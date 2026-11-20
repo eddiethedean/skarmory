@@ -3,7 +3,9 @@
 from collections.abc import Sequence
 import json
 from os import PathLike, fspath
-from typing import Literal
+from typing import Literal, cast
+
+from .report import NativeReport
 
 
 SourcePath = str | PathLike[str]
@@ -11,6 +13,17 @@ SourcePath = str | PathLike[str]
 
 class AnalysisUnavailableError(RuntimeError):
     """The native engine could not be loaded."""
+
+
+def _load_native():
+    try:
+        from . import _native
+    except ImportError as error:
+        raise AnalysisUnavailableError(
+            "Skarmory's native extension is not built. "
+            "Build the development package with `python -m pip install .`."
+        ) from error
+    return _native
 
 
 def analyze(
@@ -24,21 +37,17 @@ def analyze(
     public_modules: Sequence[str] = (),
     public_callables: Sequence[str] = (),
     workers: int = 1,
+    cache_dir: SourcePath | None = None,
     phase0: bool = False,
-) -> dict[str, object]:
+) -> NativeReport:
     """Analyze selected Python sources and return the native report.
 
     Declare source roots in import search order. Specify callable roots as
     `"module:function"`. Check `coverage.status` before using findings.
+    Pass `cache_dir` to reuse validated file-local facts.
     Set `phase0=True` to use the flat-project prototype with its original report.
     """
-    try:
-        from . import _native
-    except ImportError as error:
-        raise AnalysisUnavailableError(
-            "Skarmory's native extension is not built. "
-            "Build the development package with `python -m pip install .`."
-        ) from error
+    native = _load_native()
 
     if phase0:
         if (
@@ -50,9 +59,10 @@ def analyze(
             or public_modules
             or public_callables
             or workers != 1
+            or cache_dir is not None
         ):
             raise ValueError("Phase 0 does not accept preview scan options")
-        return json.loads(_native.analyze(fspath(path)))
+        return cast(NativeReport, json.loads(native.analyze(fspath(path))))
 
     for name, values in (
         ("source_roots", source_roots),
@@ -63,18 +73,18 @@ def analyze(
     ):
         if isinstance(values, (str, bytes)):
             raise TypeError(f"{name} must be a sequence, such as [{values!r}]")
-    return json.loads(
-        _native.scan(
-            fspath(path),
-            {
-                "source_roots": [fspath(root) for root in source_roots],
-                "policy": policy,
-                "entry_file": fspath(entry_file) if entry_file is not None else None,
-                "entry_modules": entry_modules,
-                "entry_callables": entry_callables,
-                "public_modules": public_modules,
-                "public_callables": public_callables,
-                "workers": workers,
-            },
-        )
+    serialized = native.scan(
+        fspath(path),
+        {
+            "source_roots": [fspath(root) for root in source_roots],
+            "policy": policy,
+            "entry_file": fspath(entry_file) if entry_file is not None else None,
+            "entry_modules": entry_modules,
+            "entry_callables": entry_callables,
+            "public_modules": public_modules,
+            "public_callables": public_callables,
+            "workers": workers,
+            "cache_dir": fspath(cache_dir) if cache_dir is not None else None,
+        },
     )
+    return cast(NativeReport, json.loads(serialized))

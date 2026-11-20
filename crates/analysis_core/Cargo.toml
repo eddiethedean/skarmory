@@ -9,10 +9,15 @@ license-file.workspace = true
 description = "Shared native analysis engine for Skarmory"
 
 [dependencies]
+blake3.workspace = true
+globset.workspace = true
 rayon.workspace = true
 skarmory_python.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
+time.workspace = true
+toml.workspace = true
 walkdir.workspace = true
 
 [lints]

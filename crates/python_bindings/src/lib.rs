@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use skarmory_core::phase02;
 use skarmory_core::{ScanOptions, ScanPolicy};
 
 #[derive(FromPyObject)]
@@ -17,6 +18,20 @@ struct Options {
     public_modules: Vec<String>,
     public_callables: Vec<String>,
     workers: usize,
+    cache_dir: Option<PathBuf>,
+}
+
+#[derive(FromPyObject)]
+#[pyo3(from_item_all)]
+struct SkylosOptions {
+    config_file: Option<PathBuf>,
+    exclude_folders: Vec<String>,
+    skip_generated: bool,
+    generated_keep_paths: Vec<String>,
+    confidence: u8,
+    all_advice: bool,
+    workers: usize,
+    cache_dir: Option<PathBuf>,
 }
 
 #[pyfunction]
@@ -36,6 +51,7 @@ fn scan(py: Python<'_>, path: PathBuf, options: Options) -> PyResult<String> {
             ));
         }
     };
+    let cache_dir = options.cache_dir;
     let options = ScanOptions {
         source_roots: options.source_roots,
         policy,
@@ -46,8 +62,36 @@ fn scan(py: Python<'_>, path: PathBuf, options: Options) -> PyResult<String> {
         public_callables: options.public_callables,
         workers: options.workers,
     };
-    py.detach(move || skarmory_core::scan(&path, &options).0.to_json())
-        .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    py.detach(move || {
+        if let Some(directory) = cache_dir {
+            skarmory_core::scan_cached(&path, &options, &directory).0
+        } else {
+            skarmory_core::scan(&path, &options).0
+        }
+        .to_json()
+    })
+    .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResult<String> {
+    let options = phase02::Options {
+        config_file: options.config_file,
+        excludes: options.exclude_folders,
+        include_generated: Some(!options.skip_generated),
+        generated_keep_paths: options.generated_keep_paths,
+        confidence: Some(options.confidence),
+        all_advice: options.all_advice,
+        workers: options.workers,
+        cache_dir: options.cache_dir,
+        ..phase02::Options::default()
+    };
+    py.detach(move || {
+        phase02::scan(&path, &options)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?
+            .to_json()
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    })
 }
 
 #[pymodule]
@@ -55,5 +99,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", skarmory_core::VERSION)?;
     module.add_function(wrap_pyfunction!(analyze, module)?)?;
     module.add_function(wrap_pyfunction!(scan, module)?)?;
+    module.add_function(wrap_pyfunction!(scan_skylos, module)?)?;
     Ok(())
 }

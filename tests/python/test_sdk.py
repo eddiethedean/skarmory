@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 import skarmory
+from skarmory.compat import skylos
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "conformance" / "fixtures"
@@ -22,6 +23,8 @@ class SdkTests(unittest.TestCase):
     def test_source_only_scan_raises(self):
         with self.assertRaises(skarmory.AnalysisUnavailableError):
             skarmory.analyze(FIXTURES / "reachable")
+        with self.assertRaises(skarmory.AnalysisUnavailableError):
+            skylos.analyze(FIXTURES / "reachable")
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     def test_native_reports(self):
@@ -98,6 +101,11 @@ class SdkTests(unittest.TestCase):
             self.assertEqual(serial["coverage"]["status"], "complete", serial)
             self.assertEqual([item["symbol"] for item in serial["findings"]], ["dead"])
             self.assertEqual(serial, skarmory.analyze(project, workers=2, **options))
+            cache = project / "facts"
+            self.assertEqual(serial, skarmory.analyze(project, cache_dir=cache, **options))
+            self.assertEqual(
+                serial, skarmory.analyze(project, workers=2, cache_dir=cache, **options)
+            )
             if cli := os.environ.get("SKARMORY_TEST_CLI"):
                 result = subprocess.run(
                     [
@@ -113,3 +121,40 @@ class SdkTests(unittest.TestCase):
     def test_phase0_rejects_preview_options(self):
         with self.assertRaisesRegex(ValueError, "Phase 0 does not accept preview"):
             skarmory.analyze(FIXTURES / "reachable", phase0=True, workers=2)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_compatibility_sdk_returns_json_string(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            config = project / ".skylos.toml"
+            config.write_text("root = true\n", encoding="utf-8")
+            (project / "main.py").write_text(
+                "def kept():\n    pass\nkept()\n\ndef unused():\n    pass\n",
+                encoding="utf-8",
+            )
+            result = skylos.analyze(project, config_file=config, all_advice=False)
+            self.assertIsInstance(result, str)
+            report = json.loads(result)
+            self.assertTrue(report["unused_functions"], report)
+            self.assertEqual(report["analysis_errors"], [])
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                output = subprocess.run(
+                    [
+                        cli, project, "--profile", "skylos", "--json", "--no-grep-verify",
+                        "--config-file", config, "--include-generated", "--confidence", "60",
+                    ],
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(report, json.loads(output.stdout))
+
+            config.write_text("unknown_key = true\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                skylos.analyze(project, config_file=config)
+
+    def test_compatibility_rejects_unsupported_work(self):
+        for key in ("grep_verify", "grep_cache", "enable_dependency_hallucinations"):
+            with self.subTest(option=key), self.assertRaises(ValueError):
+                skylos.analyze(FIXTURES / "reachable", **{key: True})
+        with self.assertRaises(TypeError):
+            skylos.analyze(FIXTURES / "reachable", enable_quality=True)

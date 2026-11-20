@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+- Adds a bounded Skylos 5.7.0 Python dead-code profile with configuration,
+  confidence filtering, suppression, JSON reports, and SARIF output.
+- Models scoped bindings, public exports, and selected static pytest,
+  FastAPI, and callback cases.
+- Adds opt-in caching for file-local facts with fresh project resolution on
+  every scan.
+
+See the [Phase 0.2 plan](docs/phase-02.md) for scope and release gates.
+
 ## 0.1.0
 
 - Adds a packaged-project preview for the `unreachable_function` rule with

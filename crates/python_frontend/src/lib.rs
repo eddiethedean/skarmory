@@ -1,10 +1,14 @@
 //! Ruff adapters for the native Python analyzers.
 
+pub mod phase02;
 pub mod preview;
+
+use std::num::NonZeroUsize;
 
 use ruff_python_ast::{Expr, Mod, ModModule, PythonVersion, Stmt};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_text_size::Ranged;
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug)]
 pub struct Module {
@@ -35,10 +39,16 @@ pub struct Call {
     pub location: Location,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Location {
+    #[serde(deserialize_with = "one_based")]
     pub line: usize,
+    #[serde(deserialize_with = "one_based")]
     pub column: usize,
+}
+
+fn one_based<'de, D: Deserializer<'de>>(input: D) -> Result<usize, D::Error> {
+    NonZeroUsize::deserialize(input).map(NonZeroUsize::get)
 }
 
 #[derive(Debug)]
@@ -83,6 +93,14 @@ pub fn simple_name(name: &str) -> bool {
 }
 
 fn parse(source: &str) -> Result<(ModModule, Lines), FrontendError> {
+    let (parsed, lines) = parse_source(source)?;
+    let Mod::Module(syntax) = parsed.into_syntax() else {
+        unreachable!("module mode always produces a module AST");
+    };
+    Ok((syntax, lines))
+}
+
+fn parse_source(source: &str) -> Result<(ruff_python_parser::Parsed<Mod>, Lines), FrontendError> {
     let lines = Lines(
         std::iter::once(0)
             .chain(source.match_indices('\n').map(|(index, _)| index + 1))
@@ -111,10 +129,7 @@ fn parse(source: &str) -> Result<(ModModule, Lines), FrontendError> {
             location: lines.locate(error.start()),
         });
     }
-    let Mod::Module(syntax) = parsed.into_syntax() else {
-        unreachable!("module mode always produces a module AST");
-    };
-    Ok((syntax, lines))
+    Ok((parsed, lines))
 }
 
 /// Parse normalized UTF-8 Python with Python 3.11 syntax and extract owned facts.

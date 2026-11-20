@@ -1,0 +1,103 @@
+use std::{fs, path::Path};
+
+use serde_json::Value;
+use skarmory_core::phase02::{Options, scan};
+
+fn compare(project: &Path, cache: &Path) -> (Value, Value) {
+    let clean = scan(project, &Options::default()).unwrap();
+    let cached = scan(
+        project,
+        &Options {
+            workers: 4,
+            cache_dir: Some(cache.to_owned()),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let clean: Value = serde_json::from_str(&clean.to_json().unwrap()).unwrap();
+    let mut cached: Value = serde_json::from_str(&cached.to_json().unwrap()).unwrap();
+    let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+    assert_eq!(cached, clean);
+    (cached, stats)
+}
+
+fn finds(report: &Value, name: &str) -> bool {
+    report["unused_functions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["name"] == name)
+}
+
+#[test]
+fn edits_rebuild_roots_and_recursive_reachability() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let config = project.path().join(".skylos.toml");
+    let main = project.path().join("main.py");
+    fs::write(&config, "root = true\n").unwrap();
+    fs::write(
+        project.path().join("helpers.py"),
+        "def first():\n    second()\n\ndef second():\n    first()\n",
+    )
+    .unwrap();
+    fs::write(&main, "from helpers import first\nfirst()\n").unwrap();
+    let (initial, cold) = compare(project.path(), cache.path());
+    assert_eq!(initial["coverage"]["status"], "complete");
+    assert_eq!(cold["misses"], 2);
+    assert!(!finds(&initial, "first"));
+    let (_, warm) = compare(project.path(), cache.path());
+    assert_eq!(warm["hits"], 2);
+
+    fs::write(&main, "pass\n").unwrap();
+    let (unrooted, edited) = compare(project.path(), cache.path());
+    assert_eq!(unrooted["coverage"]["status"], "complete");
+    assert_eq!(edited["hits"], 1);
+    assert!(finds(&unrooted, "first"));
+    assert!(finds(&unrooted, "second"));
+
+    fs::write(
+        &config,
+        "root = true\n[[dead_code.entrypoints]]\nname = 'first'\nmodule = 'helpers'\n",
+    )
+    .unwrap();
+    let (rooted, reconfigured) = compare(project.path(), cache.path());
+    assert_eq!(reconfigured["hits"], 2);
+    assert!(!finds(&rooted, "first"));
+    assert!(!finds(&rooted, "second"));
+}
+
+#[test]
+fn read_and_parse_proofs_follow_the_current_file_universe() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("main.py"),
+        "from helper import target\ntarget()\n",
+    )
+    .unwrap();
+    let helper = project.path().join("helper.py");
+    let moved = project.path().join("moved.py");
+    let source = "def target():\n    pass\n";
+    fs::write(&helper, source).unwrap();
+    let (initial, _) = compare(project.path(), cache.path());
+    assert_eq!(initial["coverage"]["status"], "complete");
+
+    fs::rename(&helper, &moved).unwrap();
+    let (renamed, warm) = compare(project.path(), cache.path());
+    assert_eq!(warm["hits"], 2);
+    assert_eq!(renamed["coverage"]["status"], "incomplete");
+
+    fs::write(&helper, "def target(\n").unwrap();
+    let (invalid, failed) = compare(project.path(), cache.path());
+    assert_eq!(invalid["coverage"]["status"], "incomplete");
+    assert_eq!(failed["misses"], 1);
+    assert_eq!(failed["writes"], 0);
+
+    fs::remove_file(moved).unwrap();
+    fs::write(&helper, source).unwrap();
+    let (restored, warm) = compare(project.path(), cache.path());
+    assert_eq!(warm["hits"], 2);
+    assert_eq!(restored, initial);
+}
