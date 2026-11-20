@@ -72,6 +72,19 @@ impl<'a> Engine<'a> {
         if !self.step(site) {
             return Vec::new();
         }
+        self.with_evaluation(site, |engine| {
+            engine.eval_expression(state, frame, expression, site)
+        })
+        .unwrap_or_default()
+    }
+
+    fn eval_expression(
+        &mut self,
+        state: State,
+        frame: FrameId,
+        expression: &'a Expression,
+        site: Site,
+    ) -> Outcomes<Value> {
         match &expression.kind {
             ExpressionKind::Name(name) => {
                 if let Some(value) = state.lookup(frame, name, self) {
@@ -470,6 +483,11 @@ impl<'a> Engine<'a> {
         if !self.step(site) {
             return None;
         }
+        self.with_evaluation(site, |engine| engine.equal_values(left, right, site))
+            .flatten()
+    }
+
+    fn equal_values(&mut self, left: &Value, right: &Value, site: Site) -> Option<bool> {
         if uncertain_value(left) || uncertain_value(right) {
             return None;
         }
@@ -515,6 +533,16 @@ impl<'a> Engine<'a> {
     }
 
     fn order(
+        &mut self,
+        left: &Value,
+        right: &Value,
+        site: Site,
+    ) -> Result<Option<Ordering>, &'static str> {
+        self.with_evaluation(site, |engine| engine.order_values(left, right, site))
+            .unwrap_or(Ok(None))
+    }
+
+    fn order_values(
         &mut self,
         left: &Value,
         right: &Value,

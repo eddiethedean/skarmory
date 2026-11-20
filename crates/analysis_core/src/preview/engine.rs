@@ -16,6 +16,7 @@ use crate::{Issue, Timings};
 
 const MAX_STEPS: usize = 250_000;
 const MAX_DEPTH: usize = 40;
+const MAX_EVALUATION_DEPTH: usize = 128;
 const MAX_VALUE_DEPTH: usize = 64;
 const MAX_PATHS: usize = 128;
 
@@ -192,6 +193,7 @@ pub(super) struct Engine<'a> {
     issues: BTreeSet<Issue>,
     steps: usize,
     depth: usize,
+    evaluation_depth: usize,
     limited: bool,
     calls: Vec<(Rc<Closure>, Names, usize)>,
     escaping: Vec<Rc<Closure>>,
@@ -220,6 +222,7 @@ impl<'a> Engine<'a> {
             issues: BTreeSet::new(),
             steps: 0,
             depth: 0,
+            evaluation_depth: 0,
             limited: false,
             calls: Vec::new(),
             escaping: Vec::new(),
@@ -526,10 +529,15 @@ impl<'a> Engine<'a> {
         outcomes
     }
 
-    fn escape(&mut self, mut state: State, value: Value, site: Site) -> Vec<State> {
+    fn escape(&mut self, state: State, value: Value, site: Site) -> Vec<State> {
         if !self.step(site) {
             return Vec::new();
         }
+        self.with_evaluation(site, |engine| engine.escape_value(state, value, site))
+            .unwrap_or_default()
+    }
+
+    fn escape_value(&mut self, mut state: State, value: Value, site: Site) -> Vec<State> {
         match value {
             Value::Function(function) => {
                 self.uncertainty(
@@ -642,7 +650,7 @@ impl<'a> Engine<'a> {
         self.calls.push((function, args, state.revision));
         let outcomes = self.block(state, frame, &node.body);
         self.calls.pop();
-        self.depth -= 1;
+        self.leave();
         outcomes
             .into_iter()
             .map(|(state, control)| {
@@ -677,22 +685,31 @@ impl<'a> Engine<'a> {
         frame: FrameId,
         statements: &'a [Statement],
     ) -> Outcomes<Control> {
-        let mut paths = vec![(state, Control::Next)];
-        for statement in statements {
-            let mut next = Vec::new();
-            for (state, control) in paths {
-                let site = Site::at(state.frame(frame).file, statement.location);
-                match control {
-                    Control::Next => next.extend(self.statement(state, frame, statement, site)),
-                    Control::Return(_) => next.push((state, control)),
+        let Some(first) = statements.first() else {
+            return vec![(state, Control::Next)];
+        };
+        let file = state.frame(frame).file;
+        self.with_evaluation(Site::at(file, first.location), |engine| {
+            let mut paths = vec![(state, Control::Next)];
+            for statement in statements {
+                let mut next = Vec::new();
+                for (state, control) in paths {
+                    let site = Site::at(file, statement.location);
+                    match control {
+                        Control::Next => {
+                            next.extend(engine.statement(state, frame, statement, site))
+                        }
+                        Control::Return(_) => next.push((state, control)),
+                    }
+                    if !engine.check_paths(next.len(), site) {
+                        return Vec::new();
+                    }
                 }
-                if !self.check_paths(next.len(), site) {
-                    return Vec::new();
-                }
+                paths = next;
             }
-            paths = next;
-        }
-        paths
+            paths
+        })
+        .unwrap_or_default()
     }
 
     fn statement(
@@ -817,8 +834,37 @@ impl<'a> Engine<'a> {
             self.limit(site, "maximum analysis call and import depth exceeded");
             return false;
         }
+        if !self.enter_evaluation(site) {
+            return false;
+        }
         self.depth += 1;
         true
+    }
+
+    fn leave(&mut self) {
+        self.depth -= 1;
+        self.evaluation_depth -= 1;
+    }
+
+    fn enter_evaluation(&mut self, site: Site) -> bool {
+        if self.evaluation_depth >= MAX_EVALUATION_DEPTH {
+            self.limit(site, "maximum combined evaluation depth exceeded");
+            return false;
+        }
+        if self.limited {
+            return false;
+        }
+        self.evaluation_depth += 1;
+        true
+    }
+
+    fn with_evaluation<T>(&mut self, site: Site, run: impl FnOnce(&mut Self) -> T) -> Option<T> {
+        if !self.enter_evaluation(site) {
+            return None;
+        }
+        let result = run(self);
+        self.evaluation_depth -= 1;
+        Some(result)
     }
 
     fn check_paths(&mut self, count: usize, site: Site) -> bool {

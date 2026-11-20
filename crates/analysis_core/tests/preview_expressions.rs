@@ -53,6 +53,52 @@ fn findings(report: &Value) -> Vec<&str> {
 }
 
 #[test]
+fn combined_call_and_expression_depth_is_bounded_on_a_small_stack() {
+    use std::fmt::Write as _;
+    use std::thread;
+
+    for (functions, operators, expected) in [(5, 6, "complete"), (38, 60, "incomplete")] {
+        let mut source = String::from("def dead(): pass\n");
+        for index in 0..functions - 1 {
+            writeln!(
+                source,
+                "def f{index}():\n    return {}f{}()",
+                "not ".repeat(operators),
+                index + 1
+            )
+            .unwrap();
+        }
+        writeln!(source, "def f{}(): return True\nf0()", functions - 1).unwrap();
+        let project = Project::new(&[("main.py", &source)]);
+        let regular = project.run(&ScanOptions::default());
+        let small_stack = thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || project.run(&ScanOptions::default()))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(small_stack, regular);
+        assert_eq!(small_stack["coverage"]["status"], expected, "{small_stack}");
+        if expected == "complete" {
+            assert_eq!(findings(&small_stack), ["dead"]);
+        } else {
+            assert_eq!(
+                small_stack["coverage"]["issues"][0]["kind"],
+                "analysis_limit"
+            );
+            assert!(
+                small_stack["coverage"]["issues"][0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("evaluation depth"),
+                "{small_stack}"
+            );
+            assert!(findings(&small_stack).is_empty());
+        }
+    }
+}
+
+#[test]
 fn call_arguments_defaults_and_short_circuit_keep_only_reached_callees() {
     let project = Project::new(&[(
         "main.py",

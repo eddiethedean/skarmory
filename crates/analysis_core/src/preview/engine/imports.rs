@@ -110,7 +110,7 @@ impl<'a> Engine<'a> {
                 break;
             }
         }
-        self.depth -= 1;
+        self.leave();
         if self.limited { Vec::new() } else { out }
     }
 
