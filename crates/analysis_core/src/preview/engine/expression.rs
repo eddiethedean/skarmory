@@ -38,7 +38,11 @@ impl Value {
 
     fn identity(&self, other: &Self) -> Option<bool> {
         match (self, other) {
-            (Self::Unknown | Self::UnknownBool, _) | (_, Self::Unknown | Self::UnknownBool) => None,
+            (Self::Unknown, _) | (_, Self::Unknown) => None,
+            (Self::UnknownBool, value) | (value, Self::UnknownBool) => {
+                (!matches!(value, Self::UnknownBool | Self::Constant(Constant::Bool(_))))
+                    .then_some(false)
+            }
             (Self::Constant(Constant::Int(left)), Self::Constant(Constant::Int(right))) => {
                 (left != right).then_some(false)
             }
@@ -533,12 +537,10 @@ impl<'a> Engine<'a> {
         right: &Value,
         site: Site,
     ) -> Result<Option<bool>, &'static str> {
-        if uncertain_value(left) || uncertain_value(right) {
-            return Ok(None);
-        }
         let result = match op {
-            Comparison::Equal | Comparison::NotEqual => self.equals(left, right, site),
             Comparison::Is | Comparison::IsNot => left.identity(right),
+            _ if uncertain_value(left) || uncertain_value(right) => return Ok(None),
+            Comparison::Equal | Comparison::NotEqual => self.equals(left, right, site),
             Comparison::In | Comparison::NotIn => self.contains(right, left, site)?,
             Comparison::Less
             | Comparison::LessEqual

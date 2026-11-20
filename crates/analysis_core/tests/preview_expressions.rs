@@ -257,6 +257,59 @@ def compare(value):
 }
 
 #[test]
+fn boolean_identity_distinguishes_known_non_booleans() {
+    let project = Project::new(&[(
+        "api.py",
+        "def impossible(): pass
+def confirmed(): pass
+def true_branch(): pass
+def false_branch(): pass
+def unknown_match(): pass
+def numeric_match(): pass
+def entry(value, other):
+    flag = not value
+    zero = 0
+    if flag is not None:
+        confirmed()
+    if flag is None or None is flag or flag is zero or flag is []:
+        impossible()
+    if flag is True:
+        true_branch()
+    else:
+        false_branch()
+    if flag is other:
+        unknown_match()
+    if flag == zero:
+        numeric_match()
+",
+    )]);
+    let report = project.run(&ScanOptions {
+        policy: ScanPolicy::Library,
+        public_callables: vec!["api:entry".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["impossible"], "{report}");
+    let evidence = report["evidence"].as_array().unwrap();
+    for (symbol, certainty) in [
+        ("::confirmed@", "established"),
+        ("::true_branch@", "possible"),
+        ("::false_branch@", "possible"),
+        ("::unknown_match@", "possible"),
+        ("::numeric_match@", "possible"),
+    ] {
+        assert!(
+            evidence.iter().any(|item| {
+                item["kind"] == "call"
+                    && item["certainty"] == certainty
+                    && item["symbol_id"].as_str().unwrap().contains(symbol)
+            }),
+            "{symbol}: {report}"
+        );
+    }
+}
+
+#[test]
 fn rich_comparison_results_can_reach_a_library_helper() {
     for comparison in [
         "value == 0",
