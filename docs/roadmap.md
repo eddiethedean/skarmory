@@ -116,11 +116,11 @@ assumptions.
 
 | Area | 0.1 behavior |
 | --- | --- |
-| Source selection | Keep explicit file scans and add recursive discovery from declared source roots, including `src` layouts and ordinary packages with `__init__.py`. Use the requested directory as the default source root. Report roots, selected paths, and documented exclusions. Ambiguous module identities and selected namespace packages surface as coverage issues. |
+| Source selection | Keep explicit file scans and add recursive discovery from declared source roots, including `src` layouts and ordinary packages with `__init__.py`. Use the requested directory as the default source root. Report roots, effective import search order, selected paths, and documented exclusions. Ambiguous module identities and selected namespace packages surface as coverage issues. |
 | Syntax and symbols | Keep the Python 3.11 target and UTF-8 source policy. Model module and synchronous function scopes, including directly called nested functions, parameter and local shadowing, simple assignments and returns, and conditional branches with conservative reachability. Identify functions by module, owning scope, and definition. |
 | Imports and declarations | Resolve absolute and relative imports, aliases, and explicit local re-exports within the selected source universe. An import required by the graph that cannot resolve within that universe produces incomplete coverage. Reachable imports activate the target module and its package initializers. Keep module execution, declaration creation, function calls, and value references distinct. A supported default expression can call a helper when its function is defined. |
 | Application roots | Support direct-file, named-module, and callable entries. Keep the flat `main.py` and explicit-file defaults in direct-file mode. A missing or unresolved entry prevents a complete application scan. |
-| Library roots | Activate declared public modules on import. Use explicit public callables and callable entries in literal `__all__` lists from those modules as externally callable roots. Resolve roots through supported re-exports and preserve code that a declared export can reach. A missing or unresolved public boundary prevents a complete library scan. |
+| Library roots | Activate declared public modules on import. Use explicit public callables and callable names in the effective literal `__all__` lists after initialization as externally callable roots. Resolve roots through supported re-exports and preserve code that a declared export can reach. A missing or unresolved public boundary prevents a complete library scan. |
 | Uncertainty | Record possible use and the evidence for it. When a function value may escape, retain the known candidate and its potentially reachable callees without asserting that they were called. Withhold project-wide unreachable findings when the affected scope cannot be bounded. |
 | Coverage and output | Record failed reads and parses, unsupported selected constructs, unresolvable graph inputs, detected source changes, and exhausted limits as incomplete coverage. Keep coverage, uncertainty, and findings separate. Use a versioned native report with deterministic paths, symbol identities, locations, and evidence. CLI stdout carries JSON. Exit 0 means completion, including runs with findings. Exit 2 covers incomplete scans and invocation or output failures. The SDK returns the same report. |
 
@@ -142,12 +142,38 @@ assumptions.
   the condition, accounting for rebinding and lexical shadowing. If the
   condition can be both true and false, preserve possible call edges from both
   branches.
+- For absolute imports, named-module, callable, and library entries use the
+  declared source roots in declaration order, with the requested directory as
+  the default. Direct-file entries search the script's directory first, then
+  any explicitly declared roots in order. Resolve the top-level name in the
+  first matching root within the selected sources, then resolve child names
+  under the selected package. Within a root, a regular package takes
+  precedence over a same-name module file. Record incomplete coverage if the
+  lookup rules leave an ambiguous identity.
+- For `from pkg import name`, resolve the package binding at that import site
+  after package initialization. Search for and load `pkg.name` as a submodule
+  only when the binding is absent. Loading a submodule binds it on the parent
+  package and can change subsequent lookups. Earlier `from` aliases retain the
+  values they captured. Preserve the possible targets when supported branches
+  leave a finite set of bindings. Mark coverage incomplete if the target cannot
+  be bounded.
 - The preview uses a closed set of selected sources. If an import needed for
   reachability has no target in that set, record its location and reason, mark
   coverage incomplete, and withhold project-wide unreachable findings. This
   applies equally to an absent project module and to standard-library or
   third-party modules outside the selection. Analysis resolves imports
   statically from selected files.
+
+#### Library export resolution
+
+Resolve the effective `__all__` binding and each listed name in the module
+namespace after reachable initialization. Assignments on paths that cannot
+execute have no effect. If multiple reachable outcomes have different literal
+lists or callable bindings, retain every possible callable and record possible
+export evidence for targets that vary by outcome. Resolved noncallable values
+add no callable root. A missing listed name or an export boundary the analyzer
+cannot determine produces incomplete coverage. When `__all__` is absent, the
+module needs an explicit public callable boundary.
 
 Proposed scan options include source roots, application or library policy,
 entry or export declarations, and a worker budget. Flag names, configuration
@@ -177,12 +203,15 @@ configuration and output remain later work. Persistent caching starts in 0.2.
 
 | Reviewed cases | Required result |
 | --- | --- |
-| Source snapshot | A conventional package in a declared `src` root resolves relative imports and reports its exact file set. A duplicate module, unreadable selected file, or detected source change produces incomplete coverage with a reason. |
+| Source snapshot | A conventional package in a declared `src` root resolves relative imports and reports its exact file set. A module identity that remains ambiguous after lookup, an unreadable selected file, or a detected source change produces incomplete coverage with a reason. |
 | Scoped identity | Same-name functions in different modules or scopes get distinct identities. A local binding that shadows an import prevents a call from being attributed to that import. |
 | Entry modes | With the same selected package sources, a named-module entry resolves a relative import and retains helpers called from the parent initializer and under the main guard. A direct-file entry into that same file reports incomplete coverage at the relative import. An ordinary import or callable entry leaves an unmodified main guard dormant. |
+| Absolute import order | With both `helper.py` and `pkg/helper.py` selected under a declared project root, the same `from helper import run` in `pkg/entry.py` reaches the sibling helper in direct-file mode and the root helper in named-module mode. Reversing two declared roots that both supply a module changes the resolved target in named-module mode. |
+| Package imports | A package's re-exported `task` function takes precedence over a selected `pkg/task.py` in `from pkg import task`. The submodule stays dormant until an explicit import loads it and updates the parent binding. The earlier alias still calls the function, and a later `from` import binds the submodule. With no package binding, the `from` import itself loads the submodule. |
 | Main guard bindings | Importing a module that first sets `__name__ = "__main__"` retains the helper called under its guard. When a parameter shadows `__name__` and its value is unknown, both possible branches contribute reachability evidence. |
 | Recursion | A recursive group is reported when isolated and retained when reached from an entry. |
 | Definition effects and exports | A helper called by a default expression survives even if the declared function's body is unreachable. A library re-export preserves its target and reachable helpers. A private sibling with no supported callers remains reportable. |
+| Effective library exports | A dormant branch that reassigns `__all__` does not change the visible export. When two reachable outcomes export different callables, both are retained with possible export evidence. A listed name that remains unbound after initialization produces incomplete coverage. |
 | Import coverage | A reachable import of a missing local module and a reachable `import pathlib` outside the selected sources each produce an import-site diagnostic, incomplete coverage, and no project-wide unreachable findings. A corresponding resolved local import permits complete coverage. |
 | Uncertainty and failure | Possible-use evidence retains affected functions. Invalid syntax, an unbounded dynamic target, and exhausted limits produce explicit diagnostics and no project-wide non-use findings. A supported clean fixture reports complete coverage. |
 | Interface and workers | CLI and installed SDK reports agree. Single-worker, multi-worker, and repeated runs match after removing documented timing and temporary-path fields. Vary file discovery and worker completion order. Compare coverage, uncertainty, evidence, finding identities, and locations. |
