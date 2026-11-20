@@ -593,6 +593,29 @@ task = override
 }
 
 #[test]
+fn ordinary_import_resolves_a_local_future_module() {
+    let project = Project::new(&[
+        ("main.py", "import __future__ as local\nlocal.run()\n"),
+        ("__future__.py", "def run(): pass\ndef unused(): pass\n"),
+    ]);
+    let report = project.run(&ScanOptions::default());
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["unused"]);
+
+    let directive = Project::new(&[
+        ("main.py", "from __future__ import annotations\n"),
+        ("__future__.py", "def unused(): pass\n"),
+    ]);
+    let report = directive.run(&ScanOptions::default());
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert_eq!(
+        report["coverage"]["issues"][0]["kind"],
+        "unsupported_construct"
+    );
+    assert!(findings(&report).is_empty(), "{report}");
+}
+
+#[test]
 fn a_local_file_cannot_supply_a_builtin_module() {
     let project = Project::new(&[
         (
