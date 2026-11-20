@@ -40,6 +40,7 @@ wheel tags and all four published crates.
 | --- | --- |
 | [Architecture](docs/architecture.md) | Shared Rust engine, Python semantics, project graph, caching, evidence, and integration boundaries |
 | [Roadmap](docs/roadmap.md) | Phases, dependencies, acceptance gates, and initial engineering tasks |
+| [Planned Rust dependencies](docs/roadmap.md#planned-rust-dependencies) | Proposed crates and adoption checks by milestone |
 | [Compatibility](docs/compatibility.md) | Pinned Skylos target, promised surfaces, exclusions, and discrepancy policy |
 | [Architecture decision](docs/adr/0001-native-engine.md) | Why the CLI and Python SDK share a native engine |
 | [Conformance strategy](tests/conformance/README.md) | Differential compatibility and independently reviewed correctness cases |
@@ -63,9 +64,9 @@ The next milestone expands the prototype into the Python dead-code preview.
 
 ## Development
 
-Use Python 3.11 or newer and a Rust toolchain with `rustfmt` and `clippy`.
-The workspace requires Rust 1.96 or later for the pinned Ruff crates. CI tests
-the minimum, and the local toolchain file selects stable Rust.
+Use Python 3.11 or newer and Rust 1.98 or newer. The local toolchain file
+pins Rust 1.98.1 with `rustfmt` and `clippy`. CI checks and release builds use
+the same Rust patch release.
 
 ### Native CLI
 

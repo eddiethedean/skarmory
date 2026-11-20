@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 env:
-  RUSTUP_TOOLCHAIN: '1.96.0'
+  RUSTUP_TOOLCHAIN: '1.98.1'
   MATURIN_VERSION: '1.16.0'
   TWINE_VERSION: '6.2.0'
 
@@ -74,7 +74,7 @@ jobs:
           python-version: '3.11'
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
-          toolchain: '1.96.0'
+          toolchain: '1.98.1'
       - run: python scripts/update_third_party_notices.py --check
       - run: cargo package --workspace --locked
 
@@ -136,7 +136,7 @@ jobs:
           python-version: ${{ matrix.name == 'windows-arm64' && '3.14' || '3.11' }}
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
-          toolchain: '1.96.0'
+          toolchain: '1.98.1'
           targets: ${{ matrix.target }}
       - name: Install wheel build tools
         shell: bash
@@ -204,7 +204,7 @@ jobs:
           python-version: '3.11'
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
-          toolchain: '1.96.0'
+          toolchain: '1.98.1'
       - name: Build and test the source distribution
         env:
           SKARMORY_REQUIRE_NATIVE: '1'
@@ -261,7 +261,7 @@ jobs:
           python-version: '3.11'
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
-          toolchain: '1.96.0'
+          toolchain: '1.98.1'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-python-*
