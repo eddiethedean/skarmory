@@ -40,12 +40,34 @@ Compatibility is versioned and limited to explicitly declared features. The
 | Milestone | Main deliverable | Depends on | Release gate |
 | --- | --- | --- | --- |
 | Phase 0 | Compatibility contract, benchmark baseline, native vertical slice | Initial scaffold | Reproducible baseline and measured native prototype |
-| 0.1 | Python dead-code preview | Phase 0 | Core semantic fixtures pass; limitations explicit |
+| 0.1 | Native unreachable-function preview for packaged Python 3.11 projects | Phase 0 | Reviewed reachability, coverage, and worker-equivalence checks pass |
 | 0.2 | Declared Python dead-code compatibility | 0.1 | No unexplained conformance differences |
 | 0.3 | Quality and secrets | 0.2 | Rule-level conformance and independent controls |
 | 0.4 | Security and data flow | 0.3 and semantic infrastructure | Accuracy, completeness, and resource budgets verified |
 | 0.5 | Developer workflows | Relevant stable rule families | Integration and narrow edit contracts verified |
 | 1.0 | Stable declared Python analysis contract | Earlier gates | Published feature matrix, APIs, wheels, and evidence |
+
+## Planned Rust dependencies
+
+The workspace uses the pinned Ruff parser and AST crates behind the Python
+frontend, Serde for reports, and PyO3 at the SDK boundary. Adopt the candidates
+below as their features land. Verify each addition on Rust 1.98 and the
+supported distribution targets. Follow the locked dependency and notice
+workflow in [CONTRIBUTING.md](../CONTRIBUTING.md#dependencies-and-packaging).
+
+| Milestone | Candidates | Adoption criteria |
+| --- | --- | --- |
+| 0.1 | [walkdir](https://docs.rs/walkdir/latest/walkdir/), [Rayon](https://docs.rs/rayon/latest/rayon/), [clap](https://docs.rs/clap/latest/clap/) | Use walkdir for recursive discovery with explicit root and nested symlink behavior, sorted paths, and coverage diagnostics for traversal errors. Add bounded Rayon workers after the serial fixtures pass. Use clap for the preview flags while preserving native CLI output and exit behavior. |
+| 0.2 | [toml](https://docs.rs/toml/latest/toml/), [globset](https://docs.rs/globset/latest/globset/), [ignore](https://docs.rs/ignore/latest/ignore/), [BLAKE3](https://docs.rs/blake3/latest/blake3/), [tempfile](https://docs.rs/tempfile/latest/tempfile/), [serde-sarif](https://docs.rs/serde-sarif/latest/serde_sarif/) | Match TOML syntax, path rules, and config precedence against pinned Skylos fixtures. Evaluate ignore for declared Git-style filtering. Use BLAKE3 content fingerprints and versioned Serde records, with tempfile for atomic cache writes from the same directory. Evaluate serde-sarif for the declared report format and verify exported reports against the compatibility fixtures. |
+| 0.3 | [regex](https://docs.rs/regex/latest/regex/), [aho-corasick](https://docs.rs/aho-corasick/latest/aho_corasick/) | Use regex for reviewed text and byte patterns. Check Python lookaround and backreferences when porting rules. Evaluate the already transitive aho-corasick crate for a shared literal search pass. Preserve reference clone scores when optimizing candidate selection. |
+| 0.4 | [petgraph](https://docs.rs/petgraph/latest/petgraph/), [fixedbitset](https://docs.rs/fixedbitset/latest/fixedbitset/) | Evaluate iterative strongly connected component analysis for recursive call groups and dense bitsets for flow facts. Keep propagation, budgets, and evidence paths in the analysis engine. |
+| 0.5 | [notify](https://docs.rs/notify/latest/notify/), [lsp-server](https://docs.rs/lsp-server/latest/lsp_server/), [lsp-types](https://docs.rs/lsp-types/latest/lsp_types/), [similar](https://docs.rs/similar/latest/similar/) | Use notify for watch events and rescan when events may have been lost. Use the LSP pair for editor transport and messages, with position conversion at the adapter boundary. Use similar for cleanup previews with source fingerprints revalidated before any edit. |
+| Through 1.0 | [proptest](https://proptest-rs.github.io/proptest/proptest/getting-started.html), [cargo-deny](https://embarkstudios.github.io/cargo-deny/checks/index.html) | Use proptest in development for worker-order, cache-edit, and Unicode-position invariants. Evaluate cargo-deny in CI for advisories, licenses, and dependency sources. |
+
+In the cache dependency trial, tempfile brought in `r-efi` 6.0.0. Its
+[AUTHORS file](https://github.com/r-efi/r-efi/blob/v6.0.0/AUTHORS) contains
+the license text that the current notice generator missed. Account for the
+license file of the version resolved when adding the cache dependencies.
 
 ## Phase 0: freeze the contract and measure the foundation
 
@@ -85,25 +107,121 @@ Evidence includes [runnable fixtures](../tests/conformance/phase0.toml), a
 
 ## 0.1: Python dead-code preview
 
-Goal: produce useful, explainable native findings for a deliberately bounded
-Python subset.
+Expand the [0.0.1 flat-project prototype](phase-0.md) into a native preview
+for multi-file applications and explicitly bounded libraries. The preview
+reports one rule, `unreachable_function`, under the declared source and entry
+assumptions.
 
-- [ ] Implement source snapshots, package discovery, and explicit source-root
-  configuration.
-- [ ] Resolve lexical scopes, shadowing, import aliases, and supported re-exports.
-- [ ] Give symbols identities beyond their unqualified names.
-- [ ] Distinguish references, function execution, declaration effects, and roots.
-- [ ] Find unreachable recursive groups from declared roots.
-- [ ] Support initial application and library policies without inventing external
-  callers or deleting public APIs by assumption.
-- [ ] Preserve possible dynamic use and explain unsupported resolution.
-- [ ] Report failures and analysis coverage separately from findings.
-- [ ] Add stable normalized output, explicit errors, and documented preview CLI
-  behavior.
-- [ ] Establish deterministic single-worker and multi-worker equivalence.
+### Planned preview contract
 
-Exit evidence: paired live/dead fixtures and a published preview matrix. This
-milestone is not a complete replacement for Skylos.
+| Area | 0.1 behavior |
+| --- | --- |
+| Source selection | Keep explicit file scans and add recursive discovery from declared source roots, including `src` layouts and ordinary packages with `__init__.py`. Use the requested directory as the default source root. Report roots, effective import search order, selected paths, and documented exclusions. Ambiguous module identities and selected namespace packages surface as coverage issues. |
+| Syntax and symbols | Keep the Python 3.11 target and UTF-8 source policy. Model module and synchronous function scopes, including directly called nested functions, parameter and local shadowing, simple assignments and returns, and conditional branches with conservative reachability. Identify functions by module, owning scope, and definition. |
+| Imports and declarations | Resolve absolute and relative imports, aliases, and explicit local re-exports within the selected source universe. An import required by the graph that cannot resolve within that universe produces incomplete coverage. Reachable imports activate the target module and its package initializers. Keep module execution, declaration creation, function calls, and value references distinct. A supported default expression can call a helper when its function is defined. |
+| Application roots | Support direct-file, named-module, and callable entries. Keep the flat `main.py` and explicit-file defaults in direct-file mode. A missing or unresolved entry prevents a complete application scan. |
+| Library roots | Activate declared public modules on import. Use explicit public callables and callable names in the effective literal `__all__` lists after initialization as externally callable roots. Resolve roots through supported re-exports and preserve code that a declared export can reach. A missing or unresolved public boundary prevents a complete library scan. |
+| Uncertainty | Record possible use and the evidence for it. When a function value may escape, retain the known candidate and its potentially reachable callees without asserting that they were called. Withhold project-wide unreachable findings when the affected scope cannot be bounded. |
+| Coverage and output | Record failed reads and parses, unsupported selected constructs, unresolvable graph inputs, detected source changes, and exhausted limits as incomplete coverage. Keep coverage, uncertainty, and findings separate. Use a versioned native report with deterministic paths, symbol identities, locations, and evidence. CLI stdout carries JSON. Exit 0 means completion, including runs with findings. Exit 2 covers incomplete scans and invocation or output failures. The SDK returns the same report. |
+
+#### Entry and import resolution
+
+- A direct-file entry models `python path/to/entry.py`. Its initial
+  `__name__` is `__main__` and it has no implicit package context. An
+  explicit file scan still selects that file alone by default. A reachable
+  relative import from a direct-file entry with no package context produces
+  incomplete coverage even when its target is among the selected files.
+- A named-module entry models `python -m pkg.entry`. It runs the parent package
+  initializers before the entry body, supports relative imports in that package,
+  and starts the entry body with `__name__` set to `__main__`. For a package
+  entry, the declaration names `pkg.__main__` explicitly. Keep entry execution
+  and ordinary import of the same source in distinct execution contexts.
+- A callable entry imports its owning module and package initializers before
+  calling the selected function. Ordinary imports initialize `__name__` to the
+  module's qualified name. Evaluate a main guard using the binding that reaches
+  the condition, accounting for rebinding and lexical shadowing. If the
+  condition can be both true and false, preserve possible call edges from both
+  branches.
+- For absolute imports, named-module, callable, and library entries use the
+  declared source roots in declaration order, with the requested directory as
+  the default. Direct-file entries search the script's directory first, then
+  any explicitly declared roots in order. Resolve the top-level name in the
+  first matching root within the selected sources, then resolve child names
+  under the selected package. Within a root, a regular package takes
+  precedence over a same-name module file. Record incomplete coverage if the
+  lookup rules leave an ambiguous identity.
+- For `from pkg import name`, resolve the package binding at that import site
+  after package initialization. Search for and load `pkg.name` as a submodule
+  only when the binding is absent. Loading a submodule binds it on the parent
+  package and can change subsequent lookups. Earlier `from` aliases retain the
+  values they captured. Preserve the possible targets when supported branches
+  leave a finite set of bindings. Mark coverage incomplete if the target cannot
+  be bounded.
+- The preview uses a closed set of selected sources. If an import needed for
+  reachability has no target in that set, record its location and reason, mark
+  coverage incomplete, and withhold project-wide unreachable findings. This
+  applies equally to an absent project module and to standard-library or
+  third-party modules outside the selection. Analysis resolves imports
+  statically from selected files.
+
+#### Library export resolution
+
+Resolve the effective `__all__` binding and each listed name in the module
+namespace after reachable initialization. Assignments on paths that cannot
+execute have no effect. If multiple reachable outcomes have different literal
+lists or callable bindings, retain every possible callable and record possible
+export evidence for targets that vary by outcome. Resolved noncallable values
+add no callable root. A missing listed name or an export boundary the analyzer
+cannot determine produces incomplete coverage. When `__all__` is absent, the
+module needs an explicit public callable boundary.
+
+Proposed scan options include source roots, application or library policy,
+entry or export declarations, and a worker budget. Flag names, configuration
+syntax, and report fields will be specified with the preview implementation.
+Keep Phase 0's explicit diagnostics for symlinked scan targets and source files.
+Recursive discovery treats symlinked directories as exclusions and records them.
+Decorators, star imports, import cycles the preview cannot resolve, framework
+models, general callback inference, dynamic exports, and Skylos-compatible
+configuration and output remain later work. Persistent caching starts in 0.2.
+
+### Implementation order
+
+1. Establish the source snapshot and package identities. Read each selected file
+   into one snapshot and derive both facts and locations from it. Test source
+   selection and detected changes before adding graph features.
+2. Extract scoped facts and resolve supported imports and exports in the serial
+   path. Record shadowing, declaration effects, and unresolved relationships
+   before making reachability decisions.
+3. Add application and library roots, traverse resolved call and possible-use
+   edges, and produce findings for unreachable functions and recursive groups.
+   Exercise the same report through the native CLI and installed SDK.
+4. Add bounded workers for per-file work once the serial fixtures pass. Merge
+   facts deterministically and compare findings, evidence, uncertainties, and
+   coverage across worker counts.
+
+### Release criteria
+
+| Reviewed cases | Required result |
+| --- | --- |
+| Source snapshot | A conventional package in a declared `src` root resolves relative imports and reports its exact file set. A module identity that remains ambiguous after lookup, an unreadable selected file, or a detected source change produces incomplete coverage with a reason. |
+| Scoped identity | Same-name functions in different modules or scopes get distinct identities. A local binding that shadows an import prevents a call from being attributed to that import. |
+| Entry modes | With the same selected package sources, a named-module entry resolves a relative import and retains helpers called from the parent initializer and under the main guard. A direct-file entry into that same file reports incomplete coverage at the relative import. An ordinary import or callable entry leaves an unmodified main guard dormant. |
+| Absolute import order | With both `helper.py` and `pkg/helper.py` selected under a declared project root, the same `from helper import run` in `pkg/entry.py` reaches the sibling helper in direct-file mode and the root helper in named-module mode. Reversing two declared roots that both supply a module changes the resolved target in named-module mode. |
+| Package imports | A package's re-exported `task` function takes precedence over a selected `pkg/task.py` in `from pkg import task`. The submodule stays dormant until an explicit import loads it and updates the parent binding. The earlier alias still calls the function, and a later `from` import binds the submodule. With no package binding, the `from` import itself loads the submodule. |
+| Main guard bindings | Importing a module that first sets `__name__ = "__main__"` retains the helper called under its guard. When a parameter shadows `__name__` and its value is unknown, both possible branches contribute reachability evidence. |
+| Recursion | A recursive group is reported when isolated and retained when reached from an entry. |
+| Definition effects and exports | A helper called by a default expression survives even if the declared function's body is unreachable. A library re-export preserves its target and reachable helpers. A private sibling with no supported callers remains reportable. |
+| Effective library exports | A dormant branch that reassigns `__all__` does not change the visible export. When two reachable outcomes export different callables, both are retained with possible export evidence. A listed name that remains unbound after initialization produces incomplete coverage. |
+| Import coverage | A reachable import of a missing local module and a reachable `import pathlib` outside the selected sources each produce an import-site diagnostic, incomplete coverage, and no project-wide unreachable findings. A corresponding resolved local import permits complete coverage. |
+| Uncertainty and failure | Possible-use evidence retains affected functions. Invalid syntax, an unbounded dynamic target, and exhausted limits produce explicit diagnostics and no project-wide non-use findings. A supported clean fixture reports complete coverage. |
+| Interface and workers | CLI and installed SDK reports agree. Single-worker, multi-worker, and repeated runs match after removing documented timing and temporary-path fields. Vary file discovery and worker completion order. Compare coverage, uncertainty, evidence, finding identities, and locations. |
+
+Publish the preview matrix and runnable fixtures, keeping the Phase 0 controls
+as regressions. Record differences against [Skylos 5.7.0](skylos-5.7.0-contract.md)
+for overlapping cases and preserve independently reviewed expectations. Capture
+phase timings and coverage on a representative packaged workload using the
+[benchmark protocol](../benchmarks/README.md). The 0.1 gate is correctness and
+explicit coverage. Compatibility and speed claims require separate evidence.
 
 ## 0.2: declared Python dead-code compatibility
 

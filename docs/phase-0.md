@@ -57,7 +57,7 @@ persistent cache.
 The adapter pins Ruff parser, AST, and text range crates to `0.0.12` from
 [Ruff revision `22f65a2`](https://github.com/astral-sh/ruff/tree/22f65a2ab5052990503985c7c794de37598d531e).
 The Rust 1.85 scaffold built before adopting Ruff. The selected matching crate
-set requires Rust 1.96, so the workspace minimum and CI are set to 1.96.
+set requires Rust 1.96, which 0.0.1 used as its workspace and CI minimum.
 The Cargo lockfile records the resolved dependency graph. Parser AST and
 diagnostic types stay in the adapter.
 
