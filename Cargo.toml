@@ -12,12 +12,12 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.96"
 repository = "https://github.com/eddiethedean/skarmory"
-publish = false
-license = "MIT"
+publish = ["crates-io"]
+license-file = "LICENSE"
 
 [workspace.dependencies]
-skarmory_core = { path = "crates/analysis_core" }
-skarmory_python = { path = "crates/python_frontend" }
+skarmory_core = { path = "crates/analysis_core", version = "=0.0.1" }
+skarmory_python = { path = "crates/python_frontend", version = "=0.0.1" }
 pyo3 = "=0.29.0"
 ruff_python_ast = "=0.0.12"
 ruff_python_parser = "=0.0.12"

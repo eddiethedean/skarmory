@@ -44,7 +44,27 @@ native CLI. Keep the combined-wheel trial separate from the default build.
 Its validation commands and receipts are in the [measurement report](benchmarks/phase0.md).
 
 Skarmory is licensed under [MIT](LICENSE). Record provenance and applicable
-license obligations before importing third-party source or fixtures.
+license obligations before importing third-party source or fixtures. Run
+`python scripts/update_third_party_notices.py` after changing Cargo dependencies
+to refresh the [notices included in Python distributions](THIRD_PARTY_NOTICES.txt).
+
+## Releases
+
+Keep the workspace version in `Cargo.toml`, the internal crate dependency
+versions, and `python/skarmory/_version.py` aligned. Push the matching
+`vX.Y.Z` tag to start the [release workflow](.github/workflows/release.yml).
+A manual run or a packaging pull request builds and verifies distributions
+without publishing.
+
+The workflow runs the regular CI suite, verifies the crate packages, and
+tests the installed Python wheels and source distribution before publishing.
+It builds CPython 3.11+ stable-ABI wheels for manylinux, musllinux, macOS, and
+Windows on x86-64 and ARM64. The PyPI package contains the SDK. The native CLI
+is distributed as the `skarmory_cli` crate.
+
+Configure the repository secrets `CARGO_REGISTRY_TOKEN` for crates.io and
+`PYPI_API_TOKEN` for PyPI. The workflow uses both secrets on matching tag
+pushes and publishes the Cargo workspace in dependency order.
 
 ## Reporting results
 

@@ -96,7 +96,12 @@ def verify(wheel, cli, temporary, combined):
     extension = Path(captured(python, "-c", "import skarmory._native as m; print(m.__file__)").strip())
     with ZipFile(wheel) as archive:
         assert any(name.endswith(f".data/scripts/{CLI_NAME}") for name in archive.namelist()) == combined
-        assert any(name.endswith(".dist-info/licenses/LICENSE") for name in archive.namelist())
+        for license_file in ("LICENSE", "THIRD_PARTY_NOTICES.txt"):
+            entry, = (
+                name for name in archive.namelist()
+                if name.endswith(f".dist-info/licenses/{license_file}")
+            )
+            assert archive.read(entry) == (ROOT / license_file).read_bytes()
     return {
         "layout": "combined" if combined else "separate",
         "wheel": artifact(wheel),
@@ -113,7 +118,7 @@ def build_combined(cli, temporary, maturin):
     # Stage a separate project so the supported SDK wheel keeps its own layout.
     project = temporary / "project"
     project.mkdir()
-    for name in ("Cargo.toml", "Cargo.lock", "README.md", "LICENSE"):
+    for name in ("Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.txt"):
         shutil.copy2(ROOT / name, project / name)
     for name in ("crates", "python"):
         shutil.copytree(ROOT / name, project / name, ignore=shutil.ignore_patterns("__pycache__"))

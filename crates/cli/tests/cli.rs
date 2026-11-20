@@ -3,8 +3,7 @@ use std::process::Command;
 
 #[test]
 fn a_parse_failure_cannot_be_mistaken_for_a_clean_result() {
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance/fixtures/invalid");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/invalid.py");
     let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
         .arg(fixture)
         .output()
