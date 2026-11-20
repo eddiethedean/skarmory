@@ -73,12 +73,16 @@ were written for Skarmory. The repository vendors no upstream source or fixtures
 
 ## Distributions
 
-The default artifacts are a native CLI installed with Cargo and a separate
-Maturin-built PyO3 SDK wheel. Phase 0 qualified Rust 1.96 and a CPython
-3.11–3.14 development matrix across Linux, macOS, and Windows. CI installs both into clean destinations, checks
-their reports against the reviewed cases, verifies CLI linkage and operation
-with no Python on PATH, and records startup samples, sizes, and hashes. It also
-rebuilds and tests the SDK from its source distribution.
+Version 0.0.1 ships the native CLI through `skarmory_cli` on crates.io and the
+Python SDK through `skarmory` on PyPI. The [release notes](../CHANGELOG.md#001)
+record the published wheel targets and the completed release checks.
+
+Phase 0 qualified Rust 1.96 and a CPython 3.11–3.14 development matrix across
+Linux, macOS, and Windows. CI installs both distributions into clean
+destinations, verifies their reports against the reviewed cases, checks CLI
+linkage and operation with no Python on PATH, and records startup samples,
+sizes, and hashes. It also rebuilds and tests the SDK from its source
+distribution.
 
 The combined-wheel experiment stages the same native executable in the wheel's
 scripts data directory and uses Maturin for the PyO3 extension. The install
