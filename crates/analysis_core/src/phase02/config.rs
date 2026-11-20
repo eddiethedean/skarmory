@@ -572,10 +572,12 @@ fn parse_date(value: &str) -> Option<Date> {
 type ConfigLayer = (PathBuf, Layer, blake3::Hash);
 
 fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigError> {
-    if std::env::var_os("SKYLOS_POLICY_BASE").is_some_and(|value| !value.is_empty()) {
-        return Err(ConfigError::new(
-            "SKYLOS_POLICY_BASE is outside the local dead-code profile",
-        ));
+    for variable in ["SKYLOS_POLICY_BASE", "SKYLOS_SYNCED_POLICY_FILE"] {
+        if std::env::var_os(variable).is_some_and(|value| !value.is_empty()) {
+            return Err(ConfigError::new(format!(
+                "{variable} is outside the local dead-code profile"
+            )));
+        }
     }
     let env_file = std::env::var_os("SKYLOS_CONFIG_FILE");
     if let Some(file) = options
@@ -603,6 +605,12 @@ fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigErro
     for (depth, directory) in start.ancestors().enumerate() {
         if depth >= MAX_CONFIG_LAYERS {
             return Err(ConfigError::new("configuration ancestor limit exceeded"));
+        }
+        if directory.join(".skylos/config.yaml").exists() {
+            return Err(ConfigError::new(format!(
+                "synced Skylos configuration in {} is outside the local dead-code profile",
+                directory.display()
+            )));
         }
         let mut stop = directory.join(".git").exists();
         for filename in [".skylos.toml", "skylos.toml", "pyproject.toml"] {

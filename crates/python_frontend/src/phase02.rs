@@ -1,5 +1,7 @@
 //! Serializable source facts for the bounded Python 3.11 compatibility profile.
 
+use std::collections::BTreeSet;
+
 use ruff_python_ast::{Alias, BoolOp, CmpOp, Expr, Mod, Stmt, UnaryOp, token::TokenKind};
 use ruff_text_size::Ranged;
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,7 @@ pub enum StatementKind {
     },
     Return(Option<Expression>),
     Raise(Option<Expression>),
+    Assert(Expression),
     Evaluate(Expression),
 }
 
@@ -174,7 +177,7 @@ pub fn extract(source: &str) -> Result<ModuleFacts, FrontendError> {
         || (syntax.body.len() == 1
             && matches!(&syntax.body[0], Stmt::Expr(node) if node.value.is_string_literal_expr()));
     Ok(ModuleFacts {
-        body: Lowering(&lines).suite(&syntax.body, 0)?,
+        body: Lowering(&lines, SyntaxScope::ModuleOrClass).suite(&syntax.body, 0)?,
         empty,
         inline_ignores,
         postponed_annotations: syntax.body.iter().any(|statement|
@@ -232,7 +235,14 @@ fn ignore_rules(lower: &str) -> Option<Vec<String>> {
     (!rules.is_empty()).then_some(rules)
 }
 
-struct Lowering<'a>(&'a Lines);
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SyntaxScope {
+    ModuleOrClass,
+    Function,
+    AsyncFunction,
+}
+
+struct Lowering<'a>(&'a Lines, SyntaxScope);
 
 impl Lowering<'_> {
     fn check(&self, node: &impl Ranged, depth: usize) -> Result<(), FrontendError> {
@@ -342,7 +352,15 @@ impl Lowering<'_> {
                 }
                 Stmt::FunctionDef(node) => {
                     let mut annotations = Vec::new();
+                    let mut parameter_names = BTreeSet::new();
                     for parameter in node.parameters.iter() {
+                        if !parameter_names.insert(parameter.name().as_str()) {
+                            return Err(self.0.error(
+                                "parse_error",
+                                parameter.name(),
+                                "duplicate parameter name",
+                            ));
+                        }
                         if let Some(annotation) = parameter.annotation() {
                             annotations.push(self.annotation(annotation, next)?);
                         }
@@ -357,7 +375,15 @@ impl Lowering<'_> {
                         } else {
                             DefinitionKind::Function
                         },
-                        body: self.suite(&node.body, next)?,
+                        body: Lowering(
+                            self.0,
+                            if node.is_async {
+                                SyntaxScope::AsyncFunction
+                            } else {
+                                SyntaxScope::Function
+                            },
+                        )
+                        .suite(&node.body, next)?,
                         decorators: node
                             .decorator_list
                             .iter()
@@ -391,7 +417,8 @@ impl Lowering<'_> {
                     StatementKind::Define(Definition {
                         name: self.name(&node.name),
                         kind: DefinitionKind::Class,
-                        body: self.suite(&node.body, next)?,
+                        body: Lowering(self.0, SyntaxScope::ModuleOrClass)
+                            .suite(&node.body, next)?,
                         decorators: node
                             .decorator_list
                             .iter()
@@ -463,10 +490,28 @@ impl Lowering<'_> {
                     body: self.suite(&node.body, next)?,
                 },
                 Stmt::Return(node) => {
+                    if self.1 == SyntaxScope::ModuleOrClass {
+                        return Err(self
+                            .0
+                            .error("parse_error", node, "return outside a function"));
+                    }
                     StatementKind::Return(node.value.as_deref().map(expression).transpose()?)
                 }
                 Stmt::Raise(node) if node.cause.is_none() => {
                     StatementKind::Raise(node.exc.as_deref().map(expression).transpose()?)
+                }
+                Stmt::Assert(node) => {
+                    if node
+                        .msg
+                        .as_deref()
+                        .is_some_and(|message| !message.is_string_literal_expr())
+                    {
+                        return Err(self.0.unsupported(
+                            node,
+                            "dynamic assertion messages are outside the compatibility subset",
+                        ));
+                    }
+                    StatementKind::Assert(expression(&node.test)?)
                 }
                 Stmt::Expr(node) => StatementKind::Evaluate(expression(&node.value)?),
                 _ => {
@@ -565,7 +610,16 @@ impl Lowering<'_> {
             Expr::BinOp(node) => {
                 ExpressionKind::Operands(vec![lower(&node.left)?, lower(&node.right)?])
             }
-            Expr::Await(node) => ExpressionKind::Await(Box::new(lower(&node.value)?)),
+            Expr::Await(node) => {
+                if self.1 != SyntaxScope::AsyncFunction {
+                    return Err(self.0.error(
+                        "parse_error",
+                        node,
+                        "await outside an async function",
+                    ));
+                }
+                ExpressionKind::Await(Box::new(lower(&node.value)?))
+            }
             _ => {
                 return Err(self
                     .0
@@ -594,6 +648,38 @@ mod tests {
     #[test]
     fn unsupported_scope_operations_report_a_location() {
         let error = extract("def helper():\n    global name\n").unwrap_err();
+        assert_eq!(error.kind, "unsupported_construct");
+        assert_eq!(error.location.line, 2);
+    }
+
+    #[test]
+    fn rejects_compiler_invalid_contexts_and_duplicate_parameters() {
+        for (source, line) in [
+            ("return 1\n", 1),
+            ("async def job(): return 1\nawait job()\n", 2),
+            ("def foo(a, a): return a\n", 1),
+            ("async def job():\n    class Bad:\n        await job()\n", 3),
+            ("async def job():\n    def bad():\n        await job()\n", 3),
+        ] {
+            let error = extract(source).unwrap_err();
+            assert_eq!(error.kind, "parse_error", "{source}");
+            assert_eq!(error.location.line, line, "{source}");
+        }
+        assert!(extract("async def job(x):\n    return await x()\n").is_ok());
+    }
+
+    #[test]
+    fn lowers_assertions_and_rejects_dynamic_messages() {
+        let facts =
+            extract("def test_app(resource):\n    assert resource, 'missing resource'\n").unwrap();
+        assert!(
+            matches!(&facts.body[0].kind, StatementKind::Define(definition)
+            if matches!(&definition.body[0].kind, StatementKind::Assert(Expression {
+                kind: ExpressionKind::Name(name), ..
+            }) if name == "resource"))
+        );
+        let error =
+            extract("def test_app(resource):\n    assert resource, build_failure()\n").unwrap_err();
         assert_eq!(error.kind, "unsupported_construct");
         assert_eq!(error.location.line, 2);
     }

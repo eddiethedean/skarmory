@@ -103,6 +103,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         read: BTreeSet::new(),
         direct: BTreeSet::new(),
         conditional: BTreeMap::new(),
+        subclassed: BTreeSet::new(),
         issues: Vec::new(),
         scope_issues: Vec::new(),
         uncertainties: Vec::new(),
@@ -125,6 +126,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         }
         graph.index(file, &source.facts.body);
     }
+    graph.index_base_classes();
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
         graph.suite(scope, body);
@@ -143,6 +145,7 @@ struct Graph<'a> {
     read: BTreeSet<SymbolId>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
+    subclassed: BTreeSet<SymbolId>,
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     uncertainties: Vec<Issue>,
@@ -326,6 +329,24 @@ impl<'a> Graph<'a> {
         matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Class)
     }
 
+    fn index_base_classes(&mut self) {
+        for id in 0..self.symbols.len() {
+            let scope = self.symbols[id].scope;
+            let Binding::Definition(definition, _) = self.symbols[id].binding else {
+                continue;
+            };
+            if definition.kind == DefinitionKind::Class {
+                for base in &definition.bases {
+                    if let Value::Callable(base) = self.identity(scope, base, definition.name.at, 0)
+                        && self.is_class(base)
+                    {
+                        self.subclassed.insert(base);
+                    }
+                }
+            }
+        }
+    }
+
     fn full_name(&self, id: SymbolId) -> String {
         let symbol = &self.symbols[id];
         let mut names = vec![symbol.name.text.as_str()];
@@ -397,6 +418,7 @@ impl<'a> Graph<'a> {
                         .parent
                         .and_then(|parent| self.scopes[parent].owner)
                     && self.is_class(parent)
+                    && !self.subclassed.contains(&parent)
                 {
                     return Value::Instance(parent);
                 }
@@ -509,16 +531,37 @@ impl<'a> Graph<'a> {
             Value::Module(file) => self.module_member(&self.files[file].module, name, depth),
             Value::Provider(module) => self.module_member(&module, name, depth),
             Value::Instance(id) | Value::Callable(id) if self.is_class(id) => {
-                let Binding::Definition(_, class_scope) = self.symbols[id].binding else {
-                    unreachable!()
-                };
-                self.local(class_scope, name, END)
-                    .map_or(Value::Unknown, |id| self.binding(id, END, depth))
+                self.class_member(id, name, depth).unwrap_or(Value::Unknown)
             }
             Value::Object(object, _) => Value::Method(object, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
             _ => Value::Unknown,
+        }
+    }
+
+    /// None means the attribute is absent in a fully resolved base chain.
+    fn class_member(&mut self, id: SymbolId, name: &str, depth: usize) -> Option<Value> {
+        if depth >= MAX_BINDING_CHAIN {
+            return Some(Value::Unknown);
+        }
+        let symbol = &self.symbols[id];
+        let Binding::Definition(definition, class_scope) = symbol.binding else {
+            unreachable!()
+        };
+        if let Some(attribute) = self.local(class_scope, name, END) {
+            return Some(self.binding(attribute, END, depth + 1));
+        }
+        match definition.bases.as_slice() {
+            [] => None,
+            [base] => match self.identity(symbol.scope, base, definition.name.at, depth + 1) {
+                Value::Callable(parent) if self.is_class(parent) => {
+                    self.class_member(parent, name, depth + 1)
+                }
+                Value::Provider(name) if name == "builtins.object" => None,
+                _ => Some(Value::Unknown),
+            },
+            _ => Some(Value::Unknown),
         }
     }
 
@@ -543,9 +586,15 @@ impl<'a> Graph<'a> {
         match &expression.kind {
             ExpressionKind::Name(name) => {
                 if let Some(id) = self.lexical(scope, name, before) {
-                    let before = if self.symbols[id].scope == scope {
+                    let binding_scope = self.symbols[id].scope;
+                    let before = if binding_scope == scope {
                         before
                     } else {
+                        if self.scopes[binding_scope].names[name.as_str()].len() > 1 {
+                            self.scope_issue(scope, expression.at, "ambiguous_binding",
+                                "an enclosing name has multiple bindings and the active version is unresolved");
+                            return Value::Unknown;
+                        }
                         END
                     };
                     return self.binding(id, before, depth + 1);
@@ -739,11 +788,15 @@ impl<'a> Graph<'a> {
                         {
                             self.edge(scope, id, "direct_call", "certain");
                         }
-                        if self.is_class(id)
-                            && let Value::Callable(initializer) =
-                                self.member(Value::Instance(id), "__init__", 0)
-                        {
-                            self.edge(scope, initializer, "constructor", "certain");
+                        if self.is_class(id) {
+                            for name in ["__new__", "__init__"] {
+                                match self.class_member(id, name, 0) {
+                                    None => {}
+                                    Some(Value::Callable(initializer)) => self.edge(scope, initializer, "constructor", "certain"),
+                                    _ => self.scope_issue(scope, expr.at, "unresolved_constructor",
+                                        "constructor dispatch is outside the bounded class hierarchy"),
+                                }
+                            }
                         }
                         // Callback parameter substitution is bounded by retaining the
                         // finite supplied values even if the callee dispatches dynamically.
@@ -835,9 +888,11 @@ impl<'a> Graph<'a> {
                 self.walk(scope, value, before);
                 self.activate_argument(scope, Some(value), before, "awaited_coroutine", expr.at);
             }
-            ExpressionKind::Member(base, _) | ExpressionKind::Not(base) => {
-                self.walk(scope, base, before)
+            ExpressionKind::Member(base, _) => {
+                self.walk(scope, base, before);
+                self.identity(scope, expr, before, 0);
             }
+            ExpressionKind::Not(base) => self.walk(scope, base, before),
             ExpressionKind::Compare { left, right, .. } => {
                 self.walk(scope, left, before);
                 self.walk(scope, right, before);
@@ -959,6 +1014,18 @@ impl<'a> Graph<'a> {
             let at = statement.at;
             match &statement.kind {
                 StatementKind::Define(definition) => {
+                    if matches!(
+                        definition.name.text.as_str(),
+                        "__getattribute__" | "__getattr__"
+                    ) && self.scopes[scope].owner.is_some_and(|id| self.is_class(id))
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_descriptor",
+                            "dynamic instance attribute resolution is outside the bounded model",
+                        );
+                    }
                     let target = self.by_location
                         [&(scope, definition.name.at.line, definition.name.at.column)];
                     for annotation in &definition.annotations {
@@ -1003,6 +1070,12 @@ impl<'a> Graph<'a> {
                         self.walk(scope, value, at);
                     }
                     return true;
+                }
+                StatementKind::Assert(test) => {
+                    self.walk(scope, test, at);
+                    if matches!(self.identity(scope, test, at, 0), Value::Bool(false)) {
+                        return true;
+                    }
                 }
                 StatementKind::Evaluate(value) => self.walk(scope, value, at),
                 StatementKind::If {
@@ -1110,7 +1183,7 @@ impl<'a> Graph<'a> {
             Value::Provider(name)
                 if matches!(
                     name.as_str(),
-                    "builtins.staticmethod" | "builtins.classmethod" | "builtins.property"
+                    "builtins.staticmethod" | "builtins.classmethod"
                 ) => {}
             _ => self.scope_issue(
                 scope,
@@ -1806,6 +1879,110 @@ mod tests {
                 .issues
                 .iter()
                 .any(|issue| issue.kind == "ambiguous_binding")
+        );
+    }
+
+    #[test]
+    fn a_later_parent_rebinding_cannot_prove_the_earlier_target_unused() {
+        let project = tempfile::tempdir().unwrap();
+        let config = project.path().join(".skylos.toml");
+        let source = project.path().join("main.py");
+        std::fs::write(&config, "root = true\n").unwrap();
+        let options = super::super::Options {
+            config_file: Some(config),
+            ..super::super::Options::default()
+        };
+        for (program, call_line) in [
+            (
+                "def helper():\n    return 1\ndef caller():\n    helper()\ncaller()\ndef helper():\n    return 2\n",
+                4,
+            ),
+            (
+                "def outer():\n    def early():\n        return 1\n    def late():\n        return 2\n    target = early\n    def caller():\n        target()\n    caller()\n    target = late\nouter()\n",
+                8,
+            ),
+        ] {
+            std::fs::write(&source, program).unwrap();
+            let report = super::super::scan(project.path(), &options).unwrap();
+            let output: serde_json::Value =
+                serde_json::from_str(&report.to_json().unwrap()).unwrap();
+            assert!(!report.is_complete(), "{output}");
+            assert_eq!(output["unused_functions"], serde_json::json!([]));
+            assert!(output["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding" && issue["line"] == call_line));
+        }
+    }
+
+    #[test]
+    fn instantiating_a_subclass_executes_the_resolved_inherited_constructor() {
+        let files = [module(
+            "main.py",
+            "main",
+            "def helper():\n    return 1\ndef runner():\n    return 2\nclass Base:\n    def __init__(self):\n        helper()\n    def run(self):\n        runner()\nclass Middle(Base):\n    pass\nclass Child(Middle):\n    pass\nChild().run()\n",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(names(&result, Category::Function).is_empty());
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|evidence| evidence.full_name == "main.Base.__init__"
+                    && evidence.kind == "constructor")
+        );
+        assert!(result.evidence.iter().any(
+            |evidence| evidence.full_name == "main.Base.run" && evidence.kind == "direct_call"
+        ));
+    }
+
+    #[test]
+    fn active_unknown_mro_and_descriptor_dispatch_are_incomplete() {
+        for (source, expected_issue) in [
+            (
+                "from external import Foreign\nclass Child(Foreign):\n    pass\nChild()\n",
+                "unresolved_constructor",
+            ),
+            (
+                "class Base:\n    def __init__(self):\n        self.hook()\n    def hook(self):\n        pass\nclass Child(Base):\n    def hook(self):\n        pass\nChild()\n",
+                "unresolved_call",
+            ),
+            (
+                "def getter():\n    return 1\nclass Base:\n    @property\n    def value(self):\n        return getter()\nclass Child(Base):\n    pass\nprint(Child().value)\n",
+                "unresolved_decorator",
+            ),
+        ] {
+            let result = analyze(&[module("main.py", "main", source)], &[]);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == expected_issue),
+                "{source}\n{:?}",
+                result.issues
+            );
+        }
+    }
+
+    #[test]
+    fn pytest_assertion_retains_its_fixture() {
+        let files = [module(
+            "test_app.py",
+            "test_app",
+            "from pytest import fixture\n@fixture\ndef resource():\n    return 1\n\ndef test_app(resource):\n    assert resource\n",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(names(&result, Category::Function).is_empty());
+        assert!(names(&result, Category::Parameter).is_empty());
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|evidence| evidence.full_name == "test_app.resource"
+                    && evidence.kind == "pytest_root")
         );
     }
 }

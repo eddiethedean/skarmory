@@ -16,6 +16,8 @@ path, qualified symbol, line, and confidence when present.
 | Application | One file, one called function, one uncalled function with a local binding | Uncalled function and unread local |
 | Library | Two files in a `src` package with a re-export and literal `__all__` | Private function outside the public call chain |
 | Bindings | Three files with a used alias, an unused import, a class, and a called private function | Unused function, import, class, parameter, and comment-only file |
+| FastAPI | One registered router and one dormant router in the same module | Only the dormant handler |
+| pytest | A collected test with an injected fixture used by an assertion | No unused findings |
 | Invalid | One selected file with a parse failure and no non-use proof | No unused findings and an explicit incomplete diagnostic |
 
 The comparator also checks configuration inheritance and replacement, nested
@@ -32,7 +34,7 @@ The independent source assumptions and observed library difference are in the
 | Coverage | Skarmory reports selection, configuration provenance, and completeness explicitly. Skylos's resolution-scope flags are separate reference results. The comparator preserves completion and error outcomes. |
 | Legacy report scope | The profile exposes the six declared result lists, suppressions, retention evidence, abstentions, and errors. It has its own schema and omits unrelated assessment, workspace, and full definition-ledger fields. Native evidence is produced by the Rust analyzer. |
 | File output errors | The pinned CLI reports exit 1 for the tested unwritable output path. Skarmory returns its operation-failure exit 2. |
-| Dynamic behavior | Unresolved bindings, unmodeled provider calls that can affect non-use, and ambiguous conditional dispatch may leave coverage incomplete. The fixtures cover bounded patterns. Full Python semantics, arbitrary framework coverage, and every Skylos scoring branch are outside the verified comparison. |
+| Dynamic behavior | Unresolved bindings, unmodeled provider calls that can affect non-use, ambiguous cross-scope rebinding, and unknown class dispatch may leave coverage incomplete. The fixtures cover bounded patterns. Full Python semantics, arbitrary framework coverage, and every Skylos scoring branch are outside the verified comparison. |
 | Local policy | The opt-in cache, strict input validation, and UTC date for temporary whitelist expiry are Skarmory policies. Tests use an explicit date for expiration boundaries. |
 
 ## Reproduce

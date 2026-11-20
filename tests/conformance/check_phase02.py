@@ -42,6 +42,11 @@ EXPECTED = {
             ["unused_files", "empty.py", None, 1, None],
         ],
     ),
+    "fastapi": (
+        ["main.py"],
+        [["unused_functions", "main.py", "main.dormant", 14, 90]],
+    ),
+    "pytest": (["test_resource.py"], []),
     "invalid": (["main.py"], []),
 }
 
@@ -168,6 +173,16 @@ def check(cli, reference):
             assert [row["rule_id"] for row in report["analysis_errors"]] == (
                 ["SKY-ANALYSIS-INCOMPLETE"] if invalid else []
             ), (name, report)
+            if name == "fastapi":
+                assert any(
+                    row["full_name"] == "main.active" and row["kind"] == "fastapi_registration"
+                    for row in report["dead_code_evidence"]
+                ), report
+            if name == "pytest":
+                assert any(
+                    row["full_name"] == "test_resource.resource" and row["kind"] == "pytest_root"
+                    for row in report["dead_code_evidence"]
+                ), report
             if reference:
                 for backend in ("python", "skylos_fast"):
                     result = subprocess.run([
