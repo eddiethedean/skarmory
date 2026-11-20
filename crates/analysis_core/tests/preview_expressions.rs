@@ -347,6 +347,32 @@ __all__ = ['factory']
         ),
         (
             "def hidden(): pass
+def factory():
+    flags = [True]
+    def callback():
+        def nested(value=flags):
+            if not value:
+                hidden()
+        nested()
+    return (flags, callback)
+__all__ = ['factory']
+",
+            "returned",
+        ),
+        (
+            "def hidden(): pass
+def factory():
+    flags = [True]
+    def callback(value=flags):
+        if not value:
+            hidden()
+    return (flags, callback)
+__all__ = ['factory']
+",
+            "returned",
+        ),
+        (
+            "def hidden(): pass
 def entry(value):
     flags = [True]
     value in [flags]
@@ -392,6 +418,27 @@ def getter():
     fresh = [True]
     return (fresh,)
 __all__ = ['getter', 'metadata']
+",
+    )]);
+    let report = project.run(&ScanOptions {
+        policy: ScanPolicy::Library,
+        public_modules: vec!["api".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["dead"], "{report}");
+}
+
+#[test]
+fn returning_a_fresh_container_with_an_unrelated_callback_keeps_coverage_complete() {
+    let project = Project::new(&[(
+        "api.py",
+        "def dead(): return 17
+def factory():
+    fresh = [True]
+    def callback(): return 1
+    return (fresh, callback)
+__all__ = ['factory']
 ",
     )]);
     let report = project.run(&ScanOptions {

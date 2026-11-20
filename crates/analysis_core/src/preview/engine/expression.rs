@@ -87,7 +87,7 @@ impl<'a> Engine<'a> {
     ) -> Outcomes<Value> {
         match &expression.kind {
             ExpressionKind::Name(name) => {
-                if let Some(value) = state.lookup(frame, name, self) {
+                if let Some(value) = state.lookup(frame, name, self).cloned() {
                     vec![(state, value)]
                 } else {
                     self.issue(

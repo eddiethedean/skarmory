@@ -168,11 +168,11 @@ impl State {
             .insert(name, value);
     }
 
-    fn lookup(&self, mut frame: FrameId, name: &str, engine: &Engine<'_>) -> Option<Value> {
+    fn lookup(&self, mut frame: FrameId, name: &str, engine: &Engine<'_>) -> Option<&Value> {
         loop {
             let scope = self.frame(frame);
             if let Some(value) = scope.locals.get(name) {
-                return Some(value.clone());
+                return Some(value);
             }
             if let Some(definition) = scope.definition
                 && engine.definitions[&definition].node.locals.contains(name)
@@ -628,7 +628,8 @@ impl<'a> Engine<'a> {
         let mut returned = BTreeSet::new();
         let mut returned_values = vec![result];
         let mut scopes = Vec::new();
-        let mut values = Vec::new();
+        let mut values: Vec<&Value> = Vec::new();
+        let mut callbacks: Vec<&Closure> = Vec::new();
         while let Some(value) = returned_values.pop() {
             if !self.step(site) {
                 return false;
@@ -637,8 +638,7 @@ impl<'a> Engine<'a> {
                 returned.insert(id);
             }
             if let Value::Function(function) = value {
-                scopes.push(function.enclosing);
-                values.extend(function.defaults.iter().flatten());
+                callbacks.push(function);
             }
             value.extend_with_items(&mut returned_values);
         }
@@ -650,18 +650,13 @@ impl<'a> Engine<'a> {
         // A local in a completed frame does not itself make a result shared.
         if let Some(calls) = &state.library_calls {
             scopes.extend(state.modules.values().map(|module| module.frame));
-            for (function, _) in &calls.escaped {
-                scopes.push(function.enclosing);
-                values.extend(function.defaults.iter().flatten());
-            }
+            callbacks.extend(calls.escaped.iter().map(|(function, _)| function.as_ref()));
         }
         let escaping = self.escaping.clone();
-        for function in &escaping {
-            scopes.push(function.enclosing);
-            values.extend(function.defaults.iter().flatten());
-        }
+        callbacks.extend(escaping.iter().map(Rc::as_ref));
 
-        let mut visited = BTreeSet::new();
+        let mut visited_modules = BTreeSet::new();
+        let mut visited_callbacks = BTreeSet::new();
         loop {
             if let Some(value) = values.pop() {
                 if !self.step(site) {
@@ -674,21 +669,29 @@ impl<'a> Engine<'a> {
                     return true;
                 }
                 match value {
-                    Value::Function(function) => {
-                        scopes.push(function.enclosing);
-                        values.extend(function.defaults.iter().flatten());
-                    }
+                    Value::Function(function) => callbacks.push(function),
                     Value::Module(name) => {
                         scopes.extend(state.modules.get(name).map(|module| module.frame));
                     }
                     _ => {}
                 }
                 value.extend_with_items(&mut values);
+            } else if let Some(function) = callbacks.pop() {
+                if visited_callbacks.insert(std::ptr::from_ref(function)) {
+                    scopes.push(state.frame(function.enclosing).module);
+                    values.extend(function.defaults.iter().flatten());
+                    // A callback can only access enclosing locals it reads.
+                    let node = self.definitions[&function.definition].node;
+                    for name in &node.free_names {
+                        if !self.step(site) {
+                            return false;
+                        }
+                        values.extend(state.lookup(function.enclosing, name, self));
+                    }
+                }
             } else if let Some(frame) = scopes.pop() {
-                if visited.insert(frame) {
-                    let scope = state.frame(frame);
-                    scopes.extend(scope.parent);
-                    values.extend(scope.locals.values());
+                if visited_modules.insert(frame) {
+                    values.extend(state.frame(frame).locals.values());
                 }
             } else {
                 return false;
