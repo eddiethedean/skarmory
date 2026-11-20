@@ -255,6 +255,8 @@ pub struct Report {
     profile: &'static str,
     selected_paths: Vec<String>,
     exclusions: Vec<Exclusion>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    generated_sources: BTreeSet<String>,
     config_sources: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     file_config_sources: BTreeMap<String, Vec<String>>,
@@ -434,9 +436,10 @@ fn validate_category(category: Option<&str>) -> Result<(), ConfigError> {
     Ok(())
 }
 
-enum Snapshot {
-    Excluded,
-    Extracted(Result<ModuleFacts, skarmory_python::FrontendError>, String),
+struct Snapshot {
+    facts: Result<ModuleFacts, skarmory_python::FrontendError>,
+    source: String,
+    hide_findings: bool,
 }
 
 pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
@@ -459,6 +462,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         preview_source::discover_filtered(path, &roots, FileEntry::None, Some(&config.selection));
     let mut issues = std::mem::take(&mut project.issues);
     let mut selected_paths = Vec::new();
+    let mut generated_sources = BTreeSet::new();
     let mut sources = BTreeMap::new();
     let mut files = Vec::new();
     let mut stamps = Vec::new();
@@ -466,35 +470,32 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let mut directory_configs = BTreeMap::new();
     let mut local_configs = Vec::new();
     match project.map_file_sources(options.workers, |file, source| {
-        if !path.is_file()
-            && config
-                .selection
-                .exclude_generated_header(&file.label, source)
-        {
-            return Snapshot::Excluded;
-        }
-        let result = match &cache {
+        let facts = match &cache {
             Some(cache) => cache.get_or_extract(source, extract),
             None => extract(source),
         };
-        Snapshot::Extracted(result, source.to_owned())
+        Snapshot {
+            facts,
+            source: source.to_owned(),
+            hide_findings: !path.is_file()
+                && config
+                    .selection
+                    .suppress_generated_findings(&file.label, source),
+        }
     }) {
         Ok(work) => {
             for (file, work) in project.files.iter().zip(work) {
                 stamps.push(work.stamp);
-                let result = match work.result {
-                    Ok(Snapshot::Excluded) => {
-                        project.exclusions.push(Exclusion {
-                            path: file.label.clone(),
-                            reason: "generated_source",
-                        });
-                        continue;
-                    }
-                    result => result,
-                };
                 selected_paths.push(file.label.clone());
-                match result {
-                    Ok(Snapshot::Extracted(Ok(facts), source)) => {
+                match work.result {
+                    Ok(Snapshot {
+                        facts: Ok(facts),
+                        source,
+                        hide_findings,
+                    }) => {
+                        if hide_findings {
+                            generated_sources.insert(file.label.clone());
+                        }
                         let directory = file.directory();
                         let config_index = *directory_configs
                             .entry(directory.to_owned())
@@ -526,13 +527,12 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                             facts,
                         });
                     }
-                    Ok(Snapshot::Extracted(Err(error), _)) => issues.push(
+                    Ok(Snapshot {
+                        facts: Err(error), ..
+                    }) => issues.push(
                         Issue::new(error.kind, &file.label, error.message).at(error.location),
                     ),
                     Err(issue) => issues.push(issue),
-                    Ok(Snapshot::Excluded) => {
-                        unreachable!("generated source handled before extraction")
-                    }
                 }
             }
         }
@@ -621,6 +621,9 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         .collect();
     if status == "complete" {
         for mut finding in analysis.findings {
+            if generated_sources.contains(&finding.file) {
+                continue;
+            }
             let source = sources.get(&finding.file).map(String::as_str);
             let inline = file_facts.get(finding.file.as_str()).is_some_and(|facts| {
                 facts.inline_ignores.iter().any(|entry| {
@@ -710,6 +713,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         },
         selected_paths,
         exclusions: project.exclusions,
+        generated_sources,
         config_sources: config.sources,
         file_config_sources,
         config_warnings,

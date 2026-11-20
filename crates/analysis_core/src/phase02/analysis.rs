@@ -57,6 +57,8 @@ struct Scope<'a> {
     body: &'a [Statement],
     names: BTreeMap<&'a str, Vec<SymbolId>>,
     edges: Vec<Edge>,
+    imports: Vec<usize>,
+    class_bodies: Vec<ScopeId>,
     activated_apps: Vec<Object>,
     mounts: Vec<(Object, Object)>,
     routes: Vec<(Object, SymbolId)>,
@@ -107,7 +109,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         issues: Vec::new(),
         scope_issues: Vec::new(),
         uncertainties: Vec::new(),
-        fixtures: Vec::new(),
+        fixtures: BTreeMap::new(),
         called_tests: Vec::new(),
         direct_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
@@ -131,6 +133,17 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         let body = graph.scopes[scope].body;
         graph.suite(scope, body);
     }
+    if graph.has_initialization_cycle() {
+        graph.issues.push(Issue::new(
+            "cyclic_imports",
+            ".",
+            "cyclic module initialization cannot use final module bindings to prove non-use",
+        ));
+        return Analysis {
+            issues: graph.issues,
+            ..Analysis::default()
+        };
+    }
     let mut roots = graph.external_roots(entrypoints);
     roots.extend(graph.test_edges());
     graph.finish(roots)
@@ -149,7 +162,7 @@ struct Graph<'a> {
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     uncertainties: Vec<Issue>,
-    fixtures: Vec<SymbolId>,
+    fixtures: BTreeMap<SymbolId, String>,
     called_tests: Vec<SymbolId>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
@@ -171,6 +184,8 @@ impl<'a> Graph<'a> {
             body,
             names: BTreeMap::new(),
             edges: Vec::new(),
+            imports: Vec::new(),
+            class_bodies: Vec::new(),
             activated_apps: Vec::new(),
             mounts: Vec::new(),
             routes: Vec::new(),
@@ -378,6 +393,67 @@ impl<'a> Graph<'a> {
             parts.push(&import.module);
         }
         Some(parts.join("."))
+    }
+
+    fn record_import(&mut self, scope: ScopeId, module: &str, import: &Import) {
+        let source = self.scopes[scope].file;
+        let own_module = &self.files[source].module;
+        let module_file = self.modules.get(module).copied();
+        let child = import.member.as_deref().and_then(|member| {
+            if module_file.is_some_and(|file| self.scopes[file].names.contains_key(member)) {
+                return None;
+            }
+            self.modules
+                .get(format!("{module}.{member}").as_str())
+                .copied()
+        });
+        // A sibling submodule import through an already-entered package need
+        // not wait for the parent's final bindings.
+        if let Some(target) = module_file
+            && (target != source || import.level == 0)
+            && !(child.is_some() && within_package(own_module, module))
+        {
+            self.scopes[scope].imports.push(target);
+        }
+        if let Some(child) = child {
+            self.scopes[scope].imports.push(child);
+        }
+        // Importing a dotted module can also execute its package initializers.
+        for (end, _) in module.match_indices('.') {
+            let parent = &module[..end];
+            if !within_package(own_module, parent)
+                && let Some(&target) = self.modules.get(parent)
+            {
+                self.scopes[scope].imports.push(target);
+            }
+        }
+    }
+
+    fn has_initialization_cycle(&self) -> bool {
+        let mut imports = vec![Vec::new(); self.files.len()];
+        let mut visited = vec![false; self.scopes.len()];
+        for (file, targets) in imports.iter_mut().enumerate() {
+            let mut pending = vec![file];
+            while let Some(id) = pending.pop() {
+                if std::mem::replace(&mut visited[id], true) {
+                    continue;
+                }
+                let scope = &self.scopes[id];
+                targets.extend(&scope.imports);
+                pending.extend(&scope.class_bodies);
+                // Follow synchronous local calls during initialization, not
+                // functions merely exported or callbacks that may run later.
+                for edge in &scope.edges {
+                    if matches!(edge.kind, "direct_call" | "constructor" | "decorator")
+                        && let Binding::Definition(_, body) = self.symbols[edge.target].binding
+                        && self.scopes[body].file == file
+                    {
+                        pending.push(body);
+                    }
+                }
+            }
+        }
+        crate::graph::has_import_cycle(&imports)
     }
 
     fn binding(&mut self, id: SymbolId, before: Location, depth: usize) -> Value {
@@ -1028,6 +1104,11 @@ impl<'a> Graph<'a> {
                     }
                     let target = self.by_location
                         [&(scope, definition.name.at.line, definition.name.at.column)];
+                    if definition.kind == DefinitionKind::Class
+                        && let Binding::Definition(_, body) = self.symbols[target].binding
+                    {
+                        self.scopes[scope].class_bodies.push(body);
+                    }
                     for annotation in &definition.annotations {
                         self.annotation(scope, annotation, at, true);
                     }
@@ -1110,17 +1191,20 @@ impl<'a> Graph<'a> {
                         return true;
                     }
                 }
-                StatementKind::Import(import) if import.level > 0 => {
-                    let resolved = self
-                        .relative_module(self.scopes[scope].file, import)
-                        .is_some_and(|module| {
+                StatementKind::Import(import) => {
+                    let module = self.relative_module(self.scopes[scope].file, import);
+                    if let Some(module) = &module {
+                        self.record_import(scope, module, import);
+                    }
+                    if import.level > 0
+                        && !module.is_some_and(|module| {
                             self.modules.contains_key(module.as_str())
                                 || import.member.as_ref().is_some_and(|name| {
                                     self.modules
                                         .contains_key(format!("{module}.{name}").as_str())
                                 })
-                        });
-                    if !resolved {
+                        })
+                    {
                         self.issue(
                             self.scopes[scope].file,
                             at,
@@ -1129,7 +1213,6 @@ impl<'a> Graph<'a> {
                         );
                     }
                 }
-                _ => {}
             }
         }
         false
@@ -1158,7 +1241,24 @@ impl<'a> Graph<'a> {
                 self.scopes[scope].routes.push((object, target))
             }
             Value::Provider(name) if name == "pytest.fixture" => {
-                self.fixtures.push(target);
+                let registered_name = if let Some((_, expression)) =
+                    keywords.iter().find(|(name, _)| name == "name")
+                {
+                    if let Value::Text(name) = self.identity(scope, expression, before, 0) {
+                        name
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unresolved_fixture_name",
+                            "pytest fixture name could not be resolved",
+                        );
+                        return;
+                    }
+                } else {
+                    self.symbols[target].name.text.clone()
+                };
+                self.fixtures.insert(target, registered_name);
                 if keywords
                     .iter()
                     .any(|(name, value)| name == "autouse" && static_bool(value) == Some(true))
@@ -1209,7 +1309,7 @@ impl<'a> Graph<'a> {
                 .unwrap_or_default();
             if (filename.starts_with("test_") || filename.ends_with("_test.py"))
                 && symbol.name.text.starts_with("test_")
-                && !self.fixtures.contains(&id)
+                && !self.fixtures.contains_key(&id)
             {
                 test_roots.push(id);
             }
@@ -1224,18 +1324,18 @@ impl<'a> Graph<'a> {
                 continue;
             };
             let file = &self.files[self.scopes[self.symbols[id].scope].file].path;
-            let candidates = self.fixtures.iter().copied().filter(|&id| {
+            let candidates = self.fixtures.iter().filter(|&(&id, _)| {
                 let fixture = &self.files[self.scopes[self.symbols[id].scope].file].path;
                 fixture == file
                     || fixture
                         .strip_suffix("conftest.py")
                         .is_some_and(|parent| file.starts_with(parent))
             });
-            for fixture in candidates {
+            for (&fixture, name) in candidates {
                 if definition
                     .parameters
                     .iter()
-                    .any(|param| param.text == self.symbols[fixture].name.text)
+                    .any(|param| &param.text == name)
                 {
                     queue.push_back(fixture);
                 }
@@ -1571,7 +1671,7 @@ impl<'a> Graph<'a> {
                         && !name.starts_with('_')
                         && !matches!(name.as_str(), "self" | "cls")
                         && !scope.owner.is_some_and(|owner| {
-                            self.fixtures.contains(&owner)
+                            self.fixtures.contains_key(&owner)
                                 || reachable_symbols.contains(&owner)
                                     && !self.direct.contains(&owner)
                         }) =>
@@ -1677,6 +1777,12 @@ fn suite_end(body: &[Statement]) -> [usize; 2] {
         _ => {}
     }
     end
+}
+
+fn within_package(module: &str, package: &str) -> bool {
+    module
+        .strip_prefix(package)
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
 }
 
 fn static_bool(expression: &Expression) -> Option<bool> {

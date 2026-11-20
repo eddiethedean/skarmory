@@ -175,6 +175,21 @@ fn resolve_call(bindings: &[BTreeMap<&str, Binding>], module: usize, call: &Call
 }
 
 fn check_import_order(files: &[ModuleFile], edges: &[Vec<usize>]) -> Result<(), Failure> {
+    if has_import_cycle(edges) {
+        Err(Failure::Unsupported(Issue::new(
+            "cyclic_imports",
+            ".",
+            format!(
+                "import graph for {} selected files contains a cycle",
+                files.len()
+            ),
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn has_import_cycle(edges: &[Vec<usize>]) -> bool {
     let mut incoming = vec![0; edges.len()];
     for &target in edges.iter().flatten() {
         incoming[target] += 1;
@@ -190,18 +205,7 @@ fn check_import_order(files: &[ModuleFile], edges: &[Vec<usize>]) -> Result<(), 
             }
         }
     }
-    if incoming.iter().any(|&count| count > 0) {
-        Err(Failure::Unsupported(Issue::new(
-            "cyclic_imports",
-            ".",
-            format!(
-                "import graph for {} selected files contains a cycle",
-                files.len()
-            ),
-        )))
-    } else {
-        Ok(())
-    }
+    incoming.iter().any(|&count| count > 0)
 }
 
 impl Graph<'_> {

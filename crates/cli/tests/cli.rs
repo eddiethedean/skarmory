@@ -180,3 +180,151 @@ fn invalid_profile_options_and_report_paths_fail_before_emitting_json() {
     assert_eq!(mixed.status.code(), Some(2));
     assert!(mixed.stdout.is_empty());
 }
+
+#[test]
+fn skylos_retains_a_fixture_by_its_registered_name() {
+    let project = skylos_fixture();
+    fs::remove_file(project.path().join("main.py")).unwrap();
+    fs::write(
+        project.path().join("test_sample.py"),
+        "from pytest import fixture\n\ndef helper():\n    return 1\n\n@fixture(name='resource')\ndef setup_resource():\n    return helper()\n\ndef test_resource(resource):\n    assert resource == 1\n",
+    )
+    .unwrap();
+
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+    assert!(
+        report["dead_code_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["full_name"] == "test_sample.setup_resource" && item["kind"] == "pytest_root"
+            })
+    );
+}
+
+#[test]
+fn skylos_reports_import_cycles_as_incomplete() {
+    let project = skylos_fixture();
+    fs::remove_file(project.path().join("main.py")).unwrap();
+    fs::write(project.path().join("b.py"), "from a import used\nused()\n").unwrap();
+    for import in ["import b", "def load():\n    import b\n\nload()"] {
+        fs::write(
+            project.path().join("a.py"),
+            format!("def used():\n    return 1\n\n{import}\n\ndef used():\n    return 2\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{report}");
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert_eq!(report["coverage"]["issues"][0]["kind"], "cyclic_imports");
+        assert_eq!(report["unused_functions"], serde_json::json!([]));
+    }
+
+    fs::write(
+        project.path().join("a.py"),
+        "def used():\n    return 1\n\ndef used():\n    return 2\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    let findings = report["unused_functions"].as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{report}");
+    assert_eq!(findings[0]["line"], 1);
+
+    fs::remove_file(project.path().join("a.py")).unwrap();
+    fs::remove_file(project.path().join("b.py")).unwrap();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("__init__.py"),
+        "from .child import used as used\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("child.py"),
+        "from . import helper as dependency\n\ndef used():\n    return dependency.value()\n",
+    )
+    .unwrap();
+    fs::write(package.join("helper.py"), "def value():\n    return 1\n").unwrap();
+    let output = skylos(project.path(), &["--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+}
+
+#[test]
+fn skylos_distinguishes_generated_markers_from_ordinary_comments() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("main.py"),
+        "# This file processes generated values.\nfrom generated import helper\nhelper()\n\ndef orphan():\n    pass\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("generated.py"),
+        "# This file was automatically generated.\ndef helper():\n    pass\n\ndef spare():\n    pass\n",
+    )
+    .unwrap();
+    for (args, expected) in [
+        (&["--json"][..], vec!["main.orphan"]),
+        (
+            &["--json", "--include-generated"][..],
+            vec!["generated.spare", "main.orphan"],
+        ),
+    ] {
+        let output = skylos(project.path(), args);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(
+            report["selected_paths"],
+            serde_json::json!(["generated.py", "main.py"])
+        );
+        let names: Vec<_> = report["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| finding["full_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, expected);
+    }
+}
+
+#[test]
+fn skylos_keeps_descendants_excluded_when_an_unrelated_include_is_present() {
+    let project = skylos_fixture();
+    let excluded = project.path().join("generated/sub");
+    fs::create_dir_all(&excluded).unwrap();
+    fs::write(excluded.join("omitted.py"), "def omitted():\n    pass\n").unwrap();
+    fs::write(excluded.join("retained.py"), "def retained():\n    pass\n").unwrap();
+    for (include, paths) in [
+        ("unrelated", serde_json::json!(["main.py"])),
+        (
+            "generated/sub/retained.py",
+            serde_json::json!(["generated/sub/retained.py", "main.py"]),
+        ),
+    ] {
+        let output = skylos(
+            project.path(),
+            &[
+                "--json",
+                "--exclude",
+                "generated/sub",
+                "--include-folder",
+                include,
+            ],
+        );
+        assert_eq!(output.status.code(), Some(0));
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["selected_paths"], paths, "{report}");
+    }
+}
