@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, Metadata};
+use std::ffi::OsString;
+use std::fs::{self, File, FileType, Metadata};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -37,7 +38,7 @@ pub(super) struct Project {
     base: PathBuf,
     search: Vec<PathBuf>,
     files_by_path: BTreeMap<PathBuf, usize>,
-    directories: BTreeMap<PathBuf, Stamp>,
+    directories: BTreeMap<PathBuf, DirectoryEntries>,
     ambiguous: BTreeSet<usize>,
 }
 
@@ -75,6 +76,17 @@ pub(super) struct Stamp {
     created: Option<SystemTime>,
     #[cfg(unix)]
     identity: (u64, u64, i64, i64),
+}
+
+type DirectoryEntries = BTreeSet<(OsString, SeenEntry)>;
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum SeenEntry {
+    Directory,
+    LinkedDirectory,
+    PythonFile,
+    LinkedPython,
+    OtherPython,
 }
 
 impl Stamp {
@@ -278,6 +290,15 @@ impl Project {
             };
             let path = entry.path();
             let kind = entry.file_type();
+            let seen = seen_entry(path, kind);
+            if entry.depth() > 0
+                && let Some(seen) = seen
+                && let Some(parent) = path
+                    .parent()
+                    .and_then(|path| self.directories.get_mut(path))
+            {
+                parent.insert((entry.file_name().to_owned(), seen));
+            }
             if kind.is_symlink() {
                 if entry.depth() == 0 {
                     self.issues.push(Issue::new(
@@ -287,8 +308,7 @@ impl Project {
                     ));
                     continue;
                 }
-                let is_directory = fs::metadata(path).is_ok_and(|m| m.is_dir());
-                if is_directory {
+                if seen == Some(SeenEntry::LinkedDirectory) {
                     self.exclusions.push(Exclusion {
                         path: self.label(path),
                         reason: "symlink_directory",
@@ -312,17 +332,7 @@ impl Project {
                     walk.skip_current_dir();
                     continue;
                 }
-                match entry.metadata() {
-                    Ok(metadata) => {
-                        self.directories
-                            .entry(path.to_owned())
-                            .or_insert_with(|| Stamp::new(&metadata));
-                    }
-                    Err(error) => {
-                        self.issues
-                            .push(Issue::new("discovery_error", &self.label(path), error))
-                    }
-                }
+                self.directories.entry(path.to_owned()).or_default();
             } else if source::is_python(entry.file_name()) {
                 let stamp = match entry.metadata() {
                     Ok(metadata) => Some(Stamp::new(&metadata)),
@@ -512,10 +522,8 @@ impl Project {
                 ));
             }
         }
-        for (directory, stamp) in &self.directories {
-            if !fs::symlink_metadata(directory)
-                .is_ok_and(|metadata| metadata.is_dir() && Stamp::new(&metadata) == *stamp)
-            {
+        for (directory, entries) in &self.directories {
+            if !read_directory_entries(directory).is_ok_and(|current| current == *entries) {
                 issues.push(Issue::new(
                     "source_changed",
                     &self.label(directory),
@@ -529,6 +537,53 @@ impl Project {
     fn label(&self, path: &Path) -> String {
         display(path.strip_prefix(&self.base).unwrap_or(path))
     }
+}
+
+/// Record entries that can affect Python source selection or a directory exclusion.
+fn seen_entry(path: &Path, kind: FileType) -> Option<SeenEntry> {
+    let is_python = path.file_name().is_some_and(source::is_python);
+    if kind.is_symlink() {
+        if fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            Some(SeenEntry::LinkedDirectory)
+        } else {
+            is_python.then_some(SeenEntry::LinkedPython)
+        }
+    } else if kind.is_dir() {
+        Some(SeenEntry::Directory)
+    } else if !is_python {
+        None
+    } else if kind.is_file() {
+        Some(SeenEntry::PythonFile)
+    } else {
+        Some(SeenEntry::OtherPython)
+    }
+}
+
+fn read_directory_entries(directory: &Path) -> std::io::Result<DirectoryEntries> {
+    // Directory timestamps can settle after enumeration on Windows. Verify the
+    // source universe by comparing entry names and kinds without rereading sources.
+    fn require_directory(directory: &Path) -> std::io::Result<()> {
+        let metadata = fs::symlink_metadata(directory)?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "source directory was replaced",
+            ))
+        }
+    }
+
+    require_directory(directory)?;
+    let mut entries = DirectoryEntries::new();
+    for child in fs::read_dir(directory)? {
+        let child = child?;
+        if let Some(kind) = seen_entry(&child.path(), child.file_type()?) {
+            entries.insert((child.file_name(), kind));
+        }
+    }
+    require_directory(directory)?;
+    Ok(entries)
 }
 
 struct WorkerReservation<'a> {
@@ -672,10 +727,16 @@ fn checked_path(path: &Path) -> Result<(PathBuf, Metadata), String> {
         return Err("symlinked scan targets are unsupported".into());
     }
     let resolved = fs::canonicalize(path).map_err(|error| error.to_string())?;
-    let stamp = Stamp::new(&metadata);
+    let stamp = metadata.is_file().then(|| Stamp::new(&metadata));
     for live in [path, &resolved] {
         let live = fs::symlink_metadata(live).map_err(|error| error.to_string())?;
-        if live.file_type().is_symlink() || Stamp::new(&live) != stamp {
+        if live.file_type().is_symlink()
+            || live.is_dir() != metadata.is_dir()
+            || live.is_file() != metadata.is_file()
+            || stamp
+                .as_ref()
+                .is_some_and(|stamp| Stamp::new(&live) != *stamp)
+        {
             return Err("scan target changed while resolving its path".into());
         }
     }
@@ -828,6 +889,32 @@ mod tests {
                 .iter()
                 .any(|issue| issue.kind == "source_changed" && issue.path == ".")
         );
+    }
+
+    #[test]
+    fn directory_verification_tracks_the_python_source_universe() {
+        let root = Fixture::new();
+        root.write("main.py", "pass\n");
+        root.write("pkg/__init__.py", "pass\n");
+        let project = discover(&root.0, &[], FileEntry::Default);
+        let stamps: Vec<_> = project
+            .map_files(2, str::to_owned)
+            .unwrap()
+            .into_iter()
+            .map(|work| {
+                work.result.unwrap();
+                work.stamp
+            })
+            .collect();
+
+        root.write("pkg/notes.txt", "unrelated to source selection\n");
+        assert!(project.verify(stamps.clone()).is_empty());
+
+        fs::rename(root.0.join("pkg/notes.txt"), root.0.join("pkg/new.py")).unwrap();
+        let issues = project.verify(stamps);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, "source_changed");
+        assert_eq!(issues[0].path, "pkg");
     }
 
     #[test]

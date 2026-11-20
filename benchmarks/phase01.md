@@ -42,16 +42,16 @@ files and 8,360 lines, reported the same 2,400 expected findings, and recorded
 
 | Median per fresh process | 1 worker | 4 workers |
 | --- | ---: | ---: |
-| Wall time | 15.70 ms | 9.76 ms |
-| User and system CPU time | 10.35 ms | 11.92 ms |
-| Peak RSS | 7.59 MiB | 7.80 MiB |
-| Discovery | 0.93 ms | 0.92 ms |
-| Read and decode | 7.06 ms | 7.09 ms |
-| Parse and extract | 1.11 ms | 1.75 ms |
-| Resolution and execution analysis | 0.99 ms | 0.96 ms |
-| Reachability evidence | 0.09 ms | 0.09 ms |
-| Finding generation | 0.11 ms | 0.12 ms |
-| Report output | 0.55 ms | 0.52 ms |
+| Wall time | 13.28 ms | 9.29 ms |
+| User and system CPU time | 9.23 ms | 10.41 ms |
+| Peak RSS | 7.56 MiB | 7.67 MiB |
+| Discovery | 0.83 ms | 0.81 ms |
+| Read and decode | 5.35 ms | 5.47 ms |
+| Parse and extract | 0.96 ms | 1.45 ms |
+| Resolution and execution analysis | 0.97 ms | 0.95 ms |
+| Reachability evidence | 0.08 ms | 0.09 ms |
+| Finding generation | 0.12 ms | 0.11 ms |
+| Report output | 0.50 ms | 0.50 ms |
 
 File-local stages sum time spent across workers. The phase medians describe
 individual stages, while wall time includes process startup and snapshot
