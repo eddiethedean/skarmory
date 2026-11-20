@@ -1,8 +1,7 @@
 # Contributing to Skarmory
 
-Skarmory has a bounded Phase 0 prototype. Start with the
-[roadmap](docs/roadmap.md) and keep changes scoped to an explicit milestone.
-The initial focus is the native Python dead-code vertical slice.
+Skarmory has a bounded [Python dead-code preview](docs/phase-01.md). Start with
+the [roadmap](docs/roadmap.md) and keep changes scoped to an explicit milestone.
 
 ## Working on a change
 
@@ -40,7 +39,9 @@ checks at the declared minimum Rust version. Maturin is pinned in the SDK build
 manifest and CI.
 
 The default wheel contains the SDK extension. Cargo installs the separate
-native CLI. Keep the combined-wheel trial separate from the default build.
+native CLI. The Python source distribution preserves the Git-tracked Cargo
+workspace so the full lockfile can be used when rebuilding the SDK.
+Keep the combined-wheel trial separate from the default build.
 Its validation commands and receipts are in the [measurement report](benchmarks/phase0.md).
 
 Skarmory is licensed under [MIT](LICENSE). Record provenance and applicable

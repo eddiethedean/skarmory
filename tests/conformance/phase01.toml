@@ -1,0 +1,203 @@
+schema_version = 2
+profile = "phase01-python311-dead-code-preview"
+
+# Expected symbols and evidence were reviewed against the fixture source and
+# each declared entry mode. Finding keys are [path, owning scope, symbol].
+
+[[case]]
+id = "packaged-module"
+fixture = "preview/packages"
+args = ["--source-root", "src", "--entry-module", "shop.start"]
+coverage = "complete"
+paths = ["src/shop/__init__.py", "src/shop/service.py", "src/shop/start.py"]
+import_roots = ["src"]
+roots = [["named_module", "shop.start"]]
+findings = [
+    ["src/shop/service.py", "", "dead_left"],
+    ["src/shop/service.py", "", "dead_right"],
+    ["src/shop/start.py", "", "unused"],
+]
+retained = [
+    ["src/shop/__init__.py", "", "bootstrap", "established"],
+    ["src/shop/service.py", "", "handle", "established"],
+    ["src/shop/service.py", "", "live_left", "established"],
+    ["src/shop/service.py", "", "live_right", "established"],
+    ["src/shop/start.py", "", "setup_default", "established"],
+    ["src/shop/start.py", "", "nested_target", "established"],
+    ["src/shop/start.py", "launch", "handle", "established"],
+]
+
+[[case]]
+id = "packaged-callable"
+fixture = "preview/packages"
+args = ["--source-root", "src", "--entry-callable", "shop.start:launch"]
+coverage = "complete"
+roots = [["callable_entry", "shop.start:launch"]]
+findings = [
+    ["src/shop/service.py", "", "handle"],
+    ["src/shop/service.py", "", "live_left"],
+    ["src/shop/service.py", "", "live_right"],
+    ["src/shop/service.py", "", "dead_left"],
+    ["src/shop/service.py", "", "dead_right"],
+    ["src/shop/start.py", "", "unused"],
+    ["src/shop/start.py", "", "guarded"],
+]
+retained = [
+    ["src/shop/__init__.py", "", "bootstrap", "established"],
+    ["src/shop/start.py", "", "setup_default", "established"],
+    ["src/shop/start.py", "launch", "handle", "established"],
+]
+
+[[case]]
+id = "direct-file-relative-import"
+fixture = "preview/packages"
+args = ["--source-root", "src", "--entry-file", "src/shop/start.py"]
+coverage = "incomplete"
+issue_path = "src/shop/start.py"
+issue_line = 1
+
+[[case]]
+id = "direct-file-absolute-import"
+fixture = "preview/import_roots"
+args = ["--source-root", "src", "--source-root", "alternate", "--entry-file", "src/shop/start.py"]
+coverage = "complete"
+import_roots = ["src/shop", "src", "alternate"]
+findings = [["alternate/helper.py", "", "run"], ["src/helper.py", "", "run"]]
+retained = [["src/shop/helper.py", "", "run", "established"]]
+
+[[case]]
+id = "named-module-absolute-import"
+fixture = "preview/import_roots"
+args = ["--source-root", "src", "--source-root", "alternate", "--entry-module", "shop.start"]
+coverage = "complete"
+import_roots = ["src", "alternate"]
+findings = [["alternate/helper.py", "", "run"], ["src/shop/helper.py", "", "run"]]
+retained = [["src/helper.py", "", "run", "established"]]
+
+[[case]]
+id = "reordered-import-roots"
+fixture = "preview/import_roots"
+args = ["--source-root", "alternate", "--source-root", "src", "--entry-module", "shop.start"]
+coverage = "complete"
+import_roots = ["alternate", "src"]
+findings = [["src/helper.py", "", "run"], ["src/shop/helper.py", "", "run"]]
+retained = [["alternate/helper.py", "", "run", "established"]]
+
+[[case]]
+id = "existing-package-binding"
+fixture = "preview/package_binding"
+args = ["--entry-module", "before"]
+coverage = "complete"
+findings = [
+    ["pkg/fallback.py", "", "run"],
+    ["pkg/task.py", "", "on_import"],
+    ["pkg/task.py", "", "run"],
+]
+retained = [["pkg/impl.py", "", "task", "established"]]
+
+[[case]]
+id = "package-binding-after-explicit-load"
+fixture = "preview/package_binding"
+args = ["--entry-module", "after"]
+coverage = "complete"
+retained = [
+    ["pkg/fallback.py", "", "run", "established"],
+    ["pkg/impl.py", "", "task", "established"],
+    ["pkg/task.py", "", "on_import", "established"],
+    ["pkg/task.py", "", "run", "established"],
+]
+
+[[case]]
+id = "rebound-main-guard"
+fixture = "preview/guard"
+args = ["--entry-callable", "module:start"]
+coverage = "complete"
+retained = [["module.py", "", "rebound_guard_target", "established"]]
+
+[[case]]
+id = "library-exports-and-possible-use"
+fixture = "preview/library"
+args = ["--policy", "library", "--public-module", "api"]
+coverage = "complete"
+roots = [["public_module", "api"]]
+findings = [["api.py", "", "private"]]
+retained = [
+    ["api.py", "", "main_branch", "possible"],
+    ["api.py", "", "other_branch", "possible"],
+    ["api.py", "", "reached_by_callback", "possible"],
+    ["api.py", "factory", "callback", "possible", "escape"],
+]
+uncertainty = "possible_use"
+
+[[case]]
+id = "different-effective-library-exports"
+fixture = "preview/library_order"
+args = ["--policy", "library", "--public-module", "api", "--public-module", "activator"]
+coverage = "complete"
+findings = [["switches/__init__.py", "", "initial"]]
+only_possible_exports = true
+retained = [
+    ["api.py", "", "first", "possible", "public_export"],
+    ["api.py", "", "second", "possible", "public_export"],
+]
+
+[[case]]
+id = "missing-public-binding"
+fixture = "preview/library"
+args = ["--policy", "library", "--public-module", "unbound"]
+coverage = "incomplete"
+issue = "unresolved_export"
+issue_path = "unbound.py"
+
+[[case]]
+id = "missing-import"
+fixture = "preview/incomplete"
+args = ["--entry-module", "missing"]
+coverage = "incomplete"
+issue = "unresolved_import"
+issue_path = "missing.py"
+issue_line = 1
+
+[[case]]
+id = "external-import"
+fixture = "preview/incomplete"
+args = ["--entry-module", "external"]
+coverage = "incomplete"
+issue = "unresolved_import"
+issue_path = "external.py"
+issue_line = 1
+
+[[case]]
+id = "unbounded-call"
+fixture = "preview/incomplete"
+args = ["--entry-callable", "dynamic:entry"]
+coverage = "incomplete"
+issue = "unbounded_use"
+issue_path = "dynamic.py"
+issue_line = 2
+uncertainty = "unbounded_use"
+
+[[case]]
+id = "parse-error"
+fixture = "fixtures/invalid"
+args = []
+coverage = "incomplete"
+issue = "parse_error"
+issue_path = "main.py"
+
+[[case]]
+id = "version-gate"
+fixture = "fixtures/version"
+args = []
+coverage = "incomplete"
+issue = "unsupported_syntax_version"
+issue_path = "main.py"
+
+[[case]]
+id = "unsupported-selected-construct"
+fixture = "preview/unsupported_syntax"
+args = []
+coverage = "incomplete"
+issue = "unsupported_construct"
+issue_path = "main.py"
+issue_line = 2

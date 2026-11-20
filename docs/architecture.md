@@ -1,7 +1,8 @@
 # Skarmory architecture
 
-Status: accepted architecture. The [Phase 0 prototype](phase-0.md) implements
-a bounded subset of the design.
+Status: accepted architecture. The [Phase 0.1 preview](phase-01.md) implements
+bounded packaged-project analysis. The [Phase 0 prototype](phase-0.md) records
+the original flat-project design and evidence.
 
 Skarmory is a Python code analyzer powered by a shared Rust engine. Its first
 analysis milestone is project-wide dead-code detection with explicitly tested
@@ -9,8 +10,8 @@ Skylos compatibility. Quality, secrets, security analysis, and developer
 integrations follow on the same foundation.
 
 The sections below describe the intended architecture. The repository includes
-prototype timings and projected fixture comparisons. Broader semantic analysis,
-caching, and Skylos compatibility remain future milestones.
+native scanner measurements and projected fixture comparisons. Broader
+semantic analysis, caching, and Skylos compatibility remain future milestones.
 
 ## 1. Goals and scope
 

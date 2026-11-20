@@ -12,14 +12,14 @@ import tomllib
 HERE = Path(__file__).resolve().parent
 
 
-def scan(cli: Path, path: str | Path, expected_exit: int) -> dict:
-    result = subprocess.run([cli, path], capture_output=True, check=False)
+def scan(cli: tuple[Path | str, ...], path: str | Path, expected_exit: int) -> dict:
+    result = subprocess.run([*cli, path], capture_output=True, check=False)
     assert result.returncode == expected_exit, result
     assert not result.stderr, result.stderr
     return json.loads(result.stdout)
 
 
-def check(cli: Path) -> None:
+def check(cli: tuple[Path | str, ...]) -> None:
     manifest = tomllib.loads((HERE / "phase0.toml").read_text(encoding="utf-8"))
     for case in manifest["case"]:
         label = case["id"]
@@ -48,7 +48,7 @@ def check(cli: Path) -> None:
         print(f"{label}: pass")
 
 
-def check_incomplete(cli: Path, path: str | Path, kind: str) -> dict:
+def check_incomplete(cli: tuple[Path | str, ...], path: str | Path, kind: str) -> dict:
     report = scan(cli, path, 2)
     assert report["coverage"]["status"] == "incomplete", report
     assert not report["findings"], report
@@ -57,7 +57,7 @@ def check_incomplete(cli: Path, path: str | Path, kind: str) -> dict:
     return issue
 
 
-def check_regressions(cli: Path) -> None:
+def check_regressions(cli: tuple[Path | str, ...]) -> None:
     with TemporaryDirectory() as directory:
         root = Path(directory) / "app"
         root.mkdir()
@@ -111,6 +111,12 @@ def check_regressions(cli: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cli", type=Path)
-    cli = parser.parse_args().cli.resolve()
+    parser.add_argument(
+        "--released-cli",
+        action="store_true",
+        help="Run against the 0.0.1 CLI, which used the Phase 0 profile by default.",
+    )
+    args = parser.parse_args()
+    cli = (args.cli.resolve(),) if args.released_cli else (args.cli.resolve(), "--phase0")
     check(cli)
     check_regressions(cli)

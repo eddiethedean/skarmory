@@ -1,7 +1,11 @@
-//! Native engine for the Phase 0 closed-world dead-code prototype.
+//! Native engines for the historical prototype and the packaged-project preview.
 
 mod graph;
+mod preview;
+mod preview_source;
 mod source;
+
+pub use preview::{PreviewReport, ScanOptions, ScanPolicy, scan};
 
 use std::path::Path;
 use std::time::Instant;
@@ -29,7 +33,7 @@ struct Coverage {
     issues: Vec<Issue>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Issue {
     kind: &'static str,
     path: String,

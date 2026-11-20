@@ -92,6 +92,7 @@ def verify(wheel, cli, temporary, combined):
     env.pop("PYTHONPATH", None)
     run(python, "-m", "unittest", "discover", "-s", ROOT / "tests" / "python", "-v", env=env)
     run(python, ROOT / "tests" / "conformance" / "check_phase0.py", cli, stdout=sys.stderr)
+    run(python, ROOT / "tests" / "conformance" / "check_phase01.py", cli, stdout=sys.stderr)
 
     extension = Path(captured(python, "-c", "import skarmory._native as m; print(m.__file__)").strip())
     with ZipFile(wheel) as archive:

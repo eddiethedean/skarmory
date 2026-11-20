@@ -181,7 +181,7 @@ def measure(args, temporary, env):
             "runs": {},
         }
         commands = {
-            "skarmory": [args.cli, "--timings", project],
+            "skarmory": [args.cli, *([] if args.released_prototype else ["--phase0"]), "--timings", project],
             **{
                 backend: [args.reference_python, SCRIPT, "--worker", backend, project]
                 for backend in ("python", "skylos_fast")
@@ -213,6 +213,11 @@ def main():
     parser.add_argument("cli", type=Path)
     parser.add_argument("reference_python", type=Path)
     parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument(
+        "--released-prototype",
+        action="store_true",
+        help="The CLI is v0.0.1 and uses the prototype contract by default.",
+    )
     args = parser.parse_args()
     if not hasattr(os, "wait4") or args.samples < 1:
         parser.error("a POSIX host and at least one sample are required")

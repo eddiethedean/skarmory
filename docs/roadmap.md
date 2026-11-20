@@ -1,6 +1,7 @@
 # Skarmory roadmap
 
 [Phase 0](phase-0.md) shipped in [0.0.1](../CHANGELOG.md#001).
+The [Phase 0.1 preview](phase-01.md) is included in development version 0.1.0.
 Subsequent version labels describe planned milestones.
 
 The default distribution uses a PyO3 SDK wheel and a native Cargo CLI. The
@@ -112,7 +113,7 @@ for multi-file applications and explicitly bounded libraries. The preview
 reports one rule, `unreachable_function`, under the declared source and entry
 assumptions.
 
-### Planned preview contract
+### Preview contract
 
 | Area | 0.1 behavior |
 | --- | --- |
@@ -175,9 +176,8 @@ add no callable root. A missing listed name or an export boundary the analyzer
 cannot determine produces incomplete coverage. When `__all__` is absent, the
 module needs an explicit public callable boundary.
 
-Proposed scan options include source roots, application or library policy,
-entry or export declarations, and a worker budget. Flag names, configuration
-syntax, and report fields will be specified with the preview implementation.
+The [preview interface](phase-01.md) specifies source roots, application or
+library policy, entry and export declarations, worker budgets, and report fields.
 Keep Phase 0's explicit diagnostics for symlinked scan targets and source files.
 Recursive discovery treats symlinked directories as exclusions and records them.
 Decorators, star imports, import cycles the preview cannot resolve, framework

@@ -1,6 +1,7 @@
 # Benchmark plan
 
-For the implemented harness and recorded runs, see the [Phase 0 measurements](phase0.md).
+See the [Phase 0 measurements](phase0.md) and the
+[Phase 0.1 packaged workload](phase01.md) for runnable harnesses and results.
 
 Status: methodology for equivalent-work measurements beyond the initial
 prototype. The Phase 0 report records the initial bounded runs.

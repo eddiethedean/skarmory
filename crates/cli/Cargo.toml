@@ -13,6 +13,7 @@ name = "skarmory"
 path = "src/main.rs"
 
 [dependencies]
+clap.workspace = true
 skarmory_core.workspace = true
 serde_json.workspace = true
 
