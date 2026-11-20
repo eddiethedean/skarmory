@@ -1,6 +1,6 @@
 # Skarmory
 
-[![Release 0.1.0](https://img.shields.io/badge/release-0.1.0-blue)](https://github.com/eddiethedean/skarmory/blob/main/CHANGELOG.md#010)
+[![PyPI version](https://img.shields.io/pypi/v/skarmory?logo=pypi&logoColor=white)](https://pypi.org/project/skarmory/)
 [![CI](https://github.com/eddiethedean/skarmory/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/eddiethedean/skarmory/actions/workflows/ci.yml)
 [![Python SDK supports CPython 3.11+](https://img.shields.io/badge/CPython-3.11%2B-3776ab?logo=python&logoColor=white)](https://pypi.org/project/skarmory/)
 [![CLI builds with Rust 1.98+](https://img.shields.io/badge/Rust-1.98%2B-orange?logo=rust&logoColor=white)](https://crates.io/crates/skarmory_cli)
