@@ -342,6 +342,29 @@ if getdefaultencoding() == 'utf-8':
 }
 
 #[test]
+fn running_main_module_cannot_be_selected_as_a_named_entry() {
+    let project = Project::new(&[
+        ("__main__.py", "def unused(): pass\n"),
+        ("pkg/__init__.py", ""),
+        ("pkg/__main__.py", "def run(): pass\nrun()\n"),
+    ]);
+    let named = project.run(&ScanOptions {
+        entry_modules: vec!["__main__".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(named["coverage"]["status"], "incomplete", "{named}");
+    assert_eq!(named["coverage"]["issues"][0]["kind"], "invalid_entry");
+    assert!(findings(&named).is_empty());
+
+    let package = project.run(&ScanOptions {
+        entry_modules: vec!["pkg.__main__".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(package["coverage"]["status"], "complete", "{package}");
+    assert_eq!(findings(&package), ["unused"]);
+}
+
+#[test]
 fn a_rebound_package_path_prevents_static_child_selection() {
     let project = Project::new(&[
         (

@@ -247,6 +247,14 @@ impl<'a> Engine<'a> {
             self.initialize(State::default(), "__main__", file, None, Site::entry(file));
         }
         for name in &options.entry_modules {
+            if name == "__main__" {
+                self.issue(
+                    site,
+                    "invalid_entry",
+                    "the running __main__ module cannot be selected as a named entry",
+                );
+                continue;
+            }
             let Some(module) = self.resolve(name, site) else {
                 continue;
             };

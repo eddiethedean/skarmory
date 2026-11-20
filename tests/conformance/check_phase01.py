@@ -109,6 +109,25 @@ def check_file_order(cli, case, expected):
                 assert scan(cli, project, case["args"], "complete", workers) == expected
 
 
+def check_platform_import_precedence(cli):
+    with TemporaryDirectory() as directory:
+        project = Path(directory)
+        (project / "main.py").write_text("from math import local\nlocal()\n", encoding="utf-8")
+        (project / "math.py").write_text(
+            "def local(): pass\ndef unused(): pass\n", encoding="utf-8"
+        )
+        # The standard CPython Windows build links math into the interpreter.
+        if os.name == "nt":
+            report = scan(cli, project, [], "incomplete")
+            issue, = report["coverage"]["issues"]
+            assert (issue["kind"], issue["path"]) == ("unresolved_import", "main.py"), report
+        else:
+            report = scan(cli, project, [], "complete")
+            assert [(item["path"], item["symbol"]) for item in report["findings"]] == [
+                ("math.py", "unused")
+            ], report
+
+
 def check_limits_and_selection(cli):
     with TemporaryDirectory() as directory:
         project = Path(directory) / "project"
@@ -176,6 +195,8 @@ def check(cli):
         except AssertionError as error:
             raise AssertionError(f"{case['id']}: {error}") from error
         print(f"{case['id']}: pass")
+    check_platform_import_precedence(cli)
+    print("platform import precedence: pass")
     check_limits_and_selection(cli)
     print("analysis bounds and source selection: pass")
 
