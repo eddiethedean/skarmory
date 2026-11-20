@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0
 
 - Adds a packaged-project preview for the `unreachable_function` rule with
   explicit application entries and bounded library exports.
@@ -8,9 +8,15 @@
   coverage through the native CLI and Python SDK.
 - Supports bounded file discovery and parallel source processing with
   deterministic reports.
+- Resolves ordinary imports of a local `__future__` module and keeps Boolean
+  identity comparisons distinct from equality.
+- Preserves uncertainty for speculative recursion and complete coverage for
+  bounded escapes of containers with unrelated callback values.
+- Raises the minimum Rust version to 1.98.
 
 The [Phase 0.1 contract](docs/phase-01.md) documents the supported subset and
-the historical prototype mode.
+the historical prototype mode. The [reference comparison](docs/phase-01-reference.md)
+records the two fixtures checked against pinned Skylos 5.7.0.
 
 ## 0.0.1
 

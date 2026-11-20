@@ -1,7 +1,7 @@
 # Skarmory roadmap
 
 [Phase 0](phase-0.md) shipped in [0.0.1](../CHANGELOG.md#001).
-The [Phase 0.1 preview](phase-01.md) is included in development version 0.1.0.
+The [Phase 0.1 preview](phase-01.md) is included in [0.1.0](../CHANGELOG.md#010).
 Subsequent version labels describe planned milestones.
 
 The default distribution uses a PyO3 SDK wheel and a native Cargo CLI. The

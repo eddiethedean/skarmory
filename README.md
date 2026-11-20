@@ -9,30 +9,30 @@ explainable confidence, and explicit analysis limits.
 
 ## Status
 
-Skarmory 0.0.1 is the published Phase 0 release. The development CLI and Python
-SDK implement the [Phase 0.1 dead-code preview](docs/phase-01.md) for packaged
-Python 3.11 projects with declared source and entry boundaries. The
+Skarmory 0.1.0 implements the [Phase 0.1 dead-code preview](docs/phase-01.md)
+in the native CLI and Python SDK. It supports packaged Python 3.11 projects
+with declared source and entry boundaries. The
 [Phase 0 evidence](docs/phase-0.md) records the original prototype contract
 and comparison with the pinned Skylos reference.
 
-## Install 0.0.1
+## Install
 
 Install the Python SDK from PyPI in a virtual environment.
 
 ```bash
-python -m pip install "skarmory==0.0.1"
+python -m pip install skarmory
 ```
 
-Install the native CLI from crates.io with Rust 1.96 or newer.
+Install the native CLI from crates.io. Version 0.1.0 requires Rust 1.98 or newer.
 
 ```bash
-cargo install --locked --version 0.0.1 skarmory_cli
+cargo install --locked skarmory_cli
 skarmory --version
 ```
 
-The SDK ships eight wheels for standard CPython 3.11+ and a source
-distribution. The [0.0.1 release notes](CHANGELOG.md#001) list the
-wheel tags and all four published crates.
+The release builds SDK wheels for standard CPython 3.11+ on Linux, macOS,
+and Windows, plus a source distribution. See the [changelog](CHANGELOG.md)
+for version details.
 
 ## Plans
 
