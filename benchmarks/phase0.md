@@ -95,8 +95,22 @@ with import-cycle checks disabled. No speedup ratio is reported.
 
 ## Distribution evidence
 
-[Linux arm64, CPython 3.11](results/distributions-linux-arm64-cp311.json)
-records the Cargo-installed CLI, SDK wheel rebuilt from the source distribution,
-and combined-wheel experiment. The tests ran on Debian 12 with Rust 1.96.0 and
-verified the same fixture reports in both frontends. Hosted CI supplies the
-rest of the platform matrix.
+Each receipt records both installed layouts where exercised, the CLI and
+extension linkage, executable and wheel sizes, and seven fresh-process samples
+for CLI startup and SDK import. CLI checks ran with no Python on PATH.
+
+- Linux arm64 on Debian 12 and CPython 3.11 verified the installed Cargo CLI,
+  the SDK rebuilt from the source distribution, and the combined-wheel
+  experiment. [Linux receipt](results/distributions-linux-arm64-cp311.json)
+- macOS arm64 verified the CLI and SDK on CPython 3.11–3.14 and the combined
+  wheel on 3.11. The SDK and combined wheels on 3.11 measured approximately
+  1.00 MB and 2.01 MB. [macOS receipts](results/distributions-macos-arm64.json)
+- Windows x64 verified both layouts on CPython 3.13. The SDK and combined
+  wheels measured approximately 0.93 MB and 1.85 MB. The extension links to
+  `python313.dll`, and the CLI links to Windows system and C runtime libraries.
+  [Windows receipt](results/distributions-windows-x64-cp313.json) ·
+  [Hosted check](https://github.com/eddiethedean/skarmory/actions/runs/44773207537/job/136415993635)
+
+Phase 0 keeps the separate CLI and SDK as the default distribution. The
+combined wheel doubles the compressed artifact size on the measured platforms
+and remains an experiment.

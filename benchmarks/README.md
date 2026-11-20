@@ -168,12 +168,13 @@ should not become arbitrary merge blockers.
 
 ## First harness tasks
 
-- [ ] Freeze environment and corpus manifests.
-- [ ] Capture matched Skylos Python and native-extension baselines.
-- [ ] Implement fresh-process cold/warm runs and deterministic edits.
+- [x] Freeze the initial environment and corpus manifests.
+- [x] Capture the pinned Skylos Python and native-extension baselines.
+- [x] Measure fresh processes on identical inputs.
+- [ ] Add cache-state runs and deterministic edits once those features exist.
 - [ ] Add completion and finding-equivalence checks before calculating speedups.
-- [ ] Add phase timings without including profiler overhead in headline runs.
-- [ ] Publish raw measurements and a small report showing limitations.
+- [x] Record prototype phase timings and end-to-end samples.
+- [x] Publish raw measurements and their limitations.
 
 Related: [roadmap](../docs/roadmap.md),
 [compatibility](../docs/compatibility.md), and

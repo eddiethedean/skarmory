@@ -1,0 +1,285 @@
+[
+  {
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "python": "3.11.14",
+    "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "distributions": [
+      {
+        "layout": "separate",
+        "wheel": {
+          "filename": "skarmory-0.0.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 999187,
+          "sha256": "22ffb2b1f1fa73d690c4d4f6acb5e053393693da7dc3ae61937499adbadfaea3"
+        },
+        "cli": {
+          "filename": "skarmory",
+          "bytes": 2037968,
+          "sha256": "199348353c5b382bb31a3f3de90742ad324f5dbfe3fa90a2f327973a46aa1bf1"
+        },
+        "extension": {
+          "filename": "_native.cpython-311-darwin.so",
+          "bytes": 1987424,
+          "sha256": "b8f681cfcd6de1dde9f2021c3fe35c7a924ba363b911ba71cf187dfa5b0a2872"
+        },
+        "cli_linkage": [
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "extension_linkage": [
+          "@rpath/skarmory._native.cpython-311-darwin.so (compatibility version 0.0.0, current version 0.0.0)",
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "cli_version_startup": {
+          "median_ns": 2583959,
+          "samples_ns": [
+            2652417,
+            2500834,
+            2839666,
+            2583959,
+            2581375,
+            2803875,
+            2383875
+          ]
+        },
+        "sdk_import_startup": {
+          "median_ns": 23671375,
+          "samples_ns": [
+            22734542,
+            23736042,
+            23671375,
+            22805584,
+            24511000,
+            25203458,
+            23189833
+          ]
+        }
+      },
+      {
+        "layout": "combined",
+        "wheel": {
+          "filename": "skarmory-0.0.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "bytes": 2005127,
+          "sha256": "2279c7846a64801107ce16c94ca13c0045ada652bcdb4ad72deda05ff4b10183"
+        },
+        "cli": {
+          "filename": "skarmory",
+          "bytes": 2037968,
+          "sha256": "199348353c5b382bb31a3f3de90742ad324f5dbfe3fa90a2f327973a46aa1bf1"
+        },
+        "extension": {
+          "filename": "_native.cpython-311-darwin.so",
+          "bytes": 1987424,
+          "sha256": "b8f681cfcd6de1dde9f2021c3fe35c7a924ba363b911ba71cf187dfa5b0a2872"
+        },
+        "cli_linkage": [
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "extension_linkage": [
+          "@rpath/skarmory._native.cpython-311-darwin.so (compatibility version 0.0.0, current version 0.0.0)",
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "cli_version_startup": {
+          "median_ns": 2753209,
+          "samples_ns": [
+            2904500,
+            3258584,
+            3439041,
+            2753209,
+            2498917,
+            2691084,
+            2591459
+          ]
+        },
+        "sdk_import_startup": {
+          "median_ns": 21234334,
+          "samples_ns": [
+            21234334,
+            21751042,
+            21639542,
+            21044542,
+            21123667,
+            20307083,
+            24343458
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "python": "3.12.13",
+    "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "distributions": [
+      {
+        "layout": "separate",
+        "wheel": {
+          "filename": "skarmory-0.0.1-cp312-cp312-macosx_11_0_arm64.whl",
+          "bytes": 996930,
+          "sha256": "d09eae91dad98b5fdb9debfb931b015184217330a973cef327843cd0ae62b908"
+        },
+        "cli": {
+          "filename": "skarmory",
+          "bytes": 2037968,
+          "sha256": "199348353c5b382bb31a3f3de90742ad324f5dbfe3fa90a2f327973a46aa1bf1"
+        },
+        "extension": {
+          "filename": "_native.cpython-312-darwin.so",
+          "bytes": 1986352,
+          "sha256": "0043017ac0ec538848a2738cf4d3138a40cebbecd4a4410cce4e1cfb54ebda31"
+        },
+        "cli_linkage": [
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "extension_linkage": [
+          "@rpath/skarmory._native.cpython-312-darwin.so (compatibility version 0.0.0, current version 0.0.0)",
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "cli_version_startup": {
+          "median_ns": 2615125,
+          "samples_ns": [
+            2676125,
+            2615125,
+            2527416,
+            2848417,
+            2562292,
+            2894209,
+            2443417
+          ]
+        },
+        "sdk_import_startup": {
+          "median_ns": 19060958,
+          "samples_ns": [
+            21515709,
+            18971625,
+            29447125,
+            20437500,
+            18621166,
+            19060958,
+            17831500
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "python": "3.13.11",
+    "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "distributions": [
+      {
+        "layout": "separate",
+        "wheel": {
+          "filename": "skarmory-0.0.1-cp313-cp313-macosx_11_0_arm64.whl",
+          "bytes": 997162,
+          "sha256": "cd8b852fe499f002baf8c0c53ce3a8d6d44f2b619c92b1b19b1cf2a21c367499"
+        },
+        "cli": {
+          "filename": "skarmory",
+          "bytes": 2037968,
+          "sha256": "199348353c5b382bb31a3f3de90742ad324f5dbfe3fa90a2f327973a46aa1bf1"
+        },
+        "extension": {
+          "filename": "_native.cpython-313-darwin.so",
+          "bytes": 1986416,
+          "sha256": "3496a7253479a05c1add70b77a44065d4f1b2e72c1086cbe19ddd304d8e06b33"
+        },
+        "cli_linkage": [
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "extension_linkage": [
+          "@rpath/skarmory._native.cpython-313-darwin.so (compatibility version 0.0.0, current version 0.0.0)",
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "cli_version_startup": {
+          "median_ns": 2704125,
+          "samples_ns": [
+            2704125,
+            2687708,
+            2623667,
+            2573917,
+            2785834,
+            3403375,
+            2758792
+          ]
+        },
+        "sdk_import_startup": {
+          "median_ns": 24871208,
+          "samples_ns": [
+            24467667,
+            23095708,
+            24871208,
+            25284125,
+            25374625,
+            24791041,
+            26485500
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "python": "3.14.10",
+    "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "distributions": [
+      {
+        "layout": "separate",
+        "wheel": {
+          "filename": "skarmory-0.0.1-cp314-cp314-macosx_11_0_arm64.whl",
+          "bytes": 997424,
+          "sha256": "b2e0c3cf2760d67ef02f308b9ddc7b4aa7c966bbe85ddb6d5f70b9075e49e8da"
+        },
+        "cli": {
+          "filename": "skarmory",
+          "bytes": 2037968,
+          "sha256": "199348353c5b382bb31a3f3de90742ad324f5dbfe3fa90a2f327973a46aa1bf1"
+        },
+        "extension": {
+          "filename": "_native.cpython-314-darwin.so",
+          "bytes": 1987072,
+          "sha256": "d96aa77357aac85be34c89692c8d34eeb84894183b8866ff3c69d72418402648"
+        },
+        "cli_linkage": [
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "extension_linkage": [
+          "@rpath/skarmory._native.cpython-314-darwin.so (compatibility version 0.0.0, current version 0.0.0)",
+          "/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)",
+          "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)"
+        ],
+        "cli_version_startup": {
+          "median_ns": 2574625,
+          "samples_ns": [
+            2779542,
+            2945459,
+            2534917,
+            2743417,
+            2478667,
+            2574625,
+            2521417
+          ]
+        },
+        "sdk_import_startup": {
+          "median_ns": 23411542,
+          "samples_ns": [
+            23577125,
+            23267208,
+            23315500,
+            22859125,
+            23411542,
+            24421750,
+            26425000
+          ]
+        }
+      }
+    ]
+  }
+]

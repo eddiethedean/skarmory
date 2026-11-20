@@ -1,8 +1,7 @@
 # Skarmory roadmap
 
-Status: the [Phase 0 prototype and scope](phase-0.md) are implemented. The
-checklist tracks the remaining qualification evidence. Version labels describe
-planned milestones.
+Status: [Phase 0](phase-0.md) is complete. Version labels describe planned
+milestones.
 
 The default distribution uses a PyO3 SDK wheel and a native Cargo CLI. The
 combined wheel is an experimental installed layout.
@@ -61,14 +60,14 @@ behavior while substantially reducing the cost of equivalent analysis.
 - [x] Define the exact first Python dead-code subset and its unsupported surfaces.
 - [x] Capture an authentic Cargo dependency lockfile and select the Ruff-compatible
   Rust minimum.
-- [ ] Qualify the minimum Rust version and Python interpreter matrix on each
-  supported build platform.
+- [x] Qualify Rust 1.96 and the CPython 3.11–3.14 development matrix across
+  Linux, macOS, and Windows.
 - [x] Select and document the distribution license before the first release;
   record provenance for any imported upstream code or fixtures.
 - [x] Capture small reviewed fixtures before optimizing against their output.
 - [x] Evaluate a pinned, matching Ruff parser/AST crate set behind a project-owned
   adapter. Record supported syntax and parser error behavior.
-- [ ] Prove separate native CLI and PyO3 SDK distributions on Linux, macOS, and
+- [x] Prove separate native CLI and PyO3 SDK distributions on Linux, macOS, and
   Windows; record installation behavior, linkage, startup cost, and artifact size.
 - [x] Evaluate a combined native-CLI/SDK wheel as a separate packaging spike.
   Preserve the working separate distributions until the installed layout is

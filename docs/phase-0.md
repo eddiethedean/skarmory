@@ -72,8 +72,9 @@ were written for Skarmory. The repository vendors no upstream source or fixtures
 
 ## Distributions
 
-The default artifacts remain a native CLI installed with Cargo and a separate
-Maturin-built PyO3 SDK wheel. CI installs both into clean destinations, checks
+The default artifacts are a native CLI installed with Cargo and a separate
+Maturin-built PyO3 SDK wheel. Phase 0 qualified Rust 1.96 and a CPython
+3.11–3.14 development matrix across Linux, macOS, and Windows. CI installs both into clean destinations, checks
 their reports against the reviewed cases, verifies CLI linkage and operation
 with no Python on PATH, and records startup samples, sizes, and hashes. It also
 rebuilds and tests the SDK from its source distribution.
