@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+from tempfile import TemporaryDirectory
 import unittest
 
 import skarmory
@@ -36,6 +38,27 @@ class SdkTests(unittest.TestCase):
         self.assertEqual(incomplete["coverage"]["status"], "incomplete")
         self.assertEqual(incomplete["coverage"]["issues"][0]["kind"], "parse_error")
         self.assertEqual(incomplete["findings"], [])
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    @unittest.skipUnless(os.name == "posix", "requires POSIX filesystem encoding")
+    def test_native_preserves_surrogateescaped_path(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / os.fsdecode(b"source-\xff")
+            if sys.platform == "linux":
+                path.mkdir()
+                (path / "main.py").write_text("pass\n")
+                expected_status = "complete"
+                expected_exit = 0
+            else:
+                expected_status = "incomplete"
+                expected_exit = 2
+
+            report = skarmory.analyze(path)
+            self.assertEqual(report["coverage"]["status"], expected_status)
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                result = subprocess.run([cli, path], capture_output=True)
+                self.assertEqual(result.returncode, expected_exit)
+                self.assertEqual(report, json.loads(result.stdout))
 
     @unittest.skipUnless(os.environ.get("SKARMORY_TEST_CLI"), "requires an installed CLI")
     def test_sdk_equals_cli(self):

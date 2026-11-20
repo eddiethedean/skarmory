@@ -25,9 +25,11 @@ pub(super) fn discover(path: &Path) -> Discovery {
         files: Vec::new(),
         issues: Vec::new(),
     };
-    let is_python = |path: &Path| path.extension() == Some(OsStr::new("py"));
-    let paths = match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_file() && is_python(path) => vec![path.to_owned()],
+    // Strip trailing separators and dots so metadata checks the root itself.
+    let paths = match fs::symlink_metadata(path.components().as_path()) {
+        Ok(meta) if meta.is_file() && path.file_name().is_some_and(is_python) => {
+            vec![path.to_owned()]
+        }
         Ok(meta) if meta.is_dir() => {
             result.entry = Some("main".into());
             let mut paths = Vec::new();
@@ -35,7 +37,15 @@ pub(super) fn discover(path: &Path) -> Discovery {
                 Ok(entries) => {
                     for entry in entries {
                         match entry {
-                            Ok(entry) if is_python(&entry.path()) => paths.push(entry.path()),
+                            Ok(entry) if is_python(&entry.file_name()) => match entry.file_type() {
+                                Ok(kind) if kind.is_dir() => {}
+                                Ok(_) => paths.push(entry.path()),
+                                Err(error) => result.issues.push(Issue::new(
+                                    "discovery_error",
+                                    &entry.file_name().to_string_lossy(),
+                                    error,
+                                )),
+                            },
                             Ok(_) => {}
                             Err(error) => {
                                 result
@@ -99,6 +109,10 @@ pub(super) fn discover(path: &Path) -> Discovery {
         ));
     }
     result
+}
+
+fn is_python(name: &OsStr) -> bool {
+    name.as_encoded_bytes().ends_with(b".py")
 }
 
 impl SourceFile {

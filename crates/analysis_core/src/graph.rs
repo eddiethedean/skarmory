@@ -51,6 +51,16 @@ pub(super) fn resolve(files: &[ModuleFile]) -> Result<Graph<'_>, Failure> {
     let mut edges = vec![Vec::new(); nodes];
     for (index, file) in files.iter().enumerate() {
         for import in &file.facts.imports {
+            if import.module == "__main__" {
+                return Err(Failure::Unsupported(
+                    Issue::new(
+                        "unsupported_import",
+                        &file.path,
+                        "importing the running entry module __main__ is outside the prototype subset",
+                    )
+                    .at(import.location),
+                ));
+            }
             let missing = || {
                 Failure::Unresolved(
                     Issue::new(

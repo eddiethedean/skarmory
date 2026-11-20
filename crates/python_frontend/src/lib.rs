@@ -2,7 +2,7 @@
 
 use ruff_python_ast::{Expr, Mod, PythonVersion, Stmt};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
-use ruff_text_size::{Ranged, TextSize};
+use ruff_text_size::Ranged;
 
 #[derive(Debug)]
 pub struct Module {
@@ -49,8 +49,8 @@ pub struct FrontendError {
 struct Lines(Vec<usize>);
 
 impl Lines {
-    fn locate(&self, offset: TextSize) -> Location {
-        let offset = usize::from(offset);
+    fn locate(&self, offset: impl Into<usize>) -> Location {
+        let offset = offset.into();
         let line = self.0.partition_point(|&start| start <= offset) - 1;
         Location {
             line: line + 1,
@@ -83,6 +83,13 @@ pub fn extract(source: &str) -> Result<Module, FrontendError> {
             .chain(source.match_indices('\n').map(|(index, _)| index + 1))
             .collect(),
     );
+    if let Some(offset) = source.find('\0') {
+        return Err(FrontendError {
+            kind: "parse_error",
+            message: "Python source cannot contain NUL bytes".into(),
+            location: lines.locate(offset),
+        });
+    }
     let options = ParseOptions::from(Mode::Module).with_target_version(PythonVersion::PY311);
     let parsed = parse_unchecked(source, options);
     if let Some(error) = parsed.errors().first() {

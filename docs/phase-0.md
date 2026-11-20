@@ -13,12 +13,13 @@ interface ahead of the broader [0.1 preview](roadmap.md#01-python-dead-code-prev
   import resolves to its selected local file.
 - Module filenames, bindings, and call targets use ASCII identifiers. Sources
   are UTF-8 up to 1 MiB per file, with an optional BOM and universal newlines.
-  Encoding declarations are limited to `utf-8` and `utf_8`. Symlinked source
-  entries, missing roots, and detected read races produce incomplete reports.
+  Encoding declarations are limited to `utf-8` and `utf_8`. Literal NUL bytes,
+  symlinked scan targets or source entries, missing roots, and detected read
+  races produce incomplete reports.
 - Modules may have a leading docstring and `pass` statements. Absolute imports
   of local modules and their directly defined functions precede definitions and
-  calls. Imports can use aliases. Import cycles and duplicate bindings are
-  unsupported.
+  calls. Imports can use aliases. Import cycles, imports of the running entry
+  module `__main__`, and duplicate bindings are unsupported.
 - Functions are synchronous, top-level, zero-parameter definitions with no
   decorators, type parameters, annotations, or defaults. Bodies may contain a
   leading docstring, `pass`, and direct zero-argument call statements. A call
