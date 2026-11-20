@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0 (unreleased)
+
+- Adds a packaged-project preview for the `unreachable_function` rule with
+  explicit application entries and bounded library exports.
+- Reports the analyzed source set, reachability evidence, uncertainty, and
+  coverage through the native CLI and Python SDK.
+- Supports bounded file discovery and parallel source processing with
+  deterministic reports.
+
+The [Phase 0.1 contract](docs/phase-01.md) documents the supported subset and
+the historical prototype mode.
+
 ## 0.0.1
 
 Released November 20, 2026.

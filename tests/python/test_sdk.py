@@ -28,13 +28,15 @@ class SdkTests(unittest.TestCase):
         from skarmory import _native
 
         self.assertEqual(_native.__version__, skarmory.__version__)
-        report = skarmory.analyze(FIXTURES / "reachable")
+        report = skarmory.analyze(FIXTURES / "reachable", phase0=True)
+        self.assertEqual(report["profile"], "phase0-python311-flat-application")
         self.assertEqual(report["coverage"]["status"], "complete")
         self.assertEqual(
             [(item["path"], item["symbol"]) for item in report["findings"]],
             [("main.py", "dead_left"), ("main.py", "dead_right"), ("other.py", "work")],
         )
         incomplete = skarmory.analyze(FIXTURES / "invalid")
+        self.assertEqual(incomplete["schema_version"], 2)
         self.assertEqual(incomplete["coverage"]["status"], "incomplete")
         self.assertEqual(incomplete["coverage"]["issues"][0]["kind"], "parse_error")
         self.assertEqual(incomplete["findings"], [])
@@ -69,3 +71,45 @@ class SdkTests(unittest.TestCase):
                 )
                 self.assertIn(result.returncode, (0, 2))
                 self.assertEqual(skarmory.analyze(fixture), json.loads(result.stdout))
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_package_preview_options_and_worker_equivalence(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            root = project / "src"
+            package = root / "pkg"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text(
+                'from .impl import public\n__all__ = ["public"]\n', encoding="utf-8"
+            )
+            (package / "impl.py").write_text(
+                "def helper():\n    pass\n\n"
+                "def public():\n    helper()\n\n"
+                "def dead():\n    pass\n",
+                encoding="utf-8",
+            )
+
+            options = {
+                "source_roots": [root],
+                "policy": "library",
+                "public_modules": ["pkg"],
+            }
+            serial = skarmory.analyze(project, **options)
+            self.assertEqual(serial["coverage"]["status"], "complete", serial)
+            self.assertEqual([item["symbol"] for item in serial["findings"]], ["dead"])
+            self.assertEqual(serial, skarmory.analyze(project, workers=2, **options))
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                result = subprocess.run(
+                    [
+                        cli, "--source-root", root, "--policy", "library",
+                        "--public-module", "pkg", "--workers", "2", project,
+                    ],
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(serial, json.loads(result.stdout))
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase0_rejects_preview_options(self):
+        with self.assertRaisesRegex(ValueError, "Phase 0 does not accept preview"):
+            skarmory.analyze(FIXTURES / "reachable", phase0=True, workers=2)

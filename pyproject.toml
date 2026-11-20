@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "skarmory"
 dynamic = ["version"]
-description = "Fast Python code analysis, powered by Rust. Phase 0 dead-code prototype."
+description = "Native Python analysis with a closed-world dead-code preview."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.txt"]
@@ -29,3 +29,5 @@ python-source = "python"
 module-name = "skarmory._native"
 bindings = "pyo3"
 locked = true
+# Keep CLI-only lockfile dependencies when building the workspace source archive.
+sdist-generator = "git"

@@ -8,7 +8,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 repository = "https://github.com/eddiethedean/skarmory"
@@ -16,14 +16,17 @@ publish = ["crates-io"]
 license-file = "LICENSE"
 
 [workspace.dependencies]
-skarmory_core = { path = "crates/analysis_core", version = "=0.0.1" }
-skarmory_python = { path = "crates/python_frontend", version = "=0.0.1" }
+skarmory_core = { path = "crates/analysis_core", version = "=0.1.0" }
+skarmory_python = { path = "crates/python_frontend", version = "=0.1.0" }
+clap = { version = "4.6.9", default-features = false, features = ["std", "help", "usage", "error-context", "derive"] }
 pyo3 = "=0.29.0"
+rayon = "1.12.0"
 ruff_python_ast = "=0.0.12"
 ruff_python_parser = "=0.0.12"
 ruff_text_size = "=0.0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+walkdir = "2.5.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Issue;
 
-const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
+pub(super) const MAX_SOURCE_BYTES: u64 = 1024 * 1024;
 
 pub(super) struct Discovery {
     pub entry: Option<String>,
@@ -111,7 +111,7 @@ pub(super) fn discover(path: &Path) -> Discovery {
     result
 }
 
-fn is_python(name: &OsStr) -> bool {
+pub(super) fn is_python(name: &OsStr) -> bool {
     name.as_encoded_bytes().ends_with(b".py")
 }
 
@@ -150,35 +150,39 @@ impl SourceFile {
                 "file metadata changed during read",
             ));
         }
-        let mut source = String::from_utf8(bytes)
-            .map_err(|error| Issue::new("unsupported_encoding", &self.label, error))?;
-        if source.starts_with('\u{feff}') {
-            source.drain(..'\u{feff}'.len_utf8());
-        }
-        if source.contains('\r') {
-            source = source.replace("\r\n", "\n").replace('\r', "\n");
-        }
-        for line in source.lines().take(2) {
-            let line = line.trim_start_matches([' ', '\t', '\x0c']);
-            if line.is_empty() {
-                continue;
-            }
-            let Some(comment) = line.strip_prefix('#') else {
-                break;
-            };
-            if let Some(name) = encoding_cookie(comment) {
-                if !name.eq_ignore_ascii_case("utf-8") && !name.eq_ignore_ascii_case("utf_8") {
-                    return Err(Issue::new(
-                        "unsupported_encoding",
-                        &self.label,
-                        format!("source declares {name}; the prototype accepts UTF-8"),
-                    ));
-                }
-                break;
-            }
-        }
-        Ok(source)
+        decode(bytes, &self.label)
     }
+}
+
+pub(super) fn decode(bytes: Vec<u8>, label: &str) -> Result<String, Issue> {
+    let mut source = String::from_utf8(bytes)
+        .map_err(|error| Issue::new("unsupported_encoding", label, error))?;
+    if source.starts_with('\u{feff}') {
+        source.drain(..'\u{feff}'.len_utf8());
+    }
+    if source.contains('\r') {
+        source = source.replace("\r\n", "\n").replace('\r', "\n");
+    }
+    for line in source.lines().take(2) {
+        let line = line.trim_start_matches([' ', '\t', '\x0c']);
+        if line.is_empty() {
+            continue;
+        }
+        let Some(comment) = line.strip_prefix('#') else {
+            break;
+        };
+        if let Some(name) = encoding_cookie(comment) {
+            if !name.eq_ignore_ascii_case("utf-8") && !name.eq_ignore_ascii_case("utf_8") {
+                return Err(Issue::new(
+                    "unsupported_encoding",
+                    label,
+                    format!("source declares {name}; the prototype accepts UTF-8"),
+                ));
+            }
+            break;
+        }
+    }
+    Ok(source)
 }
 
 fn encoding_cookie(comment: &str) -> Option<&str> {

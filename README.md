@@ -9,11 +9,11 @@ explainable confidence, and explicit analysis limits.
 
 ## Status
 
-Skarmory 0.0.1 is the first Phase 0 release. The native CLI and Python SDK
-report unreachable functions with evidence and explicit coverage for a flat,
-closed-world Python 3.11 application. See the [prototype contract](docs/phase-0.md)
-for the supported source subset and the [benchmark report](benchmarks/phase0.md)
-for comparisons with the pinned Skylos reference.
+Skarmory 0.0.1 is the published Phase 0 release. The development CLI and Python
+SDK implement the [Phase 0.1 dead-code preview](docs/phase-01.md) for packaged
+Python 3.11 projects with declared source and entry boundaries. The
+[Phase 0 evidence](docs/phase-0.md) records the original prototype contract
+and comparison with the pinned Skylos reference.
 
 ## Install 0.0.1
 
@@ -46,7 +46,8 @@ wheel tags and all four published crates.
 | [Conformance strategy](tests/conformance/README.md) | Differential compatibility and independently reviewed correctness cases |
 | [Benchmark strategy](benchmarks/README.md) | Matched workloads, cache states, accuracy gates, and unmeasured performance goals |
 
-The next milestone expands the prototype into the Python dead-code preview.
+See the [Phase 0.1 preview](docs/phase-01.md) for scan modes and completeness
+requirements.
 
 ## Repository layout
 
@@ -73,6 +74,7 @@ the same Rust patch release.
 ```bash
 cargo run --locked -p skarmory_cli -- --help
 cargo run --locked -p skarmory_cli -- tests/conformance/fixtures/reachable
+cargo run --locked -p skarmory_cli -- . --source-root src --entry-module my_app.main
 ```
 
 The CLI emits one JSON report per scan. A complete report exits 0. Incomplete
@@ -101,6 +103,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo build --locked -p skarmory_cli
 python tests/conformance/check_phase0.py target/debug/skarmory
+python tests/conformance/check_phase01.py target/debug/skarmory
 python -m unittest discover -s tests/python -v
 ```
 

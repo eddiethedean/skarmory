@@ -1,6 +1,8 @@
-//! The Ruff adapter for the closed-world Phase 0 Python subset.
+//! Ruff adapters for the native Python analyzers.
 
-use ruff_python_ast::{Expr, Mod, PythonVersion, Stmt};
+pub mod preview;
+
+use ruff_python_ast::{Expr, Mod, ModModule, PythonVersion, Stmt};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_text_size::Ranged;
 
@@ -59,8 +61,12 @@ impl Lines {
     }
 
     fn unsupported(&self, node: &impl Ranged, message: &str) -> FrontendError {
+        self.error("unsupported_construct", node, message)
+    }
+
+    fn error(&self, kind: &'static str, node: &impl Ranged, message: &str) -> FrontendError {
         FrontendError {
-            kind: "unsupported_construct",
+            kind,
             message: message.into(),
             location: self.locate(node.start()),
         }
@@ -76,8 +82,7 @@ pub fn simple_name(name: &str) -> bool {
         && name != "__debug__"
 }
 
-/// Parse normalized UTF-8 Python with Python 3.11 syntax and extract owned facts.
-pub fn extract(source: &str) -> Result<Module, FrontendError> {
+fn parse(source: &str) -> Result<(ModModule, Lines), FrontendError> {
     let lines = Lines(
         std::iter::once(0)
             .chain(source.match_indices('\n').map(|(index, _)| index + 1))
@@ -109,7 +114,12 @@ pub fn extract(source: &str) -> Result<Module, FrontendError> {
     let Mod::Module(syntax) = parsed.into_syntax() else {
         unreachable!("module mode always produces a module AST");
     };
+    Ok((syntax, lines))
+}
 
+/// Parse normalized UTF-8 Python with Python 3.11 syntax and extract owned facts.
+pub fn extract(source: &str) -> Result<Module, FrontendError> {
+    let (syntax, lines) = parse(source)?;
     let mut module = Module {
         imports: Vec::new(),
         functions: Vec::new(),
