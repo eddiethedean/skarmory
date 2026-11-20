@@ -162,7 +162,7 @@ struct Graph<'a> {
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     uncertainties: Vec<Issue>,
-    fixtures: BTreeMap<SymbolId, String>,
+    fixtures: BTreeMap<SymbolId, Option<String>>,
     called_tests: Vec<SymbolId>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
@@ -430,30 +430,63 @@ impl<'a> Graph<'a> {
     }
 
     fn has_initialization_cycle(&self) -> bool {
-        let mut imports = vec![Vec::new(); self.files.len()];
-        let mut visited = vec![false; self.scopes.len()];
-        for (file, targets) in imports.iter_mut().enumerate() {
-            let mut pending = vec![file];
-            while let Some(id) = pending.pop() {
-                if std::mem::replace(&mut visited[id], true) {
-                    continue;
+        let count = self.scopes.len();
+        let mut incoming = vec![Vec::new(); count];
+        let mut reached = vec![false; count];
+        let mut finished = Vec::with_capacity(count);
+        let mut pending: Vec<_> = (0..self.files.len()).map(|file| (file, false)).collect();
+        while let Some((id, exiting)) = pending.pop() {
+            if exiting {
+                finished.push(id);
+                continue;
+            }
+            if std::mem::replace(&mut reached[id], true) {
+                continue;
+            }
+            pending.push((id, true));
+            let scope = &self.scopes[id];
+            let calls = scope.edges.iter().filter_map(|edge| {
+                if matches!(edge.kind, "direct_call" | "constructor" | "decorator")
+                    && let Binding::Definition(_, body) = self.symbols[edge.target].binding
+                {
+                    Some(body)
+                } else {
+                    None
                 }
-                let scope = &self.scopes[id];
-                targets.extend(&scope.imports);
-                pending.extend(&scope.class_bodies);
-                // Follow synchronous local calls during initialization, not
-                // functions merely exported or callbacks that may run later.
-                for edge in &scope.edges {
-                    if matches!(edge.kind, "direct_call" | "constructor" | "decorator")
-                        && let Binding::Definition(_, body) = self.symbols[edge.target].binding
-                        && self.scopes[body].file == file
-                    {
-                        pending.push(body);
-                    }
+            });
+            for target in scope
+                .imports
+                .iter()
+                .chain(&scope.class_bodies)
+                .copied()
+                .chain(calls)
+            {
+                incoming[target].push(id);
+                if !reached[target] {
+                    pending.push((target, false));
                 }
             }
         }
-        crate::graph::has_import_cycle(&imports)
+        // Reverse finishing order gives the strongly connected components.
+        // A recursive call alone is valid. A component with an import edge
+        // can consult a module before its final bindings are established.
+        let mut component = vec![usize::MAX; count];
+        let mut pending = Vec::new();
+        for &root in finished.iter().rev() {
+            pending.push(root);
+            while let Some(id) = pending.pop() {
+                if component[id] == usize::MAX {
+                    component[id] = root;
+                    pending.extend(&incoming[id]);
+                }
+            }
+        }
+        finished.iter().any(|&id| {
+            self.scopes[id]
+                .imports
+                .iter()
+                .any(|&target| component[id] == component[target])
+        })
     }
 
     fn binding(&mut self, id: SymbolId, before: Location, depth: usize) -> Value {
@@ -1245,7 +1278,7 @@ impl<'a> Graph<'a> {
                     keywords.iter().find(|(name, _)| name == "name")
                 {
                     if let Value::Text(name) = self.identity(scope, expression, before, 0) {
-                        name
+                        Some(name)
                     } else {
                         self.scope_issue(
                             scope,
@@ -1256,14 +1289,20 @@ impl<'a> Graph<'a> {
                         return;
                     }
                 } else {
-                    self.symbols[target].name.text.clone()
+                    None
                 };
                 self.fixtures.insert(target, registered_name);
-                if keywords
-                    .iter()
-                    .any(|(name, value)| name == "autouse" && static_bool(value) == Some(true))
-                {
-                    self.called_tests.push(target);
+                if let Some((_, expression)) = keywords.iter().find(|(name, _)| name == "autouse") {
+                    match self.identity(scope, expression, before, 0) {
+                        Value::Bool(true) => self.called_tests.push(target),
+                        Value::Bool(false) => {}
+                        _ => self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unresolved_fixture_autouse",
+                            "pytest fixture autouse could not be resolved",
+                        ),
+                    }
                 }
             }
             Value::Callable(id) => {
@@ -1294,15 +1333,53 @@ impl<'a> Graph<'a> {
         };
     }
 
+    fn collected_pytest_class(&self, class: SymbolId, scope: ScopeId, file: usize) -> bool {
+        let symbol = &self.symbols[class];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        symbol.scope == file
+            && self.is_class(class)
+            && symbol.name.text.starts_with("Test")
+            && self.local(file, &symbol.name.text, END) == Some(class)
+            && definition.bases.is_empty()
+            && !self.scopes[scope].names.contains_key("__init__")
+            && !self.scopes[scope].names.contains_key("__new__")
+            && !self.local(scope, "__test__", END).is_some_and(|id| {
+                matches!(self.symbols[id].binding, Binding::Variable(Some(value), _) if static_bool(value) == Some(false))
+            })
+    }
+
+    fn imported_pytest_fixture(&self, mut id: SymbolId) -> Option<(SymbolId, Vec<SymbolId>)> {
+        let mut imports = Vec::new();
+        for _ in 0..MAX_BINDING_CHAIN {
+            if self.conditional.contains_key(&id) {
+                return None;
+            }
+            if self.fixtures.contains_key(&id) {
+                return Some((id, imports));
+            }
+            let symbol = &self.symbols[id];
+            let Binding::Import(import) = symbol.binding else {
+                return None;
+            };
+            let module = self.relative_module(self.scopes[symbol.scope].file, import)?;
+            let file = *self.modules.get(module.as_str())?;
+            imports.push(id);
+            id = self.local(file, import.member.as_deref()?, END)?;
+        }
+        None
+    }
+
     fn test_edges(&mut self) -> Vec<Edge> {
         let mut test_roots = self.called_tests.clone();
         for (id, symbol) in self.symbols.iter().enumerate() {
-            if symbol.scope >= self.files.len()
-                || !matches!(symbol.binding, Binding::Definition(def, _) if def.kind != DefinitionKind::Class)
+            if !matches!(symbol.binding, Binding::Definition(def, _) if def.kind != DefinitionKind::Class)
             {
                 continue;
             }
-            let filename = self.files[symbol.scope]
+            let scope = &self.scopes[symbol.scope];
+            let filename = self.files[scope.file]
                 .path
                 .rsplit('/')
                 .next()
@@ -1311,7 +1388,14 @@ impl<'a> Graph<'a> {
                 && symbol.name.text.starts_with("test_")
                 && !self.fixtures.contains_key(&id)
             {
-                test_roots.push(id);
+                if symbol.scope == scope.file {
+                    test_roots.push(id);
+                } else if let Some(owner) = scope.owner
+                    && self.collected_pytest_class(owner, symbol.scope, scope.file)
+                    && self.local(symbol.scope, &symbol.name.text, END) == Some(id)
+                {
+                    test_roots.extend([owner, id]);
+                }
             }
         }
         let mut queue = VecDeque::from(test_roots);
@@ -1323,20 +1407,40 @@ impl<'a> Graph<'a> {
             let Binding::Definition(definition, _) = self.symbols[id].binding else {
                 continue;
             };
-            let file = &self.files[self.scopes[self.symbols[id].scope].file].path;
-            let candidates = self.fixtures.iter().filter(|&(&id, _)| {
-                let fixture = &self.files[self.scopes[self.symbols[id].scope].file].path;
-                fixture == file
-                    || fixture
-                        .strip_suffix("conftest.py")
-                        .is_some_and(|parent| file.starts_with(parent))
+            if definition.parameters.is_empty() {
+                continue;
+            }
+            let scope = self.symbols[id].scope;
+            let file = self.scopes[scope].file;
+            let path = &self.files[file].path;
+            let candidates = self.fixtures.iter().filter(|&(&fixture, _)| {
+                let fixture_scope = self.symbols[fixture].scope;
+                let fixture_file = self.scopes[fixture_scope].file;
+                fixture_scope == scope
+                    || fixture_scope == file
+                    || (fixture_scope == fixture_file
+                        && self.files[fixture_file]
+                            .path
+                            .strip_suffix("conftest.py")
+                            .is_some_and(|parent| path.starts_with(parent)))
             });
             for (&fixture, name) in candidates {
-                if definition
-                    .parameters
-                    .iter()
-                    .any(|param| &param.text == name)
+                let name = name.as_deref().unwrap_or(&self.symbols[fixture].name.text);
+                if definition.parameters.iter().any(|param| param.text == name) {
+                    queue.push_back(fixture);
+                }
+            }
+            // Pytest registers fixture objects imported into the collected
+            // namespace. The attribute name is used unless the decorator
+            // explicitly supplies a fixture name.
+            for &alias in self.scopes[file].names.keys() {
+                if let Some(import) = self.local(file, alias, END)
+                    && matches!(self.symbols[import].binding, Binding::Import(_))
+                    && let Some((fixture, imports)) = self.imported_pytest_fixture(import)
+                    && let name = self.fixtures[&fixture].as_deref().unwrap_or(alias)
+                    && definition.parameters.iter().any(|param| param.text == name)
                 {
+                    self.read.extend(imports);
                     queue.push_back(fixture);
                 }
             }

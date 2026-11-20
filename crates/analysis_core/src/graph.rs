@@ -189,7 +189,7 @@ fn check_import_order(files: &[ModuleFile], edges: &[Vec<usize>]) -> Result<(), 
     }
 }
 
-pub(super) fn has_import_cycle(edges: &[Vec<usize>]) -> bool {
+fn has_import_cycle(edges: &[Vec<usize>]) -> bool {
     let mut incoming = vec![0; edges.len()];
     for &target in edges.iter().flatten() {
         incoming[target] += 1;
