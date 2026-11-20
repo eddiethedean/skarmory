@@ -9,11 +9,30 @@ explainable confidence, and explicit analysis limits.
 
 ## Status
 
-Skarmory has a native Phase 0 prototype for a flat, closed-world Python 3.11
-application. The CLI and Python SDK report unreachable functions with evidence
-and explicit coverage. See the [prototype contract](docs/phase-0.md) for the
-supported source subset and the [benchmark report](benchmarks/phase0.md) for
-comparisons with the pinned Skylos reference.
+Skarmory 0.0.1 is the first Phase 0 release. The native CLI and Python SDK
+report unreachable functions with evidence and explicit coverage for a flat,
+closed-world Python 3.11 application. See the [prototype contract](docs/phase-0.md)
+for the supported source subset and the [benchmark report](benchmarks/phase0.md)
+for comparisons with the pinned Skylos reference.
+
+## Install 0.0.1
+
+Install the Python SDK from PyPI in a virtual environment.
+
+```bash
+python -m pip install "skarmory==0.0.1"
+```
+
+Install the native CLI from crates.io with Rust 1.96 or newer.
+
+```bash
+cargo install --locked --version 0.0.1 skarmory_cli
+skarmory --version
+```
+
+The SDK ships eight wheels for standard CPython 3.11+ and a source
+distribution. The [0.0.1 release notes](CHANGELOG.md#001) list the
+wheel tags and all four published crates.
 
 ## Plans
 

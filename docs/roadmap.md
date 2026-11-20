@@ -1,7 +1,7 @@
 # Skarmory roadmap
 
-Status: [Phase 0](phase-0.md) is complete. Version labels describe planned
-milestones.
+[Phase 0](phase-0.md) shipped in [0.0.1](../CHANGELOG.md#001).
+Subsequent version labels describe planned milestones.
 
 The default distribution uses a PyO3 SDK wheel and a native Cargo CLI. The
 combined wheel is an experimental installed layout.

@@ -72,12 +72,10 @@ adapters must not grow independent implementations of resolution or rules.
 
 ### Native command line
 
-The intended installed `skarmory` command is a native executable. Startup,
-argument parsing, scanning, and output should not require starting Python. The
-initial scaffold builds that executable through Cargo separately from the
-Python SDK wheel; installing the SDK does not yet install the native CLI. The
-CLI maps engine outcomes into the selected output and gate policy; a finding
-count alone does not determine every command's exit code.
+The `skarmory_cli` crate on crates.io installs the native `skarmory` executable.
+Startup, argument parsing, scanning, and output run independently of the
+Python interpreter. The CLI maps engine outcomes into the selected output and
+gate policy.
 
 ### Python interface
 
@@ -402,27 +400,16 @@ settings coexist; do not combine them by accident. Existing Skylos discovery,
 inheritance, suppressions, and selector behavior belong in conformance tests.
 [Skylos configuration](https://docs.skylos.dev/configuration)
 
-The initial packaging arrangement is a standard PyO3 SDK wheel built from
-`crates/python_bindings`, exposing the extension as `skarmory._native`, plus a
-separately built Cargo CLI. The native CLI is not bundled in that wheel.
+Release 0.0.1 publishes the PyO3 SDK through PyPI and the native CLI through
+crates.io. The SDK wheel exposes `skarmory._native` and uses the CPython stable
+ABI starting at 3.11. The [release notes](../CHANGELOG.md#001)
+record the published wheel matrix.
 
-The longer-term goal is one installation containing the native binary, PyO3
-extension, Python API, and type information. This is an unresolved Phase 0
-packaging spike. Maturin's target-selection documentation is not evidence that
-its binding-selection machinery supports this combined layout automatically.
-The separate binary/library packaging question must be tested with the pinned
-build tools before promising a combined wheel.
-[Maturin binary/library packaging discussion](https://github.com/PyO3/maturin/issues/368)
-
-The spike must establish executable placement, whether the CLI depends on
-Python at runtime, wheel size, source-distribution contents, and supported
-interpreter/ABI combinations. Do not assume an ordinary ABI3 wheel covers every
-free-threaded interpreter. A separate CLI distribution and SDK distribution is
-an acceptable fallback if they have clear ownership and matching engine/schema
-versions.
-
-No package-registry reservation, published wheel matrix, stable API, parser
-coverage, or performance result is implied by the initial scaffold.
+The Phase 0 combined-wheel experiment verified executable placement and
+Python-independent CLI operation with the pinned build tools. The
+[distribution measurements](../benchmarks/phase0.md#distribution-evidence)
+record linkage, startup samples, and artifact sizes. A combined installation
+remains a packaging experiment.
 
 ## 12. Validation gates
 
