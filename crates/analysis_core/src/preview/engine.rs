@@ -490,15 +490,7 @@ impl<'a> Engine<'a> {
                                 format!("cannot resolve __all__ name {name:?}"),
                             );
                         }
-                        Some(value) if self.contains_mutable(value, site) => {
-                            self.unbounded(
-                                site,
-                                &format!(
-                                    "mutable public export {name:?} may be changed by a caller"
-                                ),
-                            );
-                        }
-                        Some(_) => {}
+                        Some(value) => self.inspect_public_value(value, name, site, &mut functions),
                     }
                 }
             }
@@ -515,6 +507,46 @@ impl<'a> Engine<'a> {
             }
         }
         functions
+    }
+
+    fn inspect_public_value(
+        &mut self,
+        value: &Value,
+        name: &str,
+        site: Site,
+        functions: &mut Vec<(Rc<Closure>, &'static str)>,
+    ) {
+        let mut pending = vec![value];
+        let mut mutable = false;
+        while let Some(value) = pending.pop() {
+            if !self.step(site) {
+                return;
+            }
+            match value {
+                Value::Function(function) => {
+                    self.uncertainty(
+                        site,
+                        "possible_use",
+                        format!("a function inside public export {name:?} may be invoked"),
+                    );
+                    functions.push((function.clone(), "escape"));
+                }
+                Value::Module(_) | Value::Unknown => self.unbounded(
+                    site,
+                    &format!("cannot bound callable access through public export {name:?}"),
+                ),
+                _ => {
+                    mutable |= value.mutable_identity().is_some();
+                    value.extend_with_items(&mut pending);
+                }
+            }
+        }
+        if mutable {
+            self.unbounded(
+                site,
+                &format!("mutable public export {name:?} may be changed by a caller"),
+            );
+        }
     }
 
     fn invoke_external(

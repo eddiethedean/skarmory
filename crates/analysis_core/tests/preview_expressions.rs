@@ -404,6 +404,72 @@ __all__ = ['getter', 'metadata']
 }
 
 #[test]
+fn public_tuple_retains_nested_callables_and_their_callees() {
+    let project = Project::new(&[(
+        "api.py",
+        "def helper(): pass
+def callback(): helper()
+def direct(): pass
+def private(): pass
+callbacks = ((callback,),)
+metadata = (1, 'ready')
+__all__ = ['callbacks', 'direct', 'metadata']
+",
+    )]);
+    let report = project.run(&ScanOptions {
+        policy: ScanPolicy::Library,
+        public_modules: vec!["api".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["private"], "{report}");
+    let evidence = report["evidence"].as_array().unwrap();
+    for (symbol, kind, certainty) in [
+        ("::callback@", "escape", "possible"),
+        ("::helper@", "call", "possible"),
+        ("::direct@", "public_export", "established"),
+    ] {
+        assert!(
+            evidence.iter().any(|event| {
+                event["kind"] == kind
+                    && event["certainty"] == certainty
+                    && event["symbol_id"].as_str().unwrap().contains(symbol)
+            }),
+            "{symbol}: {report}"
+        );
+    }
+}
+
+#[test]
+fn exported_modules_require_incomplete_coverage() {
+    for binding in ["exported = helper", "exported = (helper,)"] {
+        let source = format!("import helper\n{binding}\n__all__ = ['exported']\n");
+        let project = Project::new(&[
+            ("api.py", &source),
+            ("helper.py", "def called_by_client(): pass\n"),
+        ]);
+        let report = project.run(&ScanOptions {
+            policy: ScanPolicy::Library,
+            public_modules: vec!["api".into()],
+            ..ScanOptions::default()
+        });
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(findings(&report).is_empty(), "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unbounded_use"
+                        && issue["message"].as_str().unwrap().contains("exported")
+                }),
+            "{report}"
+        );
+    }
+}
+
+#[test]
 fn returned_callback_can_share_a_container_with_its_caller() {
     let project = Project::new(&[(
         "main.py",
