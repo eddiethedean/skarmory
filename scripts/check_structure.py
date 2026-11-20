@@ -1,4 +1,4 @@
-"""Validate scaffold manifests and local documentation links using the stdlib."""
+"""Validate project manifests and local documentation links using the stdlib."""
 
 import ast
 from pathlib import Path
@@ -68,7 +68,7 @@ def main() -> int:
         for error in errors:
             print(error, file=sys.stderr)
         return 1
-    print("Scaffold manifests, versions, baseline, and local documentation links are consistent.")
+    print("Project manifests, versions, baseline, and local documentation links are consistent.")
     return 0
 
 

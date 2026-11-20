@@ -1,31 +1,21 @@
-"""Initial SDK boundary; the planned report API is documented, not implemented."""
+"""Python interface to the Phase 0 native prototype."""
 
+import json
 from os import PathLike, fspath
-from typing import NoReturn
 
 
 class AnalysisUnavailableError(RuntimeError):
-    """The native engine is unavailable or cannot yet perform analysis."""
+    """The native engine could not be loaded."""
 
 
-def analyze(path: str | PathLike[str]) -> NoReturn:
-    """Request analysis, currently always raising AnalysisUnavailableError.
-
-    A missing native extension and an unimplemented scanner are explicit
-    failures. Neither returns an empty list or a successful scan report.
-    """
+def analyze(path: str | PathLike[str]) -> dict[str, object]:
+    """Return a prototype report. Check coverage.status before using findings."""
     try:
         from . import _native
     except ImportError as error:
         raise AnalysisUnavailableError(
             "Skarmory's native extension is not built. "
-            "Build the development package with `python -m pip install .`. "
-            "Analysis is not implemented in this scaffold."
+            "Build the development package with `python -m pip install .`."
         ) from error
 
-    try:
-        _native.analyze(fspath(path))
-    except NotImplementedError as error:
-        raise AnalysisUnavailableError(str(error)) from error
-
-    raise AnalysisUnavailableError("The native engine did not produce an analysis report.")
+    return json.loads(_native.analyze(fspath(path)))

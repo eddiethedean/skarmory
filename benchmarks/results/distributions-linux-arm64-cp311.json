@@ -1,0 +1,115 @@
+{
+  "platform": "Linux-7.0.14-linuxkit-aarch64-with-glibc2.36",
+  "python": "3.11.2",
+  "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "distributions": [
+    {
+      "layout": "separate",
+      "wheel": {
+        "filename": "skarmory-0.0.1-cp311-cp311-linux_aarch64.whl",
+        "bytes": 1033048,
+        "sha256": "7399c650b7ea1e58714f990d965144fcd6833cfd8a73bf30b20972ed093f2d19"
+      },
+      "cli": {
+        "filename": "skarmory",
+        "bytes": 2187576,
+        "sha256": "6a69de09d8920ac85d88af7494c631b52ce595e597a59cc1a2a4dab9306b40c3"
+      },
+      "extension": {
+        "filename": "_native.cpython-311-aarch64-linux-gnu.so",
+        "bytes": 2135016,
+        "sha256": "c80138d893fd5a48f9f213d09f6f3b04ae1e4f14af793479737ac4f0c23a76dd"
+      },
+      "cli_linkage": [
+        "linux-vdso.so.1 (0x0000ffff845fc000)",
+        "libgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffff843a0000)",
+        "libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffff841f0000)",
+        "/lib/ld-linux-aarch64.so.1 (0x0000ffff845c0000)"
+      ],
+      "extension_linkage": [
+        "linux-vdso.so.1 (0x0000ffffbb0d6000)",
+        "libgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffffbae70000)",
+        "libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffffbacc0000)",
+        "/lib/ld-linux-aarch64.so.1 (0x0000ffffbb090000)"
+      ],
+      "cli_version_startup": {
+        "median_ns": 306708,
+        "samples_ns": [
+          297958,
+          429458,
+          356083,
+          285875,
+          244583,
+          340250,
+          306708
+        ]
+      },
+      "sdk_import_startup": {
+        "median_ns": 9130292,
+        "samples_ns": [
+          10376667,
+          9659541,
+          8808708,
+          9240708,
+          9130292,
+          8900375,
+          8950250
+        ]
+      }
+    },
+    {
+      "layout": "combined",
+      "wheel": {
+        "filename": "skarmory-0.0.1-cp311-cp311-manylinux_2_34_aarch64.whl",
+        "bytes": 2058501,
+        "sha256": "c7c366c1baeb8242f8449cdb927f081db151860fa2e2f738315a34c8c1cc24cf"
+      },
+      "cli": {
+        "filename": "skarmory",
+        "bytes": 2187576,
+        "sha256": "6a69de09d8920ac85d88af7494c631b52ce595e597a59cc1a2a4dab9306b40c3"
+      },
+      "extension": {
+        "filename": "_native.cpython-311-aarch64-linux-gnu.so",
+        "bytes": 2135016,
+        "sha256": "c80138d893fd5a48f9f213d09f6f3b04ae1e4f14af793479737ac4f0c23a76dd"
+      },
+      "cli_linkage": [
+        "linux-vdso.so.1 (0x0000ffff88b3c000)",
+        "libgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffff888e0000)",
+        "libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffff88730000)",
+        "/lib/ld-linux-aarch64.so.1 (0x0000ffff88b00000)"
+      ],
+      "extension_linkage": [
+        "linux-vdso.so.1 (0x0000ffff9aacc000)",
+        "libgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ffff9a870000)",
+        "libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ffff9a6c0000)",
+        "/lib/ld-linux-aarch64.so.1 (0x0000ffff9aa90000)"
+      ],
+      "cli_version_startup": {
+        "median_ns": 328167,
+        "samples_ns": [
+          333416,
+          375834,
+          325709,
+          332417,
+          328167,
+          316500,
+          278500
+        ]
+      },
+      "sdk_import_startup": {
+        "median_ns": 9001709,
+        "samples_ns": [
+          10107208,
+          8860542,
+          9563166,
+          8879292,
+          9001709,
+          8401250,
+          9704000
+        ]
+      }
+    }
+  ]
+}

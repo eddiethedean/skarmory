@@ -2,13 +2,13 @@
 
 use std::path::Path;
 
-use pyo3::exceptions::PyNotImplementedError;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn analyze(py: Python<'_>, path: String) -> PyResult<()> {
-    py.detach(move || skarmory_core::analyze(Path::new(&path)))
-        .map_err(|error| PyNotImplementedError::new_err(error.to_string()))
+fn analyze(py: Python<'_>, path: String) -> PyResult<String> {
+    py.detach(move || skarmory_core::analyze(Path::new(&path)).to_json())
+        .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
 #[pymodule]

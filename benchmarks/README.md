@@ -1,8 +1,9 @@
 # Benchmark plan
 
-Status: methodology for the initial scaffold. No benchmark runner, corpus, timing
-result, speedup, or general accuracy claim is delivered by this file. Implementing
-the harness and recording the first results is Phase 0 work.
+For the implemented harness and recorded runs, see the [Phase 0 measurements](phase0.md).
+
+Status: methodology for equivalent-work measurements beyond the initial
+prototype. The Phase 0 report records the initial bounded runs.
 
 ## Questions to answer
 

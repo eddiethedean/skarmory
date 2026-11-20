@@ -1,0 +1,4 @@
+[tool.skylos]
+root = true
+nudges = false
+check_circular = false

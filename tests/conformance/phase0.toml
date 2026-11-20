@@ -1,0 +1,55 @@
+schema_version = 1
+profile = "phase0-python311-flat-application"
+
+# Independent expectations, derived from the source and the documented root policy.
+[[case]]
+id = "reachable"
+coverage = "complete"
+files = 3
+extracted = 3
+findings = [
+    ["main.py", "main", "dead_left", 8, 5],
+    ["main.py", "main", "dead_right", 11, 5],
+    ["other.py", "other", "work", 1, 5],
+]
+retained = [
+    ["helper.py", "helper", "work", 1, 5],
+    ["helper.py", "helper", "live_left", 4, 5],
+    ["helper.py", "helper", "live_right", 7, 5],
+    ["helper.py", "helper", "boot", 10, 5],
+    ["main.py", "main", "launch", 4, 5],
+    ["other.py", "other", "entry", 4, 5],
+]
+reason = "main calls launch; alias and qualified imports reach distinct functions. Imports activate helper's module body. The local recursion in main lacks an entry edge."
+
+[[case]]
+id = "unsupported"
+coverage = "incomplete"
+files = 1
+extracted = 0
+issue = "unsupported_construct"
+reason = "The assignment exposes a function value outside the direct-call model."
+
+[[case]]
+id = "invalid"
+coverage = "incomplete"
+files = 1
+extracted = 0
+issue = "parse_error"
+reason = "The incomplete function header cannot establish any facts."
+
+[[case]]
+id = "unresolved"
+coverage = "incomplete"
+files = 1
+extracted = 1
+uncertainty = "unresolved_call"
+reason = "No selected declaration resolves external."
+
+[[case]]
+id = "version"
+coverage = "incomplete"
+files = 1
+extracted = 0
+issue = "unsupported_syntax_version"
+reason = "The type statement requires Python 3.12 or later."

@@ -1,7 +1,7 @@
 # Skylos compatibility plan
 
-Status: specification work for an initial scaffold. No analyzer feature or
-Skylos compatibility level is implemented or claimed by this document.
+Status: specification. See the [Phase 0 inventory](skylos-5.7.0-contract.md) and
+[prototype comparisons](../benchmarks/phase0.md) for recorded evidence.
 
 ## Frozen reference
 
@@ -16,9 +16,8 @@ Skylos compatibility level is implemented or claimed by this document.
 
 The source revision is the reference for reproducible tests. Website documentation
 can describe newer or unreleased features; disagreements must be resolved through
-the pinned implementation and reviewed fixtures. Phase 0 will record exact
-distribution hashes, interpreter, dependencies, platform, settings, and enabled
-backend in a machine-readable baseline manifest.
+the pinned implementation and reviewed fixtures. The [baseline manifest](../tests/conformance/baselines/skylos-5.7.0.toml)
+records the artifact, interpreter, dependencies, platform, settings, and backends.
 
 Skylos already has an experimental native extension. Its documented accelerated
 operations are discovery, clone similarity, class coupling, and import cycles;
@@ -61,12 +60,10 @@ Skarmory owns its stable native configuration, result objects, and analysis
 representation. An adapter translates supported Skylos options and output shapes
 without maintaining a second analysis implementation in Python.
 
-The initial SDK wheel and native CLI are separate build artifacts. The scaffold's
-analysis entry points must fail explicitly until the analyzer exists: the SDK
-raises `AnalysisUnavailableError` (the native extension raises
-`NotImplementedError`), and the CLI reports unavailable analysis with exit
-code 2. Those development behaviors are not Skylos-compatible scanning outcomes.
-A combined wheel remains an unverified packaging milestone.
+The default SDK wheel and native CLI are separate artifacts. The prototype API
+and CLI expose the same native report and describe incomplete work in the
+coverage field. See the [Phase 0 contract](phase-0.md) for exit behavior and
+packaging evidence.
 
 The pinned `skylos.analyze(...)` API takes `conf=60` by default and returns a JSON
 string. A compatibility adapter must preserve that string return contract; a
@@ -90,8 +87,8 @@ Required adapter rules:
 - Keep user-facing package and command names `skarmory`; importing or installing
   Skarmory does not replace the `skylos` package or its executable.
 
-The final syntax for selecting a compatibility profile remains a Phase 0 decision.
-Examples in planning documents are proposed interfaces, not installed commands.
+Phase 0 exposes a single native profile. Selection syntax for a legacy profile
+is deferred until it has an implemented contract.
 
 ## Configuration is observable behavior
 
