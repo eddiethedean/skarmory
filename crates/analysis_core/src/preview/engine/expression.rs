@@ -409,6 +409,13 @@ impl<'a> Engine<'a> {
                         self.possible_argument_uses(state, [&left, &right], site);
                         continue;
                     }
+                    if has_unknown && self.comparison_exposes_mutable(*op, &left, &right, site) {
+                        self.unbounded(
+                            site,
+                            "an unknown comparison hook may mutate a selected mutable container",
+                        );
+                        continue;
+                    }
                     // Sequence ordering can return an element's comparison result.
                     // Sequence equality always converts the element result to a bool.
                     let may_return_object = match op {
@@ -470,6 +477,53 @@ impl<'a> Engine<'a> {
             }
         }
         (unknown, selected_object)
+    }
+
+    fn comparison_exposes_mutable(
+        &mut self,
+        op: Comparison,
+        left: &Value,
+        right: &Value,
+        site: Site,
+    ) -> bool {
+        // Built-in containers compare their items. Only the values handed to
+        // an unknown hook, including objects they contain, become exposed.
+        let mut pending = if matches!(op, Comparison::In | Comparison::NotIn) {
+            match right {
+                Value::Unknown => return self.contains_mutable(left, site),
+                Value::Sequence(items, ..) => items.iter().map(|item| (item, left)).collect(),
+                _ => return false,
+            }
+        } else {
+            vec![(left, right)]
+        };
+        while let Some((left, right)) = pending.pop() {
+            if !self.step(site) {
+                return false;
+            }
+            match (left, right) {
+                (Value::Unknown, value) | (value, Value::Unknown) => {
+                    if self.contains_mutable(value, site) {
+                        return true;
+                    }
+                }
+                (Value::Sequence(left, left_tuple, _), Value::Sequence(right, right_tuple, _))
+                    if left_tuple == right_tuple =>
+                {
+                    pending.extend(left.iter().zip(right.iter()));
+                }
+                (Value::Mapping(left, _), Value::Mapping(right, _))
+                    if matches!(op, Comparison::Equal | Comparison::NotEqual) =>
+                {
+                    pending.extend(
+                        left.iter()
+                            .filter_map(|(key, value)| right.get(key).map(|other| (value, other))),
+                    );
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     fn compare(

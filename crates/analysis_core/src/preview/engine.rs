@@ -84,6 +84,22 @@ impl Value {
             _ => 0,
         }
     }
+
+    fn mutable_identity(&self) -> Option<*const ()> {
+        match self {
+            Self::Sequence(items, false, _) => Some(Rc::as_ptr(items).cast()),
+            Self::Mapping(items, _) => Some(Rc::as_ptr(items).cast()),
+            _ => None,
+        }
+    }
+
+    fn extend_with_items<'a>(&'a self, values: &mut Vec<&'a Value>) {
+        match self {
+            Self::Sequence(items, ..) => values.extend(items.iter()),
+            Self::Mapping(items, _) => values.extend(items.values()),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -474,6 +490,14 @@ impl<'a> Engine<'a> {
                                 format!("cannot resolve __all__ name {name:?}"),
                             );
                         }
+                        Some(value) if self.contains_mutable(value, site) => {
+                            self.unbounded(
+                                site,
+                                &format!(
+                                    "mutable public export {name:?} may be changed by a caller"
+                                ),
+                            );
+                        }
                         Some(_) => {}
                     }
                 }
@@ -528,6 +552,12 @@ impl<'a> Engine<'a> {
         let mut outcomes = Vec::new();
         for args in alternatives {
             for (next, result) in self.invoke(state.clone(), function.clone(), args, site, kind) {
+                if self.returned_mutable_is_shared(&next, &result, site) {
+                    self.unbounded(
+                        site,
+                        "caller may change a returned mutable container still visible to selected code",
+                    );
+                }
                 outcomes.extend(self.escape(next, result, site));
                 if !self.check_paths(outcomes.len(), site) {
                     return Vec::new();
@@ -535,6 +565,96 @@ impl<'a> Engine<'a> {
             }
         }
         outcomes
+    }
+
+    fn contains_mutable(&mut self, value: &Value, site: Site) -> bool {
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            if !self.step(site) {
+                return false;
+            }
+            if value.mutable_identity().is_some() {
+                return true;
+            }
+            value.extend_with_items(&mut pending);
+        }
+        false
+    }
+
+    fn returned_mutable_is_shared(&mut self, state: &State, result: &Value, site: Site) -> bool {
+        if !matches!(result, Value::Sequence(..) | Value::Mapping(..)) {
+            return false;
+        }
+
+        let mut returned = BTreeSet::new();
+        let mut returned_values = vec![result];
+        let mut scopes = Vec::new();
+        let mut values = Vec::new();
+        while let Some(value) = returned_values.pop() {
+            if !self.step(site) {
+                return false;
+            }
+            if let Some(id) = value.mutable_identity() {
+                returned.insert(id);
+            }
+            if let Value::Function(function) = value {
+                scopes.push(function.enclosing);
+                values.extend(function.defaults.iter().flatten());
+            }
+            value.extend_with_items(&mut returned_values);
+        }
+        if returned.is_empty() {
+            return false;
+        }
+
+        // Returned closures and future library calls can read these bindings.
+        // A local in a completed frame does not itself make a result shared.
+        if let Some(calls) = &state.library_calls {
+            scopes.extend(state.modules.values().map(|module| module.frame));
+            for (function, _) in &calls.escaped {
+                scopes.push(function.enclosing);
+                values.extend(function.defaults.iter().flatten());
+            }
+        }
+        let escaping = self.escaping.clone();
+        for function in &escaping {
+            scopes.push(function.enclosing);
+            values.extend(function.defaults.iter().flatten());
+        }
+
+        let mut visited = BTreeSet::new();
+        loop {
+            if let Some(value) = values.pop() {
+                if !self.step(site) {
+                    return false;
+                }
+                if value
+                    .mutable_identity()
+                    .is_some_and(|id| returned.contains(&id))
+                {
+                    return true;
+                }
+                match value {
+                    Value::Function(function) => {
+                        scopes.push(function.enclosing);
+                        values.extend(function.defaults.iter().flatten());
+                    }
+                    Value::Module(name) => {
+                        scopes.extend(state.modules.get(name).map(|module| module.frame));
+                    }
+                    _ => {}
+                }
+                value.extend_with_items(&mut values);
+            } else if let Some(frame) = scopes.pop() {
+                if visited.insert(frame) {
+                    let scope = state.frame(frame);
+                    scopes.extend(scope.parent);
+                    values.extend(scope.locals.values());
+                }
+            } else {
+                return false;
+            }
+        }
     }
 
     fn escape(&mut self, state: State, value: Value, site: Site) -> Vec<State> {

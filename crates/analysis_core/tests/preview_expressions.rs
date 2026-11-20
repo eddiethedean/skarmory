@@ -299,6 +299,134 @@ __all__ = ['entry']
 }
 
 #[test]
+fn externally_mutable_values_cannot_prove_a_helper_unreachable() {
+    for (source, reason) in [
+        (
+            "flags = [True]
+def hidden(): pass
+def entry():
+    if not flags:
+        hidden()
+__all__ = ['flags', 'entry']
+",
+            "export",
+        ),
+        (
+            "flags = [True]
+def hidden(): pass
+def getter(): return flags
+def entry():
+    if not flags:
+        hidden()
+__all__ = ['getter', 'entry']
+",
+            "returned",
+        ),
+        (
+            "def hidden(): pass
+def entry(value):
+    flags = [True]
+    value == flags
+    if not flags:
+        hidden()
+__all__ = ['entry']
+",
+            "comparison",
+        ),
+        (
+            "def hidden(): pass
+def factory():
+    flags = [True]
+    def callback():
+        if not flags:
+            hidden()
+    return (flags, callback)
+__all__ = ['factory']
+",
+            "returned",
+        ),
+        (
+            "def hidden(): pass
+def entry(value):
+    flags = [True]
+    value in [flags]
+    if not flags:
+        hidden()
+__all__ = ['entry']
+",
+            "comparison",
+        ),
+    ] {
+        let project = Project::new(&[("api.py", source)]);
+        let report = project.run(&ScanOptions {
+            policy: ScanPolicy::Library,
+            public_modules: vec!["api".into()],
+            ..ScanOptions::default()
+        });
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(findings(&report).is_empty(), "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unbounded_use"
+                        && issue["message"].as_str().is_some_and(|message| {
+                            message.contains("mutable") && message.contains(reason)
+                        })
+                }),
+            "{reason}: {report}"
+        );
+    }
+}
+
+#[test]
+fn returning_a_fresh_container_keeps_coverage_complete() {
+    let project = Project::new(&[(
+        "api.py",
+        "private = [True]
+metadata = (1, 2)
+def dead(): pass
+def getter():
+    fresh = [True]
+    return (fresh,)
+__all__ = ['getter', 'metadata']
+",
+    )]);
+    let report = project.run(&ScanOptions {
+        policy: ScanPolicy::Library,
+        public_modules: vec!["api".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["dead"], "{report}");
+}
+
+#[test]
+fn returned_callback_can_share_a_container_with_its_caller() {
+    let project = Project::new(&[(
+        "main.py",
+        "def hidden(): pass
+def factory():
+    flags = [True]
+    def callback():
+        if not flags:
+            hidden()
+        return flags
+    return callback
+",
+    )]);
+    let report = project.run(&ScanOptions {
+        entry_callables: vec!["main:factory".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert!(findings(&report).is_empty(), "{report}");
+    assert_eq!(report["coverage"]["issues"][0]["kind"], "unbounded_use");
+}
+
+#[test]
 fn dynamic_module_attribute_prevents_a_complete_negative_conclusion() {
     let project = Project::new(&[
         ("from_import.py", "from pkg import task\n"),
