@@ -35,3 +35,23 @@ and build.
 These generated workloads measure cache behavior and equivalence within
 Skarmory. The pinned Skylos differential corpus and independent holdout
 review establish separate correctness and compatibility evidence.
+
+## Recorded run
+
+The [macOS ARM64 receipt](results/phase02-cache-macos-arm64.json) records
+Skarmory 0.2.0 at source revision `cd969b2`, Rust 1.98.1, CPython 3.11.14,
+12 logical cores, 24 GiB of memory, and 180 fresh-process observations.
+All scans completed and matched the clean report of the same state. The
+application selected 36 files and the library selected 35.
+
+| Unchanged workload | Workers | Cache disabled | Cold cache | Warm cache |
+| --- | ---: | ---: | ---: | ---: |
+| Application | 1 | 7.06 ms | 12.08 ms | 19.39 ms |
+| Application | 4 | 5.30 ms | 7.66 ms | 9.77 ms |
+| Library | 1 | 7.23 ms | 12.40 ms | 19.51 ms |
+| Library | 4 | 5.83 ms | 8.16 ms | 9.90 ms |
+
+Values are median wall times from five samples per case. Warm scans hit
+every module fact record. Cache use increased median time for these small
+unchanged workloads on this host. The raw receipt includes cold and warm
+activity and cached-versus-clean results after each edit.
