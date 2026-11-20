@@ -29,20 +29,34 @@ coverage semantics, and timing are outside this comparison.
 Build the native CLI with `cargo build --locked -p skarmory_cli`, and prepare
 the pinned reference environment using the [Phase 0 reproduction
 instructions](../benchmarks/phase0.md#reproduce). Run these commands from
-the repository root with `REFERENCE_PYTHON` pointing to that environment's
-Python interpreter.
+the repository root with `REFERENCE_PYTHON` set to the absolute path of that
+environment's Python interpreter. Copy both fixtures outside the checkout so
+Skylos treats each fixture as a standalone project.
 
 ```sh
-FLAT="$PWD/tests/conformance/fixtures/reachable"
-PACKAGE="$PWD/tests/conformance/preview/packages"
-target/debug/skarmory "$FLAT"
-target/debug/skarmory "$PACKAGE" --source-root src --entry-module shop.start
-for fixture in "$FLAT" "$PACKAGE"; do
-  for backend in python skylos_fast; do
-    PYTHONHASHSEED=0 RAYON_NUM_THREADS=1 "$REFERENCE_PYTHON" \
-      benchmarks/phase0.py --worker "$backend" "$fixture"
+(
+  set -e
+  repo="$PWD"
+  fixture_root=$(mktemp -d /tmp/skarmory-reference.XXXXXX)
+  trap 'rm -rf "$fixture_root"' EXIT
+  flat="$fixture_root/flat"
+  package="$fixture_root/package"
+  cp -R "$repo/tests/conformance/fixtures/reachable" "$flat"
+  cp -R "$repo/tests/conformance/preview/packages" "$package"
+
+  target/debug/skarmory "$flat"
+  target/debug/skarmory "$package" --source-root src --entry-module shop.start
+  for fixture in "$flat" "$package"; do
+    (
+      cd "$fixture"
+      fixture=$(pwd -P)
+      for backend in python skylos_fast; do
+        PYTHONHASHSEED=0 RAYON_NUM_THREADS=1 "$REFERENCE_PYTHON" \
+          "$repo/benchmarks/phase0.py" --worker "$backend" "$fixture"
+      done
+    )
   done
-done
+)
 ```
 
 For fixture assertions and worker equivalence, run
