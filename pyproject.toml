@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin==1.16.0"]
+build-backend = "maturin"
+
+[project]
+name = "skarmory"
+dynamic = ["version"]
+description = "Fast Python code analysis, powered by Rust. Initial development scaffold."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/eddiethedean/skarmory"
+Issues = "https://github.com/eddiethedean/skarmory/issues"
+Roadmap = "https://github.com/eddiethedean/skarmory/blob/main/docs/roadmap.md"
+
+[tool.maturin]
+manifest-path = "crates/python_bindings/Cargo.toml"
+python-source = "python"
+module-name = "skarmory._native"
+bindings = "pyo3"

@@ -1,0 +1,19 @@
+[package]
+name = "skarmory_cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Native command-line interface for Skarmory"
+
+[[bin]]
+name = "skarmory"
+path = "src/main.rs"
+
+[dependencies]
+skarmory_core.workspace = true
+skarmory_python.workspace = true
+
+[lints]
+workspace = true

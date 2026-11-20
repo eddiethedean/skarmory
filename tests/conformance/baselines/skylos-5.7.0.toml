@@ -1,0 +1,19 @@
+schema_version = 1
+
+[reference]
+project = "skylos"
+version = "5.7.0"
+git_revision = "87978e69adf91b3811e97b00c40aa39d7937cd94"
+release_date = "2026-11-19"
+source_url = "https://github.com/duriantaco/skylos/tree/87978e69adf91b3811e97b00c40aa39d7937cd94"
+
+[contract]
+status = "planned"
+initial_language = "python"
+initial_check_family = "dead_code"
+default_confidence = 60
+python_api_result = "json-string"
+
+[benchmark]
+reference_backends = ["python", "skylos_fast"]
+measurements_recorded = false

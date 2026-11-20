@@ -1,0 +1,31 @@
+[workspace]
+members = [
+    "crates/analysis_core",
+    "crates/python_frontend",
+    "crates/cli",
+    "crates/python_bindings",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/eddiethedean/skarmory"
+publish = false
+
+[workspace.dependencies]
+skarmory_core = { path = "crates/analysis_core" }
+skarmory_python = { path = "crates/python_frontend" }
+pyo3 = "=0.29.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
