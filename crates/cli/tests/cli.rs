@@ -217,14 +217,16 @@ fn skylos_retains_an_imported_fixture_and_its_import() {
     ] {
         fs::write(
             project.path().join("support.py"),
-            format!("from pytest import fixture\n\ndef helper():\n    return 1\n\n{decorator}\ndef resource():\n    return helper()\n"),
+            format!("from pytest import fixture\n\ndef helper(seed):\n    return seed\n\n{decorator}\ndef resource(seed):\n    return helper(seed)\n"),
         )
         .unwrap();
-        fs::write(
-            project.path().join("test_sample.py"),
-            format!("from support import resource as supplied\n\ndef test_resource({parameter}):\n    assert {parameter} == 1\n"),
-        )
-        .unwrap();
+        for (filename, seed) in [("test_sample.py", 1), ("test_other.py", 2)] {
+            fs::write(
+                project.path().join(filename),
+                format!("from pytest import fixture\nfrom support import resource as supplied\n\n@fixture\ndef seed():\n    return {seed}\n\ndef test_resource({parameter}):\n    assert {parameter} == {seed}\n"),
+            )
+            .unwrap();
+        }
         let output = skylos(project.path(), &["--json", "--strict"]);
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output.status.code(), Some(0), "{report}");

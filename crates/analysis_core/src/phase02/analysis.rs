@@ -1398,19 +1398,25 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        let mut queue = VecDeque::from(test_roots);
+        // Fixture dependencies are looked up from the requesting test's scope,
+        // including when several tests import the same fixture.
+        let mut queue: VecDeque<_> = test_roots
+            .into_iter()
+            .map(|id| (id, self.symbols[id].scope))
+            .collect();
+        let mut visited = BTreeSet::new();
         let mut roots = BTreeSet::new();
-        while let Some(id) = queue.pop_front() {
-            if !roots.insert(id) {
+        while let Some((id, scope)) = queue.pop_front() {
+            if !visited.insert((id, scope)) {
                 continue;
             }
+            roots.insert(id);
             let Binding::Definition(definition, _) = self.symbols[id].binding else {
                 continue;
             };
             if definition.parameters.is_empty() {
                 continue;
             }
-            let scope = self.symbols[id].scope;
             let file = self.scopes[scope].file;
             let path = &self.files[file].path;
             let candidates = self.fixtures.iter().filter(|&(&fixture, _)| {
@@ -1427,7 +1433,7 @@ impl<'a> Graph<'a> {
             for (&fixture, name) in candidates {
                 let name = name.as_deref().unwrap_or(&self.symbols[fixture].name.text);
                 if definition.parameters.iter().any(|param| param.text == name) {
-                    queue.push_back(fixture);
+                    queue.push_back((fixture, scope));
                 }
             }
             // Pytest registers fixture objects imported into the collected
@@ -1441,7 +1447,7 @@ impl<'a> Graph<'a> {
                     && definition.parameters.iter().any(|param| param.text == name)
                 {
                     self.read.extend(imports);
-                    queue.push_back(fixture);
+                    queue.push_back((fixture, scope));
                 }
             }
         }
