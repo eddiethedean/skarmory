@@ -390,13 +390,18 @@ impl<'a> Engine<'a> {
     ) -> Outcomes<Value> {
         let mut pending = self.eval(state, frame, left);
         let mut completed = Vec::new();
-        for (op, expression) in comparisons {
+        for (index, (op, expression)) in comparisons.iter().enumerate() {
+            let last = index + 1 == comparisons.len();
             let mut next = Vec::new();
             for (state, left) in pending {
                 for (mut state, right) in self.eval(state, frame, expression) {
-                    if !matches!(op, Comparison::Is | Comparison::IsNot)
-                        && self.comparison_may_escape([&left, &right], site)
-                    {
+                    let (has_unknown, has_selected_object) =
+                        if matches!(op, Comparison::Is | Comparison::IsNot) {
+                            (false, false)
+                        } else {
+                            self.comparison_operands([&left, &right], site)
+                        };
+                    if has_unknown && has_selected_object {
                         self.unbounded(
                             site,
                             "an unknown comparison hook may receive selected callable values",
@@ -404,9 +409,29 @@ impl<'a> Engine<'a> {
                         self.possible_argument_uses(state, [&left, &right], site);
                         continue;
                     }
+                    // Sequence ordering can return an element's comparison result.
+                    // Sequence equality always converts the element result to a bool.
+                    let may_return_object = match op {
+                        Comparison::Equal | Comparison::NotEqual => {
+                            matches!(left, Value::Unknown) || matches!(right, Value::Unknown)
+                        }
+                        Comparison::Less
+                        | Comparison::LessEqual
+                        | Comparison::Greater
+                        | Comparison::GreaterEqual => has_unknown,
+                        _ => false,
+                    };
                     match self.compare(*op, &left, &right, site) {
                         Ok(Some(true)) => next.push((state, right)),
                         Ok(Some(false)) => completed.push((state, boolean(false))),
+                        Ok(None) if may_return_object => {
+                            // A falsy comparison result can itself be the chain's value.
+                            if !last {
+                                state.possible = true;
+                                next.push((state.clone(), right));
+                            }
+                            completed.push((state, Value::Unknown));
+                        }
                         Ok(None) => {
                             state.possible = true;
                             completed.push((state.clone(), boolean(false)));
@@ -425,13 +450,13 @@ impl<'a> Engine<'a> {
         completed
     }
 
-    fn comparison_may_escape(&mut self, operands: [&Value; 2], site: Site) -> bool {
+    fn comparison_operands(&mut self, operands: [&Value; 2], site: Site) -> (bool, bool) {
         let mut pending = operands.to_vec();
         let mut unknown = false;
         let mut selected_object = false;
         while let Some(value) = pending.pop() {
             if !self.step(site) {
-                return false;
+                break;
             }
             match value {
                 Value::Unknown => unknown = true,
@@ -441,10 +466,10 @@ impl<'a> Engine<'a> {
                 _ => {}
             }
             if unknown && selected_object {
-                return true;
+                break;
             }
         }
-        false
+        (unknown, selected_object)
     }
 
     fn compare(

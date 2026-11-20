@@ -257,6 +257,48 @@ def compare(value):
 }
 
 #[test]
+fn rich_comparison_results_can_reach_a_library_helper() {
+    for comparison in [
+        "value == 0",
+        "value != 0",
+        "[value] < [0]",
+        "value == 0 == 1",
+        "0 == 0 == value",
+    ] {
+        let source = format!(
+            "def live(): return 17
+def dead(): return 23
+def entry(value):
+    if ([value] == [0]) is None:
+        return dead()
+    if ({comparison}) is None:
+        return live()
+__all__ = ['entry']
+",
+        );
+        let project = Project::new(&[("api.py", &source)]);
+        let report = project.run(&ScanOptions {
+            policy: ScanPolicy::Library,
+            public_modules: vec!["api".into()],
+            ..ScanOptions::default()
+        });
+        assert_eq!(
+            report["coverage"]["status"], "complete",
+            "{comparison}: {report}"
+        );
+        assert_eq!(findings(&report), ["dead"], "{comparison}: {report}");
+        assert!(
+            report["evidence"].as_array().unwrap().iter().any(|event| {
+                event["kind"] == "call"
+                    && event["certainty"] == "possible"
+                    && event["symbol_id"].as_str().unwrap().contains("::live@")
+            }),
+            "{comparison}: {report}"
+        );
+    }
+}
+
+#[test]
 fn dynamic_module_attribute_prevents_a_complete_negative_conclusion() {
     let project = Project::new(&[
         ("from_import.py", "from pkg import task\n"),
