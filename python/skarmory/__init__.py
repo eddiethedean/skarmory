@@ -1,7 +1,4 @@
-"""Skarmory: fast Python code analysis, powered by Rust.
-
-This initial scaffold does not implement analysis. See the repository roadmap.
-"""
+"""Skarmory: native Python code analysis. See the roadmap for prototype scope."""
 
 from ._version import __version__
 from .api import AnalysisUnavailableError, analyze

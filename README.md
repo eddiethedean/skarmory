@@ -9,14 +9,11 @@ explainable confidence, and explicit analysis limits.
 
 ## Status
 
-**This repository is an initial development scaffold. Analysis is not
-implemented.** The native CLI supports help and version output; a scan request
-exits with status 2. The Python API raises `AnalysisUnavailableError`. Neither
-entry point reports an empty successful scan.
-
-The repository contains a Rust workspace, a PyO3-backed Python package, build
-and smoke-check CI, and the implementation plans. It has no implemented parser,
-analysis rules, Skylos compatibility guarantee, or measured speedup yet.
+Skarmory has a native Phase 0 prototype for a flat, closed-world Python 3.11
+application. The CLI and Python SDK report unreachable functions with evidence
+and explicit coverage. See the [prototype contract](docs/phase-0.md) for the
+supported source subset and the [benchmark report](benchmarks/phase0.md) for
+comparisons with the pinned Skylos reference.
 
 ## Plans
 
@@ -29,39 +26,37 @@ analysis rules, Skylos compatibility guarantee, or measured speedup yet.
 | [Conformance strategy](tests/conformance/README.md) | Differential compatibility and independently reviewed correctness cases |
 | [Benchmark strategy](benchmarks/README.md) | Matched workloads, cache states, accuracy gates, and unmeasured performance goals |
 
-The first implementation milestone is a vertical slice from Python source
-discovery through scoped symbols and project reachability to evidence-bearing
-dead-code findings.
+The next milestone expands the prototype into the Python dead-code preview.
 
 ## Repository layout
 
 | Path | Role |
 | --- | --- |
 | `crates/analysis_core` | `skarmory_core`: shared native engine boundary |
-| `crates/python_frontend` | `skarmory_python`: future parser adapter and semantic extraction |
+| `crates/python_frontend` | `skarmory_python`: Ruff parser adapter and prototype fact extraction |
 | `crates/cli` | `skarmory_cli`: native `skarmory` executable |
 | `crates/python_bindings` | `skarmory_bindings`: PyO3 extension installed as `skarmory._native` |
 | `python/skarmory` | Python API, typing information, and development version |
-| `tests/python` | Source and installed-wheel smoke tests |
-| `tests/conformance` | Compatibility plan and pinned reference metadata |
-| `benchmarks` | Performance and accuracy evaluation plan |
+| `tests/python` | Source and installed-wheel tests |
+| `tests/conformance` | Reviewed fixtures and pinned reference metadata |
+| `benchmarks` | Measurement harness, results, and evaluation plan |
 | `docs` | Design documents and delivery roadmap |
 
 ## Development
 
 Use Python 3.11 or newer and a Rust toolchain with `rustfmt` and `clippy`.
-The workspace declares Rust 1.85 as its intended minimum; minimum-version
-qualification remains a Phase 0 task. The toolchain file selects stable Rust.
+The workspace requires Rust 1.96 or later for the pinned Ruff crates. CI tests
+the minimum, and the local toolchain file selects stable Rust.
 
 ### Native CLI
 
 ```bash
-cargo run -p skarmory_cli -- --help
-cargo run -p skarmory_cli -- --version
+cargo run --locked -p skarmory_cli -- --help
+cargo run --locked -p skarmory_cli -- tests/conformance/fixtures/reachable
 ```
 
-`cargo run -p skarmory_cli -- .` currently reports that analysis is not
-implemented and exits with status 2.
+The CLI emits one JSON report per scan. A complete report exits 0. Incomplete
+coverage is explicit and exits 2.
 
 ### Python SDK
 
@@ -69,37 +64,36 @@ In a virtual environment, build and install the local package:
 
 ```bash
 python -m pip install .
-python -c "import skarmory; print(skarmory.__version__)"
+python -c "import skarmory; print(skarmory.analyze('tests/conformance/fixtures/reachable'))"
 ```
 
-The package builds the native extension with Maturin. A compiler and Rust are
-required for this source installation. A request such as `skarmory.analyze('.')`
-currently raises `skarmory.AnalysisUnavailableError`.
-
-**The SDK wheel does not yet install the native CLI.** The CLI is built
-separately through Cargo. A single-install distribution containing both remains
-an explicit Phase 0 packaging experiment.
+Maturin builds the native extension from source. The SDK returns a report
+dictionary with a `coverage.status` field. Install the native CLI separately with
+`cargo install --locked --path crates/cli`. The combined-wheel layout is an
+experiment documented in the [Phase 0 evidence](docs/phase-0.md#distributions).
 
 ### Checks
 
 ```bash
 python scripts/check_structure.py
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo build --locked -p skarmory_cli
+python tests/conformance/check_phase0.py target/debug/skarmory
 python -m unittest discover -s tests/python -v
 ```
 
-The Python test command uses the installed SDK. Without a native build, the
-source-only smoke test can be run on POSIX with:
+The Python test command uses the installed SDK. Run the source-only failure
+check on POSIX with:
 
 ```bash
 PYTHONPATH=python python -m unittest discover -s tests/python -v
 ```
 
 CI sets `SKARMORY_REQUIRE_NATIVE=1` for installed-wheel tests, so a missing
-extension cannot be hidden by the source-only test mode. CI also builds the
-source distribution and tests the native CLI on Linux, macOS, and Windows.
+extension cannot be hidden by the source-only test mode. The packaging matrix covers Linux, macOS, and Windows and includes a source
+distribution rebuild.
 
 ## Compatibility and performance
 
@@ -113,5 +107,5 @@ all speed targets in this repository are provisional and unmeasured. A faster
 run with missing rules, fewer analyzed files, or incomplete coverage is not a
 matched performance result.
 
-Skarmory is an independent project. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+Skarmory is an independent project distributed under the [MIT license](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for
 the development workflow and rules for preserving compatibility evidence.

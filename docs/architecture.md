@@ -1,17 +1,16 @@
 # Skarmory architecture
 
-Status: accepted direction; implementation is at the initial scaffold stage.
+Status: accepted architecture. The [Phase 0 prototype](phase-0.md) implements
+a bounded subset of the design.
 
 Skarmory is a Python code analyzer powered by a shared Rust engine. Its first
 analysis milestone is project-wide dead-code detection with explicitly tested
 Skylos compatibility. Quality, secrets, security analysis, and developer
 integrations follow on the same foundation.
 
-This document describes the intended architecture. The scaffold does not yet
-implement parsing, semantic analysis, caching, or Skylos-equivalent findings.
-Commands that request unavailable analysis must report that limitation rather
-than return an empty successful scan. Performance figures elsewhere in the plan
-are engineering targets, not measurements of this repository.
+The sections below describe the intended architecture. The repository includes
+prototype timings and projected fixture comparisons. Broader semantic analysis,
+caching, and Skylos compatibility remain future milestones.
 
 ## 1. Goals and scope
 
@@ -127,8 +126,8 @@ statically.
 ## 4. Python frontend and internal representation
 
 Ruff's parser and AST crates are the preferred candidates for the initial
-parser spike. Selection, exact versions, supported syntax, and performance must
-be verified before treating the adapter as implemented. Ruff's official
+parser spike. The Phase 0 adapter uses the matching 0.0.12 crate set and checks syntax for
+Python 3.11 before extracting the supported subset. Ruff's official
 versioning policy describes internal Rust interfaces as unstable, so parser
 dependencies must be pinned together and upgraded intentionally.
 [Ruff crate versioning](https://docs.astral.sh/ruff/versioning/#crate-versioning)

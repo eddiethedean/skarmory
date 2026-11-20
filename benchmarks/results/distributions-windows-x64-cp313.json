@@ -1,0 +1,135 @@
+{
+  "platform": "Windows-2025Server-10.0.26100-SP0",
+  "python": "3.13.17",
+  "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "distributions": [
+    {
+      "layout": "separate",
+      "wheel": {
+        "filename": "skarmory-0.0.1-cp313-cp313-win_amd64.whl",
+        "bytes": 932291,
+        "sha256": "1b5611ec394a07d54a22a673fb41778f58759811fc4491a5405e881f20a8b87f"
+      },
+      "cli": {
+        "filename": "skarmory.exe",
+        "bytes": 1902080,
+        "sha256": "eff37d2164b9f5342fec4b7d6b27ce2c630ef81e2f72afc344b9dcd75c591cfb"
+      },
+      "extension": {
+        "filename": "_native.cp313-win_amd64.pyd",
+        "bytes": 1892352,
+        "sha256": "eb536301e72ea99a8c2be8a97322bc6131dcfc384c0beb531f7b8be1c7a6f43f"
+      },
+      "cli_linkage": [
+        "DLL Name: kernel32.dll",
+        "DLL Name: api-ms-win-core-synch-l1-2-0.dll",
+        "DLL Name: ntdll.dll",
+        "DLL Name: KERNEL32.dll",
+        "DLL Name: VCRUNTIME140.dll",
+        "DLL Name: api-ms-win-crt-runtime-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-math-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-stdio-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-locale-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-heap-l1-1-0.dll"
+      ],
+      "extension_linkage": [
+        "DLL Name: kernel32.dll",
+        "DLL Name: api-ms-win-core-synch-l1-2-0.dll",
+        "DLL Name: ntdll.dll",
+        "DLL Name: python313.dll",
+        "DLL Name: KERNEL32.dll",
+        "DLL Name: VCRUNTIME140.dll",
+        "DLL Name: api-ms-win-crt-runtime-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-heap-l1-1-0.dll"
+      ],
+      "cli_version_startup": {
+        "median_ns": 6520500,
+        "samples_ns": [
+          6019300,
+          6724700,
+          7122900,
+          5838700,
+          5715100,
+          6520500,
+          6883100
+        ]
+      },
+      "sdk_import_startup": {
+        "median_ns": 50006200,
+        "samples_ns": [
+          53615900,
+          52185100,
+          47922400,
+          47738400,
+          46451800,
+          50006200,
+          51490700
+        ]
+      }
+    },
+    {
+      "layout": "combined",
+      "wheel": {
+        "filename": "skarmory-0.0.1-cp313-cp313-win_amd64.whl",
+        "bytes": 1852968,
+        "sha256": "26409c2b411615a00f987ca31349bfccfe161a3371dc953c0aa59d6e584be20c"
+      },
+      "cli": {
+        "filename": "skarmory.exe",
+        "bytes": 1902080,
+        "sha256": "eff37d2164b9f5342fec4b7d6b27ce2c630ef81e2f72afc344b9dcd75c591cfb"
+      },
+      "extension": {
+        "filename": "_native.cp313-win_amd64.pyd",
+        "bytes": 1892352,
+        "sha256": "eb536301e72ea99a8c2be8a97322bc6131dcfc384c0beb531f7b8be1c7a6f43f"
+      },
+      "cli_linkage": [
+        "DLL Name: kernel32.dll",
+        "DLL Name: api-ms-win-core-synch-l1-2-0.dll",
+        "DLL Name: ntdll.dll",
+        "DLL Name: KERNEL32.dll",
+        "DLL Name: VCRUNTIME140.dll",
+        "DLL Name: api-ms-win-crt-runtime-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-math-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-stdio-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-locale-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-heap-l1-1-0.dll"
+      ],
+      "extension_linkage": [
+        "DLL Name: kernel32.dll",
+        "DLL Name: api-ms-win-core-synch-l1-2-0.dll",
+        "DLL Name: ntdll.dll",
+        "DLL Name: python313.dll",
+        "DLL Name: KERNEL32.dll",
+        "DLL Name: VCRUNTIME140.dll",
+        "DLL Name: api-ms-win-crt-runtime-l1-1-0.dll",
+        "DLL Name: api-ms-win-crt-heap-l1-1-0.dll"
+      ],
+      "cli_version_startup": {
+        "median_ns": 7573100,
+        "samples_ns": [
+          7602900,
+          7626800,
+          7570800,
+          6982500,
+          8413600,
+          7573100,
+          7440400
+        ]
+      },
+      "sdk_import_startup": {
+        "median_ns": 49422300,
+        "samples_ns": [
+          48453500,
+          47476500,
+          47342100,
+          49422300,
+          49558900,
+          53388600,
+          49900300
+        ]
+      }
+    }
+  ]
+}

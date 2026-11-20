@@ -1,6 +1,6 @@
 # Contributing to Skarmory
 
-Skarmory is at the scaffold stage. Start with the
+Skarmory has a bounded Phase 0 prototype. Start with the
 [roadmap](docs/roadmap.md) and keep changes scoped to an explicit milestone.
 The initial focus is the native Python dead-code vertical slice.
 
@@ -18,7 +18,7 @@ without starting Python.
 
 ## Validation
 
-The [README](README.md#checks) lists the scaffold checks. CI validates Rust
+The [README](README.md#checks) lists the development checks. CI validates Rust
 formatting, Clippy, workspace tests, extension-wheel installation, the native
 CLI, and rebuilding an SDK wheel from a source distribution.
 
@@ -34,22 +34,17 @@ an intentional change, or an unsupported capability.
 
 ## Dependencies and packaging
 
-The initial PyO3 dependency and Maturin build tool are pinned. A real generated
-`Cargo.lock` must be committed once dependency resolution is captured; never
-hand-author registry checksums or claim `--locked` validation without it.
-CI currently resolves the dependency graph because the scaffold has no
-committed lockfile. Reproducible dependency resolution, the intended MSRV,
-source encoding, and the parser selection are Phase 0 gates.
+The pinned Ruff and PyO3 dependencies are resolved in `Cargo.lock`.
+Regenerate it with Cargo for deliberate dependency upgrades and run the locked
+checks at the declared minimum Rust version. Maturin is pinned in the SDK build
+manifest and CI.
 
-The initial Python wheel contains the SDK extension. The native CLI is a
-separate Cargo target. Do not document a combined wheel as supported until the
-packaging experiment has verified executable installation and native linkage
-on each supported platform.
+The default wheel contains the SDK extension. Cargo installs the separate
+native CLI. Keep the combined-wheel trial separate from the default build.
+Its validation commands and receipts are in the [measurement report](benchmarks/phase0.md).
 
-Select and document the project's distribution license before its first
-release. This scaffold does not assign an outgoing license. Record provenance
-and applicable license obligations before importing third-party source or
-fixtures; links to upstream projects do not make their code part of this repo.
+Skarmory is licensed under [MIT](LICENSE). Record provenance and applicable
+license obligations before importing third-party source or fixtures.
 
 ## Reporting results
 
@@ -57,7 +52,6 @@ Performance claims need matched rules, inputs, complete analysis, pinned
 versions, hardware information, and repeatable measurements. Report accuracy
 differences beside timing. Follow the [benchmark plan](benchmarks/README.md).
 
-No scanner rule is implemented in the initial scaffold. Analysis must continue
-to fail explicitly until a real result can include its coverage state. Avoid
-empty-success placeholders, implicit target-code execution, and silent feature
-fallbacks.
+Preserve the prototype's coverage and uncertainty reporting when expanding its
+rule set. An incomplete run must always carry the reason work could not finish.
+Do not execute target source during static analysis.

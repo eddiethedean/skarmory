@@ -1,9 +1,9 @@
 # Conformance and semantic validation plan
 
-Status: this directory initially contains the test design, not an implemented
-conformance runner or a claim of Skylos parity. Phase 0 will introduce manifests,
-fixtures, and the runner against the frozen reference described in
-[compatibility](../../docs/compatibility.md).
+The [Phase 0 manifest](phase0.toml) declares independent expectations for the
+prototype. Run `python tests/conformance/check_phase0.py target/debug/skarmory`
+after building the CLI. The [reference harness](../../benchmarks/phase0.md)
+records the pinned Skylos comparison alongside those expectations.
 
 ## Two separate questions
 
@@ -34,8 +34,8 @@ Use category/rule, file, symbol, and source range on the same assertion. Equal
 finding counts alone are insufficient. A nominally clean fixture must also assert
 the expected analysis coverage and successful completion.
 
-Fixture manifests and their schema are Phase 0 deliverables. Examples in this
-document describe required cases; they are not executed fixtures yet.
+The Phase 0 fixture schema covers module-scoped function findings and incomplete
+coverage. The broader fixture families below are planned.
 
 ## Paired semantic cases
 

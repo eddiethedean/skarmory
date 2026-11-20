@@ -1,14 +1,10 @@
 # Skarmory roadmap
 
-Status: initial development plan. The repository starts as a scaffold; analysis,
-Skylos compatibility, and performance targets below are not implemented or
-verified capabilities. Version labels identify proposed milestones, not promised
-release dates. Checklists describe work to complete, not GitHub issues already
-created.
+Status: [Phase 0](phase-0.md) is complete. Version labels describe planned
+milestones.
 
-The initial packaging uses a PyO3 SDK wheel and an independently built native
-CLI. Distributing both in one wheel remains a Phase 0 experiment; accepting
-multiple build targets does not establish a working combined installation.
+The default distribution uses a PyO3 SDK wheel and a native Cargo CLI. The
+combined wheel is an experimental installed layout.
 
 ## Product goal
 
@@ -56,34 +52,36 @@ Compatibility is versioned and limited to explicitly declared features. The
 Goal: establish whether the proposed architecture can preserve the intended
 behavior while substantially reducing the cost of equivalent analysis.
 
-- [ ] Record the Skylos source revision, distribution artifact, Python version,
+- [x] Record the Skylos source revision, distribution artifact, Python version,
   dependencies, OS, configuration, and native-accelerator state in a baseline
   manifest.
-- [ ] Inventory CLI flags, configuration resolution, Python API options, result
+- [x] Inventory CLI flags, configuration resolution, Python API options, result
   schemas, rule families, suppressions, exit behavior, and incomplete analysis.
-- [ ] Define the exact first Python dead-code subset and its unsupported surfaces.
-- [ ] Capture an authentic Cargo dependency lockfile and qualify the intended
-  Rust minimum version, Python versions, and supported build platforms.
-- [ ] Select and document the distribution license before the first release;
+- [x] Define the exact first Python dead-code subset and its unsupported surfaces.
+- [x] Capture an authentic Cargo dependency lockfile and select the Ruff-compatible
+  Rust minimum.
+- [x] Qualify Rust 1.96 and the CPython 3.11–3.14 development matrix across
+  Linux, macOS, and Windows.
+- [x] Select and document the distribution license before the first release;
   record provenance for any imported upstream code or fixtures.
-- [ ] Capture small reviewed fixtures before optimizing against their output.
-- [ ] Evaluate a pinned, matching Ruff parser/AST crate set behind a project-owned
+- [x] Capture small reviewed fixtures before optimizing against their output.
+- [x] Evaluate a pinned, matching Ruff parser/AST crate set behind a project-owned
   adapter. Record supported syntax and parser error behavior.
-- [ ] Prove separate native CLI and PyO3 SDK distributions on Linux, macOS, and
+- [x] Prove separate native CLI and PyO3 SDK distributions on Linux, macOS, and
   Windows; record installation behavior, linkage, startup cost, and artifact size.
-- [ ] Evaluate a combined native-CLI/SDK wheel as a separate packaging spike.
+- [x] Evaluate a combined native-CLI/SDK wheel as a separate packaging spike.
   Preserve the working separate distributions until the installed layout is
   verified; do not infer support merely from a build-target configuration example.
-- [ ] Build source discovery, parsing, scoped symbols, basic imports, roots,
+- [x] Build source discovery, parsing, scoped symbols, basic imports, roots,
   reachability, and machine-readable findings as one native vertical slice.
-- [ ] Benchmark discovery, read/decode, parse/extract, resolution, graph analysis,
+- [x] Benchmark discovery, read/decode, parse/extract, resolution, graph analysis,
   rules, and output separately as well as end to end.
-- [ ] Compare against Skylos with its existing accelerator both disabled and
+- [x] Compare against Skylos with its existing accelerator both disabled and
   enabled, where that extension can be built reproducibly.
 
-Exit evidence: runnable fixtures, a versioned contract inventory, reproducible
-benchmark instructions and raw results, and a decision on parser and packaging
-dependencies. No general speed or compatibility claim follows from a tiny demo.
+Evidence includes [runnable fixtures](../tests/conformance/phase0.toml), a
+[versioned contract inventory](skylos-5.7.0-contract.md), and
+[reproduction instructions and raw measurements](../benchmarks/phase0.md).
 
 ## 0.1: Python dead-code preview
 

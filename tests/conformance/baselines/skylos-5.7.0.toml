@@ -8,7 +8,7 @@ release_date = "2026-11-19"
 source_url = "https://github.com/duriantaco/skylos/tree/87978e69adf91b3811e97b00c40aa39d7937cd94"
 
 [contract]
-status = "planned"
+status = "phase0-inventory"
 initial_language = "python"
 initial_check_family = "dead_code"
 default_confidence = 60
@@ -16,4 +16,37 @@ python_api_result = "json-string"
 
 [benchmark]
 reference_backends = ["python", "skylos_fast"]
-measurements_recorded = false
+measurements_recorded = true
+
+[distribution]
+wheel = "skylos-5.7.0-py3-none-macosx_11_0_arm64.whl"
+url = "https://files.pythonhosted.org/packages/5d/8c/67f092d3c98d43e5b973ec1de078b526d3025198b7bfd5b394f9f63ca749/skylos-5.7.0-py3-none-macosx_11_0_arm64.whl"
+sha256 = "9be44d39484a782f2116c7fcfeafa2b4cf62fb1d1e0ece63bf549019e6e38d77"
+sdist_sha256 = "ce9fa138bf8cbe41eafb2d96a03e3fc4cc2bfbbc23cd8bd3be8f299bc90c5ea0"
+
+[environment]
+python = "CPython 3.11.14"
+os = "macOS 26.5.2 (25F84)"
+architecture = "arm64"
+dependencies = "skylos-5.7.0-macos-arm64-cp311.txt"
+config = "phase0-skylos-config.toml"
+
+[api_options]
+conf = 60
+enable_dependency_hallucinations = false
+grep_verify = false
+grep_cache = false
+all_advice = true
+
+[accelerator]
+revision = "87978e69adf91b3811e97b00c40aa39d7937cd94"
+manifest = "rust/Cargo.toml"
+lockfile = "rust/Cargo.lock"
+lockfile_sha256 = "6c0c3482dee0be096969ca17686bc27f4bc81e267268346e41b4f90db47789ff"
+version = "0.1.0"
+wheel = "skylos_fast-0.1.0-cp311-cp311-macosx_11_0_arm64.whl"
+wheel_sha256 = "7acbfbc131892778866f815e337655561517732ca3f072099a3a85dc45b9345a"
+build_tool = "maturin 1.16.0"
+rust = "1.96.0"
+disabled = "Block the optional skylos_fast import before importing Skylos."
+enabled = "Load the source-built skylos_fast module and require successful native discovery."
