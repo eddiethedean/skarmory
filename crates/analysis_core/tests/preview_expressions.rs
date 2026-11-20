@@ -150,6 +150,41 @@ recursive(original)
 }
 
 #[test]
+fn recursion_cutoff_only_makes_the_continuation_possible() {
+    let project = Project::new(&[(
+        "main.py",
+        "def later(): pass
+def dead(): pass
+def again():
+    again()
+    later()
+again()
+",
+    )]);
+    let report = project.run(&ScanOptions::default());
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["dead"]);
+
+    let evidence = report["evidence"].as_array().unwrap();
+    assert_eq!(evidence.len(), 3, "{report}");
+    for (symbol, line, certainty) in [
+        ("::again@", 4, "established"),
+        ("::later@", 5, "possible"),
+        ("::again@", 6, "established"),
+    ] {
+        assert!(
+            evidence.iter().any(|event| {
+                event["kind"] == "call"
+                    && event["line"] == line
+                    && event["certainty"] == certainty
+                    && event["symbol_id"].as_str().unwrap().contains(symbol)
+            }),
+            "{symbol} at {line}: {report}"
+        );
+    }
+}
+
+#[test]
 fn escaped_closure_can_run_after_a_later_public_call_loads_a_module() {
     let project = Project::new(&[
         (
