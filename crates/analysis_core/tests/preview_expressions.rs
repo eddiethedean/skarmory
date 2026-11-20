@@ -470,6 +470,47 @@ fn exported_modules_require_incomplete_coverage() {
 }
 
 #[test]
+fn a_public_callable_does_not_select_its_modules_all_exports() {
+    let project = Project::new(&[
+        (
+            "api.py",
+            "import helper
+def chosen(): helper.reachable()
+def other(): pass
+__all__ = ['helper', 'other']
+",
+        ),
+        ("helper.py", "def reachable(): pass\ndef unused(): pass\n"),
+    ]);
+    let mut options = ScanOptions {
+        policy: ScanPolicy::Library,
+        public_callables: vec!["api:chosen".into()],
+        ..ScanOptions::default()
+    };
+    let callable = project.run(&options);
+    assert_eq!(callable["coverage"]["status"], "complete", "{callable}");
+    assert_eq!(findings(&callable), ["other", "unused"]);
+
+    options.public_modules.push("api".into());
+    let combined = project.run(&options);
+    assert_eq!(combined["coverage"]["status"], "incomplete", "{combined}");
+    assert!(findings(&combined).is_empty(), "{combined}");
+    assert_eq!(combined["coverage"]["issues"][0]["kind"], "unbounded_use");
+    let evidence = combined["evidence"].as_array().unwrap();
+    for (symbol, kind) in [
+        ("::chosen@", "public_callable"),
+        ("::other@", "public_export"),
+    ] {
+        assert!(
+            evidence.iter().any(|event| {
+                event["kind"] == kind && event["symbol_id"].as_str().unwrap().contains(symbol)
+            }),
+            "{symbol}: {combined}"
+        );
+    }
+}
+
+#[test]
 fn returned_callback_can_share_a_container_with_its_caller() {
     let project = Project::new(&[(
         "main.py",

@@ -141,6 +141,12 @@ struct LibraryCalls {
     explored: Vec<(Rc<Closure>, &'static str, usize)>,
 }
 
+#[derive(Default)]
+struct LibraryRoots<'a> {
+    include_exports: bool,
+    callables: Vec<&'a str>,
+}
+
 impl State {
     fn library_calls_mut(&mut self) -> &mut LibraryCalls {
         Rc::make_mut(self.library_calls.as_mut().expect("library scan state"))
@@ -344,13 +350,13 @@ impl<'a> Engine<'a> {
     }
 
     fn library(&mut self, options: &ScanOptions) {
-        let mut modules: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut modules: BTreeMap<&str, LibraryRoots<'_>> = BTreeMap::new();
         for name in &options.public_modules {
-            modules.entry(name).or_default();
+            modules.entry(name).or_default().include_exports = true;
         }
         for target in &options.public_callables {
             if let Some((module, name)) = self.callable_name(target) {
-                modules.entry(module).or_default().push(name);
+                modules.entry(module).or_default().callables.push(name);
             }
         }
         let mut queue = VecDeque::from([State {
@@ -363,7 +369,7 @@ impl<'a> Engine<'a> {
                 break;
             }
             let mut outgoing = Vec::new();
-            for (&module, names) in &modules {
+            for (&module, roots) in &modules {
                 let loaded = state.modules.get(module).copied();
                 let Some(Loaded {
                     frame,
@@ -381,7 +387,7 @@ impl<'a> Engine<'a> {
                     continue;
                 };
                 let site = Site::entry(state.frame(frame).file);
-                for (function, kind) in self.public_functions(&state, frame, names, site) {
+                for (function, kind) in self.public_functions(&state, frame, roots, site) {
                     if let Some(enriched) =
                         self.schedule_library_call(&mut outgoing, &state, function, site, kind)
                     {
@@ -463,13 +469,14 @@ impl<'a> Engine<'a> {
         &mut self,
         state: &State,
         frame: FrameId,
-        declared: &[&str],
+        roots: &LibraryRoots<'_>,
         site: Site,
     ) -> Vec<(Rc<Closure>, &'static str)> {
         let mut functions = Vec::new();
         let namespace = &state.frame(frame).locals;
-        match namespace.get("__all__") {
-            Some(Value::Sequence(names, false, _)) => {
+        match (roots.include_exports, namespace.get("__all__")) {
+            (false, _) => {}
+            (true, Some(Value::Sequence(names, false, _))) => {
                 for name in names.iter() {
                     let Value::Constant(Constant::String(name)) = name else {
                         self.issue(
@@ -494,14 +501,14 @@ impl<'a> Engine<'a> {
                     }
                 }
             }
-            None if !declared.is_empty() => {}
-            _ => self.issue(
+            (true, None) if !roots.callables.is_empty() => {}
+            (true, _) => self.issue(
                 site,
                 "unresolved_exports",
                 "public module needs a literal __all__ list or explicit callables",
             ),
         }
-        for name in declared {
+        for name in &roots.callables {
             if let Some(function) = self.callable_root(state, frame, name, site) {
                 functions.push((function, "public_callable"));
             }
