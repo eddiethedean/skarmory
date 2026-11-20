@@ -122,6 +122,20 @@ def check_limits_and_selection(cli):
         assert any(item["kind"] == "analysis_limit" for item in report["coverage"]["issues"])
         assert scan(cli, project, [], "incomplete", workers=4) == report
 
+        def nested_lists(depth):
+            return (
+                "def live(): pass\nx = None\n"
+                + "x = [x]\n" * depth
+                + "if x == x:\n    live()\n"
+            )
+
+        main.write_text(nested_lists(16), encoding="utf-8")
+        assert not scan(cli, project, [], "complete")["findings"]
+        main.write_text(nested_lists(40_000), encoding="utf-8")
+        report = scan(cli, project, [], "incomplete")
+        issue, = report["coverage"]["issues"]
+        assert issue["kind"] == "analysis_limit" and "value nesting" in issue["message"], report
+
         main.write_text("pass\n", encoding="utf-8")
         namespace = project / "namespace"
         namespace.mkdir()

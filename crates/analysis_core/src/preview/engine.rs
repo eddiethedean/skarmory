@@ -16,6 +16,7 @@ use crate::{Issue, Timings};
 
 const MAX_STEPS: usize = 250_000;
 const MAX_DEPTH: usize = 40;
+const MAX_VALUE_DEPTH: usize = 64;
 const MAX_PATHS: usize = 128;
 
 type FrameId = usize;
@@ -48,8 +49,8 @@ struct FunctionInfo<'a> {
 #[derive(Clone, Debug)]
 enum Value {
     Constant(Constant),
-    Sequence(Rc<[Value]>, bool),
-    Mapping(Rc<Names>),
+    Sequence(Rc<[Value]>, bool, usize),
+    Mapping(Rc<Names>, usize),
     Module(String),
     Function(Rc<Closure>),
     UnknownBool,
@@ -60,6 +61,28 @@ impl Value {
     fn none() -> Self {
         Self::Constant(Constant::None)
     }
+
+    fn sequence(values: Vec<Value>, tuple: bool) -> Self {
+        let depth = Self::nested_depth(values.iter());
+        Self::Sequence(values.into(), tuple, depth)
+    }
+
+    fn mapping(values: Names) -> Self {
+        let depth = Self::nested_depth(values.values());
+        Self::Mapping(Rc::new(values), depth)
+    }
+
+    fn nested_depth<'a>(values: impl Iterator<Item = &'a Self>) -> usize {
+        1 + values.map(Self::depth).max().unwrap_or(0)
+    }
+
+    fn depth(&self) -> usize {
+        match self {
+            Self::Sequence(_, _, depth) | Self::Mapping(_, depth) => *depth,
+            Self::Function(closure) => closure.depth,
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -67,6 +90,7 @@ struct Closure {
     definition: Definition,
     enclosing: FrameId,
     defaults: Vec<Option<Value>>,
+    depth: usize,
 }
 
 #[derive(Clone)]
@@ -91,9 +115,20 @@ struct State {
     modules: Rc<BTreeMap<String, Loaded>>,
     possible: bool,
     revision: usize,
+    library_calls: Option<Rc<LibraryCalls>>,
+}
+
+#[derive(Clone, Default)]
+struct LibraryCalls {
+    escaped: Vec<(Rc<Closure>, Site)>,
+    explored: Vec<(Rc<Closure>, &'static str, usize)>,
 }
 
 impl State {
+    fn library_calls_mut(&mut self) -> &mut LibraryCalls {
+        Rc::make_mut(self.library_calls.as_mut().expect("library scan state"))
+    }
+
     fn push(&mut self, frame: Frame) -> FrameId {
         let id = self.frames.len();
         Rc::make_mut(&mut self.frames).push(Rc::new(frame));
@@ -293,12 +328,14 @@ impl<'a> Engine<'a> {
         }
         let mut queue = VecDeque::from([State {
             possible: modules.len() > 1,
+            library_calls: Some(Rc::default()),
             ..State::default()
         }]);
-        while let Some(state) = queue.pop_front() {
+        'states: while let Some(state) = queue.pop_front() {
             if self.limited || !self.step(Site::entry(0)) {
                 break;
             }
+            let mut outgoing = Vec::new();
             for (&module, names) in &modules {
                 let loaded = state.modules.get(module).copied();
                 let Some(Loaded {
@@ -306,31 +343,93 @@ impl<'a> Engine<'a> {
                     loading: false,
                 }) = loaded
                 else {
-                    for (next, _) in self.load(state.clone(), module, Site::entry(0)) {
-                        if queue.len() == MAX_PATHS {
+                    for (mut next, _) in self.load(state.clone(), module, Site::entry(0)) {
+                        if outgoing.len() == MAX_PATHS {
                             self.limit(Site::entry(0), "too many library initialization paths");
                             break;
                         }
-                        queue.push_back(next);
+                        next.library_calls_mut().explored.clear();
+                        outgoing.push(next);
                     }
                     continue;
                 };
                 let site = Site::entry(state.frame(frame).file);
-                let revision = state.revision;
                 for (function, kind) in self.public_functions(&state, frame, names, site) {
-                    for mut next in self.invoke_external(state.clone(), function, site, kind) {
-                        if next.revision != revision {
-                            if queue.len() == MAX_PATHS {
-                                self.limit(site, "too many library call paths");
-                                break;
-                            }
-                            next.possible = true;
-                            queue.push_back(next);
-                        }
+                    if let Some(enriched) =
+                        self.schedule_library_call(&mut outgoing, &state, function, site, kind)
+                    {
+                        queue.push_front(enriched);
+                        continue 'states;
                     }
                 }
             }
+            for (function, site) in &state.library_calls.as_ref().unwrap().escaped {
+                if let Some(enriched) = self.schedule_library_call(
+                    &mut outgoing,
+                    &state,
+                    function.clone(),
+                    *site,
+                    "escape",
+                ) {
+                    queue.push_front(enriched);
+                    continue 'states;
+                }
+            }
+            if !self.check_paths(queue.len() + outgoing.len(), Site::entry(0)) {
+                break;
+            }
+            queue.extend(outgoing);
         }
+    }
+
+    fn schedule_library_call(
+        &mut self,
+        outgoing: &mut Vec<State>,
+        state: &State,
+        function: Rc<Closure>,
+        site: Site,
+        kind: &'static str,
+    ) -> Option<State> {
+        let calls = state.library_calls.as_ref().expect("library scan state");
+        let mut input = state.clone();
+        input.possible |= kind == "escape";
+        let outcomes = self.invoke_external(input, function.clone(), site, kind);
+        for (index, mut next) in outcomes.into_iter().enumerate() {
+            let world_changed = next.revision != state.revision;
+            let new_escape =
+                next.library_calls.as_ref().unwrap().escaped.len() > calls.escaped.len();
+            if world_changed {
+                if outgoing.len() == MAX_PATHS {
+                    self.limit(site, "too many library call paths");
+                    return None;
+                }
+                // Revisit public calls and saved callbacks after imports change
+                // the module bindings they observe.
+                next.library_calls_mut().explored.clear();
+                next.possible = true;
+                outgoing.push(next);
+            } else if new_escape
+                && !calls
+                    .explored
+                    .iter()
+                    .any(|(previous, previous_kind, outcome)| {
+                        *previous_kind == kind
+                            && *outcome == index
+                            && Rc::ptr_eq(previous, &function)
+                    })
+            {
+                // With unchanged module bindings, this outcome only adds
+                // optional calls. Keep them before exploring other actions.
+                // Remember the outcome so rerunning the factory in this same
+                // world cannot create unbounded copies of the same closure.
+                next.library_calls_mut()
+                    .explored
+                    .push((function, kind, index));
+                next.possible = state.possible;
+                return Some(next);
+            }
+        }
+        None
     }
 
     fn public_functions(
@@ -343,7 +442,7 @@ impl<'a> Engine<'a> {
         let mut functions = Vec::new();
         let namespace = &state.frame(frame).locals;
         match namespace.get("__all__") {
-            Some(Value::Sequence(names, false)) => {
+            Some(Value::Sequence(names, false, _)) => {
                 for name in names.iter() {
                     let Value::Constant(Constant::String(name)) = name else {
                         self.issue(
@@ -438,6 +537,21 @@ impl<'a> Engine<'a> {
                     "possible_use",
                     "a function returned to an external caller may be invoked",
                 );
+                if state.library_calls.is_some() {
+                    let calls = state.library_calls_mut();
+                    if !calls
+                        .escaped
+                        .iter()
+                        .any(|(saved, _)| Rc::ptr_eq(saved, &function))
+                    {
+                        if calls.escaped.len() == MAX_PATHS {
+                            self.limit(site, "too many saved library callbacks");
+                            return Vec::new();
+                        }
+                        calls.escaped.push((function, site));
+                    }
+                    return vec![state];
+                }
                 if self
                     .escaping
                     .iter()
@@ -457,8 +571,8 @@ impl<'a> Engine<'a> {
                 results.push(original);
                 results
             }
-            Value::Sequence(items, _) => self.escape_items(state, items.iter(), site),
-            Value::Mapping(items) => self.escape_items(state, items.values(), site),
+            Value::Sequence(items, ..) => self.escape_items(state, items.iter(), site),
+            Value::Mapping(items, _) => self.escape_items(state, items.values(), site),
             Value::Module(_) | Value::Unknown => {
                 self.unbounded(
                     site,
@@ -616,7 +730,11 @@ impl<'a> Engine<'a> {
                 }
                 paths
                     .into_iter()
-                    .map(|(mut state, defaults)| {
+                    .filter_map(|(mut state, defaults)| {
+                        let depth = Value::nested_depth(defaults.iter().flatten());
+                        if !self.check_value_depth(depth, site) {
+                            return None;
+                        }
                         state.bind(
                             frame,
                             node.name.clone(),
@@ -624,9 +742,10 @@ impl<'a> Engine<'a> {
                                 definition,
                                 enclosing: frame,
                                 defaults,
+                                depth,
                             })),
                         );
-                        (state, Control::Next)
+                        Some((state, Control::Next))
                     })
                     .collect()
             }
@@ -705,6 +824,14 @@ impl<'a> Engine<'a> {
     fn check_paths(&mut self, count: usize, site: Site) -> bool {
         if count > MAX_PATHS {
             self.limit(site, "maximum simultaneous analysis paths exceeded");
+            return false;
+        }
+        !self.limited
+    }
+
+    fn check_value_depth(&mut self, depth: usize, site: Site) -> bool {
+        if depth > MAX_VALUE_DEPTH {
+            self.limit(site, "maximum abstract value nesting exceeded");
             return false;
         }
         !self.limited

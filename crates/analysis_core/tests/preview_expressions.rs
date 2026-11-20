@@ -104,6 +104,78 @@ recursive(original)
 }
 
 #[test]
+fn escaped_closure_can_run_after_a_later_public_call_loads_a_module() {
+    let project = Project::new(&[
+        (
+            "api.py",
+            "import switches
+from switches import mode as original
+def hidden(): return 197
+def factory():
+    if switches.mode is original:
+        def callback():
+            if switches.mode is not original:
+                return hidden()
+        return callback
+def arm():
+    import switches.mode
+__all__ = ['factory', 'arm']
+",
+        ),
+        ("switches/__init__.py", "def mode(): pass\n"),
+        ("switches/mode.py", "pass\n"),
+    ]);
+    let report = project.run(&ScanOptions {
+        policy: ScanPolicy::Library,
+        public_modules: vec!["api".into()],
+        ..ScanOptions::default()
+    });
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["mode"], "{report}");
+    let uses: Vec<_> = report["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["symbol_id"].as_str().unwrap().contains("::hidden@"))
+        .collect();
+    assert!(!uses.is_empty(), "{report}");
+    assert!(uses.iter().all(|event| event["certainty"] == "possible"));
+}
+
+#[test]
+fn independent_factories_complete_without_branching_on_their_order() {
+    use std::fmt::Write as _;
+
+    let mut source = String::from("def dead(): pass\n");
+    let mut options = ScanOptions {
+        policy: ScanPolicy::Library,
+        ..ScanOptions::default()
+    };
+    for index in 0..6 {
+        writeln!(
+            source,
+            "def factory{index}():\n    def saved(): pass\n    return saved"
+        )
+        .unwrap();
+        options.public_callables.push(format!("api:factory{index}"));
+    }
+    let project = Project::new(&[("api.py", &source)]);
+    let report = project.run(&options);
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert_eq!(findings(&report), ["dead"]);
+    assert_eq!(
+        report["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["certainty"] == "possible" && event["kind"] == "escape")
+            .count(),
+        6,
+        "{report}"
+    );
+}
+
+#[test]
 fn boolean_results_are_bounded_and_comparison_hooks_keep_passed_callables() {
     let project = Project::new(&[(
         "main.py",

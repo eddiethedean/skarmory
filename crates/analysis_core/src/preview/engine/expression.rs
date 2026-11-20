@@ -15,8 +15,8 @@ impl Value {
             Self::Constant(Constant::Bool(value)) => *value,
             Self::Constant(Constant::Int(value)) => *value != 0,
             Self::Constant(Constant::String(value)) => !value.is_empty(),
-            Self::Sequence(values, _) => !values.is_empty(),
-            Self::Mapping(values) => !values.is_empty(),
+            Self::Sequence(values, ..) => !values.is_empty(),
+            Self::Mapping(values, _) => !values.is_empty(),
             Self::Module(_) | Self::Function(_) => true,
             Self::Unknown | Self::UnknownBool => return None,
         })
@@ -25,10 +25,10 @@ impl Value {
     pub(super) fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Constant(left), Self::Constant(right)) => left == right,
-            (Self::Sequence(left, left_tuple), Self::Sequence(right, right_tuple)) => {
+            (Self::Sequence(left, left_tuple, _), Self::Sequence(right, right_tuple, _)) => {
                 left_tuple == right_tuple && Rc::ptr_eq(left, right)
             }
-            (Self::Mapping(left), Self::Mapping(right)) => Rc::ptr_eq(left, right),
+            (Self::Mapping(left, _), Self::Mapping(right, _)) => Rc::ptr_eq(left, right),
             (Self::Module(left), Self::Module(right)) => left == right,
             (Self::Function(left), Self::Function(right)) => Rc::ptr_eq(left, right),
             (Self::Unknown, Self::Unknown) | (Self::UnknownBool, Self::UnknownBool) => true,
@@ -45,7 +45,7 @@ impl Value {
             (Self::Constant(Constant::String(left)), Self::Constant(Constant::String(right))) => {
                 (left != right).then_some(false)
             }
-            (Self::Sequence(left, true), Self::Sequence(right, true)) => {
+            (Self::Sequence(left, true, _), Self::Sequence(right, true, _)) => {
                 Rc::ptr_eq(left, right).then_some(true)
             }
             _ => Some(self.same(other)),
@@ -103,7 +103,11 @@ impl<'a> Engine<'a> {
                 let tuple = matches!(expression.kind, ExpressionKind::Tuple(_));
                 self.values(state, frame, items, site)
                     .into_iter()
-                    .map(|(state, values)| (state, Value::Sequence(values.into(), tuple)))
+                    .filter_map(|(state, values)| {
+                        let value = Value::sequence(values, tuple);
+                        self.check_value_depth(value.depth(), site)
+                            .then_some((state, value))
+                    })
                     .collect()
             }
             ExpressionKind::Compare { left, comparisons } => {
@@ -213,13 +217,21 @@ impl<'a> Engine<'a> {
                         let named = values.split_off(positional.len());
                         let named = keywords.iter().map(|(name, _)| name).zip(named).collect();
                         match self.bind_arguments(function, values, named) {
-                            Ok(args) => paths.extend(self.invoke(
-                                state,
-                                function.clone(),
-                                args,
-                                site,
-                                "call",
-                            )),
+                            Ok(args) => {
+                                if !self.check_value_depth(
+                                    args.values().map(Value::depth).max().unwrap_or(0),
+                                    site,
+                                ) {
+                                    return Vec::new();
+                                }
+                                paths.extend(self.invoke(
+                                    state,
+                                    function.clone(),
+                                    args,
+                                    site,
+                                    "call",
+                                ));
+                            }
                             Err(reason) => self.issue(site, "invalid_call", reason),
                         }
                     }
@@ -246,6 +258,9 @@ impl<'a> Engine<'a> {
         site: Site,
     ) {
         state.possible = true;
+        // This path is incomplete already. Collect evidence immediately since
+        // there is no successor state in which to schedule saved callbacks.
+        state.library_calls = None;
         let mut pending = values.into_iter().collect::<Vec<_>>();
         while let Some(value) = pending.pop() {
             if !self.step(site) {
@@ -260,8 +275,8 @@ impl<'a> Engine<'a> {
                     );
                     self.invoke_external(state.clone(), function.clone(), site, "argument_escape");
                 }
-                Value::Sequence(items, _) => pending.extend(items.iter()),
-                Value::Mapping(items) => pending.extend(items.values()),
+                Value::Sequence(items, ..) => pending.extend(items.iter()),
+                Value::Mapping(items, _) => pending.extend(items.values()),
                 _ => {}
             }
         }
@@ -288,17 +303,16 @@ impl<'a> Engine<'a> {
                         (position, keyword) => position.or(keyword),
                     }
                 }
-                ParameterKind::VariadicPositional => Some(Value::Sequence(
-                    positional.by_ref().collect::<Vec<_>>().into(),
-                    true,
-                )),
+                ParameterKind::VariadicPositional => {
+                    Some(Value::sequence(positional.by_ref().collect(), true))
+                }
                 ParameterKind::KeywordOnly => keywords.remove(name),
                 ParameterKind::VariadicKeyword => {
                     let extras = std::mem::take(&mut keywords)
                         .into_iter()
                         .map(|(name, value)| (name.clone(), value))
                         .collect();
-                    Some(Value::Mapping(Rc::new(extras)))
+                    Some(Value::mapping(extras))
                 }
             };
             let value = supplied
@@ -409,8 +423,8 @@ impl<'a> Engine<'a> {
             match value {
                 Value::Unknown => unknown = true,
                 Value::Function(_) | Value::Module(_) => selected_object = true,
-                Value::Sequence(values, _) => pending.extend(values.iter()),
-                Value::Mapping(values) => pending.extend(values.values()),
+                Value::Sequence(values, ..) => pending.extend(values.iter()),
+                Value::Mapping(values, _) => pending.extend(values.values()),
                 _ => {}
             }
             if unknown && selected_object {
@@ -463,7 +477,7 @@ impl<'a> Engine<'a> {
             return Some(left == right);
         }
         match (left, right) {
-            (Value::Sequence(left, left_tuple), Value::Sequence(right, right_tuple)) => {
+            (Value::Sequence(left, left_tuple, _), Value::Sequence(right, right_tuple, _)) => {
                 if left_tuple != right_tuple || left.len() != right.len() {
                     return Some(false);
                 }
@@ -478,7 +492,7 @@ impl<'a> Engine<'a> {
                 }
                 (!uncertain).then_some(true)
             }
-            (Value::Mapping(left), Value::Mapping(right)) => {
+            (Value::Mapping(left, _), Value::Mapping(right, _)) => {
                 if left.len() != right.len() {
                     return Some(false);
                 }
@@ -516,7 +530,7 @@ impl<'a> Engine<'a> {
             (Value::Constant(Constant::String(left)), Value::Constant(Constant::String(right))) => {
                 Ok(Some(left.cmp(right)))
             }
-            (Value::Sequence(left, left_tuple), Value::Sequence(right, right_tuple))
+            (Value::Sequence(left, left_tuple, _), Value::Sequence(right, right_tuple, _))
                 if left_tuple == right_tuple =>
             {
                 for (left, right) in left.iter().zip(right.iter()) {
@@ -543,7 +557,7 @@ impl<'a> Engine<'a> {
                 Value::Constant(Constant::String(haystack)),
                 Value::Constant(Constant::String(needle)),
             ) => Ok(Some(haystack.contains(needle))),
-            (Value::Sequence(values, _), _) => {
+            (Value::Sequence(values, ..), _) => {
                 let mut uncertain = false;
                 for value in values.iter() {
                     match self.equals(value, needle, site) {
@@ -555,13 +569,13 @@ impl<'a> Engine<'a> {
                 }
                 Ok((!uncertain).then_some(false))
             }
-            (Value::Mapping(values), Value::Constant(Constant::String(needle))) => {
+            (Value::Mapping(values, _), Value::Constant(Constant::String(needle))) => {
                 Ok(Some(values.contains_key(needle)))
             }
-            (Value::Mapping(_), Value::Sequence(..) | Value::Mapping(_)) => {
+            (Value::Mapping(..), Value::Sequence(..) | Value::Mapping(..)) => {
                 Err("dictionary membership requires a supported hashable key")
             }
-            (Value::Mapping(_), _) => Ok(Some(false)),
+            (Value::Mapping(..), _) => Ok(Some(false)),
             _ => Err("membership check is outside the preview subset for these values"),
         }
     }
