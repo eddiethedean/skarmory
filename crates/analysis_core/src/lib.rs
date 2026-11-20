@@ -15,9 +15,8 @@ pub struct AnalysisUnavailable;
 
 impl fmt::Display for AnalysisUnavailable {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(
-            "analysis is not implemented yet; this is the Skarmory development scaffold",
-        )
+        formatter
+            .write_str("analysis is not implemented yet; this is the Skarmory development scaffold")
     }
 }
 
