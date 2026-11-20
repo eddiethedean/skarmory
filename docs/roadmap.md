@@ -118,11 +118,36 @@ assumptions.
 | --- | --- |
 | Source selection | Keep explicit file scans and add recursive discovery from declared source roots, including `src` layouts and ordinary packages with `__init__.py`. Use the requested directory as the default source root. Report roots, selected paths, and documented exclusions. Ambiguous module identities and selected namespace packages surface as coverage issues. |
 | Syntax and symbols | Keep the Python 3.11 target and UTF-8 source policy. Model module and synchronous function scopes, including directly called nested functions, parameter and local shadowing, simple assignments and returns, and conditional branches with conservative reachability. Identify functions by module, owning scope, and definition. |
-| Imports and declarations | Resolve absolute and relative imports, aliases, and explicit local re-exports within the selected source universe. Reachable imports activate the target module and its package initializers. Keep module execution, declaration creation, function calls, and value references distinct. A supported default expression can call a helper when its function is defined. |
-| Application roots | Use declared entry modules and callables. A callable root activates its owning module and package initializers. Keep the flat `main.py` and explicit-file entry behavior as defaults. A missing or unresolved entry prevents a complete application scan. An `if __name__ == "__main__"` guard activates for a declared script entry and stays dormant on an ordinary import. |
+| Imports and declarations | Resolve absolute and relative imports, aliases, and explicit local re-exports within the selected source universe. An import required by the graph that cannot resolve within that universe produces incomplete coverage. Reachable imports activate the target module and its package initializers. Keep module execution, declaration creation, function calls, and value references distinct. A supported default expression can call a helper when its function is defined. |
+| Application roots | Support direct-file, named-module, and callable entries. Keep the flat `main.py` and explicit-file defaults in direct-file mode. A missing or unresolved entry prevents a complete application scan. |
 | Library roots | Activate declared public modules on import. Use explicit public callables and callable entries in literal `__all__` lists from those modules as externally callable roots. Resolve roots through supported re-exports and preserve code that a declared export can reach. A missing or unresolved public boundary prevents a complete library scan. |
 | Uncertainty | Record possible use and the evidence for it. When a function value may escape, retain the known candidate and its potentially reachable callees without asserting that they were called. Withhold project-wide unreachable findings when the affected scope cannot be bounded. |
 | Coverage and output | Record failed reads and parses, unsupported selected constructs, unresolvable graph inputs, detected source changes, and exhausted limits as incomplete coverage. Keep coverage, uncertainty, and findings separate. Use a versioned native report with deterministic paths, symbol identities, locations, and evidence. CLI stdout carries JSON. Exit 0 means completion, including runs with findings. Exit 2 covers incomplete scans and invocation or output failures. The SDK returns the same report. |
+
+#### Entry and import resolution
+
+- A direct-file entry models `python path/to/entry.py`. Its initial
+  `__name__` is `__main__` and it has no implicit package context. An
+  explicit file scan still selects that file alone by default. A reachable
+  relative import from a direct-file entry with no package context produces
+  incomplete coverage even when its target is among the selected files.
+- A named-module entry models `python -m pkg.entry`. It runs the parent package
+  initializers before the entry body, supports relative imports in that package,
+  and starts the entry body with `__name__` set to `__main__`. For a package
+  entry, the declaration names `pkg.__main__` explicitly. Keep entry execution
+  and ordinary import of the same source in distinct execution contexts.
+- A callable entry imports its owning module and package initializers before
+  calling the selected function. Ordinary imports initialize `__name__` to the
+  module's qualified name. Evaluate a main guard using the binding that reaches
+  the condition, accounting for rebinding and lexical shadowing. If the
+  condition can be both true and false, preserve possible call edges from both
+  branches.
+- The preview uses a closed set of selected sources. If an import needed for
+  reachability has no target in that set, record its location and reason, mark
+  coverage incomplete, and withhold project-wide unreachable findings. This
+  applies equally to an absent project module and to standard-library or
+  third-party modules outside the selection. Analysis resolves imports
+  statically from selected files.
 
 Proposed scan options include source roots, application or library policy,
 entry or export declarations, and a worker budget. Flag names, configuration
@@ -154,9 +179,12 @@ configuration and output remain later work. Persistent caching starts in 0.2.
 | --- | --- |
 | Source snapshot | A conventional package in a declared `src` root resolves relative imports and reports its exact file set. A duplicate module, unreadable selected file, or detected source change produces incomplete coverage with a reason. |
 | Scoped identity | Same-name functions in different modules or scopes get distinct identities. A local binding that shadows an import prevents a call from being attributed to that import. |
-| Roots and recursion | A recursive group is reported when isolated and retained when reached from an entry. Importing a module leaves its main guard dormant. Running that module as the declared entry activates the guard. |
+| Entry modes | With the same selected package sources, a named-module entry resolves a relative import and retains helpers called from the parent initializer and under the main guard. A direct-file entry into that same file reports incomplete coverage at the relative import. An ordinary import or callable entry leaves an unmodified main guard dormant. |
+| Main guard bindings | Importing a module that first sets `__name__ = "__main__"` retains the helper called under its guard. When a parameter shadows `__name__` and its value is unknown, both possible branches contribute reachability evidence. |
+| Recursion | A recursive group is reported when isolated and retained when reached from an entry. |
 | Definition effects and exports | A helper called by a default expression survives even if the declared function's body is unreachable. A library re-export preserves its target and reachable helpers. A private sibling with no supported callers remains reportable. |
-| Uncertainty and failure | Possible-use evidence retains affected functions. Invalid syntax, a missing import required by the graph, an unbounded dynamic target, and exhausted limits produce explicit diagnostics and no project-wide non-use findings. A supported clean fixture reports complete coverage. |
+| Import coverage | A reachable import of a missing local module and a reachable `import pathlib` outside the selected sources each produce an import-site diagnostic, incomplete coverage, and no project-wide unreachable findings. A corresponding resolved local import permits complete coverage. |
+| Uncertainty and failure | Possible-use evidence retains affected functions. Invalid syntax, an unbounded dynamic target, and exhausted limits produce explicit diagnostics and no project-wide non-use findings. A supported clean fixture reports complete coverage. |
 | Interface and workers | CLI and installed SDK reports agree. Single-worker, multi-worker, and repeated runs match after removing documented timing and temporary-path fields. Vary file discovery and worker completion order. Compare coverage, uncertainty, evidence, finding identities, and locations. |
 
 Publish the preview matrix and runnable fixtures, keeping the Phase 0 controls
