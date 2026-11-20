@@ -388,8 +388,7 @@ fn interpreter_module(name: &str) -> bool {
         | "_sha1" | "_sha256" | "_sha3" | "_sha512" | "_statistics" | "_struct" | "_typing"
         | "_winapi" | "_xxsubinterpreters" | "array" | "audioop" | "binascii" | "cmath"
         | "math" | "mmap" | "msvcrt" | "nt" | "winreg" | "zlib" => cfg!(windows),
-        "__future__"
-        | "__hello__"
+        "__hello__"
         | "__hello_alias__"
         | "__hello_only__"
         | "__phello__"
