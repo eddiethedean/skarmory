@@ -799,7 +799,8 @@ impl<'a> Engine<'a> {
                     .all(|(name, value)| args.get(name).is_some_and(|arg| value.same(arg)))
         }) {
             // An active call already explores the same abstract inputs.
-            // Keep the recursive edge and conservatively allow a return.
+            // Continue under the assumption that the recursive call may return.
+            state.possible = true;
             return vec![(state, Value::Unknown)];
         }
         if !self.enter(site) {

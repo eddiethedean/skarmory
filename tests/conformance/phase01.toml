@@ -23,8 +23,10 @@ retained = [
     ["src/shop/service.py", "", "live_left", "established"],
     ["src/shop/service.py", "", "live_right", "established"],
     ["src/shop/start.py", "", "setup_default", "established"],
-    ["src/shop/start.py", "", "nested_target", "established"],
-    ["src/shop/start.py", "launch", "handle", "established"],
+    # The main guard calls launch only if the recursive cycle returns.
+    ["src/shop/start.py", "", "launch", "possible"],
+    ["src/shop/start.py", "", "nested_target", "possible"],
+    ["src/shop/start.py", "launch", "handle", "possible"],
 ]
 
 [[case]]
