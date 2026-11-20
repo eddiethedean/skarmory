@@ -48,6 +48,8 @@ pub struct Function {
     pub parameters: Vec<Parameter>,
     /// All names owned by this function, including bindings on other branches.
     pub locals: BTreeSet<String>,
+    /// Names read from enclosing scopes, including reads by nested functions.
+    pub free_names: BTreeSet<String>,
     pub body: Vec<Statement>,
 }
 
@@ -336,12 +338,13 @@ impl Lowering<'_> {
             });
         }
         let body = self.suite(&node.body, true, depth)?;
-        collect_locals(&body, &mut locals);
+        let free_names = collect_scope_names(&body, &mut locals);
         Ok(Function {
             name: node.name.to_string(),
             location: self.lines.locate(node.name.start()),
             parameters,
             locals,
+            free_names,
             body,
         })
     }
@@ -587,25 +590,75 @@ fn has_surrogate_escape(mut token: &str) -> bool {
     false
 }
 
-fn collect_locals(statements: &[Statement], locals: &mut BTreeSet<String>) {
-    for statement in statements {
+fn collect_scope_names(
+    statements: &[Statement],
+    locals: &mut BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut reads = BTreeSet::new();
+    let mut statements: Vec<_> = statements.iter().collect();
+    let mut expressions = Vec::new();
+    while let Some(statement) = statements.pop() {
         match &statement.kind {
             StatementKind::Function(function) => {
                 locals.insert(function.name.clone());
+                reads.extend(function.free_names.iter().cloned());
+                // Defaults are evaluated when the nested function is defined.
+                expressions.extend(
+                    function
+                        .parameters
+                        .iter()
+                        .filter_map(|p| p.default.as_ref()),
+                );
             }
             StatementKind::Import(import) => {
                 locals.insert(import.local_name().into());
             }
-            StatementKind::Assign { names, .. } => locals.extend(names.iter().cloned()),
-            StatementKind::If {
-                body, otherwise, ..
-            } => {
-                collect_locals(body, locals);
-                collect_locals(otherwise, locals);
+            StatementKind::Assign { names, value } => {
+                locals.extend(names.iter().cloned());
+                expressions.push(value);
             }
-            StatementKind::Return(_) | StatementKind::Expr(_) => {}
+            StatementKind::If {
+                test,
+                body,
+                otherwise,
+            } => {
+                expressions.push(test);
+                statements.extend(body);
+                statements.extend(otherwise);
+            }
+            StatementKind::Return(value) => expressions.extend(value.as_ref()),
+            StatementKind::Expr(value) => expressions.push(value),
         }
     }
+    while let Some(expression) = expressions.pop() {
+        match &expression.kind {
+            ExpressionKind::Name(name) => {
+                reads.insert(name.clone());
+            }
+            ExpressionKind::Attribute { value, .. } | ExpressionKind::Not(value) => {
+                expressions.push(value);
+            }
+            ExpressionKind::Call {
+                function,
+                positional,
+                keywords,
+            } => {
+                expressions.push(function);
+                expressions.extend(positional);
+                expressions.extend(keywords.iter().map(|(_, value)| value));
+            }
+            ExpressionKind::List(values)
+            | ExpressionKind::Tuple(values)
+            | ExpressionKind::Boolean { values, .. } => expressions.extend(values),
+            ExpressionKind::Compare { left, comparisons } => {
+                expressions.push(left);
+                expressions.extend(comparisons.iter().map(|(_, value)| value));
+            }
+            ExpressionKind::Constant(_) => {}
+        }
+    }
+    reads.retain(|name| !locals.contains(name));
+    reads
 }
 
 #[cfg(test)]
@@ -619,8 +672,9 @@ mod tests {
         from .helpers import load as alias
     elif flag:
         target = arg
-    def nested():
+    def nested(value=make_default()):
         inner = 1
+        return arg or module_value
     return target
 ";
         let facts = extract(source).unwrap();
@@ -632,6 +686,14 @@ mod tests {
         assert_eq!(
             outer.locals.iter().map(String::as_str).collect::<Vec<_>>(),
             ["alias", "arg", "args", "flag", "kwargs", "nested", "target"],
+        );
+        assert_eq!(
+            outer
+                .free_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["make_default", "module_value"],
         );
         assert_eq!(
             outer.parameters.iter().map(|p| p.kind).collect::<Vec<_>>(),
