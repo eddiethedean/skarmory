@@ -63,6 +63,7 @@ pub struct Definition {
     pub body: Vec<Statement>,
     pub decorators: Vec<Expression>,
     pub parameters: Vec<Name>,
+    pub has_positional_parameter: bool,
     pub simple_positional_parameters: bool,
     pub defaults: Vec<Expression>,
     pub annotations: Vec<Expression>,
@@ -394,6 +395,8 @@ impl Lowering<'_> {
                             .iter()
                             .map(|parameter| self.name(parameter.name()))
                             .collect(),
+                        has_positional_parameter: !(node.parameters.posonlyargs.is_empty()
+                            && node.parameters.args.is_empty()),
                         simple_positional_parameters: (node.parameters.posonlyargs.is_empty()
                             && node.parameters.kwonlyargs.is_empty()
                             && node.parameters.vararg.is_none()
@@ -425,6 +428,7 @@ impl Lowering<'_> {
                             .map(|item| expression(&item.expression))
                             .collect::<Result<_, _>>()?,
                         parameters: Vec::new(),
+                        has_positional_parameter: false,
                         simple_positional_parameters: false,
                         defaults: Vec::new(),
                         annotations: Vec::new(),

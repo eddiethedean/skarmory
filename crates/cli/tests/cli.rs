@@ -1079,6 +1079,93 @@ fn skylos_resolves_base_calls_when_a_subclass_definition_is_dormant() {
 }
 
 #[test]
+fn skylos_treats_static_and_non_receiver_self_as_ordinary_parameters() {
+    let project = skylos_fixture();
+    let source = r#"from builtins import staticmethod as as_static
+
+def observed():
+    print("receiver method ran")
+
+class Receiver:
+    def run(self):
+        observed()
+
+class Facade:
+    def run(self):
+        pass
+
+"#;
+    for (definition, call) in [
+        (
+            "    @as_static\n    def dispatch(self):",
+            "Facade.dispatch(Receiver())",
+        ),
+        (
+            "    def dispatch(instance, self):",
+            "Facade().dispatch(Receiver())",
+        ),
+    ] {
+        fs::write(
+            project.path().join("main.py"),
+            format!("{source}{definition}\n        self.run()\n\n{call}\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{report}");
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert_eq!(report["unused_functions"], serde_json::json!([]));
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_call")
+        );
+        assert!(!report["dead_code_evidence"].as_array().unwrap().iter().any(
+            |edge| edge["full_name"] == "main.Facade.run" && edge["kind"] == "direct_call"
+        ));
+    }
+}
+
+#[test]
+fn skylos_preserves_a_positional_only_instance_receiver() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("main.py"),
+        r#"def identity(function):
+    return function
+
+def observed():
+    print("receiver method ran")
+
+class Receiver:
+    def run(self):
+        observed()
+
+    @identity
+    def dispatch(self, /):
+        self.run()
+
+Receiver().dispatch()
+"#,
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+    assert!(
+        report["dead_code_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["full_name"] == "main.Receiver.run" && edge["kind"] == "direct_call")
+    );
+}
+
+#[test]
 fn skylos_evaluates_a_lazy_base_only_for_an_executed_class_definition() {
     let project = skylos_fixture();
     fs::write(

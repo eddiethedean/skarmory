@@ -174,6 +174,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         conditional: BTreeMap::new(),
         dormant_classes: BTreeSet::new(),
         subclassed: BTreeSet::new(),
+        instance_receivers: BTreeMap::new(),
         issues: Vec::new(),
         scope_issues: Vec::new(),
         probing_identity: false,
@@ -231,6 +232,7 @@ struct Graph<'a> {
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
     dormant_classes: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
+    instance_receivers: BTreeMap<SymbolId, SymbolId>,
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     probing_identity: bool,
@@ -1084,14 +1086,10 @@ impl<'a> Graph<'a> {
             }
             Binding::Variable(None, _) => Value::Unknown,
             Binding::Parameter => {
-                if symbol.name.text == "self"
-                    && let Some(parent) = self.scopes[scope]
-                        .parent
-                        .and_then(|parent| self.scopes[parent].owner)
-                    && self.is_class(parent)
-                    && !self.subclassed.contains(&parent)
+                if let Some(&class) = self.instance_receivers.get(&id)
+                    && !self.subclassed.contains(&class)
                 {
-                    return Value::Instance(parent);
+                    return Value::Instance(class);
                 }
                 Value::Unknown
             }
@@ -1996,10 +1994,12 @@ impl<'a> Graph<'a> {
                     }
                     let target = self.by_location
                         [&(scope, definition.name.at.line, definition.name.at.column)];
-                    if definition.kind == DefinitionKind::Class
-                        && let Binding::Definition(_, body) = self.symbols[target].binding
-                    {
-                        self.scopes[scope].class_bodies.push(body);
+                    let Binding::Definition(_, definition_scope) = self.symbols[target].binding
+                    else {
+                        unreachable!()
+                    };
+                    if definition.kind == DefinitionKind::Class {
+                        self.scopes[scope].class_bodies.push(definition_scope);
                     }
                     for annotation in &definition.annotations {
                         self.annotation(scope, annotation, at, true);
@@ -2015,8 +2015,24 @@ impl<'a> Graph<'a> {
                         }
                         self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
                     }
+                    let mut preserves_receiver = true;
                     for decorator in &definition.decorators {
-                        self.decorator(scope, decorator, target, at);
+                        preserves_receiver &= self.decorator(scope, decorator, target, at);
+                    }
+                    if preserves_receiver
+                        && definition.has_positional_parameter
+                        && !matches!(
+                            definition.name.text.as_str(),
+                            "__new__" | "__init_subclass__" | "__class_getitem__"
+                        )
+                        && let Some(class) = self.scopes[scope].owner
+                        && self.is_class(class)
+                        && let Some(parameter) = definition.parameters.first()
+                        && parameter.text == "self"
+                    {
+                        let receiver = self.by_location
+                            [&(definition_scope, parameter.at.line, parameter.at.column)];
+                        self.instance_receivers.insert(receiver, class);
                     }
                 }
                 StatementKind::Assign {
@@ -2098,13 +2114,14 @@ impl<'a> Graph<'a> {
         false
     }
 
+    /// Returns whether the decorator preserves the function's instance binding.
     fn decorator(
         &mut self,
         scope: ScopeId,
         decorator: &Expression,
         target: SymbolId,
         before: Location,
-    ) {
+    ) -> bool {
         let (function, args, keywords) = match &decorator.kind {
             ExpressionKind::Call {
                 function,
@@ -2134,7 +2151,7 @@ impl<'a> Graph<'a> {
                             "unresolved_fixture_name",
                             "pytest fixture name could not be resolved",
                         );
-                        return;
+                        return false;
                     }
                 } else {
                     None
@@ -2164,7 +2181,12 @@ impl<'a> Graph<'a> {
                 let Binding::Definition(definition, _) = self.symbols[id].binding else {
                     unreachable!()
                 };
-                if !is_identity_decorator(definition) {
+                if is_identity_decorator(definition) {
+                    return definition.kind == DefinitionKind::Function
+                        && definition.has_positional_parameter
+                        && definition.decorators.is_empty()
+                        && !matches!(decorator.kind, ExpressionKind::Call { .. });
+                } else {
                     self.scope_issue(
                         scope,
                         decorator.at,
@@ -2185,6 +2207,7 @@ impl<'a> Graph<'a> {
                 "decorator identity is outside the bounded model",
             ),
         };
+        false
     }
 
     fn pytest_class_names(&mut self, class: SymbolId) -> Option<(PytestNames<'a>, bool)> {
