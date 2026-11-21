@@ -937,6 +937,45 @@ fn skylos_prefers_a_lazy_export_until_the_same_named_child_is_attached() {
 }
 
 #[test]
+fn skylos_reports_a_failed_lazy_import_in_an_eager_annotation() {
+    let project = skylos_fixture();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("__init__.py"),
+        "def __getattr__(name):\n    if name == 'Type':\n        from .absent import Type\n        return Type\n    raise AttributeError(name)\n",
+    )
+    .unwrap();
+    for (prefix, status) in [("", 2), ("from __future__ import annotations\n", 1)] {
+        fs::write(
+            project.path().join("main.py"),
+            format!("{prefix}import pkg\ndef called(arg: pkg.Type):\n    return arg\nassert called(1) == 1\n\ndef orphan():\n    pass\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(status), "{report}");
+        if status == 2 {
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert!(
+                report["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| {
+                        issue["kind"] == "unresolved_import" && issue["file"] == "pkg/__init__.py"
+                    }),
+                "{report}"
+            );
+        } else {
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert_eq!(report["analysis_errors"], serde_json::json!([]));
+            assert_eq!(report["unused_functions"][0]["full_name"], "main.orphan");
+        }
+    }
+}
+
+#[test]
 fn skylos_distinguishes_deferred_annotations_from_runtime_reads() {
     let project = skylos_fixture();
     let package = project.path().join("pkg");

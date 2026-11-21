@@ -1688,6 +1688,9 @@ impl<'a> Graph<'a> {
                 self.walk(scope, expr, before);
             }
             _ => {
+                if evaluated {
+                    self.walk(scope, expr, before);
+                }
                 let previous =
                     std::mem::replace(&mut self.resolving_deferred_annotation, !evaluated);
                 let value = self.identity(scope, expr, before, 0);
@@ -1965,19 +1968,15 @@ impl<'a> Graph<'a> {
             certain &= !candidates.iter().copied().any(disables_collection);
         }
         if !resolved {
-            if self
-                .pytest_registrations(&names, "test_")
-                .iter()
-                .any(|(registration, _)| self.is_pytest_function(registration.target))
-            {
-                let symbol = &self.symbols[class];
-                self.scope_issue(
-                    symbol.scope,
-                    symbol.name.at,
-                    "unresolved_pytest_class",
-                    "pytest test collection through this class hierarchy could not be resolved",
-                );
-            }
+            // Unresolved bases can supply tests and fixtures even when the
+            // collected class declares none of its own.
+            let symbol = &self.symbols[class];
+            self.scope_issue(
+                symbol.scope,
+                symbol.name.at,
+                "unresolved_pytest_class",
+                "pytest test collection through this class hierarchy could not be resolved",
+            );
             return None;
         }
         Some((names, certain))
@@ -2002,55 +2001,127 @@ impl<'a> Graph<'a> {
         &bindings[first..]
     }
 
-    fn pytest_target(&self, mut id: SymbolId) -> Option<PytestRegistration> {
+    fn pytest_target(&self, id: SymbolId) -> Option<PytestRegistration> {
         let mut bindings = Vec::new();
-        let mut before = None;
-        for _ in 0..MAX_BINDING_CHAIN {
-            if before.is_some_and(|at| {
+        let Value::Callable(target) = self.pytest_binding(id, None, &mut bindings, 0)? else {
+            return None;
+        };
+        Some(PytestRegistration { target, bindings })
+    }
+
+    // Collect identity evidence without marking unrelated namespace entries
+    // as used. Only a test or fixture that is retained consumes this evidence.
+    fn pytest_binding(
+        &self,
+        id: SymbolId,
+        before: Option<Location>,
+        bindings: &mut Vec<SymbolId>,
+        depth: usize,
+    ) -> Option<Value> {
+        if depth >= MAX_BINDING_CHAIN
+            || before.is_some_and(|at| {
                 self.conditional
                     .get(&id)
                     .is_some_and(|guards| guards.iter().any(|span| !span.contains(&position(at))))
-            }) {
-                return None;
+            })
+        {
+            return None;
+        }
+        let symbol = &self.symbols[id];
+        match symbol.binding {
+            Binding::Definition(_, _) => Some(Value::Callable(id)),
+            Binding::Variable(Some(value), at) => {
+                bindings.push(id);
+                self.pytest_expression(symbol.scope, value, at, bindings, depth + 1)
             }
-            let symbol = &self.symbols[id];
-            match symbol.binding {
-                Binding::Definition(_, _) => {
-                    return Some(PytestRegistration {
-                        target: id,
-                        bindings,
-                    });
-                }
-                Binding::Variable(
-                    Some(Expression {
-                        kind: ExpressionKind::Name(name),
-                        ..
-                    }),
-                    at,
-                ) => {
-                    bindings.push(id);
-                    id = self.lexical(symbol.scope, name, at)?;
-                    before = Some(if self.symbols[id].scope == symbol.scope {
-                        at
-                    } else {
-                        END
-                    });
-                }
-                Binding::Import(import) => {
-                    let source = self.scopes[symbol.scope].file;
-                    let module = self.relative_module(source, import)?;
+            Binding::Import(import) => {
+                bindings.push(id);
+                let source = self.scopes[symbol.scope].file;
+                let module = self.relative_module(source, import)?;
+                if let Some(member) = &import.member {
                     let file = *self.modules.get(module.as_str())?;
-                    let at = self
+                    let before = self
                         .import_member_position(symbol.scope, &module, import)
                         .unwrap_or(END);
-                    bindings.push(id);
-                    id = self.local(file, import.member.as_deref()?, at)?;
-                    before = Some(at);
+                    let selected = self.selected_module_member(
+                        file,
+                        member,
+                        before,
+                        (symbol.scope, import.local.at),
+                        ModuleMemberAccess::FromImport,
+                    );
+                    self.pytest_member(selected, before, bindings, depth + 1)
+                } else {
+                    let visible = if import.exposes_top_level {
+                        module.split('.').next().unwrap_or(&module)
+                    } else {
+                        &module
+                    };
+                    self.modules.get(visible).copied().map(Value::Module)
                 }
-                _ => return None,
             }
+            _ => None,
         }
-        None
+    }
+
+    fn pytest_expression(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        bindings: &mut Vec<SymbolId>,
+        depth: usize,
+    ) -> Option<Value> {
+        if depth >= MAX_BINDING_CHAIN {
+            return None;
+        }
+        match &expression.kind {
+            ExpressionKind::Name(name) => {
+                let id = self.lexical(scope, name, before)?;
+                let before = if self.symbols[id].scope == scope {
+                    before
+                } else {
+                    END
+                };
+                self.pytest_binding(id, Some(before), bindings, depth)
+            }
+            ExpressionKind::Member(base, member) => {
+                let Value::Module(file) =
+                    self.pytest_expression(scope, base, before, bindings, depth + 1)?
+                else {
+                    return None;
+                };
+                let selected = self.selected_module_member(
+                    file,
+                    member,
+                    END,
+                    (scope, before),
+                    ModuleMemberAccess::Attribute,
+                );
+                self.pytest_member(selected, END, bindings, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    fn pytest_member(
+        &self,
+        member: ModuleMember<'a>,
+        before: Location,
+        bindings: &mut Vec<SymbolId>,
+        depth: usize,
+    ) -> Option<Value> {
+        match member {
+            ModuleMember::Binding(id, import) => {
+                bindings.extend(import);
+                self.pytest_binding(id, Some(before), bindings, depth)
+            }
+            ModuleMember::Submodule(file, imports) => {
+                bindings.extend(imports);
+                Some(Value::Module(file))
+            }
+            _ => None,
+        }
     }
 
     fn pytest_registrations(
