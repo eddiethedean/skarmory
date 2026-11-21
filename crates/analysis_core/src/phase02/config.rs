@@ -58,6 +58,7 @@ pub(crate) struct Selection {
 struct Pattern {
     text: String,
     matcher: GlobMatcher,
+    anchored: bool,
 }
 
 impl Pattern {
@@ -73,7 +74,43 @@ impl Pattern {
             .build()
             .map_err(|error| ConfigError::new(format!("invalid pattern {pattern:?}: {error}")))?
             .compile_matcher();
-        Ok(Self { text, matcher })
+        Ok(Self {
+            text,
+            matcher,
+            anchored: false,
+        })
+    }
+
+    fn selection(value: &str, input: &Path) -> Result<Self, ConfigError> {
+        let path = Path::new(value);
+        if !path.is_absolute() {
+            let text = value.replace('\\', "/");
+            let normalized = text.trim_start_matches("./").trim_end_matches('/');
+            return Self::new(if normalized.is_empty() {
+                &text
+            } else {
+                normalized
+            });
+        }
+        let mut text = value.to_owned();
+        if let Ok(root) = fs::canonicalize(input) {
+            let root = if root.is_file() {
+                root.parent().unwrap_or(&root)
+            } else {
+                &root
+            };
+            let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+            if let Ok(relative) = absolute.strip_prefix(root)
+                && !relative.as_os_str().is_empty()
+            {
+                text = relative.to_string_lossy().into_owned();
+            }
+        }
+        let mut pattern = Self::new(&text)?;
+        // A literal absolute path must not also match its relative suffix in
+        // a different directory under the project.
+        pattern.anchored = true;
+        Ok(pattern)
     }
 
     fn matches(&self, value: &str) -> bool {
@@ -84,6 +121,33 @@ impl Pattern {
         self.matches(value)
             || (!self.text.contains('/') && value.split('/').any(|part| self.matches(part)))
             || value.ends_with(&self.text)
+    }
+
+    fn selection_matches(&self, value: &str) -> bool {
+        if self.matches(value) {
+            return true;
+        }
+        if self.anchored {
+            return false;
+        }
+        if !self.text.contains('/') {
+            return value.split('/').any(|part| self.matches(part));
+        }
+        !self.has_glob()
+            && value
+                .match_indices('/')
+                .any(|(end, _)| self.matches(&value[end + 1..]))
+    }
+
+    fn selection_matches_ancestor(&self, value: &str) -> bool {
+        self.selection_matches(value)
+            || value
+                .match_indices('/')
+                .any(|(end, _)| self.selection_matches(&value[..end]))
+    }
+
+    fn has_glob(&self) -> bool {
+        self.text.contains(['*', '?', '['])
     }
 }
 
@@ -109,16 +173,15 @@ impl Selection {
         if self
             .include
             .iter()
-            .any(|pattern| pattern.path_matches(label))
+            .any(|pattern| pattern.selection_matches_ancestor(label))
         {
             return None;
         }
-        if self.exclude.iter().any(|pattern| {
-            pattern.path_matches(label)
-                || label
-                    .match_indices('/')
-                    .any(|(end, _)| pattern.path_matches(&label[..end]))
-        }) {
+        if self
+            .exclude
+            .iter()
+            .any(|pattern| pattern.selection_matches_ancestor(label))
+        {
             return Some("configured_exclusion");
         }
         if self.defaults
@@ -132,10 +195,12 @@ impl Selection {
     }
 
     pub(crate) fn may_include_children(&self, label: &str) -> bool {
+        // A relative pattern can match a path suffix that begins anywhere
+        // below this directory, even when the directory itself is excluded.
         self.include.iter().any(|pattern| {
-            pattern.text.contains(['*', '?', '['])
+            !pattern.anchored
+                || pattern.has_glob()
                 || pattern.text.starts_with(&format!("{label}/"))
-                || !pattern.text.contains('/')
         })
     }
 
@@ -145,7 +210,7 @@ impl Selection {
                 .keep_generated
                 .iter()
                 .chain(&self.include)
-                .any(|pattern| pattern.path_matches(label))
+                .any(|pattern| pattern.selection_matches_ancestor(label))
             && source
                 .lines()
                 .take(80)
@@ -484,6 +549,13 @@ fn patterns(values: &[String]) -> Result<Vec<Pattern>, ConfigError> {
     values.iter().map(|value| Pattern::new(value)).collect()
 }
 
+fn selection_patterns(values: &[String], input: &Path) -> Result<Vec<Pattern>, ConfigError> {
+    values
+        .iter()
+        .map(|value| Pattern::selection(value, input))
+        .collect()
+}
+
 pub(super) fn load(path: &Path, options: &Options) -> Result<Config, ConfigError> {
     load_at(path, options, OffsetDateTime::now_utc().date())
 }
@@ -585,9 +657,9 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
         warnings,
         path_rules,
         selection: Selection {
-            include: patterns(&options.includes)?,
-            exclude: patterns(&excludes)?,
-            keep_generated: patterns(&options.generated_keep_paths)?,
+            include: selection_patterns(&options.includes, path)?,
+            exclude: selection_patterns(&excludes, path)?,
+            keep_generated: selection_patterns(&options.generated_keep_paths, path)?,
             defaults: !options.no_default_excludes,
             include_generated: options.include_generated.unwrap_or(include_generated),
         },
