@@ -100,6 +100,22 @@ struct PytestFixture {
     autouse: bool,
 }
 
+struct PytestRegistration {
+    target: SymbolId,
+    imports: Vec<SymbolId>,
+}
+
+enum LazyMember<'a> {
+    Branch {
+        scope: ScopeId,
+        imports: &'a [Statement],
+        value: &'a Expression,
+        at: Location,
+    },
+    Missing,
+    Unknown,
+}
+
 pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
     let mut graph = Graph {
         files,
@@ -415,11 +431,17 @@ impl<'a> Graph<'a> {
             .then_some(import.local.at)
     }
 
-    fn record_import(&mut self, scope: ScopeId, module: &str, import: &Import) {
-        let source = self.scopes[scope].file;
+    fn record_import(
+        &mut self,
+        scope: ScopeId,
+        source_scope: ScopeId,
+        module: &str,
+        import: &Import,
+    ) -> Option<(ScopeId, &'a [Statement])> {
+        let source = self.scopes[source_scope].file;
         let own_module = &self.files[source].module;
         let module_file = self.modules.get(module).copied();
-        let before = self.import_member_position(scope, module, import);
+        let before = self.import_member_position(source_scope, module, import);
         let child = import.member.as_deref().and_then(|member| {
             if module_file
                 .is_some_and(|file| self.local(file, member, before.unwrap_or(END)).is_some())
@@ -441,21 +463,6 @@ impl<'a> Graph<'a> {
         if let Some(child) = child {
             self.scopes[scope].imports.push(child);
         }
-        if let (Some(target), Some(member)) = (module_file, import.member.as_deref())
-            && child.is_none()
-            && self.local(target, member, before.unwrap_or(END)).is_none()
-            && self
-                .local(target, "__getattr__", before.unwrap_or(END))
-                .is_none()
-            && !has_implicit_module_member(member, self.files[target].is_package)
-        {
-            self.scope_issue(
-                scope,
-                import.local.at,
-                "unresolved_import",
-                format!("{module:?} has no selected binding for {member:?}"),
-            );
-        }
         // Importing a dotted module can also execute its package initializers.
         let mut has_selected_parent = false;
         for (end, _) in module.match_indices('.') {
@@ -468,12 +475,69 @@ impl<'a> Graph<'a> {
             }
         }
         if import.level == 0 && module_file.is_none() && has_selected_parent {
-            self.scope_issue(
+            self.import_issue(
                 scope,
-                import.local.at,
-                "unresolved_import",
+                source,
+                import,
                 format!("no source selected for submodule {module:?}"),
             );
+        }
+        if let (Some(target), Some(member)) = (module_file, import.member.as_deref())
+            && child.is_none()
+            && self.local(target, member, before.unwrap_or(END)).is_none()
+            && !has_implicit_module_member(member, self.files[target].is_package)
+        {
+            let lookup = self
+                .local(target, "__getattr__", before.unwrap_or(END))
+                .map_or(LazyMember::Missing, |id| self.lazy_lookup(id, member));
+            match lookup {
+                LazyMember::Branch { scope, imports, .. } => return Some((scope, imports)),
+                LazyMember::Missing => self.import_issue(
+                    scope,
+                    source,
+                    import,
+                    format!("{module:?} has no selected binding for {member:?}"),
+                ),
+                LazyMember::Unknown => {}
+            }
+        }
+        None
+    }
+
+    fn import_issue(&mut self, scope: ScopeId, file: usize, import: &Import, message: String) {
+        self.scope_issues.push((
+            scope,
+            Issue::new("unresolved_import", &self.files[file].path, message).at(import.local.at),
+        ));
+    }
+
+    fn record_lazy_imports(&mut self, scope: ScopeId, handler: ScopeId, imports: &'a [Statement]) {
+        // Only the selected branch executes. Put its import edges on the
+        // caller so initialization can detect a return to a partial module.
+        let mut pending = vec![(handler, imports)];
+        let mut visited = BTreeSet::new();
+        while let Some((handler, imports)) = pending.pop() {
+            let file = self.scopes[handler].file;
+            for statement in imports {
+                let StatementKind::Import(import) = &statement.kind else {
+                    continue;
+                };
+                if !visited.insert((handler, position(import.local.at))) {
+                    continue;
+                }
+                let Some(module) = self.relative_module(file, import) else {
+                    self.import_issue(
+                        scope,
+                        file,
+                        import,
+                        "relative import escapes its selected package".into(),
+                    );
+                    continue;
+                };
+                if let Some(branch) = self.record_import(scope, handler, &module, import) {
+                    pending.push(branch);
+                }
+            }
         }
     }
 
@@ -696,14 +760,42 @@ impl<'a> Graph<'a> {
     }
 
     fn lazy_member(&mut self, id: SymbolId, member: &str, depth: usize) -> Value {
+        if let LazyMember::Branch {
+            scope, value, at, ..
+        } = self.lazy_lookup(id, member)
+        {
+            self.read.insert(id);
+            return self.identity(scope, value, at, depth + 1);
+        }
+        Value::Unknown
+    }
+
+    fn lazy_lookup(&self, id: SymbolId, member: &str) -> LazyMember<'a> {
         let Binding::Definition(definition, scope) = self.symbols[id].binding else {
-            return Value::Unknown;
+            return LazyMember::Unknown;
         };
         let [parameter] = definition.parameters.as_slice() else {
-            return Value::Unknown;
+            return LazyMember::Unknown;
         };
+        if definition.kind != DefinitionKind::Function {
+            return LazyMember::Unknown;
+        }
         // Prove literal dispatch only, after ordinary module lookup failed.
         for statement in &definition.body {
+            if let StatementKind::Raise(Some(exception)) = &statement.kind {
+                let target = match &exception.kind {
+                    ExpressionKind::Call { function, .. } => function,
+                    _ => exception,
+                };
+                if matches!(&target.kind, ExpressionKind::Name(name) if name == "AttributeError")
+                    && self
+                        .lexical(scope, "AttributeError", statement.at)
+                        .is_none()
+                    && !self.scopes[scope].names.contains_key("AttributeError")
+                {
+                    return LazyMember::Missing;
+                }
+            }
             let StatementKind::If {
                 test,
                 body,
@@ -732,20 +824,26 @@ impl<'a> Graph<'a> {
             if name != &parameter.text {
                 break;
             }
-            if text == member
-                && let Some(Statement {
+            if text == member {
+                if let Some(Statement {
                     kind: StatementKind::Return(Some(value)),
                     at,
                 }) = body.last()
-                && body[..body.len() - 1]
-                    .iter()
-                    .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
-            {
-                self.read.insert(id);
-                return self.identity(scope, value, *at, depth + 1);
+                    && body[..body.len() - 1]
+                        .iter()
+                        .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
+                {
+                    return LazyMember::Branch {
+                        scope,
+                        imports: &body[..body.len() - 1],
+                        value,
+                        at: *at,
+                    };
+                }
+                return LazyMember::Unknown;
             }
         }
-        Value::Unknown
+        LazyMember::Unknown
     }
 
     fn member(&mut self, base: Value, name: &str, depth: usize) -> Value {
@@ -1110,9 +1208,25 @@ impl<'a> Graph<'a> {
                 self.walk(scope, value, before);
                 self.activate_argument(scope, Some(value), before, "awaited_coroutine", expr.at);
             }
-            ExpressionKind::Member(base, _) => {
+            ExpressionKind::Member(base, name) => {
                 self.walk(scope, base, before);
-                self.identity(scope, expr, before, 0);
+                let base = self.identity(scope, base, before, 1);
+                if let Value::Module(file) = base
+                    && let Some(id) = self.local(file, "__getattr__", END)
+                    && self.local(file, name, END).is_none()
+                    && !self
+                        .modules
+                        .contains_key(format!("{}.{name}", self.files[file].module).as_str())
+                    && !has_implicit_module_member(name, self.files[file].is_package)
+                    && let LazyMember::Branch {
+                        scope: handler,
+                        imports,
+                        ..
+                    } = self.lazy_lookup(id, name)
+                {
+                    self.record_lazy_imports(scope, handler, imports);
+                }
+                self.member(base, name, 1);
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
             ExpressionKind::Compare { left, right, .. } => {
@@ -1333,8 +1447,11 @@ impl<'a> Graph<'a> {
                 }
                 StatementKind::Import(import) => {
                     let module = self.relative_module(self.scopes[scope].file, import);
-                    if let Some(module) = &module {
-                        self.record_import(scope, module, import);
+                    if let Some(module) = &module
+                        && let Some((handler, imports)) =
+                            self.record_import(scope, scope, module, import)
+                    {
+                        self.record_lazy_imports(scope, handler, imports);
                     }
                     if import.level > 0
                         && !module.is_some_and(|module| {
@@ -1495,7 +1612,7 @@ impl<'a> Graph<'a> {
     }
 
     fn test_edges(&mut self) -> Vec<Edge> {
-        let mut queue = VecDeque::new();
+        let mut tests = BTreeMap::<_, Vec<_>>::new();
         let mut roots = BTreeSet::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
             let file = self.scopes[symbol.scope].file;
@@ -1504,7 +1621,7 @@ impl<'a> Graph<'a> {
                 && symbol.name.text.starts_with("test_")
                 && self.is_pytest_function(id)
             {
-                queue.push_back((id, file, None));
+                tests.entry((file, None)).or_default().push(id);
             }
         }
         for file in 0..self.files.len() {
@@ -1531,7 +1648,7 @@ impl<'a> Graph<'a> {
                 };
                 if test_function && imported && self.is_pytest_function(target) {
                     self.read.extend(imports);
-                    queue.push_back((target, file, None));
+                    tests.entry((file, None)).or_default().push(target);
                 } else if test_class && let Some(class) = self.pytest_class_scope(target) {
                     let mut has_tests = false;
                     for &name in self.scopes[class].names.keys() {
@@ -1540,7 +1657,7 @@ impl<'a> Graph<'a> {
                             && self.is_pytest_function(test)
                         {
                             has_tests = true;
-                            queue.push_back((test, file, Some(class)));
+                            tests.entry((file, Some(class))).or_default().push(test);
                         }
                     }
                     if has_tests {
@@ -1550,10 +1667,6 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        // Fixture dependencies are looked up from the requesting test's scope,
-        // including when several tests import the same fixture.
-        let mut visited = BTreeSet::new();
-        let mut autouse_contexts = BTreeSet::new();
         let conftests: BTreeMap<_, _> = self
             .files
             .iter()
@@ -1562,58 +1675,17 @@ impl<'a> Graph<'a> {
                 pytest_conftest_prefix(&source.path).map(|prefix| (prefix, file))
             })
             .collect();
-        while let Some((id, file, class)) = queue.pop_front() {
-            if !visited.insert((id, file, class)) {
+        for ((file, class), tests) in tests {
+            roots.extend(&tests);
+            if self.fixtures.is_empty() {
                 continue;
             }
-            roots.insert(id);
-            let Binding::Definition(definition, _) = self.symbols[id].binding else {
-                continue;
-            };
-            let activate_autouse = autouse_contexts.insert((file, class));
-            if self.fixtures.is_empty() || (definition.parameters.is_empty() && !activate_autouse) {
-                continue;
-            }
-            let requested =
-                |name: &str| definition.parameters.iter().any(|param| param.text == name);
             let path = &self.files[file].path;
-            let candidates = self.fixtures.iter().filter(|&(&fixture, _)| {
-                let fixture_scope = self.symbols[fixture].scope;
-                let fixture_file = self.scopes[fixture_scope].file;
-                Some(fixture_scope) == class
-                    || fixture_scope == file
-                    || (fixture_scope == fixture_file
-                        && pytest_conftest_prefix(&self.files[fixture_file].path)
-                            .is_some_and(|parent| path.starts_with(parent)))
-            });
-            for (&fixture, registration) in candidates {
-                let name = registration
-                    .name
-                    .as_deref()
-                    .unwrap_or(&self.symbols[fixture].name.text);
-                if (activate_autouse && registration.autouse) || requested(name) {
-                    queue.push_back((fixture, file, class));
-                }
-            }
-            // The collecting module and its ancestor conftest modules register
-            // imported fixtures under the visible alias or explicit fixture name.
             let prefixes =
                 std::iter::once("").chain(path.match_indices('/').map(|(end, _)| &path[..=end]));
             let ancestors = prefixes.filter_map(|prefix| conftests.get(prefix).copied());
-            for namespace in std::iter::once(file).chain(ancestors) {
-                for &alias in self.scopes[namespace].names.keys() {
-                    if let Some(import) = self.local(namespace, alias, END)
-                        && matches!(self.symbols[import].binding, Binding::Import(_))
-                        && let Some((fixture, imports)) = self.pytest_import_target(import)
-                        && let Some(registration) = self.fixtures.get(&fixture)
-                        && ((activate_autouse && registration.autouse)
-                            || requested(registration.name.as_deref().unwrap_or(alias)))
-                    {
-                        self.read.extend(imports);
-                        queue.push_back((fixture, file, class));
-                    }
-                }
-            }
+            let namespaces = ancestors.chain(std::iter::once(file)).chain(class);
+            self.collect_pytest_fixtures(namespaces, &tests, &mut roots);
         }
         roots
             .into_iter()
@@ -1623,6 +1695,92 @@ impl<'a> Graph<'a> {
                 certainty: "certain",
             })
             .collect()
+    }
+
+    fn collect_pytest_fixtures(
+        &mut self,
+        namespaces: impl Iterator<Item = ScopeId>,
+        tests: &[SymbolId],
+        roots: &mut BTreeSet<SymbolId>,
+    ) {
+        // Register from outermost to innermost. Pytest requests an autouse
+        // fixture by name, so a closer override can satisfy that request too.
+        let mut registrations = BTreeMap::<String, Vec<Vec<PytestRegistration>>>::new();
+        for namespace in namespaces {
+            for (&alias, bindings) in &self.scopes[namespace].names {
+                // Keep possible conditional bindings at the same precedence.
+                let mut alternatives = BTreeMap::<&str, Vec<_>>::new();
+                for &binding in bindings.iter().rev() {
+                    let resolved = if self.fixtures.contains_key(&binding) {
+                        Some((binding, Vec::new()))
+                    } else {
+                        self.pytest_import_target(binding)
+                    };
+                    if let Some((target, imports)) = resolved
+                        && let Some(fixture) = self.fixtures.get(&target)
+                    {
+                        let name = fixture.name.as_deref().unwrap_or(alias);
+                        alternatives
+                            .entry(name)
+                            .or_default()
+                            .push(PytestRegistration { target, imports });
+                    }
+                    if !self.conditional.contains_key(&binding) {
+                        break;
+                    }
+                }
+                for (name, choices) in alternatives {
+                    registrations.entry(name.into()).or_default().push(choices);
+                }
+            }
+        }
+
+        let mut pending = VecDeque::new();
+        for (name, choices) in &registrations {
+            if choices
+                .iter()
+                .flatten()
+                .any(|choice| self.fixtures[&choice.target].autouse)
+            {
+                pending.push_back((name.as_str(), choices.len() - 1));
+            }
+        }
+        for &test in tests {
+            let Binding::Definition(definition, _) = self.symbols[test].binding else {
+                continue;
+            };
+            for parameter in &definition.parameters {
+                if let Some((name, choices)) = registrations.get_key_value(&parameter.text) {
+                    pending.push_back((name.as_str(), choices.len() - 1));
+                }
+            }
+        }
+        let mut visited = BTreeSet::new();
+        while let Some((name, index)) = pending.pop_front() {
+            if !visited.insert((name, index)) {
+                continue;
+            }
+            for registration in &registrations[name][index] {
+                roots.insert(registration.target);
+                self.read.extend(&registration.imports);
+                let Binding::Definition(definition, _) = self.symbols[registration.target].binding
+                else {
+                    continue;
+                };
+                for parameter in &definition.parameters {
+                    if parameter.text == name {
+                        // An override can explicitly request the next outer fixture.
+                        if let Some(parent) = index.checked_sub(1) {
+                            pending.push_back((name, parent));
+                        }
+                    } else if let Some((name, choices)) =
+                        registrations.get_key_value(&parameter.text)
+                    {
+                        pending.push_back((name.as_str(), choices.len() - 1));
+                    }
+                }
+            }
+        }
     }
 
     fn external_roots(&mut self, entrypoints: &[Entrypoint]) -> Vec<Edge> {
