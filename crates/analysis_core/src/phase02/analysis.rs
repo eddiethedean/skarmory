@@ -86,13 +86,18 @@ struct Edge {
 
 struct DirectArguments {
     caller: ScopeId,
-    bounded_callbacks: BTreeSet<String>,
+    bounded_callbacks: BTreeMap<String, SymbolId>,
 }
 
 struct ParameterCall {
     scope: ScopeId,
     parameter: SymbolId,
     at: Location,
+}
+
+struct PytestFixture {
+    name: Option<String>,
+    autouse: bool,
 }
 
 pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
@@ -110,7 +115,6 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         scope_issues: Vec::new(),
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
-        called_tests: Vec::new(),
         direct_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
     };
@@ -162,8 +166,7 @@ struct Graph<'a> {
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     uncertainties: Vec<Issue>,
-    fixtures: BTreeMap<SymbolId, Option<String>>,
-    called_tests: Vec<SymbolId>,
+    fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
 }
@@ -288,7 +291,13 @@ impl<'a> Graph<'a> {
             .push(Issue::new(kind, &self.files[file].path, message).at(at));
     }
 
-    fn scope_issue(&mut self, scope: ScopeId, at: Location, kind: &'static str, message: &str) {
+    fn scope_issue(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        kind: &'static str,
+        message: impl ToString,
+    ) {
         let file = &self.files[self.scopes[scope].file];
         self.scope_issues
             .push((scope, Issue::new(kind, &file.path, message).at(at)));
@@ -395,28 +404,57 @@ impl<'a> Graph<'a> {
         Some(parts.join("."))
     }
 
+    fn import_member_position(
+        &self,
+        scope: ScopeId,
+        module: &str,
+        import: &Import,
+    ) -> Option<Location> {
+        let file = self.scopes[scope].file;
+        (scope == file && import.level > 0 && self.files[file].module == module)
+            .then_some(import.local.at)
+    }
+
     fn record_import(&mut self, scope: ScopeId, module: &str, import: &Import) {
         let source = self.scopes[scope].file;
         let own_module = &self.files[source].module;
         let module_file = self.modules.get(module).copied();
+        let before = self.import_member_position(scope, module, import);
         let child = import.member.as_deref().and_then(|member| {
-            if module_file.is_some_and(|file| self.scopes[file].names.contains_key(member)) {
+            if module_file
+                .is_some_and(|file| self.local(file, member, before.unwrap_or(END)).is_some())
+            {
                 return None;
             }
             self.modules
                 .get(format!("{module}.{member}").as_str())
                 .copied()
         });
-        // A sibling submodule import through an already-entered package need
-        // not wait for the parent's final bindings.
+        // Package self-imports can read the bindings already established at
+        // this statement. Sibling submodule imports also need no final parent state.
         if let Some(target) = module_file
-            && (target != source || import.level == 0)
+            && before.is_none()
             && !(child.is_some() && within_package(own_module, module))
         {
             self.scopes[scope].imports.push(target);
         }
         if let Some(child) = child {
             self.scopes[scope].imports.push(child);
+        }
+        if let (Some(target), Some(member)) = (module_file, import.member.as_deref())
+            && child.is_none()
+            && self.local(target, member, before.unwrap_or(END)).is_none()
+            && self
+                .local(target, "__getattr__", before.unwrap_or(END))
+                .is_none()
+            && !has_implicit_module_member(member, self.files[target].is_package)
+        {
+            self.scope_issue(
+                scope,
+                import.local.at,
+                "unresolved_import",
+                format!("{module:?} has no selected binding for {member:?}"),
+            );
         }
         // Importing a dotted module can also execute its package initializers.
         for (end, _) in module.match_indices('.') {
@@ -429,8 +467,68 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn synchronous_calls(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> {
+        self.scopes[scope].edges.iter().filter_map(|edge| {
+            if matches!(edge.kind, "direct_call" | "constructor" | "decorator")
+                && let Binding::Definition(_, body) = self.symbols[edge.target].binding
+            {
+                Some(body)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn initialization_callbacks(&self) -> Vec<Vec<ScopeId>> {
+        let mut invocations = BTreeMap::<_, Vec<_>>::new();
+        for call in &self.parameter_calls {
+            let parameter = &self.symbols[call.parameter];
+            let owner = self.scopes[parameter.scope]
+                .owner
+                .expect("parameters belong to a definition");
+            if self.direct_arguments.contains_key(&owner) {
+                invocations
+                    .entry((owner, parameter.scope))
+                    .or_default()
+                    .push(call);
+            }
+        }
+        let mut callbacks = vec![Vec::new(); self.scopes.len()];
+        for ((callee, body), invocations) in invocations {
+            // A captured parameter call matters only in a nested body that
+            // can execute during this invocation of the enclosing function.
+            let mut reached = BTreeSet::new();
+            if invocations.iter().any(|call| call.scope != body) {
+                let mut pending = vec![body];
+                while let Some(scope) = pending.pop() {
+                    if reached.insert(scope) {
+                        pending.extend(&self.scopes[scope].class_bodies);
+                        pending.extend(self.synchronous_calls(scope));
+                    }
+                }
+            }
+            let parameters: BTreeSet<_> = invocations
+                .into_iter()
+                .filter(|call| call.scope == body || reached.contains(&call.scope))
+                .map(|call| self.symbols[call.parameter].name.text.as_str())
+                .collect();
+            for call in &self.direct_arguments[&callee] {
+                for parameter in &parameters {
+                    if let Some(&target) = call.bounded_callbacks.get(*parameter)
+                        && let Binding::Definition(definition, body) = self.symbols[target].binding
+                        && definition.kind == DefinitionKind::Function
+                    {
+                        callbacks[call.caller].push(body);
+                    }
+                }
+            }
+        }
+        callbacks
+    }
+
     fn has_initialization_cycle(&self) -> bool {
         let count = self.scopes.len();
+        let callbacks = self.initialization_callbacks();
         let mut incoming = vec![Vec::new(); count];
         let mut reached = vec![false; count];
         let mut finished = Vec::with_capacity(count);
@@ -445,21 +543,13 @@ impl<'a> Graph<'a> {
             }
             pending.push((id, true));
             let scope = &self.scopes[id];
-            let calls = scope.edges.iter().filter_map(|edge| {
-                if matches!(edge.kind, "direct_call" | "constructor" | "decorator")
-                    && let Binding::Definition(_, body) = self.symbols[edge.target].binding
-                {
-                    Some(body)
-                } else {
-                    None
-                }
-            });
             for target in scope
                 .imports
                 .iter()
                 .chain(&scope.class_bodies)
+                .chain(&callbacks[id])
                 .copied()
-                .chain(calls)
+                .chain(self.synchronous_calls(id))
             {
                 incoming[target].push(id);
                 if !reached[target] {
@@ -544,7 +634,10 @@ impl<'a> Graph<'a> {
                     return Value::Unknown;
                 };
                 if let Some(member) = import.member.as_deref() {
-                    self.module_member(&module, member, depth + 1)
+                    let before = self
+                        .import_member_position(scope, &module, import)
+                        .unwrap_or(END);
+                    self.module_member_at(&module, member, before, depth + 1)
                 } else {
                     let visible_module = if import.exposes_top_level {
                         module.split('.').next().unwrap_or(&module)
@@ -561,18 +654,28 @@ impl<'a> Graph<'a> {
     }
 
     fn module_member(&mut self, module: &str, member: &str, depth: usize) -> Value {
+        self.module_member_at(module, member, END, depth)
+    }
+
+    fn module_member_at(
+        &mut self,
+        module: &str,
+        member: &str,
+        before: Location,
+        depth: usize,
+    ) -> Value {
         let submodule = format!("{module}.{member}");
         if depth >= MAX_BINDING_CHAIN {
             return Value::Unknown;
         }
         if let Some(&file) = self.modules.get(module) {
-            if let Some(id) = self.local(file, member, END) {
-                return self.binding(id, END, depth + 1);
+            if let Some(id) = self.local(file, member, before) {
+                return self.binding(id, before, depth + 1);
             }
             if let Some(&file) = self.modules.get(submodule.as_str()) {
                 return Value::Module(file);
             }
-            if let Some(id) = self.local(file, "__getattr__", END) {
+            if let Some(id) = self.local(file, "__getattr__", before) {
                 return self.lazy_member(id, member, depth + 1);
             }
             return Value::Unknown;
@@ -1048,21 +1151,15 @@ impl<'a> Graph<'a> {
         {
             return;
         }
-        let mut bounded_callbacks = BTreeSet::new();
+        let mut bounded_callbacks = BTreeMap::new();
         for (parameter, argument) in definition.parameters.iter().zip(args) {
-            if matches!(
-                self.identity(caller, argument, before, 0),
-                Value::Callable(_)
-            ) {
-                bounded_callbacks.insert(parameter.text.clone());
+            if let Value::Callable(target) = self.identity(caller, argument, before, 0) {
+                bounded_callbacks.insert(parameter.text.clone(), target);
             }
         }
         for (parameter, argument) in keywords {
-            if matches!(
-                self.identity(caller, argument, before, 0),
-                Value::Callable(_)
-            ) {
-                bounded_callbacks.insert(parameter.clone());
+            if let Value::Callable(target) = self.identity(caller, argument, before, 0) {
+                bounded_callbacks.insert(parameter.clone(), target);
             }
         }
         self.direct_arguments
@@ -1291,11 +1388,10 @@ impl<'a> Graph<'a> {
                 } else {
                     None
                 };
-                self.fixtures.insert(target, registered_name);
+                let mut autouse = false;
                 if let Some((_, expression)) = keywords.iter().find(|(name, _)| name == "autouse") {
                     match self.identity(scope, expression, before, 0) {
-                        Value::Bool(true) => self.called_tests.push(target),
-                        Value::Bool(false) => {}
+                        Value::Bool(value) => autouse = value,
                         _ => self.scope_issue(
                             scope,
                             expression.at,
@@ -1304,6 +1400,13 @@ impl<'a> Graph<'a> {
                         ),
                     }
                 }
+                self.fixtures.insert(
+                    target,
+                    PytestFixture {
+                        name: registered_name,
+                        autouse,
+                    },
+                );
             }
             Value::Callable(id) => {
                 self.edge(scope, id, "decorator", "certain");
@@ -1350,62 +1453,79 @@ impl<'a> Graph<'a> {
             })
     }
 
-    fn imported_pytest_fixture(&self, mut id: SymbolId) -> Option<(SymbolId, Vec<SymbolId>)> {
+    fn is_pytest_function(&self, id: SymbolId) -> bool {
+        matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind != DefinitionKind::Class)
+            && !self.fixtures.contains_key(&id)
+    }
+
+    fn is_pytest_file(&self, file: usize) -> bool {
+        let filename = self.files[file].path.rsplit('/').next().unwrap_or_default();
+        filename.starts_with("test_") || filename.ends_with("_test.py")
+    }
+
+    fn pytest_import_target(&self, mut id: SymbolId) -> Option<(SymbolId, Vec<SymbolId>)> {
         let mut imports = Vec::new();
         for _ in 0..MAX_BINDING_CHAIN {
             if self.conditional.contains_key(&id) {
                 return None;
             }
-            if self.fixtures.contains_key(&id) {
-                return Some((id, imports));
-            }
             let symbol = &self.symbols[id];
             let Binding::Import(import) = symbol.binding else {
-                return None;
+                return Some((id, imports));
             };
-            let module = self.relative_module(self.scopes[symbol.scope].file, import)?;
+            let source = self.scopes[symbol.scope].file;
+            let module = self.relative_module(source, import)?;
             let file = *self.modules.get(module.as_str())?;
+            let before = self
+                .import_member_position(symbol.scope, &module, import)
+                .unwrap_or(END);
             imports.push(id);
-            id = self.local(file, import.member.as_deref()?, END)?;
+            id = self.local(file, import.member.as_deref()?, before)?;
         }
         None
     }
 
     fn test_edges(&mut self) -> Vec<Edge> {
-        let mut test_roots = self.called_tests.clone();
+        let mut queue = VecDeque::new();
+        let mut roots = BTreeSet::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
-            if !matches!(symbol.binding, Binding::Definition(def, _) if def.kind != DefinitionKind::Class)
+            let scope = &self.scopes[symbol.scope];
+            if !self.is_pytest_file(scope.file)
+                || !symbol.name.text.starts_with("test_")
+                || !self.is_pytest_function(id)
             {
                 continue;
             }
-            let scope = &self.scopes[symbol.scope];
-            let filename = self.files[scope.file]
-                .path
-                .rsplit('/')
-                .next()
-                .unwrap_or_default();
-            if (filename.starts_with("test_") || filename.ends_with("_test.py"))
-                && symbol.name.text.starts_with("test_")
-                && !self.fixtures.contains_key(&id)
+            if symbol.scope == scope.file {
+                queue.push_back((id, symbol.scope));
+            } else if let Some(owner) = scope.owner
+                && self.collected_pytest_class(owner, symbol.scope, scope.file)
+                && self.local(symbol.scope, &symbol.name.text, END) == Some(id)
             {
-                if symbol.scope == scope.file {
-                    test_roots.push(id);
-                } else if let Some(owner) = scope.owner
-                    && self.collected_pytest_class(owner, symbol.scope, scope.file)
-                    && self.local(symbol.scope, &symbol.name.text, END) == Some(id)
+                roots.insert(owner);
+                queue.push_back((id, symbol.scope));
+            }
+        }
+        for file in 0..self.files.len() {
+            if !self.is_pytest_file(file) {
+                continue;
+            }
+            for &name in self.scopes[file].names.keys() {
+                if name.starts_with("test_")
+                    && let Some(import) = self.local(file, name, END)
+                    && matches!(self.symbols[import].binding, Binding::Import(_))
+                    && let Some((test, imports)) = self.pytest_import_target(import)
+                    && self.is_pytest_function(test)
                 {
-                    test_roots.extend([owner, id]);
+                    self.read.extend(imports);
+                    queue.push_back((test, file));
                 }
             }
         }
         // Fixture dependencies are looked up from the requesting test's scope,
         // including when several tests import the same fixture.
-        let mut queue: VecDeque<_> = test_roots
-            .into_iter()
-            .map(|id| (id, self.symbols[id].scope))
-            .collect();
         let mut visited = BTreeSet::new();
-        let mut roots = BTreeSet::new();
+        let mut autouse_scopes = BTreeSet::new();
         while let Some((id, scope)) = queue.pop_front() {
             if !visited.insert((id, scope)) {
                 continue;
@@ -1414,9 +1534,12 @@ impl<'a> Graph<'a> {
             let Binding::Definition(definition, _) = self.symbols[id].binding else {
                 continue;
             };
-            if definition.parameters.is_empty() {
+            let activate_autouse = autouse_scopes.insert(scope);
+            if self.fixtures.is_empty() || (definition.parameters.is_empty() && !activate_autouse) {
                 continue;
             }
+            let requested =
+                |name: &str| definition.parameters.iter().any(|param| param.text == name);
             let file = self.scopes[scope].file;
             let path = &self.files[file].path;
             let candidates = self.fixtures.iter().filter(|&(&fixture, _)| {
@@ -1428,11 +1551,17 @@ impl<'a> Graph<'a> {
                         && self.files[fixture_file]
                             .path
                             .strip_suffix("conftest.py")
-                            .is_some_and(|parent| path.starts_with(parent)))
+                            .is_some_and(|parent| {
+                                (parent.is_empty() || parent.ends_with('/'))
+                                    && path.starts_with(parent)
+                            }))
             });
-            for (&fixture, name) in candidates {
-                let name = name.as_deref().unwrap_or(&self.symbols[fixture].name.text);
-                if definition.parameters.iter().any(|param| param.text == name) {
+            for (&fixture, registration) in candidates {
+                let name = registration
+                    .name
+                    .as_deref()
+                    .unwrap_or(&self.symbols[fixture].name.text);
+                if (activate_autouse && registration.autouse) || requested(name) {
                     queue.push_back((fixture, scope));
                 }
             }
@@ -1442,9 +1571,10 @@ impl<'a> Graph<'a> {
             for &alias in self.scopes[file].names.keys() {
                 if let Some(import) = self.local(file, alias, END)
                     && matches!(self.symbols[import].binding, Binding::Import(_))
-                    && let Some((fixture, imports)) = self.imported_pytest_fixture(import)
-                    && let name = self.fixtures[&fixture].as_deref().unwrap_or(alias)
-                    && definition.parameters.iter().any(|param| param.text == name)
+                    && let Some((fixture, imports)) = self.pytest_import_target(import)
+                    && let Some(registration) = self.fixtures.get(&fixture)
+                    && ((activate_autouse && registration.autouse)
+                        || requested(registration.name.as_deref().unwrap_or(alias)))
                 {
                     self.read.extend(imports);
                     queue.push_back((fixture, scope));
@@ -1706,8 +1836,11 @@ impl<'a> Graph<'a> {
                 .peekable();
             let finite = !independently_retained.contains(&owner)
                 && callers.peek().is_some()
-                && callers
-                    .all(|callsite| callsite.bounded_callbacks.contains(&parameter.name.text));
+                && callers.all(|callsite| {
+                    callsite
+                        .bounded_callbacks
+                        .contains_key(&parameter.name.text)
+                });
             if !finite {
                 self.issues.push(
                     Issue::new(
@@ -1893,6 +2026,46 @@ fn within_package(module: &str, package: &str) -> bool {
     module
         .strip_prefix(package)
         .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+}
+
+fn has_implicit_module_member(name: &str, is_package: bool) -> bool {
+    // Source modules inherit attributes from ModuleType and its base object.
+    matches!(
+        name,
+        "__name__"
+            | "__doc__"
+            | "__package__"
+            | "__loader__"
+            | "__spec__"
+            | "__file__"
+            | "__cached__"
+            | "__builtins__"
+            | "__annotations__"
+            | "__class__"
+            | "__delattr__"
+            | "__dict__"
+            | "__dir__"
+            | "__eq__"
+            | "__format__"
+            | "__ge__"
+            | "__getattribute__"
+            | "__getstate__"
+            | "__gt__"
+            | "__hash__"
+            | "__init__"
+            | "__init_subclass__"
+            | "__le__"
+            | "__lt__"
+            | "__ne__"
+            | "__new__"
+            | "__reduce__"
+            | "__reduce_ex__"
+            | "__repr__"
+            | "__setattr__"
+            | "__sizeof__"
+            | "__str__"
+            | "__subclasshook__"
+    ) || (is_package && name == "__path__")
 }
 
 fn static_bool(expression: &Expression) -> Option<bool> {

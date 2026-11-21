@@ -237,6 +237,64 @@ fn skylos_retains_an_imported_fixture_and_its_import() {
 }
 
 #[test]
+fn skylos_retains_an_imported_autouse_fixture_in_the_collecting_module() {
+    let project = skylos_fixture();
+    fs::remove_file(project.path().join("main.py")).unwrap();
+    fs::write(
+        project.path().join("support.py"),
+        "from pytest import fixture\n\n@fixture(autouse=True)\ndef automatic(seed):\n    assert seed == 7\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("test_sample.py"),
+        "from pytest import fixture\nfrom support import automatic as auto\n\n@fixture\ndef seed():\n    return 7\n\ndef test_resource():\n    pass\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["unused_imports"], serde_json::json!([]));
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+
+    fs::write(
+        project.path().join("test_sample.py"),
+        "def test_resource():\n    pass\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(
+        report["unused_functions"][0]["full_name"],
+        "support.automatic"
+    );
+}
+
+#[test]
+fn skylos_retains_a_test_collected_through_an_import_alias() {
+    let project = skylos_fixture();
+    fs::remove_file(project.path().join("main.py")).unwrap();
+    fs::write(
+        project.path().join("support.py"),
+        "def helper(seed):\n    return seed\n\ndef exported(seed):\n    assert helper(seed) == 7\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("test_sample.py"),
+        "from pytest import fixture\nfrom support import exported as test_example\n\n@fixture\ndef seed():\n    return 7\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["unused_imports"], serde_json::json!([]));
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+}
+
+#[test]
 fn skylos_retains_a_collected_test_class_and_its_fixture() {
     let project = skylos_fixture();
     fs::remove_file(project.path().join("main.py")).unwrap();
@@ -320,6 +378,96 @@ fn skylos_reports_cycles_through_imported_initialization_helpers() {
             .iter()
             .all(|item| item["file"] == "a.py")
     );
+}
+
+#[test]
+fn skylos_reports_cycles_through_synchronous_initialization_callbacks() {
+    let project = skylos_fixture();
+    fs::remove_file(project.path().join("main.py")).unwrap();
+    fs::write(
+        project.path().join("a.py"),
+        "def used():\n    return 1\n\ndef callback():\n    from a import used\n    used()\n\nfrom b import invoke\ninvoke(callback)\n\ndef used():\n    return 2\n",
+    )
+    .unwrap();
+    for body in [
+        "    fn()\n",
+        "    def nested():\n        fn()\n    nested()\n",
+    ] {
+        fs::write(
+            project.path().join("b.py"),
+            format!("def invoke(fn):\n{body}"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{report}");
+        assert_eq!(report["coverage"]["issues"][0]["kind"], "cyclic_imports");
+        assert_eq!(report["unused_functions"], serde_json::json!([]));
+    }
+
+    fs::write(
+        project.path().join("b.py"),
+        "def invoke(fn):\n    def dormant():\n        fn()\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+}
+
+#[test]
+fn skylos_resolves_relative_self_imports_at_initialization_time() {
+    let project = skylos_fixture();
+    fs::remove_file(project.path().join("main.py")).unwrap();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("__init__.py"),
+        "def used():\n    return 1\n\nfrom . import used as previous\nprevious()\n\ndef used():\n    return 2\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    let findings = report["unused_functions"].as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{report}");
+    assert_eq!(findings[0]["line"], 7, "{report}");
+}
+
+#[test]
+fn skylos_reports_a_missing_member_even_when_the_import_binding_is_unread() {
+    let project = skylos_fixture();
+    fs::remove_file(project.path().join("main.py")).unwrap();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(package.join("main.py"), "from . import unavailable\n").unwrap();
+
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{report}");
+    assert_eq!(report["coverage"]["issues"][0]["kind"], "unresolved_import");
+    assert_eq!(report["unused_imports"], serde_json::json!([]));
+
+    fs::write(package.join("unavailable.py"), "pass\n").unwrap();
+    fs::write(
+        package.join("main.py"),
+        "from . import unavailable, __path__ as imported_path\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    let names: Vec<_> = report["unused_imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["full_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["pkg.unavailable", "pkg.__path__"], "{report}");
 }
 
 #[test]
