@@ -191,6 +191,126 @@ def check(data):
 }
 
 #[test]
+fn pytest_retains_tests_and_fixtures_exposed_through_lazy_exports() {
+    let project = tempfile::tempdir().unwrap();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("__init__.py"),
+        r#"def __getattr__(name):
+    if name == 'example':
+        from .support import check
+        return check
+    if name == 'resource':
+        from .support import supply
+        return supply
+    raise AttributeError(name)
+"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("support.py"),
+        r#"from pytest import fixture
+
+def helper():
+    return 1
+
+@fixture
+def supply():
+    return helper()
+
+def check(data):
+    assert data == 1
+
+def orphan():
+    pass
+"#,
+    )
+    .unwrap();
+    for source in [
+        "from pkg import example as test_result, resource as data\n",
+        "import pkg\ntest_result = pkg.example\ndata = pkg.resource\n",
+    ] {
+        fs::write(project.path().join("test_example.py"), source).unwrap();
+        let report = scan(project.path());
+        let findings = report["unused_functions"].as_array().unwrap();
+        assert_eq!(findings.len(), 1, "{report}");
+        assert_eq!(findings[0]["full_name"], "pkg.support.orphan");
+        assert_eq!(report["unused_imports"], json!([]), "{report}");
+        assert_eq!(report["unused_variables"], json!([]), "{report}");
+        for name in ["pkg.support.check", "pkg.support.supply"] {
+            assert!(
+                report["dead_code_evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| { row["full_name"] == name && row["kind"] == "pytest_root" }),
+                "{report}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pytest_reports_incomplete_coverage_for_a_conditional_imported_test() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("support.py"),
+        r#"from sys import platform
+
+def check_darwin():
+    assert True
+
+def check_elsewhere():
+    assert True
+
+if platform == 'darwin':
+    selected = check_darwin
+else:
+    selected = check_elsewhere
+"#,
+    )
+    .unwrap();
+    let test_file = project.path().join("test_example.py");
+    fs::write(
+        &test_file,
+        "from support import selected as test_concrete\n",
+    )
+    .unwrap();
+    let report = scan_with_status(project.path(), 2, "incomplete");
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "ambiguous_binding"
+                    && issue["file"] == "test_example.py"
+                    && issue["line"] == 1
+            }),
+        "{report}"
+    );
+    assert_eq!(report["unused_functions"], json!([]), "{report}");
+
+    fs::write(
+        test_file,
+        "from support import check_darwin as test_concrete\n",
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert!(
+        report["dead_code_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["full_name"] == "support.check_darwin" && row["kind"] == "pytest_root"
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn pytest_reports_unresolved_collection_for_multiple_bases() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

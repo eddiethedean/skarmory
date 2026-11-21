@@ -763,6 +763,21 @@ impl<'a> Graph<'a> {
                     import,
                     format!("{module:?} has no selected binding for {member:?}"),
                 ),
+                ModuleMember::Binding(id, _)
+                    if self.binding_depends_on_branch(id, before.unwrap_or(END)) =>
+                {
+                    // A from-import reads the member even if the local alias
+                    // is used only by an external collector such as pytest.
+                    self.scope_issues.push((
+                        scope,
+                        Issue::new(
+                            "ambiguous_binding",
+                            &self.files[source].path,
+                            format!("import of {module}.{member} depends on an unresolved branch"),
+                        )
+                        .at(import.local.at),
+                    ));
+                }
                 ModuleMember::Ambiguous => self.scope_issues.push((
                     scope,
                     Issue::new("ambiguous_binding", &self.files[source].path,
@@ -917,6 +932,12 @@ impl<'a> Graph<'a> {
         })
     }
 
+    fn binding_depends_on_branch(&self, id: SymbolId, at: Location) -> bool {
+        self.conditional
+            .get(&id)
+            .is_some_and(|guards| guards.iter().any(|span| !span.contains(&position(at))))
+    }
+
     fn binding(&mut self, id: SymbolId, before: Location, depth: usize) -> Value {
         let symbol = &self.symbols[id];
         if depth >= MAX_BINDING_CHAIN {
@@ -931,10 +952,7 @@ impl<'a> Graph<'a> {
         self.read.insert(id);
         let scope = symbol.scope;
         let file = self.scopes[scope].file;
-        if self.conditional.get(&id).is_some_and(|guards| {
-            let position = position(before);
-            guards.iter().any(|span| !span.contains(&position))
-        }) {
+        if self.binding_depends_on_branch(id, before) {
             self.scope_issue(
                 scope,
                 symbol.name.at,
@@ -2019,11 +2037,7 @@ impl<'a> Graph<'a> {
         depth: usize,
     ) -> Option<Value> {
         if depth >= MAX_BINDING_CHAIN
-            || before.is_some_and(|at| {
-                self.conditional
-                    .get(&id)
-                    .is_some_and(|guards| guards.iter().any(|span| !span.contains(&position(at))))
-            })
+            || before.is_some_and(|at| self.binding_depends_on_branch(id, at))
         {
             return None;
         }
@@ -2119,6 +2133,10 @@ impl<'a> Graph<'a> {
             ModuleMember::Submodule(file, imports) => {
                 bindings.extend(imports);
                 Some(Value::Module(file))
+            }
+            ModuleMember::Lazy(hook, branch) => {
+                bindings.push(hook);
+                self.pytest_expression(branch.scope, branch.value, branch.at, bindings, depth)
             }
             _ => None,
         }
