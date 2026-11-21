@@ -27,9 +27,9 @@ type Object = (usize, usize, usize);
 
 #[derive(Clone)]
 enum Value {
-    Callable(SymbolId),
+    Callable(Invocation),
     Instance(SymbolId),
-    Coroutine(SymbolId),
+    Coroutine(Invocation),
     Module(usize),
     Provider(String),
     Object(Object, ObjectKind),
@@ -44,6 +44,38 @@ enum Value {
     Mapping(Vec<Value>),
     Scalar,
     Unknown,
+}
+
+#[derive(Clone, Copy)]
+struct Invocation {
+    target: SymbolId,
+    receiver: Receiver,
+}
+
+impl Invocation {
+    fn ordinary(target: SymbolId) -> Self {
+        Self {
+            target,
+            receiver: Receiver::Ordinary,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Receiver {
+    Ordinary,
+    Bound(SymbolId),
+    Explicit(Option<SymbolId>),
+}
+
+impl Receiver {
+    fn supplied(self) -> Option<SymbolId> {
+        match self {
+            Self::Ordinary => None,
+            Self::Bound(class) => Some(class),
+            Self::Explicit(class) => class,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -87,9 +119,16 @@ struct Edge {
     certainty: &'static str,
 }
 
+struct ClassInvocation {
+    scope: ScopeId,
+    at: Location,
+    edge: Edge,
+    receiver: Receiver,
+}
+
 struct DirectArguments {
     caller: ScopeId,
-    bounded_callbacks: BTreeMap<String, SymbolId>,
+    bounded_callbacks: BTreeMap<String, Invocation>,
 }
 
 struct ParameterCall {
@@ -175,6 +214,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         dormant_classes: BTreeSet::new(),
         subclassed: BTreeSet::new(),
         instance_receivers: BTreeMap::new(),
+        class_invocations: Vec::new(),
         issues: Vec::new(),
         scope_issues: Vec::new(),
         probing_identity: false,
@@ -204,6 +244,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         let body = graph.scopes[scope].body;
         graph.suite(scope, body);
     }
+    graph.resolve_class_invocations();
     if graph.has_initialization_cycle() {
         graph.issues.push(Issue::new(
             "cyclic_imports",
@@ -233,6 +274,7 @@ struct Graph<'a> {
     dormant_classes: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
+    class_invocations: Vec<ClassInvocation>,
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     probing_identity: bool,
@@ -505,7 +547,7 @@ impl<'a> Graph<'a> {
             };
             if definition.kind == DefinitionKind::Class && !self.dormant_classes.contains(&id) {
                 for base in &definition.bases {
-                    if let Value::Callable(base) =
+                    if let Value::Callable(Invocation { target: base, .. }) =
                         self.probe_identity(scope, base, definition.name.at)
                         && self.is_class(base)
                     {
@@ -985,8 +1027,10 @@ impl<'a> Graph<'a> {
                 .collect();
             for call in &self.direct_arguments[&callee] {
                 for parameter in &parameters {
-                    if let Some(&target) = call.bounded_callbacks.get(*parameter)
-                        && let Binding::Definition(definition, body) = self.symbols[target].binding
+                    if let Some(&invocation) = call.bounded_callbacks.get(*parameter)
+                        && !self.receiver_conflicts(invocation)
+                        && let Binding::Definition(definition, body) =
+                            self.symbols[invocation.target].binding
                         && definition.kind == DefinitionKind::Function
                     {
                         callbacks[call.caller].push(body);
@@ -1080,7 +1124,7 @@ impl<'a> Graph<'a> {
             return Value::Unknown;
         }
         match symbol.binding {
-            Binding::Definition(_, _) => Value::Callable(id),
+            Binding::Definition(_, _) => Value::Callable(Invocation::ordinary(id)),
             Binding::Variable(Some(value), before) => {
                 self.identity(scope, value, before, depth + 1)
             }
@@ -1395,8 +1439,24 @@ impl<'a> Graph<'a> {
                 ModuleMemberAccess::Attribute,
                 depth,
             ),
-            Value::Instance(id) | Value::Callable(id) if self.is_class(id) => {
-                self.class_member(id, name, depth).unwrap_or(Value::Unknown)
+            Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
+                if self.is_class(class) =>
+            {
+                let member = self
+                    .class_member(class, name, depth)
+                    .unwrap_or(Value::Unknown);
+                if let Value::Callable(mut invocation) = member
+                    && !matches!(invocation.receiver, Receiver::Bound(_))
+                    && self.receiver_parameter(invocation.target).is_some()
+                {
+                    invocation.receiver = match base {
+                        Value::Callable(_) => Receiver::Explicit(None),
+                        _ => Receiver::Bound(class),
+                    };
+                    Value::Callable(invocation)
+                } else {
+                    member
+                }
             }
             Value::Object(object, _) => Value::Method(object, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
@@ -1420,7 +1480,7 @@ impl<'a> Graph<'a> {
         match definition.bases.as_slice() {
             [] => None,
             [base] => match self.identity(symbol.scope, base, definition.name.at, depth + 1) {
-                Value::Callable(parent) if self.is_class(parent) => {
+                Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     self.class_member(parent, name, depth + 1)
                 }
                 Value::Provider(name) if name == "builtins.object" => None,
@@ -1437,7 +1497,7 @@ impl<'a> Graph<'a> {
 
     fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
         let hook = match base {
-            Value::Callable(id) if self.is_class(id) => {
+            Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
                 self.class_member(id, "__init_subclass__", 0)
             }
             Value::Provider(name) if builtin_noop_subclass_hook(&name) => None,
@@ -1445,7 +1505,7 @@ impl<'a> Graph<'a> {
         };
         match hook {
             None => {}
-            Some(Value::Callable(id))
+            Some(Value::Callable(Invocation { target: id, .. }))
                 if single_base
                     && matches!(self.symbols[id].binding, Binding::Definition(definition, _)
                         if definition.kind == DefinitionKind::Function) =>
@@ -1589,11 +1649,17 @@ impl<'a> Graph<'a> {
                 self.member(base, name, (scope, before), depth + 1)
             }
             ExpressionKind::Call {
-                function, keywords, ..
+                function,
+                arguments,
+                keywords,
             } => match recurse(self, function) {
-                Value::Callable(id) if self.is_class(id) => Value::Instance(id),
-                Value::Callable(id) if matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine) => {
-                    Value::Coroutine(id)
+                Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
+                    Value::Instance(id)
+                }
+                Value::Callable(invocation) if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine) => {
+                    Value::Coroutine(
+                        self.with_explicit_receiver(invocation, arguments, keywords, recurse),
+                    )
                 }
                 Value::Provider(name)
                     if matches!(
@@ -1699,23 +1765,87 @@ impl<'a> Graph<'a> {
         });
     }
 
-    fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
-        match value {
-            Value::Callable(id) | Value::Coroutine(id) => {
-                self.edge(scope, id, kind, "possible");
-                self.uncertain(
-                    scope,
-                    at,
-                    "a known target may be invoked through an external or asynchronous consumer",
+    fn invoke(
+        &mut self,
+        scope: ScopeId,
+        invocation: Invocation,
+        kind: &'static str,
+        certainty: &'static str,
+        at: Location,
+    ) {
+        let owner = self.scopes[self.symbols[invocation.target].scope].owner;
+        if matches!(invocation.receiver, Receiver::Ordinary)
+            || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner)
+        {
+            self.edge(scope, invocation.target, kind, certainty);
+        } else {
+            self.class_invocations.push(ClassInvocation {
+                scope,
+                at,
+                edge: Edge {
+                    target: invocation.target,
+                    kind,
+                    certainty,
+                },
+                receiver: invocation.receiver,
+            });
+        }
+    }
+
+    fn receiver_conflicts(&self, invocation: Invocation) -> bool {
+        if matches!(invocation.receiver, Receiver::Ordinary) {
+            return false;
+        }
+        let inferred_class = self
+            .receiver_parameter(invocation.target)
+            .and_then(|parameter| {
+                self.instance_receivers
+                    .get(&parameter)
+                    .copied()
+                    .filter(|class| {
+                        self.read.contains(&parameter) && !self.subclassed.contains(class)
+                    })
+            });
+        inferred_class.is_some() && inferred_class != invocation.receiver.supplied()
+    }
+
+    fn resolve_class_invocations(&mut self) {
+        // A module can read a method before analysis has visited its class suite
+        // and determined whether decorators preserve instance binding.
+        for call in std::mem::take(&mut self.class_invocations) {
+            if self.receiver_conflicts(Invocation {
+                target: call.edge.target,
+                receiver: call.receiver,
+            }) {
+                self.scope_issue(
+                    call.scope,
+                    call.at,
+                    "unresolved_call",
+                    "explicit method receiver is outside the bounded model",
                 );
+            } else {
+                self.scopes[call.scope].edges.push(call.edge);
             }
+        }
+    }
+
+    fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
+        let invocation = match value {
+            Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
             Value::Sequence(values) | Value::Mapping(values) => {
                 for value in values {
                     self.expose(scope, value, kind, at);
                 }
+                return;
             }
-            _ => {}
-        }
+            _ => return,
+        };
+        self.invoke(scope, invocation, kind, "possible", at);
+        self.uncertain(
+            scope,
+            at,
+            "a known target may be invoked through an external or asynchronous consumer",
+        );
     }
 
     fn walk(&mut self, scope: ScopeId, expr: &Expression, before: Location) {
@@ -1734,18 +1864,25 @@ impl<'a> Graph<'a> {
                 }
                 let callee = self.identity(scope, function, before, 0);
                 match callee {
-                    Value::Callable(id) => {
+                    Value::Callable(invocation) => {
+                        let id = invocation.target;
                         self.direct.insert(id);
                         self.record_direct_arguments(scope, id, before, arguments, keywords);
                         if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
                         {
-                            self.edge(scope, id, "direct_call", "certain");
+                            let invocation = self.with_explicit_receiver(
+                                invocation,
+                                arguments,
+                                keywords,
+                                |graph, value| graph.identity(scope, value, before, 0),
+                            );
+                            self.invoke(scope, invocation, "direct_call", "certain", expr.at);
                         }
                         if self.is_class(id) {
                             for name in ["__new__", "__init__"] {
                                 match self.class_member(id, name, 0) {
                                     None => {}
-                                    Some(Value::Callable(initializer)) => self.edge(scope, initializer, "constructor", "certain"),
+                                    Some(Value::Callable(Invocation { target: initializer, .. })) => self.edge(scope, initializer, "constructor", "certain"),
                                     _ => self.scope_issue(scope, expr.at, "unresolved_constructor",
                                         "constructor dispatch is outside the bounded class hierarchy"),
                                 }
@@ -1947,6 +2084,54 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn receiver_parameter(&self, target: SymbolId) -> Option<SymbolId> {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, body) = symbol.binding else {
+            return None;
+        };
+        if !definition.has_positional_parameter
+            || matches!(
+                definition.name.text.as_str(),
+                "__new__" | "__init_subclass__" | "__class_getitem__"
+            )
+            || !self.scopes[symbol.scope]
+                .owner
+                .is_some_and(|owner| self.is_class(owner))
+        {
+            return None;
+        }
+        let parameter = definition
+            .parameters
+            .first()
+            .filter(|param| param.text == "self")?;
+        Some(self.by_location[&(body, parameter.at.line, parameter.at.column)])
+    }
+
+    fn with_explicit_receiver<'expr>(
+        &mut self,
+        mut invocation: Invocation,
+        arguments: &'expr [Expression],
+        keywords: &'expr [(String, Expression)],
+        mut evaluate: impl FnMut(&mut Self, &'expr Expression) -> Value,
+    ) -> Invocation {
+        if matches!(invocation.receiver, Receiver::Explicit(_)) {
+            let argument = arguments.first().or_else(|| {
+                // The simple signature model proves that `self` accepts a keyword.
+                if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.simple_positional_parameters) {
+                    keywords.iter().find(|(name, _)| name == "self").map(|(_, value)| value)
+                } else {
+                    None
+                }
+            });
+            let class = match argument.map(|argument| evaluate(self, argument)) {
+                Some(Value::Instance(class)) => Some(class),
+                _ => None,
+            };
+            invocation.receiver = Receiver::Explicit(class);
+        }
+        invocation
+    }
+
     fn annotation(&mut self, scope: ScopeId, expr: &Expression, before: Location, evaluated: bool) {
         let evaluated = evaluated
             && !self.files[self.scopes[scope].file]
@@ -1968,7 +2153,7 @@ impl<'a> Graph<'a> {
                 } else {
                     self.probe_identity(scope, expr, before)
                 };
-                if let Value::Callable(id) = value {
+                if let Value::Callable(Invocation { target: id, .. }) = value {
                     self.edge(scope, id, "type_reference", "possible");
                 }
             }
@@ -2010,7 +2195,7 @@ impl<'a> Graph<'a> {
                     for base in &definition.bases {
                         self.walk(scope, base, at);
                         let value = self.identity(scope, base, at, 0);
-                        if let Value::Callable(id) = value {
+                        if let Value::Callable(Invocation { target: id, .. }) = value {
                             self.edge(scope, id, "base_class", "certain");
                         }
                         self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
@@ -2020,18 +2205,9 @@ impl<'a> Graph<'a> {
                         preserves_receiver &= self.decorator(scope, decorator, target, at);
                     }
                     if preserves_receiver
-                        && definition.has_positional_parameter
-                        && !matches!(
-                            definition.name.text.as_str(),
-                            "__new__" | "__init_subclass__" | "__class_getitem__"
-                        )
+                        && let Some(receiver) = self.receiver_parameter(target)
                         && let Some(class) = self.scopes[scope].owner
-                        && self.is_class(class)
-                        && let Some(parameter) = definition.parameters.first()
-                        && parameter.text == "self"
                     {
-                        let receiver = self.by_location
-                            [&(definition_scope, parameter.at.line, parameter.at.column)];
                         self.instance_receivers.insert(receiver, class);
                     }
                 }
@@ -2176,9 +2352,10 @@ impl<'a> Graph<'a> {
                     },
                 );
             }
-            Value::Callable(id) => {
-                self.edge(scope, id, "decorator", "certain");
-                let Binding::Definition(definition, _) = self.symbols[id].binding else {
+            Value::Callable(invocation) => {
+                self.invoke(scope, invocation, "decorator", "certain", decorator.at);
+                let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+                else {
                     unreachable!()
                 };
                 if is_identity_decorator(definition) {
@@ -2233,7 +2410,9 @@ impl<'a> Graph<'a> {
                 _ => break,
             };
             match self.identity(symbol.scope, base, definition.name.at, 0) {
-                Value::Callable(parent) if self.is_class(parent) => current = parent,
+                Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
+                    current = parent
+                }
                 Value::Provider(name) if name == "builtins.object" => {
                     resolved = true;
                     break;
@@ -2304,7 +2483,9 @@ impl<'a> Graph<'a> {
 
     fn pytest_target(&self, id: SymbolId) -> Option<PytestRegistration> {
         let mut bindings = Vec::new();
-        let Value::Callable(target) = self.pytest_binding(id, None, &mut bindings, 0)? else {
+        let Value::Callable(Invocation { target, .. }) =
+            self.pytest_binding(id, None, &mut bindings, 0)?
+        else {
             return None;
         };
         Some(PytestRegistration { target, bindings })
@@ -2326,7 +2507,7 @@ impl<'a> Graph<'a> {
         }
         let symbol = &self.symbols[id];
         match symbol.binding {
-            Binding::Definition(_, _) => Some(Value::Callable(id)),
+            Binding::Definition(_, _) => Some(Value::Callable(Invocation::ordinary(id))),
             Binding::Variable(Some(value), at) => {
                 bindings.push(id);
                 self.pytest_expression(symbol.scope, value, at, bindings, depth + 1)
@@ -2678,11 +2859,13 @@ impl<'a> Graph<'a> {
                             )
                         };
                         match value {
-                            Value::Callable(target) => roots.push(Edge {
-                                target,
-                                kind: "public_export",
-                                certainty: "certain",
-                            }),
+                            Value::Callable(invocation) => self.invoke(
+                                file,
+                                invocation,
+                                "public_export",
+                                "certain",
+                                self.symbols[all].name.at,
+                            ),
                             Value::Unknown => self.issue(
                                 file,
                                 self.symbols[all].name.at,
@@ -2705,12 +2888,14 @@ impl<'a> Graph<'a> {
                 self.symbols[id].binding, Binding::Import(import) if import.declares_export && self.files[file].is_package
             )).collect();
             for alias in aliases {
-                if let Value::Callable(target) = self.binding(alias, END, 0) {
-                    roots.push(Edge {
-                        target,
-                        kind: "explicit_re_export",
-                        certainty: "certain",
-                    });
+                if let Value::Callable(invocation) = self.binding(alias, END, 0) {
+                    self.invoke(
+                        file,
+                        invocation,
+                        "explicit_re_export",
+                        "certain",
+                        self.symbols[alias].name.at,
+                    );
                 }
             }
         }
@@ -2749,7 +2934,7 @@ impl<'a> Graph<'a> {
                             Value::Provider(name) => {
                                 qualifiers.push(("parent_base_class".into(), name))
                             }
-                            Value::Callable(id) => {
+                            Value::Callable(Invocation { target: id, .. }) => {
                                 qualifiers.push(("parent_base_class".into(), self.full_name(id)))
                             }
                             _ => {}
@@ -2768,7 +2953,9 @@ impl<'a> Graph<'a> {
                     };
                     match self.probe_identity(scope, identity, definition.name.at) {
                         Value::Provider(name) => qualifiers.push((key.into(), name)),
-                        Value::Callable(id) => qualifiers.push((key.into(), self.full_name(id))),
+                        Value::Callable(Invocation { target: id, .. }) => {
+                            qualifiers.push((key.into(), self.full_name(id)))
+                        }
                         _ => {}
                     }
                 }
@@ -2793,6 +2980,7 @@ impl<'a> Graph<'a> {
     }
 
     fn finish(mut self, roots: Vec<Edge>) -> Analysis {
+        self.resolve_class_invocations();
         let mut reachable_scopes: BTreeSet<_> = (0..self.files.len()).collect();
         let mut reachable_symbols = BTreeSet::new();
         let mut active_objects = BTreeSet::new();
