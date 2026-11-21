@@ -59,6 +59,7 @@ struct Scope<'a> {
     names: BTreeMap<&'a str, Vec<SymbolId>>,
     edges: Vec<Edge>,
     imports: Vec<usize>,
+    initializer_imports: Vec<(SymbolId, usize)>,
     class_bodies: Vec<ScopeId>,
     activated_apps: Vec<Object>,
     mounts: Vec<(Object, Object)>,
@@ -126,7 +127,7 @@ enum LazyMember<'a> {
 
 enum ModuleMember<'a> {
     Binding(SymbolId, Option<SymbolId>),
-    Submodule(usize, Option<SymbolId>),
+    Submodule(usize, Vec<SymbolId>),
     Lazy(SymbolId, LazyBranch<'a>),
     Missing,
     UnattachedSubmodule,
@@ -238,6 +239,7 @@ impl<'a> Graph<'a> {
             names: BTreeMap::new(),
             edges: Vec::new(),
             imports: Vec::new(),
+            initializer_imports: Vec::new(),
             class_bodies: Vec::new(),
             activated_apps: Vec::new(),
             mounts: Vec::new(),
@@ -474,6 +476,17 @@ impl<'a> Graph<'a> {
             let Some(module) = self.relative_module(source, import) else {
                 continue;
             };
+            if symbol.scope == source
+                && !self.conditional.contains_key(&id)
+                && let Some(&target) = self.modules.get(module.as_str())
+                && target != source
+                && import.member.as_ref().is_none_or(|member| {
+                    self.local(target, member, END)
+                        .is_some_and(|binding| !self.conditional.contains_key(&binding))
+                })
+            {
+                self.scopes[source].initializer_imports.push((id, target));
+            }
             for end in module
                 .match_indices('.')
                 .map(|(end, _)| end)
@@ -577,6 +590,53 @@ impl<'a> Graph<'a> {
         } else {
             SubmoduleAttachment::Absent
         }
+    }
+
+    fn imported_submodule(
+        &self,
+        child: usize,
+        access: (ScopeId, Location),
+    ) -> Option<Vec<SymbolId>> {
+        let (source, before) = access;
+        if source >= self.files.len() {
+            return None;
+        }
+        let attachments: BTreeMap<_, _> = self
+            .direct_submodule_imports
+            .get(&child)?
+            .iter()
+            .copied()
+            .filter(|id| !self.conditional.contains_key(id))
+            .map(|id| (self.symbols[id].scope, id))
+            .collect();
+        // Follow earlier imports through completed module initializers. Each
+        // link matters because deleting it could remove the attachment.
+        let mut pending = VecDeque::from([source]);
+        let mut via = BTreeMap::new();
+        while let Some(module) = pending.pop_front() {
+            if module != source
+                && let Some(&attachment) = attachments.get(&module)
+            {
+                let mut evidence = vec![attachment];
+                let mut current = module;
+                while let Some(&(caller, import)) = via.get(&current) {
+                    evidence.push(import);
+                    current = caller;
+                }
+                return Some(evidence);
+            }
+            for &(import, target) in &self.scopes[module].initializer_imports {
+                if target != source
+                    && (module != source
+                        || position(self.symbols[import].name.at) < position(before))
+                    && let std::collections::btree_map::Entry::Vacant(entry) = via.entry(target)
+                {
+                    entry.insert((module, import));
+                    pending.push_back(target);
+                }
+            }
+        }
+        None
     }
 
     fn record_import(
@@ -909,7 +969,7 @@ impl<'a> Graph<'a> {
             if let Some(child) = child {
                 return match self.submodule_attachment(file, child, Some(binding), access) {
                     SubmoduleAttachment::Attached(import) => {
-                        ModuleMember::Submodule(child, Some(import))
+                        ModuleMember::Submodule(child, vec![import])
                     }
                     SubmoduleAttachment::Rebound(import) => {
                         ModuleMember::Binding(binding, Some(import))
@@ -928,17 +988,24 @@ impl<'a> Graph<'a> {
         if let Some(child) = child {
             match self.submodule_attachment(file, child, None, access) {
                 SubmoduleAttachment::Attached(import) => {
-                    return ModuleMember::Submodule(child, Some(import));
+                    return ModuleMember::Submodule(child, vec![import]);
                 }
                 _ if matches!(mode, ModuleMemberAccess::FromImport)
                     && matches!(lazy, LazyMember::Missing) =>
                 {
-                    return ModuleMember::Submodule(child, None);
+                    return ModuleMember::Submodule(child, Vec::new());
                 }
                 SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Missing) => {
                     return ModuleMember::UnattachedSubmodule;
                 }
                 SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Branch(_)) => {}
+                SubmoduleAttachment::Ambiguous => {
+                    return self
+                        .imported_submodule(child, access)
+                        .map_or(ModuleMember::Ambiguous, |imports| {
+                            ModuleMember::Submodule(child, imports)
+                        });
+                }
                 _ => return ModuleMember::Ambiguous,
             }
         }
@@ -987,6 +1054,15 @@ impl<'a> Graph<'a> {
                         access.1,
                         "unresolved_attribute",
                         format!("submodule {submodule} is not attached to package {module:?}"),
+                    );
+                    Value::Unknown
+                }
+                ModuleMember::Missing if matches!(mode, ModuleMemberAccess::Attribute) => {
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "unresolved_attribute",
+                        format!("module {module:?} has no selected binding for {member:?}"),
                     );
                     Value::Unknown
                 }

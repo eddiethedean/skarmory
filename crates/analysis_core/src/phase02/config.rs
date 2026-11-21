@@ -578,43 +578,43 @@ fn selection_patterns(values: &[String], input: &Path) -> Result<Vec<Pattern>, C
         .collect()
 }
 
-fn configured_exclusions(
-    values: &[String],
-    input: &Path,
-    config_file: &Path,
-) -> Result<Vec<Pattern>, ConfigError> {
+fn exclusion_patterns(values: &[String], input: &Path) -> Result<Vec<Pattern>, ConfigError> {
     let mut excludes = selection_patterns(values, input)?;
-    let prefix = (|| {
-        let target = input.canonicalize().ok()?;
-        if !target.is_dir() {
-            return None;
-        }
-        let directory = config_file.parent()?;
-        let directory = if directory.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            directory
-        };
-        let relative = target.strip_prefix(directory.canonicalize().ok()?).ok()?;
-        (!relative.as_os_str().is_empty())
-            .then(|| format!("{}/", relative.to_string_lossy().replace('\\', "/")))
-    })();
-    if let Some(prefix) = prefix {
-        // Skylos also matches an inherited literal exclusion after removing
-        // the configured path prefix to the selected scan subdirectory.
-        let rebased = excludes
-            .iter()
-            .filter(|pattern| !pattern.anchored && !pattern.has_glob())
-            .filter_map(|pattern| {
-                let (start, rest) = pattern.text.split_at_checked(prefix.len())?;
-                (!rest.is_empty()
-                    && (start == prefix || (cfg!(windows) && start.eq_ignore_ascii_case(&prefix))))
-                .then_some(rest)
-            })
-            .map(Pattern::new_selection)
-            .collect::<Result<Vec<_>, _>>()?;
-        excludes.extend(rebased);
+    let Ok(directory) = input.canonicalize() else {
+        return Ok(excludes);
+    };
+    if !directory.is_dir() {
+        return Ok(excludes);
     }
+    // Pinned Skylos also matches a literal after stripping its longest
+    // prefix that is a suffix of the scan directory's path components.
+    let directory = directory.to_string_lossy().replace('\\', "/");
+    let directory: Vec<_> = directory
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let rebased = excludes
+        .iter()
+        .filter(|pattern| !pattern.anchored && !pattern.has_glob())
+        .filter_map(|pattern| {
+            let parts: Vec<_> = pattern
+                .text
+                .split('/')
+                .filter(|part| !part.is_empty() && *part != ".")
+                .collect();
+            let prefix = (1..=directory.len().min(parts.len())).rev().find(|&len| {
+                parts[..len]
+                    .iter()
+                    .zip(&directory[directory.len() - len..])
+                    .all(|(part, dir)| {
+                        part == dir || (cfg!(windows) && part.eq_ignore_ascii_case(dir))
+                    })
+            })?;
+            (prefix < parts.len()).then(|| parts[prefix..].join("/"))
+        })
+        .map(|pattern| Pattern::new_selection(&pattern))
+        .collect::<Result<Vec<_>, _>>()?;
+    excludes.extend(rebased);
     Ok(excludes)
 }
 
@@ -632,7 +632,7 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
     }
     let mut sources = Vec::new();
     let mut digests = Vec::new();
-    let mut exclude_layer = None;
+    let mut excludes = Vec::new();
     let mut include_generated = false;
     let mut selectors = Vec::new();
     let mut whitelist = WhitelistTables::default();
@@ -642,7 +642,7 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
         sources.push(file.to_string_lossy().replace('\\', "/"));
         digests.push(digest);
         if let Some(values) = layer.exclude {
-            exclude_layer = Some((file, values));
+            excludes = values;
         }
         if let Some(values) = layer.ignore {
             path_rules.ignores = values;
@@ -672,12 +672,7 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
                 .collect::<Result<_, _>>()?;
         }
     }
-    let mut excludes = if let Some((file, values)) = exclude_layer {
-        configured_exclusions(&values, path, &file)?
-    } else {
-        Vec::new()
-    };
-    excludes.extend(selection_patterns(&options.excludes, path)?);
+    excludes.extend(options.excludes.iter().cloned());
     path_rules.whitelist = patterns(&whitelist.names)?;
     path_rules.lower = patterns(&whitelist.lower_confidence)?;
     path_rules.documented = whitelist
@@ -725,7 +720,7 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
         path_rules,
         selection: Selection {
             include: selection_patterns(&options.includes, path)?,
-            exclude: excludes,
+            exclude: exclusion_patterns(&excludes, path)?,
             keep_generated: selection_patterns(&options.generated_keep_paths, path)?,
             defaults: !options.no_default_excludes,
             include_generated: options.include_generated.unwrap_or(include_generated),

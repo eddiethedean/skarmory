@@ -948,7 +948,7 @@ fn skylos_distinguishes_dotted_attributes_from_submodule_imports() {
         "def __getattr__(name):\n    raise AttributeError(name)\n",
     ] {
         fs::write(package.join("__init__.py"), initializer).unwrap();
-        for access in ["pkg.plugin", "pkg.plugin.run()"] {
+        for access in ["pkg.plugin", "pkg.plugin.run()", "pkg.missing"] {
             fs::write(
                 project.path().join("main.py"),
                 format!("import pkg\n{access}\n"),
@@ -986,6 +986,63 @@ fn skylos_distinguishes_dotted_attributes_from_submodule_imports() {
             assert_eq!(report["unused_functions"], serde_json::json!([]));
             assert_eq!(report["unused_imports"], serde_json::json!([]));
         }
+    }
+}
+
+#[test]
+fn skylos_tracks_submodule_attachment_through_an_earlier_import() {
+    let project = skylos_fixture();
+    let root = project.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/__init__.py"), "").unwrap();
+    fs::write(root.join("pkg/child.py"), "def run():\n    return 1\n").unwrap();
+    fs::write(root.join("bootstrap.py"), "import pkg.child\n").unwrap();
+    fs::write(
+        root.join("setup.py"),
+        "import bootstrap\n\ndef ready():\n    return True\n",
+    )
+    .unwrap();
+
+    for earlier in ["import setup", "from setup import ready\nready()"] {
+        fs::write(
+            root.join("main.py"),
+            format!("{earlier}\nimport pkg\npkg.child.run()\n\ndef orphan():\n    return 2\n"),
+        )
+        .unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete");
+        let findings = report["unused_functions"].as_array().unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding["full_name"] == "main.orphan")
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding["full_name"] != "pkg.child.run")
+        );
+        assert_eq!(report["unused_imports"], serde_json::json!([]), "{report}");
+    }
+
+    for (main, bootstrap) in [
+        (
+            "import pkg\npkg.child.run()\nimport setup\n",
+            "import pkg.child\n",
+        ),
+        (
+            "import setup\nimport pkg\npkg.child.run()\n",
+            "if __name__ == '__main__':\n    import pkg.child\n",
+        ),
+    ] {
+        fs::write(root.join("main.py"), main).unwrap();
+        fs::write(root.join("bootstrap.py"), bootstrap).unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{report}");
+        assert_eq!(report["coverage"]["status"], "incomplete");
     }
 }
 

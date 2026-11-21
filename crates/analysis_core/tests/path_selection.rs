@@ -100,7 +100,7 @@ fn absolute_exclusion_is_anchored_to_the_target_path() {
 fn inherited_exclusion_uses_the_scan_subdirectory_as_an_alternate_base() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
-    for directory in ["app/nested", "app_extra"] {
+    for directory in ["app/nested", "app_extra", "services/app"] {
         fs::create_dir_all(root.join(directory)).unwrap();
     }
     for path in [
@@ -133,6 +133,11 @@ fn inherited_exclusion_uses_the_scan_subdirectory_as_an_alternate_base() {
         );
     }
 
+    let nested = root.join("services/app");
+    fs::write(nested.join("ignored.py"), "def invalid(\n").unwrap();
+    fs::write(nested.join("main.py"), "pass\n").unwrap();
+    assert_eq!(selected_paths(&nested, &options), json!(["main.py"]));
+
     fs::write(config, "root = true\n").unwrap();
     let flags = Options {
         excludes: vec!["app/ignored.py".into()],
@@ -140,6 +145,7 @@ fn inherited_exclusion_uses_the_scan_subdirectory_as_an_alternate_base() {
     };
     assert_eq!(
         selected_paths(&root.join("app"), &flags),
-        json!(["ignored.py", "nested/ignored.py", "not_ignored.py"])
+        json!(["not_ignored.py"])
     );
+    assert_eq!(selected_paths(&nested, &flags), json!(["main.py"]));
 }
