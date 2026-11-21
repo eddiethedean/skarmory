@@ -2071,6 +2071,7 @@ impl<'a> Graph<'a> {
             } => (function.as_ref(), arguments.as_slice(), keywords.as_slice()),
             _ => (decorator, [].as_slice(), [].as_slice()),
         };
+        self.walk(scope, function, before);
         for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
             self.walk(scope, value, before);
         }

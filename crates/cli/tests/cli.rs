@@ -1132,6 +1132,56 @@ fn skylos_reports_unmodeled_lazy_return_evaluation_only_when_accessed() {
 }
 
 #[test]
+fn skylos_reports_a_failed_lazy_import_in_an_evaluated_decorator() {
+    let project = skylos_fixture();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("__init__.py"),
+        "def identity(func):\n    return func\n\ndef __getattr__(name):\n    if name == 'deco':\n        from .absent import _\n        return identity\n    raise AttributeError(name)\n",
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    let active = "import pkg\n\n@pkg.deco\ndef called():\n    pass\n\ncalled()\n";
+    fs::write(&main, active).unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{report}");
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_import"
+                    && issue["file"] == "pkg/__init__.py"
+                    && issue["line"] == 6
+            }),
+        "{report}"
+    );
+
+    fs::write(
+        &main,
+        "import pkg\nENABLED = False\nif ENABLED:\n    @pkg.deco\n    def dormant():\n        pass\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["analysis_errors"], serde_json::json!([]));
+
+    fs::write(package.join("absent.py"), "_ = 1\n").unwrap();
+    fs::write(main, active).unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+}
+
+#[test]
 fn skylos_reports_a_failed_lazy_import_in_an_eager_annotation() {
     let project = skylos_fixture();
     let package = project.path().join("pkg");
