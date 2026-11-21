@@ -457,13 +457,23 @@ impl<'a> Graph<'a> {
             );
         }
         // Importing a dotted module can also execute its package initializers.
+        let mut has_selected_parent = false;
         for (end, _) in module.match_indices('.') {
             let parent = &module[..end];
-            if !within_package(own_module, parent)
-                && let Some(&target) = self.modules.get(parent)
-            {
-                self.scopes[scope].imports.push(target);
+            if let Some(&target) = self.modules.get(parent) {
+                has_selected_parent = true;
+                if !within_package(own_module, parent) {
+                    self.scopes[scope].imports.push(target);
+                }
             }
+        }
+        if import.level == 0 && module_file.is_none() && has_selected_parent {
+            self.scope_issue(
+                scope,
+                import.local.at,
+                "unresolved_import",
+                format!("no source selected for submodule {module:?}"),
+            );
         }
     }
 
@@ -1436,21 +1446,20 @@ impl<'a> Graph<'a> {
         };
     }
 
-    fn collected_pytest_class(&self, class: SymbolId, scope: ScopeId, file: usize) -> bool {
+    fn pytest_class_scope(&self, class: SymbolId) -> Option<ScopeId> {
         let symbol = &self.symbols[class];
-        let Binding::Definition(definition, _) = symbol.binding else {
-            return false;
+        let Binding::Definition(definition, scope) = symbol.binding else {
+            return None;
         };
-        symbol.scope == file
-            && self.is_class(class)
-            && symbol.name.text.starts_with("Test")
-            && self.local(file, &symbol.name.text, END) == Some(class)
+        (symbol.scope == self.scopes[symbol.scope].file
+            && definition.kind == DefinitionKind::Class
             && definition.bases.is_empty()
             && !self.scopes[scope].names.contains_key("__init__")
             && !self.scopes[scope].names.contains_key("__new__")
             && !self.local(scope, "__test__", END).is_some_and(|id| {
                 matches!(self.symbols[id].binding, Binding::Variable(Some(value), _) if static_bool(value) == Some(false))
-            })
+            }))
+        .then_some(scope)
     }
 
     fn is_pytest_function(&self, id: SymbolId) -> bool {
@@ -1489,21 +1498,13 @@ impl<'a> Graph<'a> {
         let mut queue = VecDeque::new();
         let mut roots = BTreeSet::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
-            let scope = &self.scopes[symbol.scope];
-            if !self.is_pytest_file(scope.file)
-                || !symbol.name.text.starts_with("test_")
-                || !self.is_pytest_function(id)
+            let file = self.scopes[symbol.scope].file;
+            if symbol.scope == file
+                && self.is_pytest_file(file)
+                && symbol.name.text.starts_with("test_")
+                && self.is_pytest_function(id)
             {
-                continue;
-            }
-            if symbol.scope == scope.file {
-                queue.push_back((id, symbol.scope));
-            } else if let Some(owner) = scope.owner
-                && self.collected_pytest_class(owner, symbol.scope, scope.file)
-                && self.local(symbol.scope, &symbol.name.text, END) == Some(id)
-            {
-                roots.insert(owner);
-                queue.push_back((id, symbol.scope));
+                queue.push_back((id, file, None));
             }
         }
         for file in 0..self.files.len() {
@@ -1511,50 +1512,79 @@ impl<'a> Graph<'a> {
                 continue;
             }
             for &name in self.scopes[file].names.keys() {
-                if name.starts_with("test_")
-                    && let Some(import) = self.local(file, name, END)
-                    && matches!(self.symbols[import].binding, Binding::Import(_))
-                    && let Some((test, imports)) = self.pytest_import_target(import)
-                    && self.is_pytest_function(test)
-                {
+                let test_function = name.starts_with("test_");
+                let test_class = name.starts_with("Test");
+                if !(test_class || test_function) {
+                    continue;
+                }
+                let Some(binding) = self.local(file, name, END) else {
+                    continue;
+                };
+                let imported = matches!(self.symbols[binding].binding, Binding::Import(_));
+                let (target, imports) = if imported {
+                    let Some(resolved) = self.pytest_import_target(binding) else {
+                        continue;
+                    };
+                    resolved
+                } else {
+                    (binding, Vec::new())
+                };
+                if test_function && imported && self.is_pytest_function(target) {
                     self.read.extend(imports);
-                    queue.push_back((test, file));
+                    queue.push_back((target, file, None));
+                } else if test_class && let Some(class) = self.pytest_class_scope(target) {
+                    let mut has_tests = false;
+                    for &name in self.scopes[class].names.keys() {
+                        if name.starts_with("test_")
+                            && let Some(test) = self.local(class, name, END)
+                            && self.is_pytest_function(test)
+                        {
+                            has_tests = true;
+                            queue.push_back((test, file, Some(class)));
+                        }
+                    }
+                    if has_tests {
+                        roots.insert(target);
+                        self.read.extend(imports);
+                    }
                 }
             }
         }
         // Fixture dependencies are looked up from the requesting test's scope,
         // including when several tests import the same fixture.
         let mut visited = BTreeSet::new();
-        let mut autouse_scopes = BTreeSet::new();
-        while let Some((id, scope)) = queue.pop_front() {
-            if !visited.insert((id, scope)) {
+        let mut autouse_contexts = BTreeSet::new();
+        let conftests: BTreeMap<_, _> = self
+            .files
+            .iter()
+            .enumerate()
+            .filter_map(|(file, source)| {
+                pytest_conftest_prefix(&source.path).map(|prefix| (prefix, file))
+            })
+            .collect();
+        while let Some((id, file, class)) = queue.pop_front() {
+            if !visited.insert((id, file, class)) {
                 continue;
             }
             roots.insert(id);
             let Binding::Definition(definition, _) = self.symbols[id].binding else {
                 continue;
             };
-            let activate_autouse = autouse_scopes.insert(scope);
+            let activate_autouse = autouse_contexts.insert((file, class));
             if self.fixtures.is_empty() || (definition.parameters.is_empty() && !activate_autouse) {
                 continue;
             }
             let requested =
                 |name: &str| definition.parameters.iter().any(|param| param.text == name);
-            let file = self.scopes[scope].file;
             let path = &self.files[file].path;
             let candidates = self.fixtures.iter().filter(|&(&fixture, _)| {
                 let fixture_scope = self.symbols[fixture].scope;
                 let fixture_file = self.scopes[fixture_scope].file;
-                fixture_scope == scope
+                Some(fixture_scope) == class
                     || fixture_scope == file
                     || (fixture_scope == fixture_file
-                        && self.files[fixture_file]
-                            .path
-                            .strip_suffix("conftest.py")
-                            .is_some_and(|parent| {
-                                (parent.is_empty() || parent.ends_with('/'))
-                                    && path.starts_with(parent)
-                            }))
+                        && pytest_conftest_prefix(&self.files[fixture_file].path)
+                            .is_some_and(|parent| path.starts_with(parent)))
             });
             for (&fixture, registration) in candidates {
                 let name = registration
@@ -1562,22 +1592,26 @@ impl<'a> Graph<'a> {
                     .as_deref()
                     .unwrap_or(&self.symbols[fixture].name.text);
                 if (activate_autouse && registration.autouse) || requested(name) {
-                    queue.push_back((fixture, scope));
+                    queue.push_back((fixture, file, class));
                 }
             }
-            // Pytest registers fixture objects imported into the collected
-            // namespace. The attribute name is used unless the decorator
-            // explicitly supplies a fixture name.
-            for &alias in self.scopes[file].names.keys() {
-                if let Some(import) = self.local(file, alias, END)
-                    && matches!(self.symbols[import].binding, Binding::Import(_))
-                    && let Some((fixture, imports)) = self.pytest_import_target(import)
-                    && let Some(registration) = self.fixtures.get(&fixture)
-                    && ((activate_autouse && registration.autouse)
-                        || requested(registration.name.as_deref().unwrap_or(alias)))
-                {
-                    self.read.extend(imports);
-                    queue.push_back((fixture, scope));
+            // The collecting module and its ancestor conftest modules register
+            // imported fixtures under the visible alias or explicit fixture name.
+            let prefixes =
+                std::iter::once("").chain(path.match_indices('/').map(|(end, _)| &path[..=end]));
+            let ancestors = prefixes.filter_map(|prefix| conftests.get(prefix).copied());
+            for namespace in std::iter::once(file).chain(ancestors) {
+                for &alias in self.scopes[namespace].names.keys() {
+                    if let Some(import) = self.local(namespace, alias, END)
+                        && matches!(self.symbols[import].binding, Binding::Import(_))
+                        && let Some((fixture, imports)) = self.pytest_import_target(import)
+                        && let Some(registration) = self.fixtures.get(&fixture)
+                        && ((activate_autouse && registration.autouse)
+                            || requested(registration.name.as_deref().unwrap_or(alias)))
+                    {
+                        self.read.extend(imports);
+                        queue.push_back((fixture, file, class));
+                    }
                 }
             }
         }
@@ -2026,6 +2060,11 @@ fn within_package(module: &str, package: &str) -> bool {
     module
         .strip_prefix(package)
         .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+}
+
+fn pytest_conftest_prefix(path: &str) -> Option<&str> {
+    path.strip_suffix("conftest.py")
+        .filter(|prefix| prefix.is_empty() || prefix.ends_with('/'))
 }
 
 fn has_implicit_module_member(name: &str, is_package: bool) -> bool {
