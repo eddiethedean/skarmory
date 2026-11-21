@@ -578,13 +578,19 @@ fn selection_patterns(values: &[String], input: &Path) -> Result<Vec<Pattern>, C
         .collect()
 }
 
-fn exclusion_patterns(values: &[String], input: &Path) -> Result<Vec<Pattern>, ConfigError> {
-    let mut excludes = selection_patterns(values, input)?;
+fn directory_selection_patterns(
+    values: &[String],
+    input: &Path,
+) -> Result<Vec<Pattern>, ConfigError> {
+    let mut patterns = selection_patterns(values, input)?;
+    if patterns.is_empty() {
+        return Ok(patterns);
+    }
     let Ok(directory) = input.canonicalize() else {
-        return Ok(excludes);
+        return Ok(patterns);
     };
     if !directory.is_dir() {
-        return Ok(excludes);
+        return Ok(patterns);
     }
     // Pinned Skylos also matches a literal after stripping its longest
     // prefix that is a suffix of the scan directory's path components.
@@ -593,7 +599,7 @@ fn exclusion_patterns(values: &[String], input: &Path) -> Result<Vec<Pattern>, C
         .split('/')
         .filter(|part| !part.is_empty())
         .collect();
-    let rebased = excludes
+    let rebased = patterns
         .iter()
         .filter(|pattern| !pattern.anchored && !pattern.has_glob())
         .filter_map(|pattern| {
@@ -614,8 +620,8 @@ fn exclusion_patterns(values: &[String], input: &Path) -> Result<Vec<Pattern>, C
         })
         .map(|pattern| Pattern::new_selection(&pattern))
         .collect::<Result<Vec<_>, _>>()?;
-    excludes.extend(rebased);
-    Ok(excludes)
+    patterns.extend(rebased);
+    Ok(patterns)
 }
 
 pub(super) fn load(path: &Path, options: &Options) -> Result<Config, ConfigError> {
@@ -719,8 +725,8 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
         warnings,
         path_rules,
         selection: Selection {
-            include: selection_patterns(&options.includes, path)?,
-            exclude: exclusion_patterns(&excludes, path)?,
+            include: directory_selection_patterns(&options.includes, path)?,
+            exclude: directory_selection_patterns(&excludes, path)?,
             keep_generated: selection_patterns(&options.generated_keep_paths, path)?,
             defaults: !options.no_default_excludes,
             include_generated: options.include_generated.unwrap_or(include_generated),
@@ -766,6 +772,15 @@ fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigErro
     }
     let cwd = std::env::current_dir().map_err(ConfigError::new)?;
     let absolute = cwd.join(path);
+    // Source discovery diagnoses a symlink target using the requested path.
+    let absolute = if absolute
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_symlink())
+    {
+        absolute
+    } else {
+        absolute.canonicalize().unwrap_or(absolute)
+    };
     let start = if absolute.is_file()
         || (!absolute.exists() && absolute.extension() == Some(OsStr::new("py")))
     {

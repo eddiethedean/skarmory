@@ -104,8 +104,10 @@ struct PytestFixture {
 
 struct PytestRegistration {
     target: SymbolId,
-    imports: Vec<SymbolId>,
+    bindings: Vec<SymbolId>,
 }
+
+type PytestNames<'a> = BTreeMap<&'a str, Vec<SymbolId>>;
 
 struct PytestFixtureChoices {
     alternatives: Vec<PytestRegistration>,
@@ -162,6 +164,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         subclassed: BTreeSet::new(),
         issues: Vec::new(),
         scope_issues: Vec::new(),
+        resolving_deferred_annotation: false,
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
@@ -216,6 +219,7 @@ struct Graph<'a> {
     subclassed: BTreeSet<SymbolId>,
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
+    resolving_deferred_annotation: bool,
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
@@ -350,6 +354,11 @@ impl<'a> Graph<'a> {
         kind: &'static str,
         message: impl ToString,
     ) {
+        // A lookup in a deferred annotation can retain a known type, but a
+        // runtime binding or attribute diagnostic requires an evaluated read.
+        if self.resolving_deferred_annotation {
+            return;
+        }
         let file = &self.files[self.scopes[scope].file];
         self.scope_issues
             .push((scope, Issue::new(kind, &file.path, message).at(at)));
@@ -476,56 +485,84 @@ impl<'a> Graph<'a> {
             let Some(module) = self.relative_module(source, import) else {
                 continue;
             };
-            if symbol.scope == source
-                && !self.conditional.contains_key(&id)
-                && let Some(&target) = self.modules.get(module.as_str())
-                && target != source
-                && import.member.as_ref().is_none_or(|member| {
-                    self.local(target, member, END)
-                        .is_some_and(|binding| !self.conditional.contains_key(&binding))
-                })
-            {
-                self.scopes[source].initializer_imports.push((id, target));
-            }
+            let unconditional = symbol.scope == source && !self.conditional.contains_key(&id);
+            let module_file = self.modules.get(module.as_str()).copied();
+            let fallback =
+                module_file
+                    .zip(import.member.as_deref())
+                    .and_then(|(package, member)| {
+                        self.fallback_submodule(package, member, import, symbol.scope)
+                    });
+            let loaded_child = fallback
+                .filter(|_| module_file.is_some_and(|package| self.files[package].is_package));
+            let loads_module = unconditional
+                && module_file.is_some_and(|file| {
+                    loaded_child.is_some()
+                        || import.member.as_ref().is_none_or(|member| {
+                            self.local(file, member, END)
+                                .is_some_and(|binding| !self.conditional.contains_key(&binding))
+                        })
+                });
             for end in module
                 .match_indices('.')
                 .map(|(end, _)| end)
                 .chain(std::iter::once(module.len()))
             {
                 let name = &module[..end];
-                if name.contains('.')
-                    && let Some(&child) = self.modules.get(name)
-                {
+                let Some(&target) = self.modules.get(name) else {
+                    continue;
+                };
+                if name.contains('.') {
                     self.direct_submodule_imports
-                        .entry(child)
+                        .entry(target)
                         .or_default()
                         .push(id);
                 }
-            }
-            // From-import can load a child when ordinary attribute lookup fails.
-            if let Some(member) = &import.member
-                && let Some(&package) = self.modules.get(module.as_str())
-                && let Some(&child) = self.modules.get(format!("{module}.{member}").as_str())
-                && !has_implicit_module_member(member, self.files[package].is_package)
-            {
-                let before = self
-                    .import_member_position(symbol.scope, &module, import)
-                    .unwrap_or(END);
-                if self.local(package, member, before).is_some()
-                    || self
-                        .local(package, "__getattr__", before)
-                        .is_some_and(|hook| {
-                            !matches!(self.lazy_lookup(hook, member), LazyMember::Missing)
-                        })
+                // A successful dotted import also runs its parent packages.
+                // The source and its own ancestors may still be initializing.
+                if loads_module
+                    && (end == module.len() || self.files[target].is_package)
+                    && !within_package(&self.files[source].module, name)
                 {
-                    continue;
+                    self.scopes[source].initializer_imports.push((id, target));
                 }
+            }
+            if let Some(child) = fallback {
                 self.direct_submodule_imports
                     .entry(child)
                     .or_default()
                     .push(id);
             }
+            if unconditional
+                && let Some(child) = loaded_child
+                && child != source
+            {
+                self.scopes[source].initializer_imports.push((id, child));
+            }
         }
+    }
+
+    fn fallback_submodule(
+        &self,
+        package: usize,
+        member: &str,
+        import: &Import,
+        scope: ScopeId,
+    ) -> Option<usize> {
+        let file = &self.files[package];
+        let child = self
+            .modules
+            .get(format!("{}.{member}", file.module).as_str())?;
+        let before = self
+            .import_member_position(scope, &file.module, import)
+            .unwrap_or(END);
+        // From-import can load a child when ordinary and lazy lookup fail.
+        (!has_implicit_module_member(member, file.is_package)
+            && self.local(package, member, before).is_none()
+            && self
+                .local(package, "__getattr__", before)
+                .is_none_or(|hook| matches!(self.lazy_lookup(hook, member), LazyMember::Missing)))
+        .then_some(*child)
     }
 
     fn submodule_attachment(
@@ -1637,22 +1674,25 @@ impl<'a> Graph<'a> {
     }
 
     fn annotation(&mut self, scope: ScopeId, expr: &Expression, before: Location, evaluated: bool) {
+        let evaluated = evaluated
+            && !self.files[self.scopes[scope].file]
+                .facts
+                .postponed_annotations;
         match &expr.kind {
             ExpressionKind::Operands(values) | ExpressionKind::Sequence(values) => {
                 for reference in values {
                     self.annotation(scope, reference, before, evaluated);
                 }
             }
-            ExpressionKind::Call { .. }
-                if evaluated
-                    && !self.files[self.scopes[scope].file]
-                        .facts
-                        .postponed_annotations =>
-            {
+            ExpressionKind::Call { .. } if evaluated => {
                 self.walk(scope, expr, before);
             }
             _ => {
-                if let Value::Callable(id) = self.identity(scope, expr, before, 0) {
+                let previous =
+                    std::mem::replace(&mut self.resolving_deferred_annotation, !evaluated);
+                let value = self.identity(scope, expr, before, 0);
+                self.resolving_deferred_annotation = previous;
+                if let Value::Callable(id) = value {
                     self.edge(scope, id, "type_reference", "possible");
                 }
             }
@@ -1866,20 +1906,81 @@ impl<'a> Graph<'a> {
         };
     }
 
-    fn pytest_class_scope(&self, class: SymbolId) -> Option<ScopeId> {
+    fn pytest_class_names(&mut self, class: SymbolId) -> Option<(PytestNames<'a>, bool)> {
         let symbol = &self.symbols[class];
-        let Binding::Definition(definition, scope) = symbol.binding else {
+        if symbol.scope != self.scopes[symbol.scope].file || !self.is_class(class) {
             return None;
-        };
-        (symbol.scope == self.scopes[symbol.scope].file
-            && definition.kind == DefinitionKind::Class
-            && definition.bases.is_empty()
-            && !self.scopes[scope].names.contains_key("__init__")
-            && !self.scopes[scope].names.contains_key("__new__")
-            && !self.local(scope, "__test__", END).is_some_and(|id| {
-                matches!(self.symbols[id].binding, Binding::Variable(Some(value), _) if static_bool(value) == Some(false))
-            }))
-        .then_some(scope)
+        }
+        let mut lineage = Vec::new();
+        let mut current = class;
+        let mut resolved = false;
+        for _ in 0..MAX_BINDING_CHAIN {
+            let symbol = &self.symbols[current];
+            let Binding::Definition(definition, scope) = symbol.binding else {
+                unreachable!()
+            };
+            lineage.push(scope);
+            let base = match definition.bases.as_slice() {
+                [] => {
+                    resolved = true;
+                    break;
+                }
+                [base] => base,
+                _ => break,
+            };
+            match self.identity(symbol.scope, base, definition.name.at, 0) {
+                Value::Callable(parent) if self.is_class(parent) => current = parent,
+                Value::Provider(name) if name == "builtins.object" => {
+                    resolved = true;
+                    break;
+                }
+                _ => break,
+            }
+        }
+
+        // Pytest sees the effective attributes of the collected class, so a
+        // subclass can shadow both a test method and a fixture of its base.
+        let mut names = PytestNames::new();
+        for scope in lineage.into_iter().rev() {
+            for (&name, bindings) in &self.scopes[scope].names {
+                names.entry(name).or_default().extend(bindings);
+            }
+        }
+        let mut certain = true;
+        for name in ["__init__", "__new__", "__test__"] {
+            let Some(bindings) = names.get(name) else {
+                continue;
+            };
+            let candidates = self.pytest_candidates(bindings);
+            let disables_collection = |id: SymbolId| {
+                name != "__test__"
+                    || matches!(self.symbols[id].binding, Binding::Variable(Some(value), _) if static_bool(value) == Some(false))
+            };
+            if candidates.len() == 1
+                && !self.conditional.contains_key(&candidates[0])
+                && disables_collection(candidates[0])
+            {
+                return None;
+            }
+            certain &= !candidates.iter().copied().any(disables_collection);
+        }
+        if !resolved {
+            if self
+                .pytest_registrations(&names, "test_")
+                .iter()
+                .any(|(registration, _)| self.is_pytest_function(registration.target))
+            {
+                let symbol = &self.symbols[class];
+                self.scope_issue(
+                    symbol.scope,
+                    symbol.name.at,
+                    "unresolved_pytest_class",
+                    "pytest test collection through this class hierarchy could not be resolved",
+                );
+            }
+            return None;
+        }
+        Some((names, certain))
     }
 
     fn is_pytest_function(&self, id: SymbolId) -> bool {
@@ -1892,84 +1993,86 @@ impl<'a> Graph<'a> {
         filename.starts_with("test_") || filename.ends_with("_test.py")
     }
 
-    fn pytest_import_target(&self, mut id: SymbolId) -> Option<(SymbolId, Vec<SymbolId>)> {
-        let mut imports = Vec::new();
+    fn pytest_candidates<'b>(&self, bindings: &'b [SymbolId]) -> &'b [SymbolId] {
+        // Conditional attributes may leave a previous binding in place.
+        let first = bindings
+            .iter()
+            .rposition(|id| !self.conditional.contains_key(id))
+            .unwrap_or(0);
+        &bindings[first..]
+    }
+
+    fn pytest_target(&self, mut id: SymbolId) -> Option<PytestRegistration> {
+        let mut bindings = Vec::new();
+        let mut before = None;
         for _ in 0..MAX_BINDING_CHAIN {
-            if self.conditional.contains_key(&id) {
+            if before.is_some_and(|at| {
+                self.conditional
+                    .get(&id)
+                    .is_some_and(|guards| guards.iter().any(|span| !span.contains(&position(at))))
+            }) {
                 return None;
             }
             let symbol = &self.symbols[id];
-            let Binding::Import(import) = symbol.binding else {
-                return Some((id, imports));
-            };
-            let source = self.scopes[symbol.scope].file;
-            let module = self.relative_module(source, import)?;
-            let file = *self.modules.get(module.as_str())?;
-            let before = self
-                .import_member_position(symbol.scope, &module, import)
-                .unwrap_or(END);
-            imports.push(id);
-            id = self.local(file, import.member.as_deref()?, before)?;
+            match symbol.binding {
+                Binding::Definition(_, _) => {
+                    return Some(PytestRegistration {
+                        target: id,
+                        bindings,
+                    });
+                }
+                Binding::Variable(
+                    Some(Expression {
+                        kind: ExpressionKind::Name(name),
+                        ..
+                    }),
+                    at,
+                ) => {
+                    bindings.push(id);
+                    id = self.lexical(symbol.scope, name, at)?;
+                    before = Some(if self.symbols[id].scope == symbol.scope {
+                        at
+                    } else {
+                        END
+                    });
+                }
+                Binding::Import(import) => {
+                    let source = self.scopes[symbol.scope].file;
+                    let module = self.relative_module(source, import)?;
+                    let file = *self.modules.get(module.as_str())?;
+                    let at = self
+                        .import_member_position(symbol.scope, &module, import)
+                        .unwrap_or(END);
+                    bindings.push(id);
+                    id = self.local(file, import.member.as_deref()?, at)?;
+                    before = Some(at);
+                }
+                _ => return None,
+            }
         }
         None
     }
 
+    fn pytest_registrations(
+        &self,
+        names: &PytestNames<'a>,
+        prefix: &str,
+    ) -> Vec<(PytestRegistration, bool)> {
+        names
+            .iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .flat_map(|(_, bindings)| {
+                let candidates = self.pytest_candidates(bindings);
+                candidates.iter().filter_map(move |id| {
+                    let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
+                    self.pytest_target(*id).map(|target| (target, certain))
+                })
+            })
+            .collect()
+    }
+
     fn test_edges(&mut self) -> Vec<Edge> {
-        let mut tests = BTreeMap::<_, Vec<_>>::new();
         let mut roots = BTreeMap::new();
-        for (id, symbol) in self.symbols.iter().enumerate() {
-            let file = self.scopes[symbol.scope].file;
-            if symbol.scope == file
-                && self.is_pytest_file(file)
-                && symbol.name.text.starts_with("test_")
-                && self.is_pytest_function(id)
-            {
-                tests.entry((file, None)).or_default().push(id);
-            }
-        }
-        for file in 0..self.files.len() {
-            if !self.is_pytest_file(file) {
-                continue;
-            }
-            for &name in self.scopes[file].names.keys() {
-                let test_function = name.starts_with("test_");
-                let test_class = name.starts_with("Test");
-                if !(test_class || test_function) {
-                    continue;
-                }
-                let Some(binding) = self.local(file, name, END) else {
-                    continue;
-                };
-                let imported = matches!(self.symbols[binding].binding, Binding::Import(_));
-                let (target, imports) = if imported {
-                    let Some(resolved) = self.pytest_import_target(binding) else {
-                        continue;
-                    };
-                    resolved
-                } else {
-                    (binding, Vec::new())
-                };
-                if test_function && imported && self.is_pytest_function(target) {
-                    self.read.extend(imports);
-                    tests.entry((file, None)).or_default().push(target);
-                } else if test_class && let Some(class) = self.pytest_class_scope(target) {
-                    let mut has_tests = false;
-                    for &name in self.scopes[class].names.keys() {
-                        if name.starts_with("test_")
-                            && let Some(test) = self.local(class, name, END)
-                            && self.is_pytest_function(test)
-                        {
-                            has_tests = true;
-                            tests.entry((file, Some(class))).or_default().push(test);
-                        }
-                    }
-                    if has_tests {
-                        roots.insert(target, true);
-                        self.read.extend(imports);
-                    }
-                }
-            }
-        }
         let conftests: BTreeMap<_, _> = self
             .files
             .iter()
@@ -1978,17 +2081,34 @@ impl<'a> Graph<'a> {
                 pytest_conftest_prefix(&source.path).map(|prefix| (prefix, file))
             })
             .collect();
-        for ((file, class), tests) in tests {
-            roots.extend(tests.iter().map(|&test| (test, true)));
-            if self.fixtures.is_empty() {
+        for file in 0..self.files.len() {
+            if !self.is_pytest_file(file) {
                 continue;
             }
             let path = &self.files[file].path;
             let prefixes =
                 std::iter::once("").chain(path.match_indices('/').map(|(end, _)| &path[..=end]));
             let ancestors = prefixes.filter_map(|prefix| conftests.get(prefix).copied());
-            let namespaces = ancestors.chain(std::iter::once(file)).chain(class);
-            self.collect_pytest_fixtures(file, namespaces, &tests, &mut roots);
+            let namespaces: Vec<_> = ancestors.chain(std::iter::once(file)).collect();
+            let module_tests = self.pytest_registrations(&self.scopes[file].names, "test_");
+            self.record_pytest_tests(file, &namespaces, None, module_tests, &mut roots);
+            for (class, collected) in self.pytest_registrations(&self.scopes[file].names, "Test") {
+                let Some((names, eligible)) = self.pytest_class_names(class.target) else {
+                    continue;
+                };
+                let tests: Vec<_> = self
+                    .pytest_registrations(&names, "test_")
+                    .into_iter()
+                    .filter(|(method, _)| self.is_pytest_function(method.target))
+                    .map(|(method, certain)| (method, certain && collected && eligible))
+                    .collect();
+                if !tests.is_empty() {
+                    *roots.entry(class.target).or_default() |=
+                        tests.iter().any(|(_, certain)| *certain);
+                    self.read.extend(class.bindings);
+                    self.record_pytest_tests(file, &namespaces, Some(&names), tests, &mut roots);
+                }
+            }
         }
         roots
             .into_iter()
@@ -2000,46 +2120,65 @@ impl<'a> Graph<'a> {
             .collect()
     }
 
+    fn record_pytest_tests(
+        &mut self,
+        file: usize,
+        namespaces: &[ScopeId],
+        class: Option<&PytestNames<'a>>,
+        tests: Vec<(PytestRegistration, bool)>,
+        roots: &mut BTreeMap<SymbolId, bool>,
+    ) {
+        let tests: Vec<_> = tests
+            .into_iter()
+            .filter_map(|(test, certain)| {
+                self.is_pytest_function(test.target)
+                    .then_some((test, certain))
+            })
+            .collect();
+        if tests.is_empty() {
+            return;
+        }
+        for (test, certain) in &tests {
+            *roots.entry(test.target).or_default() |= *certain;
+            self.read.extend(&test.bindings);
+        }
+        if !self.fixtures.is_empty() {
+            self.collect_pytest_fixtures(file, namespaces, class, &tests, roots);
+        }
+    }
+
     fn collect_pytest_fixtures(
         &mut self,
         file: usize,
-        namespaces: impl Iterator<Item = ScopeId>,
-        tests: &[SymbolId],
+        namespaces: &[ScopeId],
+        class: Option<&PytestNames<'a>>,
+        tests: &[(PytestRegistration, bool)],
         roots: &mut BTreeMap<SymbolId, bool>,
     ) {
         // Register from outermost to innermost. Pytest requests an autouse
         // fixture by name, so a closer override can satisfy that request too.
         let mut registrations = BTreeMap::<String, Vec<PytestFixtureChoices>>::new();
-        for namespace in namespaces {
-            for (&alias, bindings) in &self.scopes[namespace].names {
+        for names in namespaces
+            .iter()
+            .map(|&scope| &self.scopes[scope].names)
+            .chain(class)
+        {
+            for (&alias, bindings) in names {
                 // Keep possible conditional bindings at the same precedence.
                 let mut alternatives = BTreeMap::<&str, Vec<_>>::new();
-                let mut binding_count = 0;
-                let mut has_unconditional_binding = false;
-                for &binding in bindings.iter().rev() {
-                    binding_count += 1;
-                    let resolved = if self.fixtures.contains_key(&binding) {
-                        Some((binding, Vec::new()))
-                    } else {
-                        self.pytest_import_target(binding)
-                    };
-                    if let Some((target, imports)) = resolved
-                        && let Some(fixture) = self.fixtures.get(&target)
+                let candidates = self.pytest_candidates(bindings);
+                let has_unconditional_binding = !self.conditional.contains_key(&candidates[0]);
+                for &binding in candidates.iter().rev() {
+                    if let Some(resolved) = self.pytest_target(binding)
+                        && let Some(fixture) = self.fixtures.get(&resolved.target)
                     {
                         let name = fixture.name.as_deref().unwrap_or(alias);
-                        alternatives
-                            .entry(name)
-                            .or_default()
-                            .push(PytestRegistration { target, imports });
-                    }
-                    if !self.conditional.contains_key(&binding) {
-                        has_unconditional_binding = true;
-                        break;
+                        alternatives.entry(name).or_default().push(resolved);
                     }
                 }
                 for (name, alternatives) in alternatives {
                     let may_be_absent =
-                        !has_unconditional_binding || alternatives.len() != binding_count;
+                        !has_unconditional_binding || alternatives.len() != candidates.len();
                     registrations
                         .entry(name.into())
                         .or_default()
@@ -2065,16 +2204,20 @@ impl<'a> Graph<'a> {
                             .iter()
                             .all(|registration| self.fixtures[&registration.target].autouse)
                 });
-                pending.push((name.as_str(), BTreeMap::new(), certain));
+                pending.push((
+                    name.as_str(),
+                    BTreeMap::new(),
+                    certain && tests.iter().any(|(_, certain)| *certain),
+                ));
             }
         }
-        for &test in tests {
-            let Binding::Definition(definition, _) = self.symbols[test].binding else {
+        for (test, certain) in tests {
+            let Binding::Definition(definition, _) = self.symbols[test.target].binding else {
                 continue;
             };
             for parameter in &definition.parameters {
                 if let Some((name, _)) = registrations.get_key_value(&parameter.text) {
-                    pending.push((name.as_str(), BTreeMap::new(), true));
+                    pending.push((name.as_str(), BTreeMap::new(), *certain));
                 }
             }
         }
@@ -2105,7 +2248,7 @@ impl<'a> Graph<'a> {
                     certain && !choice.may_be_absent && choice.alternatives.len() == 1;
                 for registration in &choice.alternatives {
                     *roots.entry(registration.target).or_default() |= selected_certain;
-                    self.read.extend(&registration.imports);
+                    self.read.extend(&registration.bindings);
                     let Binding::Definition(definition, _) =
                         self.symbols[registration.target].binding
                     else {

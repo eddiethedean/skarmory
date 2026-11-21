@@ -149,3 +149,89 @@ fn inherited_exclusion_uses_the_scan_subdirectory_as_an_alternate_base() {
     );
     assert_eq!(selected_paths(&nested, &flags), json!(["main.py"]));
 }
+
+#[test]
+fn root_prefixed_include_restores_excluded_sources() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("services/app");
+    for directory in ["generated", "generated_extra"] {
+        let directory = app.join(directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("bad.py"), "def invalid(\n").unwrap();
+    }
+    fs::write(app.join("main.py"), "pass\n").unwrap();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    let options = Options {
+        excludes: vec!["app/generated".into(), "app/generated_extra".into()],
+        ..Options::default()
+    };
+    assert_eq!(selected_paths(&app, &options), json!(["main.py"]));
+
+    let options = Options {
+        includes: vec!["app/generated".into()],
+        ..options
+    };
+    let report = scan(&app, &options).unwrap();
+    assert!(!report.is_complete());
+    let data: Value = serde_json::from_str(&report.to_json().unwrap()).unwrap();
+    assert_eq!(
+        data["selected_paths"],
+        json!(["generated/bad.py", "main.py"])
+    );
+    assert_eq!(data["coverage"]["issues"][0]["kind"], "parse_error");
+    assert_eq!(data["coverage"]["issues"][0]["path"], "generated/bad.py");
+}
+
+#[test]
+fn configuration_discovery_uses_the_resolved_scan_directory() {
+    let project = tempfile::tempdir().unwrap();
+    let parent = project.path();
+    let root = parent.join("root");
+    let child = root.join("child");
+    fs::create_dir_all(&child).unwrap();
+    fs::write(parent.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        child.join(".skylos.toml"),
+        "root = true\nexclude = [\"orphan.py\"]\n",
+    )
+    .unwrap();
+    fs::write(root.join("orphan.py"), "def unused():\n    pass\n").unwrap();
+
+    let scan_json = |path: &Path| {
+        let report = scan(path, &Options::default()).unwrap();
+        assert!(report.is_complete());
+        serde_json::from_str::<Value>(&report.to_json().unwrap()).unwrap()
+    };
+    let direct = scan_json(&root);
+    let aliased = scan_json(&child.join(".."));
+    assert_eq!(direct["selected_paths"], json!(["orphan.py"]));
+    assert_eq!(direct["unused_functions"][0]["name"], "unused");
+    for key in ["selected_paths", "unused_functions", "config_sources"] {
+        assert_eq!(direct[key], aliased[key], "different {key}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unsupported_symlink_target_keeps_the_requested_configuration_ancestry() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path().join("root");
+    let external = project.path().join("external");
+    let target = external.join("project");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(external.join(".skylos.toml"), "malformed [\n").unwrap();
+    let link = root.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let report = scan(&link, &Options::default()).unwrap();
+    assert!(!report.is_complete());
+    let data: Value = serde_json::from_str(&report.to_json().unwrap()).unwrap();
+    assert_eq!(data["coverage"]["issues"][0]["kind"], "discovery_error");
+    assert_eq!(
+        data["coverage"]["issues"][0]["message"],
+        "symlinked scan targets are unsupported"
+    );
+}
