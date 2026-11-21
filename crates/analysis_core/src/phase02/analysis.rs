@@ -122,6 +122,13 @@ struct LazyBranch<'a> {
     at: Location,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValueEvaluation {
+    Identity,
+    LazyIdentity,
+    LazyExecution,
+}
+
 enum LazyMember<'a> {
     Branch(LazyBranch<'a>),
     Missing,
@@ -169,6 +176,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         issues: Vec::new(),
         scope_issues: Vec::new(),
         probing_identity: false,
+        nested_lazy_imports: Vec::new(),
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
@@ -224,6 +232,7 @@ struct Graph<'a> {
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     probing_identity: bool,
+    nested_lazy_imports: Vec<(ScopeId, &'a [Statement])>,
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
@@ -757,7 +766,7 @@ impl<'a> Graph<'a> {
         source_scope: ScopeId,
         module: Option<&str>,
         import: &Import,
-    ) -> Option<(ScopeId, &'a [Statement])> {
+    ) -> Option<LazyBranch<'a>> {
         let source = self.scopes[source_scope].file;
         let Some(module) = module else {
             self.import_issue(
@@ -831,10 +840,7 @@ impl<'a> Graph<'a> {
         }
         if let (Some(member), Some(lookup)) = (member, lookup) {
             match lookup {
-                ModuleMember::Lazy(_, branch) => {
-                    self.lazy_value(scope, &branch, 0);
-                    return Some((branch.scope, branch.imports));
-                }
+                ModuleMember::Lazy(_, branch) => return Some(branch),
                 ModuleMember::Missing => self.import_issue(
                     scope,
                     source,
@@ -893,10 +899,12 @@ impl<'a> Graph<'a> {
         ));
     }
 
-    fn record_lazy_imports(&mut self, scope: ScopeId, handler: ScopeId, imports: &'a [Statement]) {
-        // Only the selected branch executes. Put its import edges on the
-        // caller so initialization can detect a return to a partial module.
-        let mut pending = vec![(handler, imports)];
+    fn execute_lazy_branch(&mut self, scope: ScopeId, branch: &LazyBranch<'a>) -> Value {
+        // Keep imports discovered through return expressions on the same
+        // worklist as nested from-imports. All execute for the original caller.
+        let value = self.lazy_value(scope, branch, 0, ValueEvaluation::LazyExecution);
+        let mut pending = vec![(branch.scope, branch.imports)];
+        pending.append(&mut self.nested_lazy_imports);
         let mut visited = BTreeSet::new();
         while let Some((handler, imports)) = pending.pop() {
             let file = self.scopes[handler].file;
@@ -910,10 +918,13 @@ impl<'a> Graph<'a> {
                 let module = self.relative_module(file, import);
                 if let Some(branch) = self.record_import(scope, handler, module.as_deref(), import)
                 {
-                    pending.push(branch);
+                    self.lazy_value(scope, &branch, 0, ValueEvaluation::LazyExecution);
+                    pending.push((branch.scope, branch.imports));
+                    pending.append(&mut self.nested_lazy_imports);
                 }
             }
         }
+        value
     }
 
     fn synchronous_calls(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> {
@@ -1196,7 +1207,7 @@ impl<'a> Graph<'a> {
                 }
                 ModuleMember::Lazy(id, branch) => {
                     self.read.insert(id);
-                    self.lazy_value(access.0, &branch, depth + 2)
+                    self.lazy_value(access.0, &branch, depth + 2, ValueEvaluation::LazyIdentity)
                 }
                 ModuleMember::Ambiguous => {
                     self.scope_issue(access.0, access.1, "ambiguous_binding",
@@ -1249,9 +1260,15 @@ impl<'a> Graph<'a> {
             .map_or(Value::Provider(submodule), |file| Value::Module(*file))
     }
 
-    fn lazy_value(&mut self, caller: ScopeId, branch: &LazyBranch<'a>, depth: usize) -> Value {
+    fn lazy_value(
+        &mut self,
+        caller: ScopeId,
+        branch: &LazyBranch<'a>,
+        depth: usize,
+        evaluation: ValueEvaluation,
+    ) -> Value {
         let first_issue = self.scope_issues.len();
-        let value = self.expression_value(branch.scope, branch.value, branch.at, depth, true);
+        let value = self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation);
         if matches!(value, Value::Unknown) && self.scope_issues.len() == first_issue {
             self.scope_issue(
                 branch.scope,
@@ -1425,7 +1442,7 @@ impl<'a> Graph<'a> {
         before: Location,
         depth: usize,
     ) -> Value {
-        self.expression_value(scope, expression, before, depth, false)
+        self.expression_value(scope, expression, before, depth, ValueEvaluation::Identity)
     }
 
     fn expression_value(
@@ -1434,7 +1451,7 @@ impl<'a> Graph<'a> {
         expression: &Expression,
         before: Location,
         depth: usize,
-        check_lazy_effects: bool,
+        evaluation: ValueEvaluation,
     ) -> Value {
         if depth >= MAX_BINDING_CHAIN {
             self.issue(
@@ -1447,7 +1464,7 @@ impl<'a> Graph<'a> {
         }
         // An evaluated lazy return can read a known binding. Effectful
         // operations in the expression itself require additional execution.
-        if check_lazy_effects
+        if evaluation != ValueEvaluation::Identity
             && matches!(
                 expression.kind,
                 ExpressionKind::Call { .. }
@@ -1464,7 +1481,7 @@ impl<'a> Graph<'a> {
             return Value::Unknown;
         }
         let recurse = |this: &mut Self, expression| {
-            this.expression_value(scope, expression, before, depth + 1, check_lazy_effects)
+            this.expression_value(scope, expression, before, depth + 1, evaluation)
         };
         match &expression.kind {
             ExpressionKind::Name(name) => {
@@ -1516,6 +1533,21 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Member(base, name) => {
                 let base = recurse(self, base);
+                if evaluation == ValueEvaluation::LazyExecution
+                    && let Value::Module(file) = base
+                    && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
+                        file,
+                        name,
+                        END,
+                        (scope, before),
+                        ModuleMemberAccess::Attribute,
+                    )
+                {
+                    self.read.insert(hook);
+                    self.nested_lazy_imports
+                        .push((branch.scope, branch.imports));
+                    return self.lazy_value(scope, &branch, depth + 3, evaluation);
+                }
                 self.member(base, name, (scope, before), depth + 1)
             }
             ExpressionKind::Call {
@@ -1775,7 +1807,7 @@ impl<'a> Graph<'a> {
                 self.walk(scope, base, before);
                 let base = self.identity(scope, base, before, 1);
                 if let Value::Module(file) = base
-                    && let ModuleMember::Lazy(_, branch) = self.selected_module_member(
+                    && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
                         file,
                         name,
                         END,
@@ -1783,9 +1815,11 @@ impl<'a> Graph<'a> {
                         ModuleMemberAccess::Attribute,
                     )
                 {
-                    self.record_lazy_imports(scope, branch.scope, branch.imports);
+                    self.read.insert(hook);
+                    self.execute_lazy_branch(scope, &branch);
+                } else {
+                    self.member(base, name, (scope, before), 1);
                 }
-                self.member(base, name, (scope, before), 1);
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
             ExpressionKind::Compare { left, right, .. } => {
@@ -2011,10 +2045,10 @@ impl<'a> Graph<'a> {
                 }
                 StatementKind::Import(import) => {
                     let module = self.relative_module(self.scopes[scope].file, import);
-                    if let Some((handler, imports)) =
+                    if let Some(branch) =
                         self.record_import(scope, scope, module.as_deref(), import)
                     {
-                        self.record_lazy_imports(scope, handler, imports);
+                        self.execute_lazy_branch(scope, &branch);
                     }
                 }
             }
@@ -2557,23 +2591,26 @@ impl<'a> Graph<'a> {
                             continue;
                         };
                         let access = (file, END);
-                        if let ModuleMember::Lazy(_, branch) = self.selected_module_member(
-                            file,
-                            &export,
-                            END,
-                            access,
-                            ModuleMemberAccess::FromImport,
-                        ) {
-                            self.record_lazy_imports(file, branch.scope, branch.imports);
-                        }
-                        let value = self.module_member_at(
-                            &self.files[file].module,
-                            &export,
-                            END,
-                            access,
-                            ModuleMemberAccess::FromImport,
-                            0,
-                        );
+                        let value = if let ModuleMember::Lazy(hook, branch) = self
+                            .selected_module_member(
+                                file,
+                                &export,
+                                END,
+                                access,
+                                ModuleMemberAccess::FromImport,
+                            ) {
+                            self.read.insert(hook);
+                            self.execute_lazy_branch(file, &branch)
+                        } else {
+                            self.module_member_at(
+                                &self.files[file].module,
+                                &export,
+                                END,
+                                access,
+                                ModuleMemberAccess::FromImport,
+                                0,
+                            )
+                        };
                         match value {
                             Value::Callable(target) => roots.push(Edge {
                                 target,

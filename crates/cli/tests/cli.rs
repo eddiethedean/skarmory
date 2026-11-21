@@ -965,6 +965,66 @@ fn skylos_uses_known_local_boolean_guards_for_imported_bindings() {
 }
 
 #[test]
+fn skylos_accounts_for_imports_in_chained_lazy_exports() {
+    let project = skylos_fixture();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        package.join("outer.py"),
+        "from . import inner\n\ndef __getattr__(name):\n    if name == 'outer':\n        return inner.exported\n    raise AttributeError(name)\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("inner.py"),
+        "def __getattr__(name):\n    if name == 'exported':\n        from .target import candidate\n        return candidate\n    raise AttributeError(name)\n",
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    let reads = [
+        "from pkg.outer import outer\nprint(outer)\n",
+        "from pkg import outer\nprint(outer.outer)\n",
+    ];
+    for source in reads {
+        fs::write(&main, source).unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{report}");
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unresolved_import"
+                        && issue["file"] == "pkg/inner.py"
+                        && issue["line"] == 3
+                }),
+            "{report}"
+        );
+    }
+
+    fs::write(&main, "import pkg.outer\n").unwrap();
+    let output = skylos(project.path(), &["--json"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+
+    fs::write(
+        package.join("target.py"),
+        "def candidate():\n    return 1\n",
+    )
+    .unwrap();
+    fs::write(&main, "from pkg.outer import outer\nouter()\n").unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+}
+
+#[test]
 fn skylos_evaluates_a_lazy_base_only_for_an_executed_class_definition() {
     let project = skylos_fixture();
     fs::write(
