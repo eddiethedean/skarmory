@@ -129,8 +129,15 @@ enum ModuleMember<'a> {
     Submodule(usize, Option<SymbolId>),
     Lazy(SymbolId, LazyBranch<'a>),
     Missing,
+    UnattachedSubmodule,
     Unknown,
     Ambiguous,
+}
+
+#[derive(Clone, Copy)]
+enum ModuleMemberAccess {
+    Attribute,
+    FromImport,
 }
 
 enum SubmoduleAttachment {
@@ -482,13 +489,24 @@ impl<'a> Graph<'a> {
                         .push(id);
                 }
             }
-            // A package can attach its own child before defining its hook.
-            if let Some(before) = self.import_member_position(symbol.scope, &module, import)
-                && let Some(member) = &import.member
-                && self.local(source, member, before).is_none()
-                && self.local(source, "__getattr__", before).is_none()
+            // From-import can load a child when ordinary attribute lookup fails.
+            if let Some(member) = &import.member
+                && let Some(&package) = self.modules.get(module.as_str())
                 && let Some(&child) = self.modules.get(format!("{module}.{member}").as_str())
+                && !has_implicit_module_member(member, self.files[package].is_package)
             {
+                let before = self
+                    .import_member_position(symbol.scope, &module, import)
+                    .unwrap_or(END);
+                if self.local(package, member, before).is_some()
+                    || self
+                        .local(package, "__getattr__", before)
+                        .is_some_and(|hook| {
+                            !matches!(self.lazy_lookup(hook, member), LazyMember::Missing)
+                        })
+                {
+                    continue;
+                }
                 self.direct_submodule_imports
                     .entry(child)
                     .or_default()
@@ -588,6 +606,7 @@ impl<'a> Graph<'a> {
                 member,
                 before.unwrap_or(END),
                 (source_scope, import.local.at),
+                ModuleMemberAccess::FromImport,
             )
         });
         let child = match &lookup {
@@ -858,6 +877,7 @@ impl<'a> Graph<'a> {
                         member,
                         before,
                         (scope, import.local.at),
+                        ModuleMemberAccess::FromImport,
                         depth + 1,
                     )
                 } else {
@@ -881,6 +901,7 @@ impl<'a> Graph<'a> {
         member: &str,
         before: Location,
         access: (ScopeId, Location),
+        mode: ModuleMemberAccess,
     ) -> ModuleMember<'a> {
         let submodule = format!("{}.{member}", self.files[file].module);
         let child = self.modules.get(submodule.as_str()).copied();
@@ -903,39 +924,29 @@ impl<'a> Graph<'a> {
             return ModuleMember::Unknown;
         }
         let hook = self.local(file, "__getattr__", before);
-        let Some(hook) = hook else {
-            return child.map_or(ModuleMember::Missing, |child| {
-                ModuleMember::Submodule(child, None)
-            });
-        };
-        let lazy = self.lazy_lookup(hook, member);
+        let lazy = hook.map_or(LazyMember::Missing, |hook| self.lazy_lookup(hook, member));
         if let Some(child) = child {
-            if matches!(lazy, LazyMember::Missing) {
-                return ModuleMember::Submodule(child, None);
-            }
             match self.submodule_attachment(file, child, None, access) {
                 SubmoduleAttachment::Attached(import) => {
                     return ModuleMember::Submodule(child, Some(import));
+                }
+                _ if matches!(mode, ModuleMemberAccess::FromImport)
+                    && matches!(lazy, LazyMember::Missing) =>
+                {
+                    return ModuleMember::Submodule(child, None);
+                }
+                SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Missing) => {
+                    return ModuleMember::UnattachedSubmodule;
                 }
                 SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Branch(_)) => {}
                 _ => return ModuleMember::Ambiguous,
             }
         }
-        match lazy {
-            LazyMember::Branch(branch) => ModuleMember::Lazy(hook, branch),
-            LazyMember::Missing => ModuleMember::Missing,
-            LazyMember::Unknown => ModuleMember::Unknown,
+        match (hook, lazy) {
+            (Some(hook), LazyMember::Branch(branch)) => ModuleMember::Lazy(hook, branch),
+            (_, LazyMember::Missing) => ModuleMember::Missing,
+            _ => ModuleMember::Unknown,
         }
-    }
-
-    fn module_member(
-        &mut self,
-        module: &str,
-        member: &str,
-        access: (ScopeId, Location),
-        depth: usize,
-    ) -> Value {
-        self.module_member_at(module, member, END, access, depth)
     }
 
     fn module_member_at(
@@ -944,6 +955,7 @@ impl<'a> Graph<'a> {
         member: &str,
         before: Location,
         access: (ScopeId, Location),
+        mode: ModuleMemberAccess,
         depth: usize,
     ) -> Value {
         let submodule = format!("{module}.{member}");
@@ -951,7 +963,7 @@ impl<'a> Graph<'a> {
             return Value::Unknown;
         }
         if let Some(&file) = self.modules.get(module) {
-            return match self.selected_module_member(file, member, before, access) {
+            return match self.selected_module_member(file, member, before, access, mode) {
                 ModuleMember::Binding(id, import) => {
                     self.read.extend(import);
                     self.binding(id, before, depth + 1)
@@ -967,6 +979,15 @@ impl<'a> Graph<'a> {
                 ModuleMember::Ambiguous => {
                     self.scope_issue(access.0, access.1, "ambiguous_binding",
                         format!("cannot establish whether submodule {submodule} was attached before this lookup"));
+                    Value::Unknown
+                }
+                ModuleMember::UnattachedSubmodule => {
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "unresolved_attribute",
+                        format!("submodule {submodule} is not attached to package {module:?}"),
+                    );
                     Value::Unknown
                 }
                 ModuleMember::Missing | ModuleMember::Unknown => Value::Unknown,
@@ -1061,10 +1082,22 @@ impl<'a> Graph<'a> {
         depth: usize,
     ) -> Value {
         match base {
-            Value::Module(file) => {
-                self.module_member(&self.files[file].module, name, access, depth)
-            }
-            Value::Provider(module) => self.module_member(&module, name, access, depth),
+            Value::Module(file) => self.module_member_at(
+                &self.files[file].module,
+                name,
+                END,
+                access,
+                ModuleMemberAccess::Attribute,
+                depth,
+            ),
+            Value::Provider(module) => self.module_member_at(
+                &module,
+                name,
+                END,
+                access,
+                ModuleMemberAccess::Attribute,
+                depth,
+            ),
             Value::Instance(id) | Value::Callable(id) if self.is_class(id) => {
                 self.class_member(id, name, depth).unwrap_or(Value::Unknown)
             }
@@ -1427,8 +1460,13 @@ impl<'a> Graph<'a> {
                 self.walk(scope, base, before);
                 let base = self.identity(scope, base, before, 1);
                 if let Value::Module(file) = base
-                    && let ModuleMember::Lazy(_, branch) =
-                        self.selected_module_member(file, name, END, (scope, before))
+                    && let ModuleMember::Lazy(_, branch) = self.selected_module_member(
+                        file,
+                        name,
+                        END,
+                        (scope, before),
+                        ModuleMemberAccess::Attribute,
+                    )
                 {
                     self.record_lazy_imports(scope, branch.scope, branch.imports);
                 }
@@ -2028,13 +2066,23 @@ impl<'a> Graph<'a> {
                             continue;
                         };
                         let access = (file, END);
-                        if let ModuleMember::Lazy(_, branch) =
-                            self.selected_module_member(file, &export, END, access)
-                        {
+                        if let ModuleMember::Lazy(_, branch) = self.selected_module_member(
+                            file,
+                            &export,
+                            END,
+                            access,
+                            ModuleMemberAccess::FromImport,
+                        ) {
                             self.record_lazy_imports(file, branch.scope, branch.imports);
                         }
-                        let value =
-                            self.module_member(&self.files[file].module, &export, access, 0);
+                        let value = self.module_member_at(
+                            &self.files[file].module,
+                            &export,
+                            END,
+                            access,
+                            ModuleMemberAccess::FromImport,
+                            0,
+                        );
                         match value {
                             Value::Callable(target) => roots.push(Edge {
                                 target,

@@ -95,3 +95,51 @@ fn absolute_exclusion_is_anchored_to_the_target_path() {
     );
     assert_eq!(selected_paths(&excluded, &options), json!([]));
 }
+
+#[test]
+fn inherited_exclusion_uses_the_scan_subdirectory_as_an_alternate_base() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for directory in ["app/nested", "app_extra"] {
+        fs::create_dir_all(root.join(directory)).unwrap();
+    }
+    for path in [
+        "app/ignored.py",
+        "app/nested/ignored.py",
+        "app/not_ignored.py",
+        "app_extra/ignored.py",
+    ] {
+        fs::write(root.join(path), "pass\n").unwrap();
+    }
+    let config = root.join(".skylos.toml");
+    fs::write(&config, "root = true\nexclude = [\"app/ignored.py\"]\n").unwrap();
+    let options = Options::default();
+    assert_eq!(
+        selected_paths(root, &options),
+        json!([
+            "app/nested/ignored.py",
+            "app/not_ignored.py",
+            "app_extra/ignored.py"
+        ])
+    );
+    assert_eq!(
+        selected_paths(&root.join("app"), &options),
+        json!(["not_ignored.py"])
+    );
+    for path in ["app/nested", "app_extra", "app/ignored.py"] {
+        assert_eq!(
+            selected_paths(&root.join(path), &options),
+            json!(["ignored.py"])
+        );
+    }
+
+    fs::write(config, "root = true\n").unwrap();
+    let flags = Options {
+        excludes: vec!["app/ignored.py".into()],
+        ..options
+    };
+    assert_eq!(
+        selected_paths(&root.join("app"), &flags),
+        json!(["ignored.py", "nested/ignored.py", "not_ignored.py"])
+    );
+}

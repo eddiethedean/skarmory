@@ -937,6 +937,59 @@ fn skylos_prefers_a_lazy_export_until_the_same_named_child_is_attached() {
 }
 
 #[test]
+fn skylos_distinguishes_dotted_attributes_from_submodule_imports() {
+    let project = skylos_fixture();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("plugin.py"), "def run():\n    return 1\n").unwrap();
+
+    for initializer in [
+        "pass\n",
+        "def __getattr__(name):\n    raise AttributeError(name)\n",
+    ] {
+        fs::write(package.join("__init__.py"), initializer).unwrap();
+        for access in ["pkg.plugin", "pkg.plugin.run()"] {
+            fs::write(
+                project.path().join("main.py"),
+                format!("import pkg\n{access}\n"),
+            )
+            .unwrap();
+            let output = skylos(project.path(), &["--json", "--strict"]);
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output.status.code(), Some(2), "{report}");
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| {
+                        issue["kind"] == "unresolved_attribute"
+                            && issue["path"] == "main.py"
+                            && issue["line"] == 2
+                    }),
+                "{report}"
+            );
+            assert_eq!(report["unused_functions"], serde_json::json!([]));
+        }
+
+        for main in [
+            "from pkg import plugin\nplugin.run()\n",
+            "import pkg.plugin\npkg.plugin.run()\n",
+            "import pkg\nfrom pkg import plugin as attached\npkg.plugin.run()\n",
+        ] {
+            fs::write(project.path().join("main.py"), main).unwrap();
+            let output = skylos(project.path(), &["--json", "--strict"]);
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output.status.code(), Some(0), "{main}\n{report}");
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert_eq!(report["unused_functions"], serde_json::json!([]));
+            assert_eq!(report["unused_imports"], serde_json::json!([]));
+        }
+    }
+}
+
+#[test]
 fn skylos_resolves_the_package_binding_at_the_time_of_attachment() {
     let project = skylos_fixture();
     let package = project.path().join("pkg");
