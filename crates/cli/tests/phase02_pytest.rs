@@ -252,6 +252,55 @@ def orphan():
 }
 
 #[test]
+fn pytest_reports_incomplete_coverage_when_a_lazy_export_returns_a_conditional_binding() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("support.py"),
+        r#"from sys import platform
+
+def check_darwin():
+    assert True
+
+def check_elsewhere():
+    assert True
+
+if platform == 'darwin':
+    selected = check_darwin
+else:
+    selected = check_elsewhere
+
+def __getattr__(name):
+    if name == 'example':
+        return selected
+    raise AttributeError(name)
+"#,
+    )
+    .unwrap();
+    let test_file = project.path().join("test_example.py");
+    for code in [
+        "from support import example as test_concrete\n",
+        "import support\ntest_concrete = support.example\n",
+    ] {
+        fs::write(&test_file, code).unwrap();
+        let report = scan_with_status(project.path(), 2, "incomplete");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "ambiguous_binding" && issue["file"] == "support.py"
+                }),
+            "{report}"
+        );
+        assert_eq!(report["unused_functions"], json!([]), "{report}");
+    }
+
+    fs::write(test_file, "import support\n").unwrap();
+    assert_eq!(scan(project.path())["analysis_errors"], json!([]));
+}
+
+#[test]
 fn pytest_reports_incomplete_coverage_for_a_conditional_imported_test() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

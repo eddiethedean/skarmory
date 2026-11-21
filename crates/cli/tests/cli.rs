@@ -891,6 +891,11 @@ fn skylos_prefers_a_lazy_export_until_the_same_named_child_is_attached() {
     .unwrap();
     fs::write(package.join("actual.py"), "def run():\n    return 'lazy'\n").unwrap();
     fs::write(package.join("plugin.py"), "def run():\n    return 'disk'\n").unwrap();
+    fs::write(
+        project.path().join("loader.py"),
+        "ATTACH = False\nif ATTACH:\n    import pkg.plugin\n",
+    )
+    .unwrap();
     for (setup, lookup, expected_unused) in [
         ("", "from pkg import plugin\nplugin.run()", "pkg.plugin.run"),
         ("", "import pkg\npkg.plugin.run()", "pkg.plugin.run"),
@@ -934,6 +939,29 @@ fn skylos_prefers_a_lazy_export_until_the_same_named_child_is_attached() {
             .any(|issue| issue["kind"] == "ambiguous_binding")
     );
     assert_eq!(report["unused_functions"], serde_json::json!([]));
+}
+
+#[test]
+fn skylos_uses_known_local_boolean_guards_for_imported_bindings() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("main.py"),
+        "from support import selected\n\ndef orphan():\n    return 1\n",
+    )
+    .unwrap();
+    for enabled in ["False", "True"] {
+        fs::write(
+            project.path().join("support.py"),
+            format!("USE_OPTIONAL = {enabled}\nselected = 1\nif USE_OPTIONAL:\n    selected = 2\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(report["analysis_errors"], serde_json::json!([]));
+        assert_eq!(report["unused_functions"][0]["full_name"], "main.orphan");
+    }
 }
 
 #[test]

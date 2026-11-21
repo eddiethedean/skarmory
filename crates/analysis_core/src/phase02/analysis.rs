@@ -1,5 +1,6 @@
 //! Project binding resolution and reachability for the Skylos profile.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::RangeInclusive;
 
@@ -311,10 +312,20 @@ impl<'a> Graph<'a> {
                     body,
                     otherwise,
                 } => {
+                    if let Some(enabled) = static_bool(test) {
+                        self.index(scope, if enabled { body } else { otherwise });
+                        continue;
+                    }
                     let first_symbol = self.symbols.len();
-                    match static_bool(test) {
-                        Some(true) => self.index(scope, body),
-                        Some(false) => self.index(scope, otherwise),
+                    match self.indexed_bool(scope, test, statement.at, 0) {
+                        Some(true) => {
+                            self.index(scope, body);
+                            self.index_dormant(scope, otherwise);
+                        }
+                        Some(false) => {
+                            self.index_dormant(scope, body);
+                            self.index(scope, otherwise);
+                        }
                         None => {
                             self.index(scope, body);
                             self.mark_conditional(scope, first_symbol, body);
@@ -325,6 +336,57 @@ impl<'a> Graph<'a> {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    fn indexed_bool(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Option<bool> {
+        if depth >= MAX_BINDING_CHAIN {
+            return None;
+        }
+        match &expression.kind {
+            ExpressionKind::Bool(value) => Some(*value),
+            ExpressionKind::Not(value) => self
+                .indexed_bool(scope, value, before, depth + 1)
+                .map(|value| !value),
+            // Module guards can use prior local bindings during indexing.
+            // Nested scopes can depend on bindings that are still being indexed.
+            ExpressionKind::Name(name) if self.scopes[scope].file == scope => {
+                let id = self.local(scope, name, before)?;
+                if self.binding_depends_on_branch(id, before) {
+                    return None;
+                }
+                let Binding::Variable(Some(value), assigned) = self.symbols[id].binding else {
+                    return None;
+                };
+                self.indexed_bool(scope, value, assigned, depth + 2)
+            }
+            _ => None,
+        }
+    }
+
+    fn index_dormant(&mut self, scope: ScopeId, body: &'a [Statement]) {
+        let first = self.symbols.len();
+        self.index(scope, body);
+        // These symbols are still reportable. They never change the module's
+        // effective bindings at runtime.
+        let names = &mut self.scopes[scope].names;
+        for id in (first..self.symbols.len()).rev() {
+            let symbol = &self.symbols[id];
+            if symbol.scope == scope
+                && let Entry::Occupied(mut entry) = names.entry(symbol.name.text.as_str())
+                && entry.get().last() == Some(&id)
+            {
+                entry.get_mut().pop();
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
             }
         }
     }
@@ -481,6 +543,13 @@ impl<'a> Graph<'a> {
             let Binding::Import(import) = symbol.binding else {
                 continue;
             };
+            if !self.scopes[symbol.scope]
+                .names
+                .get(symbol.name.text.as_str())
+                .is_some_and(|ids| ids.binary_search(&id).is_ok())
+            {
+                continue;
+            }
             let source = self.scopes[symbol.scope].file;
             let Some(module) = self.relative_module(source, import) else {
                 continue;
@@ -756,7 +825,10 @@ impl<'a> Graph<'a> {
         }
         if let (Some(member), Some(lookup)) = (member, lookup) {
             match lookup {
-                ModuleMember::Lazy(_, branch) => return Some((branch.scope, branch.imports)),
+                ModuleMember::Lazy(_, branch) => {
+                    self.lazy_value(scope, &branch, 0);
+                    return Some((branch.scope, branch.imports));
+                }
                 ModuleMember::Missing => self.import_issue(
                     scope,
                     source,
@@ -1096,7 +1168,7 @@ impl<'a> Graph<'a> {
                 }
                 ModuleMember::Lazy(id, branch) => {
                     self.read.insert(id);
-                    self.identity(branch.scope, branch.value, branch.at, depth + 2)
+                    self.lazy_value(access.0, &branch, depth + 2)
                 }
                 ModuleMember::Ambiguous => {
                     self.scope_issue(access.0, access.1, "ambiguous_binding",
@@ -1127,6 +1199,17 @@ impl<'a> Graph<'a> {
         self.modules
             .get(submodule.as_str())
             .map_or(Value::Provider(submodule), |file| Value::Module(*file))
+    }
+
+    fn lazy_value(&mut self, caller: ScopeId, branch: &LazyBranch<'a>, depth: usize) -> Value {
+        let first_issue = self.scope_issues.len();
+        let value = self.identity(branch.scope, branch.value, branch.at, depth);
+        // A member access executes only the selected lazy branch. Keep the
+        // original diagnostic locations and use the caller for reachability.
+        for (owner, _) in &mut self.scope_issues[first_issue..] {
+            *owner = caller;
+        }
+        value
     }
 
     fn lazy_lookup(&self, id: SymbolId, member: &str) -> LazyMember<'a> {
