@@ -1025,6 +1025,60 @@ fn skylos_accounts_for_imports_in_chained_lazy_exports() {
 }
 
 #[test]
+fn skylos_resolves_base_calls_when_a_subclass_definition_is_dormant() {
+    let project = skylos_fixture();
+    let base = "def observed():\n    print('base method ran')\n\nclass Base:\n    def __init__(self):\n        self.setup()\n\n    def setup(self):\n        observed()\n\n";
+    let subclass =
+        "if ENABLED:\n    class Extension(Base):\n        def setup(self):\n            pass\n";
+    let nested_subclass = "if ENABLED:\n    class Container:\n        class Extension(Base):\n            def setup(self):\n                pass\n";
+    for (flag, classes, complete) in [
+        ("False", subclass, true),
+        ("False", nested_subclass, true),
+        ("True", subclass, false),
+    ] {
+        fs::write(
+            project.path().join("main.py"),
+            format!("{base}ENABLED = {flag}\n{classes}\nBase()\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        if complete {
+            assert_eq!(output.status.code(), Some(1), "{report}");
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert_eq!(report["analysis_errors"], serde_json::json!([]));
+            assert!(
+                report["unused_functions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|finding| finding["full_name"] != "main.observed")
+            );
+            assert!(
+                report["unused_classes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|finding| finding["name"] == "Extension")
+            );
+            assert!(report["dead_code_evidence"].as_array().unwrap().iter().any(
+                |edge| edge["full_name"] == "main.Base.setup" && edge["kind"] == "direct_call"
+            ));
+        } else {
+            assert_eq!(output.status.code(), Some(2), "{report}");
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert!(
+                report["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_call")
+            );
+        }
+    }
+}
+
+#[test]
 fn skylos_evaluates_a_lazy_base_only_for_an_executed_class_definition() {
     let project = skylos_fixture();
     fs::write(

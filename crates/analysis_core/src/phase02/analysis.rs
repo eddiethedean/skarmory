@@ -172,6 +172,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         read: BTreeSet::new(),
         direct: BTreeSet::new(),
         conditional: BTreeMap::new(),
+        dormant_classes: BTreeSet::new(),
         subclassed: BTreeSet::new(),
         issues: Vec::new(),
         scope_issues: Vec::new(),
@@ -228,6 +229,7 @@ struct Graph<'a> {
     read: BTreeSet<SymbolId>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
+    dormant_classes: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
@@ -391,6 +393,11 @@ impl<'a> Graph<'a> {
         let names = &mut self.scopes[scope].names;
         for id in (first..self.symbols.len()).rev() {
             let symbol = &self.symbols[id];
+            if matches!(symbol.binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Class)
+            {
+                self.dormant_classes.insert(id);
+            }
             if symbol.scope == scope
                 && let Entry::Occupied(mut entry) = names.entry(symbol.name.text.as_str())
                 && entry.get().last() == Some(&id)
@@ -494,7 +501,7 @@ impl<'a> Graph<'a> {
             let Binding::Definition(definition, _) = self.symbols[id].binding else {
                 continue;
             };
-            if definition.kind == DefinitionKind::Class {
+            if definition.kind == DefinitionKind::Class && !self.dormant_classes.contains(&id) {
                 for base in &definition.bases {
                     if let Value::Callable(base) =
                         self.probe_identity(scope, base, definition.name.at)
