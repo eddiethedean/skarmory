@@ -937,6 +937,73 @@ fn skylos_prefers_a_lazy_export_until_the_same_named_child_is_attached() {
 }
 
 #[test]
+fn skylos_resolves_the_package_binding_at_the_time_of_attachment() {
+    let project = skylos_fixture();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("actual.py"),
+        "def run():\n    return 'initial'\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("plugin.py"),
+        "def run():\n    return 'attached'\n",
+    )
+    .unwrap();
+
+    for (initializer, main, expected_unused, required_import_file) in [
+        (
+            "from . import actual as plugin\n",
+            "import pkg.plugin\nfrom pkg import plugin\nassert plugin.run() == 'attached'\n",
+            "pkg.actual.run",
+            "main.py",
+        ),
+        (
+            "from . import actual as plugin\n",
+            "import pkg.plugin\nassert pkg.plugin.run() == 'attached'\n",
+            "pkg.actual.run",
+            "main.py",
+        ),
+        (
+            "from . import actual as plugin\n",
+            "from pkg import plugin\nimport pkg.plugin\nassert plugin.run() == 'initial'\n",
+            "pkg.plugin.run",
+            "",
+        ),
+        (
+            "from . import plugin\nfrom . import actual as plugin\n",
+            "import pkg.plugin\nfrom pkg import plugin\nassert plugin.run() == 'initial'\n",
+            "pkg.plugin.run",
+            "pkg/__init__.py",
+        ),
+    ] {
+        fs::write(package.join("__init__.py"), initializer).unwrap();
+        fs::write(project.path().join("main.py"), main).unwrap();
+        let output = skylos(project.path(), &["--json"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(0), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        let findings = report["unused_functions"].as_array().unwrap();
+        assert_eq!(findings.len(), 1, "{report}");
+        assert_eq!(
+            findings[0]["full_name"], expected_unused,
+            "{main}\n{report}"
+        );
+        assert!(
+            report["unused_imports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|finding| {
+                    finding["file"] != required_import_file || finding["full_name"] != "pkg.plugin"
+                }),
+            "{main}\n{report}"
+        );
+    }
+}
+
+#[test]
 fn skylos_reports_a_missing_relative_import_only_in_the_selected_lazy_branch() {
     let project = skylos_fixture();
     let package = project.path().join("pkg");

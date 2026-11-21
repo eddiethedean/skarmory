@@ -58,6 +58,7 @@ pub(crate) struct Selection {
 struct Pattern {
     text: String,
     matcher: GlobMatcher,
+    root_matcher: Option<GlobMatcher>,
     anchored: bool,
 }
 
@@ -67,18 +68,34 @@ impl Pattern {
             return Err(ConfigError::new("empty configuration pattern"));
         }
         let text = pattern.replace('\\', "/");
-        let matcher = GlobBuilder::new(&translate_glob(&text))
+        let matcher = Self::compile(&text)?;
+        Ok(Self {
+            text,
+            matcher,
+            root_matcher: None,
+            anchored: false,
+        })
+    }
+
+    fn compile(pattern: &str) -> Result<GlobMatcher, ConfigError> {
+        GlobBuilder::new(&translate_glob(pattern))
             .case_insensitive(cfg!(windows))
             .literal_separator(false)
             .backslash_escape(false)
             .build()
-            .map_err(|error| ConfigError::new(format!("invalid pattern {pattern:?}: {error}")))?
-            .compile_matcher();
-        Ok(Self {
-            text,
-            matcher,
-            anchored: false,
-        })
+            .map(|glob| glob.compile_matcher())
+            .map_err(|error| ConfigError::new(format!("invalid pattern {pattern:?}: {error}")))
+    }
+
+    fn new_selection(value: &str) -> Result<Self, ConfigError> {
+        let mut pattern = Self::new(value)?;
+        // A leading recursive component can match zero directories.
+        pattern.root_matcher = pattern
+            .text
+            .strip_prefix("**/")
+            .map(Self::compile)
+            .transpose()?;
+        Ok(pattern)
     }
 
     fn selection(value: &str, input: &Path) -> Result<Self, ConfigError> {
@@ -86,7 +103,7 @@ impl Pattern {
         if !path.is_absolute() {
             let text = value.replace('\\', "/");
             let normalized = text.trim_start_matches("./").trim_end_matches('/');
-            return Self::new(if normalized.is_empty() {
+            return Self::new_selection(if normalized.is_empty() {
                 &text
             } else {
                 normalized
@@ -106,7 +123,7 @@ impl Pattern {
                 text = relative.to_string_lossy().into_owned();
             }
         }
-        let mut pattern = Self::new(&text)?;
+        let mut pattern = Self::new_selection(&text)?;
         // A literal absolute path must not also match its relative suffix in
         // a different directory under the project.
         pattern.anchored = true;
@@ -124,7 +141,12 @@ impl Pattern {
     }
 
     fn selection_matches(&self, value: &str) -> bool {
-        if self.matches(value) {
+        if self.matches(value)
+            || self
+                .root_matcher
+                .as_ref()
+                .is_some_and(|matcher| matcher.is_match(value))
+        {
             return true;
         }
         if self.anchored {

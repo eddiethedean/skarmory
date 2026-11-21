@@ -27,6 +27,26 @@ fn literal_exclusion_matches_whole_path_components() {
 }
 
 #[test]
+fn recursive_exclusion_matches_files_at_the_root_and_below_it() {
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir_all(project.path().join("nested/deeper")).unwrap();
+    for path in ["ignored.py", "nested/deeper/ignored.py"] {
+        fs::write(project.path().join(path), "def invalid(\n").unwrap();
+    }
+    for path in ["main.py", "nested/not_ignored.py"] {
+        fs::write(project.path().join(path), "pass\n").unwrap();
+    }
+    let options = Options {
+        excludes: vec!["**/ignored.py".into()],
+        ..Options::default()
+    };
+    assert_eq!(
+        selected_paths(project.path(), &options),
+        json!(["main.py", "nested/not_ignored.py"])
+    );
+}
+
+#[test]
 fn including_an_excluded_folder_restores_its_descendants() {
     let project = tempfile::tempdir().unwrap();
     for dir in [

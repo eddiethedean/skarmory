@@ -125,11 +125,18 @@ enum LazyMember<'a> {
 }
 
 enum ModuleMember<'a> {
-    Binding(SymbolId),
-    Submodule(usize),
+    Binding(SymbolId, Option<SymbolId>),
+    Submodule(usize, Option<SymbolId>),
     Lazy(SymbolId, LazyBranch<'a>),
     Missing,
     Unknown,
+    Ambiguous,
+}
+
+enum SubmoduleAttachment {
+    Attached(SymbolId),
+    Rebound(SymbolId),
+    Absent,
     Ambiguous,
 }
 
@@ -494,10 +501,13 @@ impl<'a> Graph<'a> {
         &self,
         package: usize,
         child: usize,
+        binding: Option<SymbolId>,
         access: (ScopeId, Location),
-    ) -> Option<bool> {
+    ) -> SubmoduleAttachment {
         let (scope, before) = access;
-        let mut possible = false;
+        let mut attached: Option<SymbolId> = None;
+        let mut possible_attachment = false;
+        let mut possible_earlier_attachment = false;
         for &id in self
             .direct_submodule_imports
             .get(&child)
@@ -516,14 +526,39 @@ impl<'a> Graph<'a> {
                     && self.scopes[scope].file != package
                     && !self.conditional.contains_key(&id)
             };
-            if guaranteed {
-                return Some(true);
-            }
             // Other scopes may already have executed. A later statement in
             // this module's own initializer has not yet attached the child.
-            possible |= symbol.scope != scope || scope >= self.files.len() || earlier_in_scope;
+            let possible = symbol.scope != scope || scope >= self.files.len() || earlier_in_scope;
+            if binding.is_some_and(|binding| {
+                symbol.scope == package
+                    && position(symbol.name.at) <= position(self.symbols[binding].name.at)
+            }) {
+                // The first successful child import sets the package attribute.
+                // A later import from the module cache leaves a reassignment in place.
+                if guaranteed {
+                    return SubmoduleAttachment::Rebound(id);
+                }
+                possible_earlier_attachment |= possible;
+            } else {
+                if guaranteed
+                    && attached.is_none_or(|first| {
+                        symbol.scope == package && self.symbols[first].scope != package
+                    })
+                {
+                    attached = Some(id);
+                }
+                possible_attachment |= possible;
+            }
         }
-        if possible { None } else { Some(false) }
+        if let Some(import) = attached
+            && !possible_earlier_attachment
+        {
+            SubmoduleAttachment::Attached(import)
+        } else if possible_attachment {
+            SubmoduleAttachment::Ambiguous
+        } else {
+            SubmoduleAttachment::Absent
+        }
     }
 
     fn record_import(
@@ -556,7 +591,7 @@ impl<'a> Graph<'a> {
             )
         });
         let child = match &lookup {
-            Some(ModuleMember::Submodule(child)) => Some(*child),
+            Some(ModuleMember::Submodule(child, _)) => Some(*child),
             None => member.and_then(|member| {
                 self.modules
                     .get(format!("{module}.{member}").as_str())
@@ -847,26 +882,42 @@ impl<'a> Graph<'a> {
         before: Location,
         access: (ScopeId, Location),
     ) -> ModuleMember<'a> {
-        if let Some(id) = self.local(file, member, before) {
-            return ModuleMember::Binding(id);
+        let submodule = format!("{}.{member}", self.files[file].module);
+        let child = self.modules.get(submodule.as_str()).copied();
+        if let Some(binding) = self.local(file, member, before) {
+            if let Some(child) = child {
+                return match self.submodule_attachment(file, child, Some(binding), access) {
+                    SubmoduleAttachment::Attached(import) => {
+                        ModuleMember::Submodule(child, Some(import))
+                    }
+                    SubmoduleAttachment::Rebound(import) => {
+                        ModuleMember::Binding(binding, Some(import))
+                    }
+                    SubmoduleAttachment::Ambiguous => ModuleMember::Ambiguous,
+                    SubmoduleAttachment::Absent => ModuleMember::Binding(binding, None),
+                };
+            }
+            return ModuleMember::Binding(binding, None);
         }
         if has_implicit_module_member(member, self.files[file].is_package) {
             return ModuleMember::Unknown;
         }
-        let submodule = format!("{}.{member}", self.files[file].module);
-        let child = self.modules.get(submodule.as_str()).copied();
         let hook = self.local(file, "__getattr__", before);
         let Some(hook) = hook else {
-            return child.map_or(ModuleMember::Missing, ModuleMember::Submodule);
+            return child.map_or(ModuleMember::Missing, |child| {
+                ModuleMember::Submodule(child, None)
+            });
         };
         let lazy = self.lazy_lookup(hook, member);
         if let Some(child) = child {
             if matches!(lazy, LazyMember::Missing) {
-                return ModuleMember::Submodule(child);
+                return ModuleMember::Submodule(child, None);
             }
-            match self.submodule_attachment(file, child, access) {
-                Some(true) => return ModuleMember::Submodule(child),
-                Some(false) if matches!(lazy, LazyMember::Branch(_)) => {}
+            match self.submodule_attachment(file, child, None, access) {
+                SubmoduleAttachment::Attached(import) => {
+                    return ModuleMember::Submodule(child, Some(import));
+                }
+                SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Branch(_)) => {}
                 _ => return ModuleMember::Ambiguous,
             }
         }
@@ -901,8 +952,14 @@ impl<'a> Graph<'a> {
         }
         if let Some(&file) = self.modules.get(module) {
             return match self.selected_module_member(file, member, before, access) {
-                ModuleMember::Binding(id) => self.binding(id, before, depth + 1),
-                ModuleMember::Submodule(file) => Value::Module(file),
+                ModuleMember::Binding(id, import) => {
+                    self.read.extend(import);
+                    self.binding(id, before, depth + 1)
+                }
+                ModuleMember::Submodule(file, import) => {
+                    self.read.extend(import);
+                    Value::Module(file)
+                }
                 ModuleMember::Lazy(id, branch) => {
                     self.read.insert(id);
                     self.identity(branch.scope, branch.value, branch.at, depth + 2)
