@@ -7,24 +7,25 @@ use ruff_python_ast::{
     Alias, BoolOp, CmpOp, Expr, ExprCall, Number, Stmt, StmtFunctionDef, StmtIf, UnaryOp,
 };
 use ruff_text_size::Ranged;
+use serde::{Deserialize, Serialize};
 
 use crate::{FrontendError, Lines, Location, parse, simple_name};
 
 /// Bound recursion in the owned representation and subsequent traversals.
 const MAX_NESTING: usize = 128;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Module {
     pub body: Vec<Statement>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Statement {
     pub location: Location,
     pub kind: StatementKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum StatementKind {
     Function(Function),
     Import(Import),
@@ -41,7 +42,7 @@ pub enum StatementKind {
     Expr(Expression),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Function {
     pub name: String,
     pub location: Location,
@@ -53,14 +54,14 @@ pub struct Function {
     pub body: Vec<Statement>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Parameter {
     pub name: String,
     pub kind: ParameterKind,
     pub default: Option<Expression>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ParameterKind {
     PositionalOnly,
     PositionalOrKeyword,
@@ -69,7 +70,7 @@ pub enum ParameterKind {
     VariadicKeyword,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Import {
     pub level: u32,
     /// Empty for imports of the form `from . import name`.
@@ -91,13 +92,13 @@ impl Import {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Expression {
     pub location: Location,
     pub kind: ExpressionKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum ExpressionKind {
     Name(String),
     Attribute {
@@ -123,7 +124,7 @@ pub enum ExpressionKind {
     Not(Box<Expression>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Constant {
     None,
     Bool(bool),
@@ -131,7 +132,7 @@ pub enum Constant {
     String(String),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Comparison {
     Equal,
     NotEqual,
@@ -162,7 +163,7 @@ impl From<CmpOp> for Comparison {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BooleanOperator {
     And,
     Or,

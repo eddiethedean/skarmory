@@ -1,11 +1,14 @@
 //! Native engines for the historical prototype and the packaged-project preview.
 
+mod fact_cache;
 mod graph;
+pub mod phase02;
 mod preview;
 mod preview_source;
 mod source;
 
-pub use preview::{PreviewReport, ScanOptions, ScanPolicy, scan};
+pub use fact_cache::CacheStats;
+pub use preview::{PreviewReport, ScanOptions, ScanPolicy, scan, scan_cached};
 
 use std::path::Path;
 use std::time::Instant;

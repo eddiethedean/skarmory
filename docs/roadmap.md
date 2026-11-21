@@ -42,7 +42,7 @@ Compatibility is versioned and limited to explicitly declared features. The
 | --- | --- | --- | --- |
 | Phase 0 | Compatibility contract, benchmark baseline, native vertical slice | Initial scaffold | Reproducible baseline and measured native prototype |
 | 0.1 | Native unreachable-function preview for packaged Python 3.11 projects | Phase 0 | Reviewed reachability, coverage, and worker-equivalence checks pass |
-| 0.2 | Declared Python dead-code compatibility | 0.1 | No unexplained conformance differences |
+| 0.2 | [Declared Python dead-code compatibility and persistent module facts](phase-02.md) | 0.1 | Reviewed reference differences, independent controls, and cached/clean equivalence |
 | 0.3 | Quality and secrets | 0.2 | Rule-level conformance and independent controls |
 | 0.4 | Security and data flow | 0.3 and semantic infrastructure | Accuracy, completeness, and resource budgets verified |
 | 0.5 | Developer workflows | Relevant stable rule families | Integration and narrow edit contracts verified |
@@ -225,29 +225,19 @@ explicit coverage. Compatibility and speed claims require separate evidence.
 
 ## 0.2: declared Python dead-code compatibility
 
-Goal: satisfy the frozen Python dead-code contract and make repeated scans fast.
+The [Phase 0.2 plan](phase-02.md) defines a Python 3.11 subset of the pinned
+Skylos 5.7.0 dead-code contract alongside the native interfaces.
 
-- [ ] Port declared confidence thresholds, scoring order, evidence, and
-  category-specific filtering behavior.
-- [ ] Match configuration discovery and precedence, exclusions, ignores,
-  whitelists, path overrides, and custom entry-point selectors.
-- [ ] Resolve public API exposure, re-export chains, and supported lazy exports.
-- [ ] Model the declared frameworks, including registration activation and
-  imported identity rather than names alone.
-- [ ] Cover callbacks, closures, async scheduling, executor submissions, and
-  multiprocessing targets within the supported semantic model.
-- [ ] Add the legacy JSON/API adapter alongside the new typed Python interface.
-- [ ] Match the promised output formats and command-specific exit contracts.
-- [ ] Cache module facts using content and semantic-version fingerprints; rebuild
-  graph reachability conservatively before pursuing partial graph updates.
-- [ ] Test edits to callers, exports, roots, configuration, and the file universe
-  against clean rebuilds.
-- [ ] Review every mismatch and publish any intentional differences.
-
-Exit evidence: no unexplained differences for the declared contract, no regression
-on the independently reviewed retain/detect controls, and matched cold/warm/edit
-benchmarks. Arbitrary Python AST visitors remain an explicitly unsupported or
-separately adapted interface until their contract is implemented.
+- [ ] Freeze the supported configuration, semantic, and output fixtures
+  against the pinned reference and independently reviewed expectations.
+- [ ] Implement the declared finding categories, export and callback cases,
+  and bounded pytest and FastAPI models in the native engine.
+- [ ] Deliver an explicit Skylos profile for the supported CLI and SDK
+  invocations, including confidence, suppressions, JSON, and SARIF.
+- [ ] Cache per-file facts and rebuild the graph from current inputs on every
+  scan. Validate clean, cached, edited, serial, and parallel equivalence.
+- [ ] Publish the compatibility matrix, reviewed discrepancies, and matched
+  cold, warm, and edited benchmark receipts.
 
 ## 0.3: quality and secrets
 

@@ -120,6 +120,8 @@ PYTHONPATH=python python -m unittest discover -s tests/python -v
 
 ### Project documentation
 
+- [Phase 0.2](docs/phase-02.md) describes the development Skylos profile and
+  opt-in module-fact cache.
 - [Contributing](CONTRIBUTING.md) covers development, testing, and publishing.
 - [Architecture](docs/architecture.md) describes the Rust engine and Python SDK.
 - [Roadmap](docs/roadmap.md) lists milestones and release gates.

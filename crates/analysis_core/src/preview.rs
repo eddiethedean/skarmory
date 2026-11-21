@@ -4,12 +4,15 @@ use std::time::Instant;
 use serde::Serialize;
 use skarmory_python::preview;
 
+use crate::fact_cache::{CacheStats, FactCache};
 use crate::preview_source::{self, Exclusion, FileEntry};
 use crate::{Coverage, Issue, Timings};
 
 mod engine;
 
 const MAX_WORKERS: usize = 32;
+// Bump the facts epoch when the extractor, parser, or location semantics change.
+const FACTS_NAMESPACE: &str = "phase01-module-v1/ruff-0.0.12/py311/utf8-universal";
 
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -154,6 +157,25 @@ impl ScanOptions {
 }
 
 pub fn scan(path: &Path, options: &ScanOptions) -> (PreviewReport, Timings) {
+    scan_with_cache(path, options, None)
+}
+
+/// Reuse file-local facts while deriving all project results from current inputs.
+pub fn scan_cached(
+    path: &Path,
+    options: &ScanOptions,
+    directory: &Path,
+) -> (PreviewReport, Timings, CacheStats) {
+    let cache = FactCache::for_project(directory, FACTS_NAMESPACE, path, &options.source_roots);
+    let (report, timings) = scan_with_cache(path, options, Some(&cache));
+    (report, timings, cache.stats())
+}
+
+fn scan_with_cache(
+    path: &Path,
+    options: &ScanOptions,
+    cache: Option<&FactCache>,
+) -> (PreviewReport, Timings) {
     let mut timings = Timings::default();
     let mut report = PreviewReport {
         schema_version: 2,
@@ -216,7 +238,10 @@ pub fn scan(path: &Path, options: &ScanOptions) -> (PreviewReport, Timings) {
         report.entry = Some(name.clone());
     }
 
-    let work = match project.map_files(options.workers, preview::extract) {
+    let work = match project.map_files(options.workers, |source| match cache {
+        Some(cache) => cache.get_or_extract(source, preview::extract),
+        None => preview::extract(source),
+    }) {
         Ok(work) => work,
         Err(issue) => {
             report.coverage.issues.push(issue);

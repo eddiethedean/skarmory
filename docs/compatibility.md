@@ -2,6 +2,8 @@
 
 Status: specification. See the [Phase 0 inventory](skylos-5.7.0-contract.md) and
 [prototype comparisons](../benchmarks/phase0.md) for recorded evidence.
+The [Phase 0.2 plan](phase-02.md) defines the initial proposed subset,
+compatibility entry points, and release evidence.
 
 ## Frozen reference
 
@@ -87,8 +89,9 @@ Required adapter rules:
 - Keep user-facing package and command names `skarmory`; importing or installing
   Skarmory does not replace the `skylos` package or its executable.
 
-Phase 0 exposes a single native profile. Selection syntax for a legacy profile
-is deferred until it has an implemented contract.
+The shipped preview exposes the native interfaces. The
+[Phase 0.2 selectors](phase-02.md#profiles-and-interfaces) make the
+Skylos profile explicit.
 
 ## Configuration is observable behavior
 

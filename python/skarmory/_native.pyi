@@ -14,6 +14,18 @@ class _ScanOptions(TypedDict):
     public_modules: Sequence[str]
     public_callables: Sequence[str]
     workers: int
+    cache_dir: str | None
+
+class _SkylosOptions(TypedDict):
+    config_file: str | None
+    exclude_folders: Sequence[str]
+    skip_generated: bool
+    generated_keep_paths: Sequence[str]
+    confidence: int
+    all_advice: bool
+    workers: int
+    cache_dir: str | None
 
 def analyze(path: str) -> str: ...
 def scan(path: str, options: _ScanOptions) -> str: ...
+def scan_skylos(path: str, options: _SkylosOptions) -> str: ...
