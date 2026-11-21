@@ -126,6 +126,7 @@ enum LazyMember<'a> {
     Branch(LazyBranch<'a>),
     Missing,
     Unknown,
+    Conditional,
 }
 
 enum ModuleMember<'a> {
@@ -136,6 +137,7 @@ enum ModuleMember<'a> {
     UnattachedSubmodule,
     Unknown,
     Ambiguous,
+    ConditionalHook,
 }
 
 #[derive(Clone, Copy)]
@@ -630,7 +632,9 @@ impl<'a> Graph<'a> {
             && self.local(package, member, before).is_none()
             && self
                 .local(package, "__getattr__", before)
-                .is_none_or(|hook| matches!(self.lazy_lookup(hook, member), LazyMember::Missing)))
+                .is_none_or(|hook| {
+                    matches!(self.lazy_lookup(hook, member, before), LazyMember::Missing)
+                }))
         .then_some(*child)
     }
 
@@ -855,6 +859,15 @@ impl<'a> Graph<'a> {
                     Issue::new("ambiguous_binding", &self.files[source].path,
                         format!("cannot establish whether submodule {module}.{member} was attached before this lookup"))
                         .at(import.local.at),
+                )),
+                ModuleMember::ConditionalHook => self.scope_issues.push((
+                    scope,
+                    Issue::new(
+                        "ambiguous_binding",
+                        &self.files[source].path,
+                        format!("lazy import of {module}.{member} depends on a conditional __getattr__"),
+                    )
+                    .at(import.local.at),
                 )),
                 _ => {}
             }
@@ -1111,7 +1124,9 @@ impl<'a> Graph<'a> {
             return ModuleMember::Unknown;
         }
         let hook = self.local(file, "__getattr__", before);
-        let lazy = hook.map_or(LazyMember::Missing, |hook| self.lazy_lookup(hook, member));
+        let lazy = hook.map_or(LazyMember::Missing, |hook| {
+            self.lazy_lookup(hook, member, before)
+        });
         if let Some(child) = child {
             match self.submodule_attachment(file, child, None, access) {
                 SubmoduleAttachment::Attached(import) => {
@@ -1125,7 +1140,8 @@ impl<'a> Graph<'a> {
                 SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Missing) => {
                     return ModuleMember::UnattachedSubmodule;
                 }
-                SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Branch(_)) => {}
+                SubmoduleAttachment::Absent
+                    if matches!(lazy, LazyMember::Branch(_) | LazyMember::Conditional) => {}
                 SubmoduleAttachment::Ambiguous => {
                     return self
                         .imported_submodule(child, access)
@@ -1139,6 +1155,7 @@ impl<'a> Graph<'a> {
         match (hook, lazy) {
             (Some(hook), LazyMember::Branch(branch)) => ModuleMember::Lazy(hook, branch),
             (_, LazyMember::Missing) => ModuleMember::Missing,
+            (_, LazyMember::Conditional) => ModuleMember::ConditionalHook,
             _ => ModuleMember::Unknown,
         }
     }
@@ -1175,6 +1192,15 @@ impl<'a> Graph<'a> {
                         format!("cannot establish whether submodule {submodule} was attached before this lookup"));
                     Value::Unknown
                 }
+                ModuleMember::ConditionalHook => {
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "ambiguous_binding",
+                        format!("lazy lookup of {submodule} depends on a conditional __getattr__"),
+                    );
+                    Value::Unknown
+                }
                 ModuleMember::UnattachedSubmodule => {
                     self.scope_issue(
                         access.0,
@@ -1203,7 +1229,15 @@ impl<'a> Graph<'a> {
 
     fn lazy_value(&mut self, caller: ScopeId, branch: &LazyBranch<'a>, depth: usize) -> Value {
         let first_issue = self.scope_issues.len();
-        let value = self.identity(branch.scope, branch.value, branch.at, depth);
+        let value = self.expression_value(branch.scope, branch.value, branch.at, depth, true);
+        if matches!(value, Value::Unknown) && self.scope_issues.len() == first_issue {
+            self.scope_issue(
+                branch.scope,
+                branch.value.at,
+                "unresolved_lazy_export",
+                "lazy return value or its evaluation is outside the bounded model",
+            );
+        }
         // A member access executes only the selected lazy branch. Keep the
         // original diagnostic locations and use the caller for reachability.
         for (owner, _) in &mut self.scope_issues[first_issue..] {
@@ -1212,7 +1246,10 @@ impl<'a> Graph<'a> {
         value
     }
 
-    fn lazy_lookup(&self, id: SymbolId, member: &str) -> LazyMember<'a> {
+    fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
+        if self.binding_depends_on_branch(id, before) {
+            return LazyMember::Conditional;
+        }
         let Binding::Definition(definition, scope) = self.symbols[id].binding else {
             return LazyMember::Unknown;
         };
@@ -1354,6 +1391,17 @@ impl<'a> Graph<'a> {
         before: Location,
         depth: usize,
     ) -> Value {
+        self.expression_value(scope, expression, before, depth, false)
+    }
+
+    fn expression_value(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+        check_lazy_effects: bool,
+    ) -> Value {
         if depth >= MAX_BINDING_CHAIN {
             self.issue(
                 self.scopes[scope].file,
@@ -1363,8 +1411,27 @@ impl<'a> Graph<'a> {
             );
             return Value::Unknown;
         }
-        let recurse =
-            |this: &mut Self, expression| this.identity(scope, expression, before, depth + 1);
+        // An evaluated lazy return can read a known binding. Effectful
+        // operations in the expression itself require additional execution.
+        if check_lazy_effects
+            && matches!(
+                expression.kind,
+                ExpressionKind::Call { .. }
+                    | ExpressionKind::Await(_)
+                    | ExpressionKind::Operands(_)
+            )
+        {
+            self.scope_issue(
+                scope,
+                expression.at,
+                "unresolved_lazy_export",
+                "effects of the lazy return expression are outside the bounded model",
+            );
+            return Value::Unknown;
+        }
+        let recurse = |this: &mut Self, expression| {
+            this.expression_value(scope, expression, before, depth + 1, check_lazy_effects)
+        };
         match &expression.kind {
             ExpressionKind::Name(name) => {
                 if let Some(id) = self.lexical(scope, name, before) {

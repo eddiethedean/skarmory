@@ -965,6 +965,54 @@ fn skylos_uses_known_local_boolean_guards_for_imported_bindings() {
 }
 
 #[test]
+fn skylos_reports_unmodeled_lazy_return_evaluation_only_when_accessed() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("support.py"),
+        "def make():\n    return 1\n\ndef __getattr__(name):\n    if name == 'example':\n        return make()\n    if name == 'invalid':\n        return missing\n    if name == 'inert':\n        return False and make()\n    raise AttributeError(name)\n",
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    for (code, line) in [
+        ("from support import example\n", 6),
+        ("import support\nprint(support.example)\n", 6),
+        ("from support import invalid\n", 8),
+    ] {
+        fs::write(&main, code).unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{report}");
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unresolved_lazy_export"
+                        && issue["file"] == "support.py"
+                        && issue["line"] == line
+                }),
+            "{report}"
+        );
+        assert_eq!(report["unused_functions"], serde_json::json!([]));
+    }
+
+    for code in [
+        "import support\n",
+        "from support import inert\n",
+        "from __future__ import annotations\nimport support\nvalue: support.example\n",
+    ] {
+        fs::write(&main, code).unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(report["unused_functions"][0]["full_name"], "support.make");
+    }
+}
+
+#[test]
 fn skylos_reports_a_failed_lazy_import_in_an_eager_annotation() {
     let project = skylos_fixture();
     let package = project.path().join("pkg");

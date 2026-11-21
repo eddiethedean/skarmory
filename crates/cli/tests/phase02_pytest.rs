@@ -252,6 +252,64 @@ def orphan():
 }
 
 #[test]
+fn pytest_reports_incomplete_coverage_when_lazy_dispatch_is_conditional() {
+    let project = tempfile::tempdir().unwrap();
+    let support = project.path().join("support.py");
+    let conditional_hook = r#"from sys import platform
+
+def check_darwin():
+    assert True
+
+def check_elsewhere():
+    assert True
+
+if platform == 'darwin':
+    def __getattr__(name):
+        if name == 'example':
+            return check_darwin
+        raise AttributeError(name)
+else:
+    def __getattr__(name):
+        if name == 'example':
+            return check_elsewhere
+        raise AttributeError(name)
+"#;
+    fs::write(&support, conditional_hook).unwrap();
+    let test_file = project.path().join("test_example.py");
+    for code in [
+        "from support import example as test_concrete\n",
+        "import support\ntest_concrete = support.example\n",
+    ] {
+        fs::write(&test_file, code).unwrap();
+        let report = scan_with_status(project.path(), 2, "incomplete");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "ambiguous_binding" && issue["file"] == "test_example.py"
+                }),
+            "{report}"
+        );
+        assert_eq!(report["unused_functions"], json!([]), "{report}");
+    }
+    fs::write(&test_file, "import support\n").unwrap();
+    assert_eq!(scan(project.path())["analysis_errors"], json!([]));
+
+    fs::write(
+        support,
+        format!("{conditional_hook}\nexample = check_darwin\n"),
+    )
+    .unwrap();
+    fs::write(test_file, "from support import example as test_concrete\n").unwrap();
+    let report = scan(project.path());
+    let unused = report["unused_functions"].as_array().unwrap();
+    assert_eq!(unused.len(), 1, "{report}");
+    assert_eq!(unused[0]["full_name"], "support.check_elsewhere");
+}
+
+#[test]
 fn pytest_reports_incomplete_coverage_when_a_lazy_export_returns_a_conditional_binding() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
