@@ -1242,6 +1242,129 @@ class Facade:
 }
 
 #[test]
+fn skylos_constructor_does_not_assume_the_result_of_custom_allocation() {
+    let project = skylos_fixture();
+    let source = r#"def observed():
+    print("receiver method ran")
+
+class Receiver:
+    def run(self):
+        observed()
+
+class Facade:
+    def __init__(self):
+        pass
+
+    def dispatch(self):
+        self.run()
+
+    def run(self):
+        pass
+
+"#;
+    let custom = "    def __new__(cls):\n        return Receiver()\n\n";
+    for (allocator, expected_exit) in [(custom, 2), ("", 1)] {
+        fs::write(
+            project.path().join("main.py"),
+            format!("{source}{allocator}Facade.dispatch(Facade())\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(expected_exit), "{report}");
+        let evidence = report["dead_code_evidence"].as_array().unwrap();
+        let has_edge = |target: &str, kind: &str| {
+            evidence
+                .iter()
+                .any(|edge| edge["full_name"] == target && edge["kind"] == kind)
+        };
+        if expected_exit == 2 {
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert_eq!(report["unused_functions"], serde_json::json!([]));
+            assert!(
+                report["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_constructor")
+            );
+            assert!(has_edge("main.Facade.__new__", "constructor"));
+            assert!(!has_edge("main.Facade.__init__", "constructor"));
+            assert!(!has_edge("main.Facade.run", "direct_call"));
+        } else {
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert!(has_edge("main.Facade.__init__", "constructor"));
+            assert!(has_edge("main.Facade.run", "direct_call"));
+        }
+    }
+}
+
+#[test]
+fn skylos_constructor_validates_the_receiver_of_an_aliased_initializer() {
+    let project = skylos_fixture();
+    let source = r#"def observed():
+    print("receiver method ran")
+
+class Facade:
+    def dispatch(self):
+        self.run()
+
+    def run(self):
+        pass
+
+class Receiver:
+    def run(self):
+        observed()
+
+"#;
+    for (initializer, expected_exit) in [
+        ("    __init__ = Facade.dispatch\n", 2),
+        (
+            "    def setup(self):\n        self.run()\n\n    __init__ = setup\n",
+            1,
+        ),
+    ] {
+        fs::write(
+            project.path().join("main.py"),
+            format!("{source}{initializer}\nReceiver()\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(expected_exit), "{report}");
+        let evidence = report["dead_code_evidence"].as_array().unwrap();
+        assert!(!evidence.iter().any(
+            |edge| edge["full_name"] == "main.Facade.run" && edge["kind"] == "direct_call"
+        ));
+        if expected_exit == 2 {
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert_eq!(report["unused_functions"], serde_json::json!([]));
+            assert!(
+                report["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_call")
+            );
+        } else {
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert!(
+                evidence
+                    .iter()
+                    .any(|edge| edge["full_name"] == "main.Receiver.setup"
+                        && edge["kind"] == "constructor")
+            );
+            assert!(
+                evidence
+                    .iter()
+                    .any(|edge| edge["full_name"] == "main.Receiver.run"
+                        && edge["kind"] == "direct_call")
+            );
+        }
+    }
+}
+
+#[test]
 fn skylos_evaluates_a_lazy_base_only_for_an_executed_class_definition() {
     let project = skylos_fixture();
     fs::write(

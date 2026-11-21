@@ -59,6 +59,14 @@ impl Invocation {
             receiver: Receiver::Ordinary,
         }
     }
+
+    fn bind_receiver(self, receiver: Receiver) -> Self {
+        if matches!(self.receiver, Receiver::Bound(_)) {
+            self
+        } else {
+            Self { receiver, ..self }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1445,15 +1453,14 @@ impl<'a> Graph<'a> {
                 let member = self
                     .class_member(class, name, depth)
                     .unwrap_or(Value::Unknown);
-                if let Value::Callable(mut invocation) = member
-                    && !matches!(invocation.receiver, Receiver::Bound(_))
+                if let Value::Callable(invocation) = member
                     && self.receiver_parameter(invocation.target).is_some()
                 {
-                    invocation.receiver = match base {
+                    let receiver = match base {
                         Value::Callable(_) => Receiver::Explicit(None),
                         _ => Receiver::Bound(class),
                     };
-                    Value::Callable(invocation)
+                    Value::Callable(invocation.bind_receiver(receiver))
                 } else {
                     member
                 }
@@ -1654,7 +1661,12 @@ impl<'a> Graph<'a> {
                 keywords,
             } => match recurse(self, function) {
                 Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
-                    Value::Instance(id)
+                    // Only default allocation proves which class the expression returns.
+                    if self.class_member(id, "__new__", depth + 1).is_none() {
+                        Value::Instance(id)
+                    } else {
+                        Value::Unknown
+                    }
                 }
                 Value::Callable(invocation) if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine) => {
                     Value::Coroutine(
@@ -1848,6 +1860,46 @@ impl<'a> Graph<'a> {
         );
     }
 
+    fn constructor(&mut self, scope: ScopeId, class: SymbolId, at: Location) {
+        if let Some(allocator) = self.class_member(class, "__new__", 0) {
+            if let Value::Callable(invocation) = allocator {
+                // An allocator receives the class itself. Its result determines
+                // whether an instance initializer runs and which one is selected.
+                self.invoke(
+                    scope,
+                    invocation.bind_receiver(Receiver::Explicit(None)),
+                    "constructor",
+                    "certain",
+                    at,
+                );
+            }
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_constructor",
+                "allocation result is outside the bounded class model",
+            );
+            return;
+        }
+
+        match self.class_member(class, "__init__", 0) {
+            None => {}
+            Some(Value::Callable(invocation)) => self.invoke(
+                scope,
+                invocation.bind_receiver(Receiver::Bound(class)),
+                "constructor",
+                "certain",
+                at,
+            ),
+            _ => self.scope_issue(
+                scope,
+                at,
+                "unresolved_constructor",
+                "constructor dispatch is outside the bounded class hierarchy",
+            ),
+        }
+    }
+
     fn walk(&mut self, scope: ScopeId, expr: &Expression, before: Location) {
         match &expr.kind {
             ExpressionKind::Call {
@@ -1879,14 +1931,7 @@ impl<'a> Graph<'a> {
                             self.invoke(scope, invocation, "direct_call", "certain", expr.at);
                         }
                         if self.is_class(id) {
-                            for name in ["__new__", "__init__"] {
-                                match self.class_member(id, name, 0) {
-                                    None => {}
-                                    Some(Value::Callable(Invocation { target: initializer, .. })) => self.edge(scope, initializer, "constructor", "certain"),
-                                    _ => self.scope_issue(scope, expr.at, "unresolved_constructor",
-                                        "constructor dispatch is outside the bounded class hierarchy"),
-                                }
-                            }
+                            self.constructor(scope, id, expr.at);
                         }
                         // Callback parameter substitution is bounded by retaining the
                         // finite supplied values even if the callee dispatches dynamically.
