@@ -138,6 +138,7 @@ enum ModuleMember<'a> {
     Unknown,
     Ambiguous,
     ConditionalHook,
+    OpaqueHook,
 }
 
 #[derive(Clone, Copy)]
@@ -167,7 +168,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         subclassed: BTreeSet::new(),
         issues: Vec::new(),
         scope_issues: Vec::new(),
-        resolving_deferred_annotation: false,
+        probing_identity: false,
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
@@ -222,7 +223,7 @@ struct Graph<'a> {
     subclassed: BTreeSet<SymbolId>,
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
-    resolving_deferred_annotation: bool,
+    probing_identity: bool,
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
@@ -418,9 +419,9 @@ impl<'a> Graph<'a> {
         kind: &'static str,
         message: impl ToString,
     ) {
-        // A lookup in a deferred annotation can retain a known type, but a
-        // runtime binding or attribute diagnostic requires an evaluated read.
-        if self.resolving_deferred_annotation {
+        // Speculative identity lookups can inform the graph. A runtime
+        // diagnostic requires an evaluated read.
+        if self.probing_identity {
             return;
         }
         let file = &self.files[self.scopes[scope].file];
@@ -486,7 +487,8 @@ impl<'a> Graph<'a> {
             };
             if definition.kind == DefinitionKind::Class {
                 for base in &definition.bases {
-                    if let Value::Callable(base) = self.identity(scope, base, definition.name.at, 0)
+                    if let Value::Callable(base) =
+                        self.probe_identity(scope, base, definition.name.at)
                         && self.is_class(base)
                     {
                         self.subclassed.insert(base);
@@ -869,6 +871,15 @@ impl<'a> Graph<'a> {
                     )
                     .at(import.local.at),
                 )),
+                ModuleMember::OpaqueHook => self.scope_issues.push((
+                    scope,
+                    Issue::new(
+                        "unresolved_lazy_export",
+                        &self.files[source].path,
+                        format!("lazy import of {module}.{member} is outside the bounded __getattr__ model"),
+                    )
+                    .at(import.local.at),
+                )),
                 _ => {}
             }
         }
@@ -1140,8 +1151,7 @@ impl<'a> Graph<'a> {
                 SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Missing) => {
                     return ModuleMember::UnattachedSubmodule;
                 }
-                SubmoduleAttachment::Absent
-                    if matches!(lazy, LazyMember::Branch(_) | LazyMember::Conditional) => {}
+                SubmoduleAttachment::Absent => {}
                 SubmoduleAttachment::Ambiguous => {
                     return self
                         .imported_submodule(child, access)
@@ -1149,13 +1159,14 @@ impl<'a> Graph<'a> {
                             ModuleMember::Submodule(child, imports)
                         });
                 }
-                _ => return ModuleMember::Ambiguous,
+                SubmoduleAttachment::Rebound(_) => return ModuleMember::Ambiguous,
             }
         }
         match (hook, lazy) {
             (Some(hook), LazyMember::Branch(branch)) => ModuleMember::Lazy(hook, branch),
             (_, LazyMember::Missing) => ModuleMember::Missing,
             (_, LazyMember::Conditional) => ModuleMember::ConditionalHook,
+            (_, LazyMember::Unknown) => ModuleMember::OpaqueHook,
             _ => ModuleMember::Unknown,
         }
     }
@@ -1198,6 +1209,17 @@ impl<'a> Graph<'a> {
                         access.1,
                         "ambiguous_binding",
                         format!("lazy lookup of {submodule} depends on a conditional __getattr__"),
+                    );
+                    Value::Unknown
+                }
+                ModuleMember::OpaqueHook => {
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "unresolved_lazy_export",
+                        format!(
+                            "lazy lookup of {submodule} is outside the bounded __getattr__ model"
+                        ),
                     );
                     Value::Unknown
                 }
@@ -1382,6 +1404,18 @@ impl<'a> Graph<'a> {
             },
             _ => Some(Value::Unknown),
         }
+    }
+
+    fn probe_identity(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> Value {
+        let previous = std::mem::replace(&mut self.probing_identity, true);
+        let value = self.identity(scope, expression, before, 0);
+        self.probing_identity = previous;
+        value
     }
 
     fn identity(
@@ -1856,13 +1890,12 @@ impl<'a> Graph<'a> {
                 self.walk(scope, expr, before);
             }
             _ => {
-                if evaluated {
+                let value = if evaluated {
                     self.walk(scope, expr, before);
-                }
-                let previous =
-                    std::mem::replace(&mut self.resolving_deferred_annotation, !evaluated);
-                let value = self.identity(scope, expr, before, 0);
-                self.resolving_deferred_annotation = previous;
+                    self.identity(scope, expr, before, 0)
+                } else {
+                    self.probe_identity(scope, expr, before)
+                };
                 if let Value::Callable(id) = value {
                     self.edge(scope, id, "type_reference", "possible");
                 }
@@ -2605,11 +2638,10 @@ impl<'a> Graph<'a> {
                 qualifiers.push(("parent_path".into(), file.path.clone()));
                 if let Binding::Definition(parent_definition, _) = self.symbols[parent].binding {
                     for base in &parent_definition.bases {
-                        match self.identity(
+                        match self.probe_identity(
                             self.symbols[parent].scope,
                             base,
                             parent_definition.name.at,
-                            0,
                         ) {
                             Value::Provider(name) => {
                                 qualifiers.push(("parent_base_class".into(), name))
@@ -2631,7 +2663,7 @@ impl<'a> Graph<'a> {
                         ExpressionKind::Call { function, .. } => function,
                         _ => expression,
                     };
-                    match self.identity(scope, identity, definition.name.at, 0) {
+                    match self.probe_identity(scope, identity, definition.name.at) {
                         Value::Provider(name) => qualifiers.push((key.into(), name)),
                         Value::Callable(id) => qualifiers.push((key.into(), self.full_name(id))),
                         _ => {}

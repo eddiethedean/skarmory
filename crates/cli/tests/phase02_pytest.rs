@@ -252,6 +252,49 @@ def orphan():
 }
 
 #[test]
+fn pytest_reports_incomplete_coverage_for_an_unmodeled_lazy_export_body() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("support.py"),
+        r#"def exported_check():
+    assert True
+
+def __getattr__(name):
+    if name == 'example':
+        target = exported_check
+        return target
+    raise AttributeError(name)
+"#,
+    )
+    .unwrap();
+    let test_file = project.path().join("test_example.py");
+    for code in [
+        "from support import example as test_concrete\n",
+        "import support\ntest_concrete = support.example\n",
+    ] {
+        fs::write(&test_file, code).unwrap();
+        let report = scan_with_status(project.path(), 2, "incomplete");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unresolved_lazy_export" && issue["file"] == "test_example.py"
+                }),
+            "{report}"
+        );
+        assert_eq!(report["unused_functions"], json!([]), "{report}");
+    }
+    fs::write(test_file, "import support\n").unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        report["unused_functions"][0]["full_name"],
+        "support.exported_check"
+    );
+}
+
+#[test]
 fn pytest_reports_incomplete_coverage_when_lazy_dispatch_is_conditional() {
     let project = tempfile::tempdir().unwrap();
     let support = project.path().join("support.py");

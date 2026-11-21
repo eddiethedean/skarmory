@@ -965,6 +965,65 @@ fn skylos_uses_known_local_boolean_guards_for_imported_bindings() {
 }
 
 #[test]
+fn skylos_evaluates_a_lazy_base_only_for_an_executed_class_definition() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("support.py"),
+        "def make_base():\n    return object\n\ndef __getattr__(name):\n    if name == 'Base':\n        return make_base()\n    raise AttributeError(name)\n",
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    for (enabled, selector, exit, coverage) in [
+        ("False", "", 1, "complete"),
+        (
+            "False",
+            "\n[[dead_code.entrypoints]]\nname = 'unmatched'\nmodule = 'main'\n",
+            1,
+            "complete",
+        ),
+        ("True", "", 2, "incomplete"),
+    ] {
+        fs::write(
+            project.path().join(".skylos.toml"),
+            format!("root = true\n{selector}"),
+        )
+        .unwrap();
+        fs::write(
+            &main,
+            format!(
+                "import support\nENABLED = {enabled}\nif ENABLED:\n    class Unused(support.Base):\n        pass\n"
+            ),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{report}");
+        assert_eq!(report["coverage"]["status"], coverage);
+        if enabled == "False" {
+            assert_eq!(report["analysis_errors"], serde_json::json!([]), "{report}");
+            assert_eq!(report["unused_classes"][0]["full_name"], "main.Unused");
+            assert_eq!(
+                report["unused_functions"][0]["full_name"],
+                "support.make_base"
+            );
+        } else {
+            assert!(
+                report["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| {
+                        issue["kind"] == "unresolved_lazy_export" && issue["file"] == "support.py"
+                    }),
+                "{report}"
+            );
+            assert_eq!(report["unused_classes"], serde_json::json!([]));
+            assert_eq!(report["unused_functions"], serde_json::json!([]));
+        }
+    }
+}
+
+#[test]
 fn skylos_reports_unmodeled_lazy_return_evaluation_only_when_accessed() {
     let project = skylos_fixture();
     fs::write(
