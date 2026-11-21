@@ -929,8 +929,10 @@ impl<'a> Graph<'a> {
 
     fn synchronous_calls(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> {
         self.scopes[scope].edges.iter().filter_map(|edge| {
-            if matches!(edge.kind, "direct_call" | "constructor" | "decorator")
-                && let Binding::Definition(_, body) = self.symbols[edge.target].binding
+            if matches!(
+                edge.kind,
+                "direct_call" | "constructor" | "decorator" | "subclass_hook"
+            ) && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
                 Some(body)
             } else {
@@ -1417,9 +1419,40 @@ impl<'a> Graph<'a> {
                     self.class_member(parent, name, depth + 1)
                 }
                 Value::Provider(name) if name == "builtins.object" => None,
+                Value::Provider(base)
+                    if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
+                {
+                    None
+                }
                 _ => Some(Value::Unknown),
             },
             _ => Some(Value::Unknown),
+        }
+    }
+
+    fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
+        let hook = match base {
+            Value::Callable(id) if self.is_class(id) => {
+                self.class_member(id, "__init_subclass__", 0)
+            }
+            Value::Provider(name) if builtin_noop_subclass_hook(&name) => None,
+            _ => Some(Value::Unknown),
+        };
+        match hook {
+            None => {}
+            Some(Value::Callable(id))
+                if single_base
+                    && matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function) =>
+            {
+                self.edge(scope, id, "subclass_hook", "certain");
+            }
+            _ => self.scope_issue(
+                scope,
+                at,
+                "unresolved_subclass_hook",
+                "class creation hook dispatch is outside the bounded class hierarchy",
+            ),
         }
     }
 
@@ -1969,9 +2002,11 @@ impl<'a> Graph<'a> {
                     }
                     for base in &definition.bases {
                         self.walk(scope, base, at);
-                        if let Value::Callable(id) = self.identity(scope, base, at, 0) {
+                        let value = self.identity(scope, base, at, 0);
+                        if let Value::Callable(id) = value {
                             self.edge(scope, id, "base_class", "certain");
                         }
+                        self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
                     }
                     for decorator in &definition.decorators {
                         self.decorator(scope, decorator, target, at);
@@ -2733,14 +2768,17 @@ impl<'a> Graph<'a> {
         let mut active_objects = BTreeSet::new();
         let mut evidence = BTreeSet::new();
         let mut pending = VecDeque::from(roots);
-        for scope in 0..self.scopes.len() {
-            // Classes declared in a module execute their bodies eagerly, even
-            // when the class itself has no consumers. Nested classes become
-            // active when their enclosing scope is reached.
-            if self.scopes[scope].owner.is_some_and(|id| self.is_class(id))
-                && self.scopes[scope]
-                    .parent
-                    .is_some_and(|parent| reachable_scopes.contains(&parent))
+        // Only visited class declarations execute when their parent is reached.
+        // An indexed class inside a dormant branch can still be reported unused.
+        let class_bodies: BTreeSet<_> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.class_bodies.iter().copied())
+            .collect();
+        for &scope in &class_bodies {
+            if self.scopes[scope]
+                .parent
+                .is_some_and(|parent| reachable_scopes.contains(&parent))
             {
                 reachable_scopes.insert(scope);
             }
@@ -2768,11 +2806,10 @@ impl<'a> Graph<'a> {
                     pending.extend(&self.scopes[scope].edges);
                 }
             }
-            for scope in 0..self.scopes.len() {
-                if self.scopes[scope].owner.is_some_and(|id| self.is_class(id))
-                    && self.scopes[scope]
-                        .parent
-                        .is_some_and(|parent| reachable_scopes.contains(&parent))
+            for &scope in &class_bodies {
+                if self.scopes[scope]
+                    .parent
+                    .is_some_and(|parent| reachable_scopes.contains(&parent))
                     && reachable_scopes.insert(scope)
                 {
                     pending.extend(&self.scopes[scope].edges);
@@ -3125,6 +3162,27 @@ fn is_known_call(name: &str) -> bool {
         )
 }
 
+fn builtin_noop_subclass_hook(name: &str) -> bool {
+    // These subclassable built-ins inherit object's no-op hook.
+    matches!(
+        name,
+        "builtins.object"
+            | "builtins.str"
+            | "builtins.int"
+            | "builtins.list"
+            | "builtins.dict"
+            | "builtins.tuple"
+            | "builtins.set"
+            | "builtins.float"
+            | "builtins.bytes"
+            | "builtins.ValueError"
+            | "builtins.RuntimeError"
+            | "builtins.AttributeError"
+            | "builtins.TypeError"
+            | "builtins.Exception"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3310,6 +3368,50 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|issue| issue["kind"] == "ambiguous_binding" && issue["line"] == call_line));
+        }
+    }
+
+    #[test]
+    fn subclass_hooks_follow_executed_class_definitions() {
+        let base = "def helper():\n    pass\nclass Base:\n    def __init_subclass__(cls):\n        helper()\n";
+        for (child, active) in [
+            ("class Child(Base):\n    pass\n", true),
+            (
+                "ENABLED = False\nif ENABLED:\n    class Outer:\n        class Child(Base):\n            pass\n",
+                false,
+            ),
+        ] {
+            let result = analyze(&[module("main.py", "main", &format!("{base}{child}"))], &[]);
+            assert!(result.issues.is_empty(), "{child}\n{:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|edge| {
+                    edge.full_name == "main.Base.__init_subclass__"
+                        && edge.kind == "subclass_hook"
+                        && edge.certainty == "certain"
+                }),
+                active,
+                "{child}"
+            );
+            let unused = names(&result, Category::Function);
+            assert_eq!(unused.contains(&"helper"), !active, "{child}\n{unused:?}");
+        }
+    }
+
+    #[test]
+    fn unresolved_subclass_hooks_make_class_creation_incomplete() {
+        for source in [
+            "from foreign import Base\nclass Child(Base):\n    pass\n",
+            "class First:\n    def __init_subclass__(cls):\n        pass\nclass Second:\n    pass\nclass Child(First, Second):\n    pass\n",
+        ] {
+            let result = analyze(&[module("main.py", "main", source)], &[]);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_subclass_hook"),
+                "{source}\n{:?}",
+                result.issues
+            );
         }
     }
 
