@@ -1598,6 +1598,154 @@ fn skylos_retains_explicit_reexport_chains_in_ordinary_modules() {
 }
 
 #[test]
+fn skylos_ignores_unexecuted_attachments_when_resolving_exports() {
+    let project = skylos_fixture();
+    let root = project.path();
+    let pkg = root.join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    fs::write(pkg.join("impl.py"), "def public():\n    pass\n").unwrap();
+    fs::write(pkg.join("public.py"), "print('loaded')\n").unwrap();
+    let initializer = "from .impl import public as public\n";
+    fs::write(
+        root.join("main.py"),
+        "import pkg\nprint(pkg)\n\ndef _unused():\n    import pkg.public\n",
+    )
+    .unwrap();
+
+    for (source, kind) in [
+        (initializer, "explicit_re_export"),
+        (
+            "from .impl import public\n__all__ = ['public']\n",
+            "public_export",
+        ),
+    ] {
+        fs::write(pkg.join("__init__.py"), source).unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        let unused = report["unused_functions"].as_array().unwrap();
+        assert_eq!(unused.len(), 1, "{report}");
+        assert_eq!(unused[0]["full_name"], "main._unused");
+        assert!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == "pkg.impl.public" && item["kind"] == kind),
+            "{report}"
+        );
+    }
+
+    fs::write(pkg.join("__init__.py"), initializer).unwrap();
+    fs::write(
+        root.join("main.py"),
+        "import pkg\nprint(pkg)\nimport pkg.public\nprint(pkg.public)\n",
+    )
+    .unwrap();
+    let output = skylos(root, &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+
+    // A synchronous initializer call makes the submodule import possible.
+    fs::write(root.join("main.py"), "import pkg\nprint(pkg)\n").unwrap();
+    fs::write(
+        pkg.join("__init__.py"),
+        format!("{initializer}\ndef _load():\n    import pkg.public\n\n_load()\n"),
+    )
+    .unwrap();
+    let output = skylos(root, &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{report}");
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert_eq!(report["analysis_errors"][0]["kind"], "ambiguous_binding");
+
+    // The module import executed by a lazy hook belongs to the initializer
+    // that selects the hook, even though the hook itself is never called directly.
+    fs::write(
+        pkg.join("__init__.py"),
+        format!("{initializer}from .provider import load\nprint(load)\n"),
+    )
+    .unwrap();
+    fs::write(
+        pkg.join("provider.py"),
+        "def __getattr__(name):\n    if name == 'load':\n        import pkg.public\n        return 1\n    raise AttributeError(name)\n",
+    )
+    .unwrap();
+    let output = skylos(root, &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{report}");
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert_eq!(report["analysis_errors"][0]["kind"], "ambiguous_binding");
+}
+
+#[test]
+fn skylos_retains_constructor_dependencies_of_exported_classes() {
+    let project = skylos_fixture();
+    let root = project.path();
+    fs::remove_file(root.join("main.py")).unwrap();
+    let pkg = root.join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    let source = r#"def prepare():
+    print("prepared")
+
+def unused():
+    pass
+
+class Client:
+    def __init__(self):
+        prepare()
+"#;
+    fs::write(pkg.join("impl.py"), source).unwrap();
+
+    for (ordinary, initializer, implementation, expected) in [
+        (
+            "from pkg.impl import Client as Client\n",
+            "",
+            "",
+            vec!["pkg.impl.unused"],
+        ),
+        (
+            "",
+            "from .impl import Client as Client\n",
+            "",
+            vec!["pkg.impl.unused"],
+        ),
+        ("", "", "__all__ = ['Client']\n", vec!["pkg.impl.unused"]),
+        ("", "", "", vec!["pkg.impl.prepare", "pkg.impl.unused"]),
+    ] {
+        fs::write(root.join("api.py"), format!("print('api')\n{ordinary}")).unwrap();
+        fs::write(pkg.join("__init__.py"), initializer).unwrap();
+        fs::write(pkg.join("impl.py"), format!("{source}\n{implementation}")).unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        let unused: Vec<_> = report["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["full_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            unused, expected,
+            "{ordinary}{initializer}{implementation}\n{report}"
+        );
+        if expected.len() == 1 {
+            assert!(
+                report["dead_code_evidence"].as_array().unwrap().iter().any(
+                    |item| item["full_name"] == "pkg.impl.Client.__init__"
+                        && item["kind"] == "constructor"
+                        && item["certainty"] == "possible"
+                ),
+                "{report}"
+            );
+        }
+    }
+}
+
+#[test]
 fn skylos_awaits_tasks_that_were_already_scheduled() {
     let project = skylos_fixture();
     fs::write(

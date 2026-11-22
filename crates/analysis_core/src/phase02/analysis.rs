@@ -1,5 +1,6 @@
 //! Project binding resolution and reachability for the Skylos profile.
 
+use std::cell::OnceCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::RangeInclusive;
@@ -101,6 +102,7 @@ struct Scope<'a> {
     names: BTreeMap<&'a str, Vec<SymbolId>>,
     edges: Vec<Edge>,
     imports: Vec<usize>,
+    evaluated_imports: Vec<SymbolId>,
     initializer_imports: Vec<(SymbolId, usize)>,
     class_bodies: Vec<ScopeId>,
     activated_apps: Vec<Object>,
@@ -197,10 +199,14 @@ enum ModuleMember<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum ModuleMemberAccess {
+enum ModuleMemberAccess<'a> {
     Attribute,
     FromImport,
-    ExplicitExport(Location),
+    Export {
+        at: Location,
+        initialization_edges: &'a [Vec<ScopeId>],
+        initialization_imports: &'a OnceCell<BTreeSet<SymbolId>>,
+    },
 }
 
 enum SubmoduleAttachment {
@@ -255,7 +261,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         graph.suite(scope, body);
     }
     graph.resolve_class_invocations();
-    if graph.has_initialization_cycle() {
+    let Some(initialization_edges) = graph.acyclic_initialization_edges() else {
         graph.issues.push(Issue::new(
             "cyclic_imports",
             ".",
@@ -265,8 +271,8 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
             issues: graph.issues,
             ..Analysis::default()
         };
-    }
-    let mut roots = graph.external_roots(entrypoints);
+    };
+    let mut roots = graph.external_roots(entrypoints, &initialization_edges);
     roots.extend(graph.test_edges());
     graph.finish(roots)
 }
@@ -312,6 +318,7 @@ impl<'a> Graph<'a> {
             names: BTreeMap::new(),
             edges: Vec::new(),
             imports: Vec::new(),
+            evaluated_imports: Vec::new(),
             initializer_imports: Vec::new(),
             class_bodies: Vec::new(),
             activated_apps: Vec::new(),
@@ -716,17 +723,28 @@ impl<'a> Graph<'a> {
         child: usize,
         binding: Option<SymbolId>,
         access: (ScopeId, Location),
+        mode: ModuleMemberAccess<'_>,
     ) -> SubmoduleAttachment {
+        let candidates = self.direct_submodule_imports.get(&child);
+        let initialization_imports = match mode {
+            ModuleMemberAccess::Export {
+                initialization_edges,
+                initialization_imports,
+                ..
+            } if candidates.is_some() => Some(
+                initialization_imports
+                    .get_or_init(|| self.initialization_imports(package, initialization_edges)),
+            ),
+            _ => None,
+        };
         let (scope, before) = access;
         let mut attached: Option<SymbolId> = None;
         let mut possible_attachment = false;
         let mut possible_earlier_attachment = false;
-        for &id in self
-            .direct_submodule_imports
-            .get(&child)
-            .into_iter()
-            .flatten()
-        {
+        for &id in candidates.into_iter().flatten() {
+            if initialization_imports.is_some_and(|imports| !imports.contains(&id)) {
+                continue;
+            }
             let symbol = &self.symbols[id];
             let earlier_in_scope =
                 symbol.scope == scope && position(symbol.name.at) < position(before);
@@ -829,6 +847,14 @@ impl<'a> Graph<'a> {
         import: &Import,
     ) -> Option<LazyBranch<'a>> {
         let source = self.scopes[source_scope].file;
+        if let Some(&id) =
+            self.by_location
+                .get(&(source_scope, import.local.at.line, import.local.at.column))
+        {
+            // A selected lazy branch evaluates its imports in the caller's
+            // execution, even though their bindings belong to the hook.
+            self.scopes[scope].evaluated_imports.push(id);
+        }
         let Some(module) = module else {
             self.import_issue(
                 scope,
@@ -1052,9 +1078,10 @@ impl<'a> Graph<'a> {
         callbacks
     }
 
-    fn has_initialization_cycle(&self) -> bool {
+    fn acyclic_initialization_edges(&self) -> Option<Vec<Vec<ScopeId>>> {
         let count = self.scopes.len();
         let callbacks = self.initialization_callbacks();
+        let mut outgoing = vec![Vec::new(); count];
         let mut incoming = vec![Vec::new(); count];
         let mut reached = vec![false; count];
         let mut finished = Vec::with_capacity(count);
@@ -1078,6 +1105,7 @@ impl<'a> Graph<'a> {
                 .chain(self.synchronous_calls(id))
             {
                 incoming[target].push(id);
+                outgoing[id].push(target);
                 if !reached[target] {
                     pending.push((target, false));
                 }
@@ -1097,12 +1125,32 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        finished.iter().any(|&id| {
+        if finished.iter().any(|&id| {
             self.scopes[id]
                 .imports
                 .iter()
                 .any(|&target| component[id] == component[target])
-        })
+        }) {
+            return None;
+        }
+        Some(outgoing)
+    }
+
+    fn initialization_imports(
+        &self,
+        file: usize,
+        initialization_edges: &[Vec<ScopeId>],
+    ) -> BTreeSet<SymbolId> {
+        let mut imports = BTreeSet::new();
+        let mut reached = BTreeSet::new();
+        let mut pending = vec![file];
+        while let Some(scope) = pending.pop() {
+            if reached.insert(scope) {
+                imports.extend(&self.scopes[scope].evaluated_imports);
+                pending.extend(&initialization_edges[scope]);
+            }
+        }
+        imports
     }
 
     fn binding_depends_on_branch(&self, id: SymbolId, at: Location) -> bool {
@@ -1185,13 +1233,13 @@ impl<'a> Graph<'a> {
         member: &str,
         before: Location,
         access: (ScopeId, Location),
-        mode: ModuleMemberAccess,
+        mode: ModuleMemberAccess<'_>,
     ) -> ModuleMember<'a> {
         let submodule = format!("{}.{member}", self.files[file].module);
         let child = self.modules.get(submodule.as_str()).copied();
         if let Some(binding) = self.local(file, member, before) {
             if let Some(child) = child {
-                return match self.submodule_attachment(file, child, Some(binding), access) {
+                return match self.submodule_attachment(file, child, Some(binding), access, mode) {
                     SubmoduleAttachment::Attached(import) => {
                         ModuleMember::Submodule(child, vec![import])
                     }
@@ -1212,12 +1260,14 @@ impl<'a> Graph<'a> {
             self.lazy_lookup(hook, member, before)
         });
         if let Some(child) = child {
-            match self.submodule_attachment(file, child, None, access) {
+            match self.submodule_attachment(file, child, None, access, mode) {
                 SubmoduleAttachment::Attached(import) => {
                     return ModuleMember::Submodule(child, vec![import]);
                 }
-                _ if matches!(mode, ModuleMemberAccess::FromImport)
-                    && matches!(lazy, LazyMember::Missing) =>
+                _ if matches!(
+                    mode,
+                    ModuleMemberAccess::FromImport | ModuleMemberAccess::Export { .. }
+                ) && matches!(lazy, LazyMember::Missing) =>
                 {
                     return ModuleMember::Submodule(child, Vec::new());
                 }
@@ -1250,7 +1300,7 @@ impl<'a> Graph<'a> {
         member: &str,
         before: Location,
         access: (ScopeId, Location),
-        mode: ModuleMemberAccess,
+        mode: ModuleMemberAccess<'_>,
         depth: usize,
     ) -> Value {
         let submodule = format!("{module}.{member}");
@@ -1258,7 +1308,7 @@ impl<'a> Graph<'a> {
             return Value::Unknown;
         }
         let (scope, at) = match mode {
-            ModuleMemberAccess::ExplicitExport(at) => (access.0, at),
+            ModuleMemberAccess::Export { at, .. } => (access.0, at),
             _ => access,
         };
         if let Some(&file) = self.modules.get(module) {
@@ -1309,7 +1359,7 @@ impl<'a> Graph<'a> {
                     );
                     Value::Unknown
                 }
-                ModuleMember::Missing if !matches!(mode, ModuleMemberAccess::FromImport) => {
+                ModuleMember::Missing if matches!(mode, ModuleMemberAccess::Attribute) => {
                     self.scope_issue(
                         scope,
                         at,
@@ -1916,7 +1966,13 @@ impl<'a> Graph<'a> {
         );
     }
 
-    fn constructor(&mut self, scope: ScopeId, class: SymbolId, at: Location) {
+    fn constructor(
+        &mut self,
+        scope: ScopeId,
+        class: SymbolId,
+        certainty: &'static str,
+        at: Location,
+    ) {
         if let Some(allocator) = self.class_member(class, "__new__", 0) {
             if let Value::Callable(invocation) = allocator {
                 // An allocator receives the class itself. Its result determines
@@ -1925,7 +1981,7 @@ impl<'a> Graph<'a> {
                     scope,
                     invocation.bind_receiver(Receiver::Explicit(None)),
                     "constructor",
-                    "certain",
+                    certainty,
                     at,
                 );
             }
@@ -1944,7 +2000,7 @@ impl<'a> Graph<'a> {
                 scope,
                 invocation.bind_receiver(Receiver::Bound(class)),
                 "constructor",
-                "certain",
+                certainty,
                 at,
             ),
             _ => self.scope_issue(
@@ -1987,7 +2043,7 @@ impl<'a> Graph<'a> {
                             self.invoke(scope, invocation, "direct_call", "certain", expr.at);
                         }
                         if self.is_class(id) {
-                            self.constructor(scope, id, expr.at);
+                            self.constructor(scope, id, "certain", expr.at);
                         }
                         // Callback parameter substitution is bounded by retaining the
                         // finite supplied values even if the callee dispatches dynamically.
@@ -2953,9 +3009,27 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn external_roots(&mut self, entrypoints: &[Entrypoint]) -> Vec<Edge> {
+    fn invoke_export(
+        &mut self,
+        scope: ScopeId,
+        invocation: Invocation,
+        kind: &'static str,
+        at: Location,
+    ) {
+        self.invoke(scope, invocation, kind, "certain", at);
+        if self.is_class(invocation.target) {
+            self.constructor(scope, invocation.target, "possible", at);
+        }
+    }
+
+    fn external_roots(
+        &mut self,
+        entrypoints: &[Entrypoint],
+        initialization_edges: &[Vec<ScopeId>],
+    ) -> Vec<Edge> {
         let mut roots = Vec::new();
         for file in 0..self.files.len() {
+            let initialization_imports = OnceCell::new();
             if let Some(all) = self.local(file, "__all__", END) {
                 let value = self.binding(all, END, 0);
                 if let Value::Sequence(exports) = value {
@@ -2970,14 +3044,14 @@ impl<'a> Graph<'a> {
                             continue;
                         };
                         let access = (file, END);
-                        let value = if let ModuleMember::Lazy(hook, branch) = self
-                            .selected_module_member(
-                                file,
-                                &export,
-                                END,
-                                access,
-                                ModuleMemberAccess::FromImport,
-                            ) {
+                        let mode = ModuleMemberAccess::Export {
+                            at: self.symbols[all].name.at,
+                            initialization_edges,
+                            initialization_imports: &initialization_imports,
+                        };
+                        let value = if let ModuleMember::Lazy(hook, branch) =
+                            self.selected_module_member(file, &export, END, access, mode)
+                        {
                             self.read.insert(hook);
                             self.execute_lazy_branch(file, &branch)
                         } else {
@@ -2986,16 +3060,15 @@ impl<'a> Graph<'a> {
                                 &export,
                                 END,
                                 access,
-                                ModuleMemberAccess::FromImport,
+                                mode,
                                 0,
                             )
                         };
                         match value {
-                            Value::Callable(invocation) => self.invoke(
+                            Value::Callable(invocation) => self.invoke_export(
                                 file,
                                 invocation,
                                 "public_export",
-                                "certain",
                                 self.symbols[all].name.at,
                             ),
                             Value::Unknown => self.issue(
@@ -3038,7 +3111,11 @@ impl<'a> Graph<'a> {
                         &name.text,
                         END,
                         (file, END),
-                        ModuleMemberAccess::ExplicitExport(at),
+                        ModuleMemberAccess::Export {
+                            at,
+                            initialization_edges,
+                            initialization_imports: &initialization_imports,
+                        },
                         0,
                     )
                 } else {
@@ -3046,7 +3123,7 @@ impl<'a> Graph<'a> {
                 };
                 match value {
                     Value::Callable(invocation) => {
-                        self.invoke(file, invocation, "explicit_re_export", "certain", at)
+                        self.invoke_export(file, invocation, "explicit_re_export", at)
                     }
                     Value::Unknown if self.scope_issues.len() == previous_issues => self
                         .scope_issue(
