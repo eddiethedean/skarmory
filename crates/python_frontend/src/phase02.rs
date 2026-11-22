@@ -119,6 +119,10 @@ pub enum ExpressionKind {
         equal: bool,
         identity: bool,
     },
+    OrderingComparison {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
     Boolean {
         and: bool,
         values: Vec<Expression>,
@@ -632,6 +636,15 @@ impl Lowering<'_> {
                     right: Box::new(lower(&node.comparators[0])?),
                     equal: matches!(node.ops[0], CmpOp::Eq | CmpOp::Is),
                     identity: matches!(node.ops[0], CmpOp::Is | CmpOp::IsNot),
+                }
+            }
+            Expr::Compare(node)
+                if node.ops.len() == 1
+                    && matches!(node.ops[0], CmpOp::Lt | CmpOp::LtE | CmpOp::Gt | CmpOp::GtE) =>
+            {
+                ExpressionKind::OrderingComparison {
+                    left: Box::new(lower(&node.left)?),
+                    right: Box::new(lower(&node.comparators[0])?),
                 }
             }
             Expr::BoolOp(node) => ExpressionKind::Boolean {

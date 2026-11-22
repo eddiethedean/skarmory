@@ -259,6 +259,7 @@ pub(super) fn analyze_with_verification(
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
+        has_ordering_hooks: false,
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
     };
@@ -276,6 +277,15 @@ pub(super) fn analyze_with_verification(
         }
         graph.index(file, &source.facts.body);
     }
+    // Sequence ordering can also compare elements for equality.
+    graph.has_ordering_hooks = graph.symbols.iter().any(|symbol| {
+        matches!(
+            symbol.name.text.as_str(),
+            "__lt__" | "__le__" | "__gt__" | "__ge__" | "__eq__"
+        ) && graph.scopes[symbol.scope]
+            .owner
+            .is_some_and(|id| graph.is_class(id))
+    });
     graph.index_submodule_imports();
     graph.index_base_classes();
     for scope in 0..graph.scopes.len() {
@@ -323,6 +333,7 @@ struct Graph<'a> {
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
+    has_ordering_hooks: bool,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
 }
@@ -1726,6 +1737,7 @@ impl<'a> Graph<'a> {
                 expression.kind,
                 ExpressionKind::Call { .. }
                     | ExpressionKind::Await(_)
+                    | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Operands(_)
             )
         {
@@ -1925,7 +1937,7 @@ impl<'a> Graph<'a> {
                 }
                 Value::Bool(*and)
             }
-            ExpressionKind::Await(_) => Value::Unknown,
+            ExpressionKind::Await(_) | ExpressionKind::OrderingComparison { .. } => Value::Unknown,
         }
     }
 
@@ -2327,6 +2339,30 @@ impl<'a> Graph<'a> {
                             "comparison method dispatch is outside the bounded model",
                         );
                     }
+                }
+            }
+            ExpressionKind::OrderingComparison { left, right } => {
+                self.walk(scope, left, before);
+                self.walk(scope, right, before);
+                // Retain both branches of an ordering guard. An indirect
+                // operand could call a selected comparison hook.
+                let may_dispatch = [left, right].into_iter().any(|operand| {
+                    !matches!(
+                        operand.kind,
+                        ExpressionKind::Scalar | ExpressionKind::Bool(_) | ExpressionKind::Text(_)
+                    ) && (self.has_ordering_hooks
+                        || !matches!(
+                            self.identity(scope, operand, before, 0),
+                            Value::Unknown | Value::Scalar | Value::Bool(_) | Value::Text(_)
+                        ))
+                });
+                if may_dispatch {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unresolved_comparison",
+                        "ordering comparison dispatch is outside the bounded model",
+                    );
                 }
             }
             ExpressionKind::Sequence(values)

@@ -159,6 +159,13 @@ have their own milestones.
   Revalidate edit inputs and proof dependencies before applying or rolling back
   an explicitly requested change.
 
+### Bounded Python ordering guards
+
+The Skylos profiles analyze both branches of a single `<`, `<=`, `>`, or `>=`
+guard when its operands have bounded scalar behavior. Comparisons that could
+invoke a selected class hook report incomplete coverage when reached. This
+supports the pinned recursive-group and caller-edit cases. [#52](https://github.com/eddiethedean/skarmory/issues/52)
+
 ### Grep verification preview
 
 The native CLI enables grep verification with `--grep-verify`. In the native
