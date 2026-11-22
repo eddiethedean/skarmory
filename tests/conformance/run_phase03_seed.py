@@ -58,6 +58,15 @@ def environment():
     return env
 
 
+def scan_candidate(sdk_python, path, options):
+    return subprocess.run(
+        [str(sdk_python), "-I", "-c", SCAN],
+        input=json.dumps([path, {**options, "profile": "skylos-0.3"}]),
+        cwd=path, env=environment(), text=True, capture_output=True, timeout=60,
+        check=True,
+    ).stdout
+
+
 def port_cases(args):
     from check_dead_code_gate import read_inventory
 
@@ -117,8 +126,10 @@ def pytest_worker(args):
         def __init__(self):
             self.outcomes = {}
             self.lines = {}
+            self.failed_assertions = {}
             self.scans = set()
-            self.missing_grep = set()
+            self.grep_scans = set()
+            self.unsupported_trace = set()
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
@@ -128,21 +139,18 @@ def pytest_worker(args):
             old_trace = sys.gettrace()
             original = item.module.analyze
 
-            def analyze(path, *, trace_file=None, grep_verify=None, **options):
-                if grep_verify is not False or trace_file is not False:
-                    self.missing_grep.add(key)
-                    pytest.skip("Phase 0.2 SDK cannot preserve the upstream evidence policy")
-                scanned = subprocess.run(
-                    [str(args.sdk_python), "-I", "-c", SCAN],
-                    input=json.dumps([path, {"grep_verify": False, **options}]),
-                    cwd=path, env=environment(), text=True, capture_output=True, timeout=60,
-                    check=True,
-                )
-                report = json.loads(scanned.stdout)
+            def analyze(path, **options):
+                if options.get("trace_file") is not False:
+                    self.unsupported_trace.add(key)
+                    pytest.skip("Phase 0.3 SDK currently requires explicit trace disablement")
+                scanned = scan_candidate(args.sdk_python, path, options)
+                report = json.loads(scanned)
                 if report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
                 self.scans.add(key)
-                return scanned.stdout
+                if report["analysis_summary"]["grep_verify"]["enabled"] is True:
+                    self.grep_scans.add(key)
+                return scanned
 
             if args.mode == "candidate":
                 item.module.analyze = analyze
@@ -153,6 +161,20 @@ def pytest_worker(args):
                 sys.settrace(old_trace)
                 item.module.analyze = original
                 self.lines[key] = {f"{case['source']}:{line}" for line in trace.completed}
+
+        def pytest_runtest_makereport(self, item, call):
+            if (
+                args.mode == "reference"
+                and call.when == "call"
+                and call.excinfo
+                and call.excinfo.errisinstance(AssertionError)
+            ):
+                case = cases[item.nodeid]
+                failure = call.excinfo.traceback[-1]
+                if failure.path.resolve() == (args.upstream / case["source"]).resolve():
+                    assertion = f"{case['source']}:{failure.lineno + 1}"
+                    if assertion in case["assertions"]:
+                        self.failed_assertions[item.nodeid] = assertion
 
         def pytest_runtest_logreport(self, report):
             key = report.nodeid
@@ -182,10 +204,12 @@ def pytest_worker(args):
             proven = required in lines
             if required == "installed-sdk":
                 proven = args.mode == "candidate"
+            elif required == "grep-verification":
+                proven = key in capture.grep_scans
             prerequisites[required] = "passed" if proven else "blocked"
         reached = [assertion for assertion in case["assertions"] if assertion in lines]
         outcome = capture.outcomes.get(key, "error")
-        if key in capture.missing_grep and outcome == "skipped":
+        if key in capture.unsupported_trace and outcome == "skipped":
             outcome = "blocked"
         proved = (
             key in capture.scans
@@ -194,7 +218,12 @@ def pytest_worker(args):
         )
         if args.mode == "candidate" and outcome == "passed" and not proved:
             outcome = "blocked"
-        report[key] = {"status": outcome, "assertions": reached, "prerequisites": prerequisites}
+        report[key] = {
+            "status": outcome,
+            "assertions": reached,
+            "failed_assertion": capture.failed_assertions.get(key),
+            "prerequisites": prerequisites,
+        }
     args.output.write_text(json.dumps(report), encoding="utf-8")
     return int(status)
 
@@ -260,6 +289,8 @@ def write_receipt(args):
         results.append({
             "case_id": case_id,
             "reference_status": reference.get("status", "error"),
+            "reference_assertions": reference.get("assertions", []),
+            "reference_failed_assertion": reference.get("failed_assertion"),
             "status": candidate.get("status", "error"),
             "assertions": candidate.get("assertions", []),
             "prerequisites": candidate.get(

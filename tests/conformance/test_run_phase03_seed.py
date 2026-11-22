@@ -1,8 +1,10 @@
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from run_phase03_seed import AssertionTrace
+from run_phase03_seed import AssertionTrace, scan_candidate
 
 
 def original_assertions(stop, value):
@@ -34,6 +36,16 @@ class AssertionTraceTests(unittest.TestCase):
                 finally:
                     sys.settrace(previous)
                 self.assertEqual(trace.completed & {first, last}, expected)
+
+
+class CandidateScanTests(unittest.TestCase):
+    def test_selects_phase03_and_preserves_explicit_and_omitted_grep_options(self):
+        for grep in ({}, {"grep_verify": False}, {"grep_verify": True}):
+            options = {"trace_file": False, **grep}
+            with self.subTest(options=options), patch("run_phase03_seed.subprocess.run") as run:
+                scan_candidate(Path("sdk/bin/python"), "fixture", options)
+                payload = json.loads(run.call_args.kwargs["input"])
+                self.assertEqual(payload, ["fixture", {"profile": "skylos-0.3", **options}])
 
 
 if __name__ == "__main__":
