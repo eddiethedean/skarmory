@@ -86,6 +86,98 @@ fn skylos(project: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn grep_verification_honors_profile_defaults_and_explicit_flags() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("workflow.py"),
+        "def queue_task():\n    return 1\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("jobs.yaml"),
+        "handler_module: workflow.py\n",
+    )
+    .unwrap();
+
+    for (args, findings, name_field, name, retained) in [
+        (&[][..], "findings", "symbol", "queue_task", false),
+        (&["--grep-verify"], "findings", "symbol", "queue_task", true),
+        (
+            &["--profile", "skylos"],
+            "unused_functions",
+            "full_name",
+            "workflow.queue_task",
+            false,
+        ),
+        (
+            &["--profile", "skylos-0.3"],
+            "unused_functions",
+            "full_name",
+            "workflow.queue_task",
+            true,
+        ),
+        (
+            &["--profile", "skylos-0.3", "--no-grep-verify"],
+            "unused_functions",
+            "full_name",
+            "workflow.queue_task",
+            false,
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+            .current_dir(project.path())
+            .env_remove("SKYLOS_CONFIG_FILE")
+            .arg(".")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(
+            report[findings]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding[name_field] == name),
+            !retained,
+            "{args:?}: {report}"
+        );
+    }
+}
+
+#[test]
+fn grep_verification_limit_blocks_the_strict_gate() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("jobs.yaml"),
+        vec![b'#'; 1024 * 1024 + 1],
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+        .current_dir(project.path())
+        .env_remove("SKYLOS_CONFIG_FILE")
+        .args([".", "--profile", "skylos-0.3", "--strict"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert_eq!(
+        report["coverage"]["issues"][0]["kind"],
+        "grep_verification_limit"
+    );
+    assert_eq!(report["coverage"]["issues"][0]["path"], "jobs.yaml");
+    assert_eq!(report["unused_functions"], serde_json::json!([]));
+    assert_eq!(report["gate"]["exit_code"], 2);
+}
+
+#[test]
 fn skylos_report_exit_status_tracks_output_mode_and_completion() {
     let project = skylos_fixture();
     let listing = skylos(project.path(), &["--json"]);

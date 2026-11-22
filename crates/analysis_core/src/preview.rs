@@ -5,6 +5,7 @@ use serde::Serialize;
 use skarmory_python::preview;
 
 use crate::fact_cache::{CacheStats, FactCache};
+use crate::grep_verification::{self, Evidence as VerificationEvidence};
 use crate::preview_source::{self, Exclusion, FileEntry};
 use crate::{Coverage, Issue, Timings};
 
@@ -32,6 +33,7 @@ pub struct ScanOptions {
     pub public_modules: Vec<String>,
     pub public_callables: Vec<String>,
     pub workers: usize,
+    pub grep_verify: bool,
 }
 
 impl Default for ScanOptions {
@@ -45,6 +47,7 @@ impl Default for ScanOptions {
             public_modules: Vec::new(),
             public_callables: Vec::new(),
             workers: 1,
+            grep_verify: false,
         }
     }
 }
@@ -63,6 +66,8 @@ pub struct PreviewReport {
     coverage: Coverage,
     uncertainties: Vec<Issue>,
     evidence: Vec<Evidence>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    grep_verification_evidence: Vec<VerificationEvidence>,
     findings: Vec<PreviewFinding>,
 }
 
@@ -195,6 +200,7 @@ fn scan_with_cache(
         },
         uncertainties: Vec::new(),
         evidence: Vec::new(),
+        grep_verification_evidence: Vec::new(),
         findings: Vec::new(),
     };
     let entry = match options.file_entry() {
@@ -269,6 +275,14 @@ fn scan_with_cache(
         let mut engine = engine::Engine::new(&project, &modules);
         let start = Instant::now();
         engine.run(options);
+        if options.grep_verify {
+            let verification = grep_verification::Snapshot::read(&project, None);
+            engine.apply_verification(&verification);
+            report
+                .coverage
+                .issues
+                .extend(verification.finish(&project, None));
+        }
         timings.resolution_ns = Some(start.elapsed().as_nanos());
         engine.finish(&mut report, &mut timings);
     }

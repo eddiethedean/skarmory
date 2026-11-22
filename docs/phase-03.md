@@ -159,18 +159,48 @@ have their own milestones.
   Revalidate edit inputs and proof dependencies before applying or rolling back
   an explicitly requested change.
 
-### Planned compatibility policies
+### Grep verification preview
+
+The native CLI enables grep verification with `--grep-verify`. In the native
+SDK, pass `grep_verify=True` to `skarmory.analyze`. The Phase 0.2 `skylos`
+profile keeps verification disabled by default. Select `--profile skylos-0.3`
+in the CLI or `profile="skylos-0.3"` in
+`skarmory.compat.skylos.analyze` to enable verification when omitted. Disable
+it with `--no-grep-verify` in the CLI or `grep_verify=False` in the SDK. The
+Phase 0.3 selector is a preview for this workstream.
+
+The verifier considers selected Python sources and UTF-8 `.yaml` and `.yml`
+files in the scanned directories. It reads plain or quoted single-line block
+mapping values and sequence items. A project-relative path such as
+`workflow.py` can retain module-level functions. A qualified target such as
+`workflow:queue_task` or `workflow.py:queue_task` names a specific function.
+In Python, a literal member in a built-in `getattr` call can supply evidence
+when the receiver and member resolve to a selected definition. Comments and
+ordinary Python strings supply no evidence. This bounded subset covers the
+pinned YAML rescue case. Skylos also searches other configuration formats and
+uses additional text patterns. [Pinned configuration rescue test](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_reachability_integration_qa.py#L259-L286)
+
+Matches in `grep_verification_evidence` carry a symbol identity, definition
+location, original reference location, and `possible` certainty. Reachability
+propagates from the retained definition in the same scan. The Phase 0.3
+compatibility report groups evidence by symbol and counts direct rescues under
+`analysis_summary.grep_verify`. An empty search contributes no evidence of
+non-use. The verifier bounds directory entries, configuration files and bytes,
+and the number of references and evidence records. A verification limit
+produces a coverage issue and an incomplete scan.
+
+The Phase 0.3 SDK accepts the pinned `grep_cache` flag. Skarmory uses the
+explicit `cache_dir` option for persistent file-local facts, and rebuilds
+verification and reachability from the current scan inputs even with a warm
+cache. The pinned SDK flag creates no verification cache files.
+
+### Other planned compatibility policies
 
 Explicitly select the Phase 0.3 Skylos contract in the CLI and SDK to apply the
 policies below. Keep existing Phase 0.2 invocations and defaults valid. The
 conformance harness selects the contract at the entry-point boundary and
 preserves each upstream case's inputs and omitted options.
 
-- **Grep defaults.** Native scans use explicit opt-in. The Phase 0.2 profile
-  keeps grep disabled. The Phase 0.3 compatibility profile enables verification
-  when omitted and honors the pinned explicit disable options. Test cached and
-  uncached verification and the retention of callers and callees in the same
-  scan. [Pinned configuration rescue test](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_reachability_integration_qa.py#L259-L286)
 - **Trace provenance.** The compatibility profile reads a supplied v1 trace
   path or, when the trace option is omitted, the project-root `.skylos_trace`.
   Honor an explicit disable even when the root trace exists. Validate paths and

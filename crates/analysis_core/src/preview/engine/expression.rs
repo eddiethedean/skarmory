@@ -2,11 +2,18 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use skarmory_python::Location;
 use skarmory_python::preview::{BooleanOperator, Comparison, Expression, ExpressionKind};
 
 use super::{
     Closure, Constant, Engine, FrameId, Names, Outcomes, ParameterKind, Site, State, Value,
 };
+
+struct DynamicMember<'a> {
+    receiver: &'a Expression,
+    name: &'a str,
+    location: Location,
+}
 
 impl Value {
     pub(super) fn truth(&self) -> Option<bool> {
@@ -223,8 +230,33 @@ impl<'a> Engine<'a> {
         keywords: &'a [(String, Expression)],
         site: Site,
     ) -> Outcomes<Value> {
+        if let Some(member) = self.dynamic_member(&state, frame, callee, positional, keywords) {
+            return self.verify_member(state, frame, member, site.file, true);
+        }
+        let dynamic_callee = match &callee.kind {
+            ExpressionKind::Call {
+                function,
+                positional,
+                keywords,
+            } => self.dynamic_member(&state, frame, function, positional, keywords),
+            _ => None,
+        };
+        let (targets, kind) = if let Some(member) = dynamic_callee {
+            let accessor = Site::at(site.file, callee.location);
+            if !self.step(accessor) {
+                return Vec::new();
+            }
+            let targets = self
+                .with_evaluation(accessor, |engine| {
+                    engine.verify_member(state, frame, member, site.file, false)
+                })
+                .unwrap_or_default();
+            (targets, "grep_rescue")
+        } else {
+            (self.eval(state, frame, callee), "call")
+        };
         let mut paths = Vec::new();
-        for (state, target) in self.eval(state, frame, callee) {
+        for (state, target) in targets {
             let args = positional
                 .iter()
                 .chain(keywords.iter().map(|(_, value)| value));
@@ -246,7 +278,7 @@ impl<'a> Engine<'a> {
                                     function.clone(),
                                     args,
                                     site,
-                                    "call",
+                                    kind,
                                 ));
                             }
                             Err(reason) => self.issue(site, "invalid_call", reason),
@@ -266,6 +298,74 @@ impl<'a> Engine<'a> {
             }
         }
         paths
+    }
+
+    fn dynamic_member(
+        &self,
+        state: &State,
+        frame: FrameId,
+        callee: &'a Expression,
+        positional: &'a [Expression],
+        keywords: &[(String, Expression)],
+    ) -> Option<DynamicMember<'a>> {
+        if !self.grep_verify
+            || !matches!(&callee.kind, ExpressionKind::Name(name) if name == "getattr")
+            || !keywords.is_empty()
+        {
+            return None;
+        }
+        let [receiver, member] = positional else {
+            return None;
+        };
+        let ExpressionKind::Constant(Constant::String(name)) = &member.kind else {
+            return None;
+        };
+        // A local declaration shadows the builtin even before its assignment.
+        let unshadowed =
+            std::iter::successors(Some(frame), |id| state.frame(*id).parent).all(|id| {
+                let scope = state.frame(id);
+                !scope.locals.contains_key("getattr")
+                    && scope.definition.is_none_or(|definition| {
+                        !self.definitions[&definition]
+                            .node
+                            .locals
+                            .contains("getattr")
+                    })
+            });
+        unshadowed.then_some(DynamicMember {
+            receiver,
+            name,
+            location: member.location,
+        })
+    }
+
+    fn verify_member(
+        &mut self,
+        state: State,
+        frame: FrameId,
+        member: DynamicMember<'a>,
+        file: usize,
+        explore_external_use: bool,
+    ) -> Outcomes<Value> {
+        let site = Site::at(file, member.location);
+        self.eval(state, frame, member.receiver)
+            .into_iter()
+            .filter_map(|(mut state, receiver)| {
+                let value = self.attribute(&state, receiver, member.name, site)?;
+                if let Value::Function(function) = &value {
+                    self.record_verification(function.definition, site, "dynamic_member");
+                    state.possible = true;
+                    if explore_external_use {
+                        // A standalone match has no known call arguments. Keep
+                        // its possible invocation separate from the current path.
+                        let mut possible = state.clone();
+                        possible.library_calls = None;
+                        self.invoke_external(possible, function.clone(), site, "grep_rescue");
+                    }
+                }
+                Some((state, value))
+            })
+            .collect()
     }
 
     fn possible_argument_uses<'b>(

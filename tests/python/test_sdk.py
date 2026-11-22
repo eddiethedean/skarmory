@@ -195,3 +195,73 @@ class SdkTests(unittest.TestCase):
                 skylos.analyze(FIXTURES / "reachable", **{key: True})
         with self.assertRaises(TypeError):
             skylos.analyze(FIXTURES / "reachable", enable_quality=True)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_grep_verification_sdk_profiles_and_cache_edits(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            project.mkdir()
+            cache = project.with_name("facts")
+            (project / ".skylos.toml").write_text("root = true\n", encoding="utf-8")
+            (project / "main.py").write_text("pass\n", encoding="utf-8")
+            (project / "operations.py").write_text(
+                "def launch_job():\n    return 1\n", encoding="utf-8"
+            )
+            jobs = project / "jobs.yml"
+            jobs.write_text("handler_module: operations.py\n", encoding="utf-8")
+
+            default_native = skarmory.analyze(project)
+            self.assertEqual(
+                [finding["symbol"] for finding in default_native["findings"]], ["launch_job"]
+            )
+            self.assertNotIn("grep_verification_evidence", default_native)
+            native = skarmory.analyze(project, grep_verify=True)
+            self.assertEqual(native["coverage"]["status"], "complete", native)
+            self.assertEqual(native["findings"], [])
+            self.assertEqual(
+                [
+                    (row["qualified_name"], row["path"], row["certainty"])
+                    for row in native["grep_verification_evidence"]
+                ],
+                [("operations.launch_job", "jobs.yml", "possible")],
+            )
+
+            options = {"profile": "skylos-0.3", "all_advice": False, "trace_file": False}
+            default_phase02 = json.loads(skylos.analyze(project, all_advice=False))
+            disabled = json.loads(skylos.analyze(project, grep_verify=False, **options))
+            for report in (default_phase02, disabled):
+                self.assertEqual(report["coverage"]["status"], "complete", report)
+                self.assertEqual(
+                    [finding["full_name"] for finding in report["unused_functions"]],
+                    ["operations.launch_job"],
+                )
+
+            enabled = json.loads(skylos.analyze(project, **options))
+            self.assertEqual(enabled["coverage"]["status"], "complete", enabled)
+            self.assertEqual(enabled["unused_functions"], [])
+            self.assertEqual(json.loads(skylos.analyze(project, grep_cache=True, **options)), enabled)
+            for expected_hits, workers in ((0, 1), (2, 2)):
+                cached = json.loads(skylos.analyze(
+                    project, grep_cache=True, cache_dir=cache, workers=workers, **options
+                ))
+                self.assertEqual(cached.pop("cache")["hits"], expected_hits)
+                self.assertEqual(cached, enabled)
+
+            jobs.write_text("handler_module: other_operations.py\n", encoding="utf-8")
+            edited = json.loads(skylos.analyze(project, **options))
+            self.assertEqual(edited["coverage"]["status"], "complete", edited)
+            self.assertEqual(
+                [finding["full_name"] for finding in edited["unused_functions"]],
+                ["operations.launch_job"],
+            )
+            cached = json.loads(skylos.analyze(
+                project, grep_cache=True, cache_dir=cache, workers=2, **options
+            ))
+            self.assertEqual(cached.pop("cache")["hits"], 2)
+            self.assertEqual(cached, edited)
+
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                output = subprocess.check_output(
+                    [cli, project, "--profile", "skylos-0.3", "--include-generated"]
+                )
+                self.assertEqual(json.loads(output), edited)
