@@ -1108,6 +1108,51 @@ fn skylos_distinguishes_generated_markers_from_ordinary_comments() {
 }
 
 #[test]
+fn skylos_relative_exclusions_only_apply_to_directory_scans() {
+    let project = skylos_fixture();
+    fs::write(project.path().join("main.py"), "print(1)\n").unwrap();
+    fs::write(project.path().join("bad.py"), "def broken(\n").unwrap();
+
+    for (config, flags) in [
+        ("root = true\n", &["--exclude", "bad.py"][..]),
+        ("root = true\nexclude = [\"**/bad.py\"]\n", &[][..]),
+    ] {
+        fs::write(project.path().join(".skylos.toml"), config).unwrap();
+        for profile in ["skylos", "skylos-0.3"] {
+            let run = |target| {
+                let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+                    .current_dir(project.path())
+                    .env_remove("SKYLOS_CONFIG_FILE")
+                    .args(["--profile", profile, "--json", "--strict", target])
+                    .args(flags)
+                    .output()
+                    .unwrap();
+                let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                (output.status.code(), report)
+            };
+            let (exit, report) = run("bad.py");
+            assert_eq!(exit, Some(2), "{profile}: {report}");
+            assert_eq!(report["gate"]["exit_code"], 2);
+            assert_eq!(report["selected_paths"], serde_json::json!(["bad.py"]));
+            assert_eq!(report["exclusions"], serde_json::json!([]));
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert_eq!(report["coverage"]["issues"][0]["kind"], "parse_error");
+            assert_eq!(report["coverage"]["issues"][0]["path"], "bad.py");
+
+            let (exit, report) = run(".");
+            assert_eq!(exit, Some(0), "{profile}: {report}");
+            assert_eq!(report["gate"]["exit_code"], 0);
+            assert_eq!(report["selected_paths"], serde_json::json!(["main.py"]));
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert_eq!(
+                report["exclusions"],
+                serde_json::json!([{"path": "bad.py", "reason": "configured_exclusion"}])
+            );
+        }
+    }
+}
+
+#[test]
 fn skylos_keeps_descendants_excluded_when_an_unrelated_include_is_present() {
     let project = skylos_fixture();
     let excluded = project.path().join("generated/sub");

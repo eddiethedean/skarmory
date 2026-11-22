@@ -199,8 +199,8 @@ pub(super) fn discover_filtered(
 
     let mut selected = BTreeMap::new();
     if input_file {
-        if let Some(reason) =
-            selection.and_then(|selection| selection.exclusion(&project.label(&input)))
+        if let Some(reason) = selection
+            .and_then(|selection| selection.explicit_file_exclusion(&project.label(&input)))
         {
             project.exclusions.push(Exclusion {
                 path: project.label(&input),
