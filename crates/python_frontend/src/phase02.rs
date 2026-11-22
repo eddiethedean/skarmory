@@ -328,8 +328,37 @@ impl Lowering<'_> {
 
     fn suite(&self, statements: &[Stmt], depth: usize) -> Result<Vec<Statement>, FrontendError> {
         let mut result = Vec::new();
-        for statement in statements {
+        let mut allows_future_import = depth == 0;
+        for (index, statement) in statements.iter().enumerate() {
             self.check(statement, depth)?;
+            if let Stmt::ImportFrom(node) = statement
+                && !node.is_lazy
+                && node.level == 0
+                && node
+                    .module
+                    .as_ref()
+                    .is_some_and(|module| module.as_str() == "__future__")
+            {
+                if !allows_future_import {
+                    return Err(self.0.error(
+                        "parse_error",
+                        node,
+                        "from __future__ imports must occur at the beginning of the file",
+                    ));
+                }
+                if node
+                    .names
+                    .iter()
+                    .all(|alias| alias.name.as_str() == "annotations" && alias.asname.is_none())
+                {
+                    continue;
+                }
+                return Err(self.0.unsupported(node, "unsupported future directive"));
+            }
+            // Only a leading module docstring can precede future imports.
+            allows_future_import &= index == 0
+                && matches!(statement, Stmt::Expr(node) if node.value.is_string_literal_expr());
+
             let next = depth + 1;
             let expression = |expr: &Expr| self.expression(expr, next);
             let kind = match statement {
@@ -340,14 +369,6 @@ impl Lowering<'_> {
                 }
                 Stmt::ImportFrom(node) if !node.is_lazy => {
                     let module = node.module.as_ref().map_or("", |module| module.as_str());
-                    if node.level == 0 && module == "__future__" {
-                        if node.names.iter().all(|alias| {
-                            alias.name.as_str() == "annotations" && alias.asname.is_none()
-                        }) {
-                            continue;
-                        }
-                        return Err(self.0.unsupported(node, "unsupported future directive"));
-                    }
                     self.imports(&mut result, &node.names, module, node.level, true)?;
                     continue;
                 }
@@ -559,21 +580,31 @@ impl Lowering<'_> {
             Expr::Attribute(node) => {
                 ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
             }
-            Expr::Call(node) => ExpressionKind::Call {
-                function: Box::new(lower(&node.func)?),
-                arguments: self.expressions(&node.arguments.args, next)?,
-                keywords: node
-                    .arguments
-                    .keywords
-                    .iter()
-                    .map(|keyword| {
-                        let name = keyword.arg.as_ref().ok_or_else(|| {
-                            self.0.unsupported(keyword, "unbounded keyword expansion")
-                        })?;
-                        Ok((name.to_string(), lower(&keyword.value)?))
-                    })
-                    .collect::<Result<_, FrontendError>>()?,
-            },
+            Expr::Call(node) => {
+                let mut keyword_names = BTreeSet::new();
+                ExpressionKind::Call {
+                    function: Box::new(lower(&node.func)?),
+                    arguments: self.expressions(&node.arguments.args, next)?,
+                    keywords: node
+                        .arguments
+                        .keywords
+                        .iter()
+                        .map(|keyword| {
+                            let name = keyword.arg.as_ref().ok_or_else(|| {
+                                self.0.unsupported(keyword, "unbounded keyword expansion")
+                            })?;
+                            if !keyword_names.insert(name.as_str()) {
+                                return Err(self.0.error(
+                                    "parse_error",
+                                    keyword,
+                                    &format!("keyword argument repeated: {name}"),
+                                ));
+                            }
+                            Ok((name.to_string(), lower(&keyword.value)?))
+                        })
+                        .collect::<Result<_, FrontendError>>()?,
+                }
+            }
             Expr::StringLiteral(node) => ExpressionKind::Text(node.value.to_str().into()),
             Expr::BooleanLiteral(node) => ExpressionKind::Bool(node.value),
             Expr::NumberLiteral(_)

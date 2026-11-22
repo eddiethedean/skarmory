@@ -134,6 +134,65 @@ fn skylos_report_exit_status_tracks_output_mode_and_completion() {
 }
 
 #[test]
+fn skylos_rejects_misplaced_future_imports() {
+    let project = skylos_fixture();
+    let main = project.path().join("main.py");
+    for (source, line) in [
+        ("x = 1\nfrom __future__ import annotations\nprint(x)\n", 2),
+        (
+            "def f():\n    from __future__ import annotations\n    print('x')\nf()\n",
+            2,
+        ),
+        ("if True:\n    from __future__ import annotations\n", 2),
+        ("pass\nfrom __future__ import annotations\n", 2),
+    ] {
+        fs::write(&main, source).unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(2), "{source}\n{report}");
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert_eq!(
+            report["analysis_errors"][0]["kind"], "parse_error",
+            "{report}"
+        );
+        assert_eq!(report["analysis_errors"][0]["line"], line, "{report}");
+    }
+
+    fs::write(
+        &main,
+        "'documentation'\nfrom __future__ import annotations\nfrom __future__ import annotations\nprint('ok')\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+}
+
+#[test]
+fn skylos_rejects_repeated_call_keywords() {
+    let project = skylos_fixture();
+    let main = project.path().join("main.py");
+    fs::write(&main, "print('test', end='a', sep='b', end='c')\n").unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{report}");
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert_eq!(
+        report["analysis_errors"][0]["kind"], "parse_error",
+        "{report}"
+    );
+    assert_eq!(report["analysis_errors"][0]["line"], 1, "{report}");
+    assert_eq!(report["analysis_errors"][0]["column"], 33, "{report}");
+
+    fs::write(&main, "print(print('nested', end=''), end='', sep='b')\n").unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+}
+
+#[test]
 fn skylos_writes_sarif_and_json_to_distinct_files() {
     let project = skylos_fixture();
     for _ in 0..2 {
