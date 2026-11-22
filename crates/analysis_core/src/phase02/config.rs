@@ -192,6 +192,18 @@ fn translate_glob(pattern: &str) -> String {
 
 impl Selection {
     pub(crate) fn exclusion(&self, label: &str) -> Option<&'static str> {
+        self.exclusion_matching(label, |_| true)
+    }
+
+    pub(crate) fn explicit_file_exclusion(&self, label: &str) -> Option<&'static str> {
+        self.exclusion_matching(label, |pattern| pattern.anchored)
+    }
+
+    fn exclusion_matching(
+        &self,
+        label: &str,
+        applies: impl Fn(&Pattern) -> bool,
+    ) -> Option<&'static str> {
         if self
             .include
             .iter()
@@ -202,7 +214,7 @@ impl Selection {
         if self
             .exclude
             .iter()
-            .any(|pattern| pattern.selection_matches_ancestor(label))
+            .any(|pattern| applies(pattern) && pattern.selection_matches_ancestor(label))
         {
             return Some("configured_exclusion");
         }

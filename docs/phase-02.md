@@ -107,6 +107,10 @@ scan.
 
 ## Configuration, findings, and output
 
+Relative source exclusions filter files discovered during directory scans.
+An explicitly requested Python file takes precedence over a relative
+exclusion. An absolute exclusion can still apply to that file.
+
 - Freeze discovery from a directory or the parent of a file. Per directory,
   use `.skylos.toml`, then `skylos.toml`, then `[tool.skylos]` in
   `pyproject.toml`. Stop at `.git`, a filesystem root, or `root = true`.
