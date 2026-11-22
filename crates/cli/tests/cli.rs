@@ -1242,6 +1242,242 @@ class Facade:
 }
 
 #[test]
+fn skylos_retains_classes_used_for_member_lookup() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("main.py"),
+        r#"class Registry:
+    @staticmethod
+    def run():
+        print("live")
+
+class Dormant:
+    @staticmethod
+    def run():
+        pass
+
+def unused():
+    Dormant.run()
+
+Registry.run()
+from support import lazy
+lazy()
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("support.py"),
+        r#"class LazyRegistry:
+    @staticmethod
+    def run():
+        print("lazy")
+
+def __getattr__(name):
+    if name == "lazy":
+        return LazyRegistry.run
+    raise AttributeError(name)
+"#,
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    let classes = report["unused_classes"].as_array().unwrap();
+    assert_eq!(classes.len(), 1, "{report}");
+    assert_eq!(classes[0]["full_name"], "main.Dormant");
+    let evidence = report["dead_code_evidence"].as_array().unwrap();
+    for class in ["main.Registry", "support.LazyRegistry"] {
+        assert!(
+            evidence
+                .iter()
+                .any(|item| item["full_name"] == class && item["kind"] == "class_reference"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn skylos_skips_enclosing_class_names_in_nested_class_scopes() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("main.py"),
+        r#"def for_body():
+    print("module helper for class body")
+
+def for_method():
+    print("module helper for method body")
+
+class Outer:
+    def for_body():
+        pass
+
+    def for_method():
+        pass
+
+    class Inner:
+        def local():
+            print("class-local helper")
+
+        local()
+        for_body()
+
+        @staticmethod
+        def run():
+            for_method()
+
+Outer.Inner.run()
+"#,
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    let findings = report["unused_functions"].as_array().unwrap();
+    let names: Vec<_> = findings
+        .iter()
+        .map(|row| row["full_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["main.Outer.for_body", "main.Outer.for_method"]);
+}
+
+#[test]
+fn skylos_reports_unmodeled_comparison_dispatch_only_when_evaluated() {
+    let project = skylos_fixture();
+    let source = r#"def observed():
+    print("comparison called")
+
+class Value:
+    def __eq__(self, other):
+        observed()
+        return False
+
+value = Value()
+"#;
+    for (comparison, exit) in [
+        ("Value() == Value()", 2),
+        ("0 != value", 2),
+        ("value is Value()", 1),
+        ("if False:\n    value == Value()", 1),
+        ("class Plain:\n    pass\n\nPlain() == Plain()", 1),
+    ] {
+        fs::write(
+            project.path().join("main.py"),
+            format!("{source}{comparison}\n"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{comparison}\n{report}");
+        if exit == 2 {
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert_eq!(report["unused_functions"], serde_json::json!([]));
+            assert_eq!(
+                report["analysis_errors"][0]["kind"],
+                "unresolved_comparison"
+            );
+            assert_eq!(report["analysis_errors"][0]["line"], 10);
+        } else {
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert_eq!(report["unused_functions"][0]["full_name"], "main.observed");
+        }
+    }
+}
+
+#[test]
+fn skylos_roots_only_effective_explicit_reexports() {
+    let project = skylos_fixture();
+    let pkg = project.path().join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    fs::write(pkg.join("impl.py"), "def old():\n    pass\n").unwrap();
+    fs::write(project.path().join("main.py"), "import pkg\nprint(pkg)\n").unwrap();
+    for (rebind, exit) in [
+        ("old = None\n", 1),
+        ("", 0),
+        ("if int('0'):\n    old = None\n", 2),
+    ] {
+        fs::write(
+            pkg.join("__init__.py"),
+            format!("from .impl import old as old\n{rebind}"),
+        )
+        .unwrap();
+        let output = skylos(project.path(), &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(exit), "{rebind}\n{report}");
+        if exit == 1 {
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert_eq!(report["unused_functions"][0]["full_name"], "pkg.impl.old");
+        } else if exit == 0 {
+            assert_eq!(report["coverage"]["status"], "complete");
+            assert!(
+                report["dead_code_evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["full_name"] == "pkg.impl.old"
+                        && item["kind"] == "explicit_re_export"),
+                "{report}"
+            );
+        } else {
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert_eq!(report["analysis_errors"][0]["kind"], "ambiguous_binding");
+        }
+    }
+}
+
+#[test]
+fn skylos_awaits_tasks_that_were_already_scheduled() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("main.py"),
+        r#"from asyncio import create_task as schedule
+
+def observed():
+    print("scheduled")
+
+async def work():
+    observed()
+
+async def inline():
+    print("awaited")
+
+async def entry():
+    await schedule(work())
+    task = schedule(work())
+    await task
+    await inline()
+
+async def unused():
+    pass
+
+__all__ = ["entry"]
+"#,
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete");
+    let findings = report["unused_functions"].as_array().unwrap();
+    assert_eq!(findings.len(), 1, "{report}");
+    assert_eq!(findings[0]["full_name"], "main.unused");
+    let evidence = report["dead_code_evidence"].as_array().unwrap();
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item["full_name"] == "main.work" && item["kind"] == "scheduled_coroutine"),
+        "{report}"
+    );
+    let awaited: Vec<_> = evidence
+        .iter()
+        .filter(|item| item["kind"] == "awaited_coroutine")
+        .map(|item| item["full_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(awaited, ["main.inline"], "{report}");
+}
+
+#[test]
 fn skylos_constructor_does_not_assume_the_result_of_custom_allocation() {
     let project = skylos_fixture();
     let source = r#"def observed():

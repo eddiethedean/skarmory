@@ -30,6 +30,7 @@ enum Value {
     Callable(Invocation),
     Instance(SymbolId),
     Coroutine(Invocation),
+    ScheduledTask,
     Module(usize),
     Provider(String),
     Object(Object, ObjectKind),
@@ -173,7 +174,7 @@ struct LazyBranch<'a> {
 enum ValueEvaluation {
     Identity,
     LazyIdentity,
-    LazyExecution,
+    LazyExecution(ScopeId),
 }
 
 enum LazyMember<'a> {
@@ -521,14 +522,15 @@ impl<'a> Graph<'a> {
             })
     }
 
-    fn lexical(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
-        let mut scope = scope;
+    fn lexical(&self, origin: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+        let mut scope = origin;
         let mut before = before;
-        let mut child_is_function = false;
         loop {
             let row = &self.scopes[scope];
             let class = row.owner.is_some_and(|id| self.is_class(id));
-            if !(class && child_is_function) {
+            // A class body sees its own namespace, but nested scopes do not
+            // capture a class namespace as an enclosing lexical scope.
+            if scope == origin || !class {
                 if let Some(id) = self.local(scope, name, before) {
                     return Some(id);
                 }
@@ -537,7 +539,6 @@ impl<'a> Graph<'a> {
                     return None;
                 }
             }
-            child_is_function = row.owner.is_some() && !class;
             scope = row.parent?;
             before = END;
         }
@@ -961,7 +962,8 @@ impl<'a> Graph<'a> {
     fn execute_lazy_branch(&mut self, scope: ScopeId, branch: &LazyBranch<'a>) -> Value {
         // Keep imports discovered through return expressions on the same
         // worklist as nested from-imports. All execute for the original caller.
-        let value = self.lazy_value(scope, branch, 0, ValueEvaluation::LazyExecution);
+        let evaluation = ValueEvaluation::LazyExecution(scope);
+        let value = self.lazy_value(scope, branch, 0, evaluation);
         let mut pending = vec![(branch.scope, branch.imports)];
         pending.append(&mut self.nested_lazy_imports);
         let mut visited = BTreeSet::new();
@@ -977,7 +979,7 @@ impl<'a> Graph<'a> {
                 let module = self.relative_module(file, import);
                 if let Some(branch) = self.record_import(scope, handler, module.as_deref(), import)
                 {
-                    self.lazy_value(scope, &branch, 0, ValueEvaluation::LazyExecution);
+                    self.lazy_value(scope, &branch, 0, evaluation);
                     pending.push((branch.scope, branch.imports));
                     pending.append(&mut self.nested_lazy_imports);
                 }
@@ -1472,6 +1474,14 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn record_class_reference(&mut self, scope: ScopeId, base: &Value) {
+        if let Value::Callable(invocation) = base
+            && self.is_class(invocation.target)
+        {
+            self.edge(scope, invocation.target, "class_reference", "certain");
+        }
+    }
+
     /// None means the attribute is absent in a fully resolved base chain.
     fn class_member(&mut self, id: SymbolId, name: &str, depth: usize) -> Option<Value> {
         if depth >= MAX_BINDING_CHAIN {
@@ -1638,20 +1648,22 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Member(base, name) => {
                 let base = recurse(self, base);
-                if evaluation == ValueEvaluation::LazyExecution
-                    && let Value::Module(file) = base
-                    && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
-                        file,
-                        name,
-                        END,
-                        (scope, before),
-                        ModuleMemberAccess::Attribute,
-                    )
-                {
-                    self.read.insert(hook);
-                    self.nested_lazy_imports
-                        .push((branch.scope, branch.imports));
-                    return self.lazy_value(scope, &branch, depth + 3, evaluation);
+                if let ValueEvaluation::LazyExecution(caller) = evaluation {
+                    self.record_class_reference(caller, &base);
+                    if let Value::Module(file) = base
+                        && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
+                            file,
+                            name,
+                            END,
+                            (scope, before),
+                            ModuleMemberAccess::Attribute,
+                        )
+                    {
+                        self.read.insert(hook);
+                        self.nested_lazy_imports
+                            .push((branch.scope, branch.imports));
+                        return self.lazy_value(scope, &branch, depth + 3, evaluation);
+                    }
                 }
                 self.member(base, name, (scope, before), depth + 1)
             }
@@ -1673,6 +1685,7 @@ impl<'a> Graph<'a> {
                         self.with_explicit_receiver(invocation, arguments, keywords, recurse),
                     )
                 }
+                Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
                 Value::Provider(name)
                     if matches!(
                         name.as_str(),
@@ -2021,11 +2034,15 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Await(value) => {
                 self.walk(scope, value, before);
-                self.activate_argument(scope, Some(value), before, "awaited_coroutine", expr.at);
+                let target = self.identity(scope, value, before, 0);
+                if !matches!(target, Value::ScheduledTask) {
+                    self.activate_callback(scope, target, "awaited_coroutine", expr.at);
+                }
             }
             ExpressionKind::Member(base, name) => {
                 self.walk(scope, base, before);
                 let base = self.identity(scope, base, before, 1);
+                self.record_class_reference(scope, &base);
                 if let Value::Module(file) = base
                     && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
                         file,
@@ -2042,9 +2059,28 @@ impl<'a> Graph<'a> {
                 }
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
-            ExpressionKind::Compare { left, right, .. } => {
+            ExpressionKind::Compare {
+                left,
+                right,
+                equal,
+                identity,
+            } => {
                 self.walk(scope, left, before);
                 self.walk(scope, right, before);
+                if !identity
+                    && [left, right].into_iter().any(|operand| {
+                        matches!(self.identity(scope, operand, before, 0), Value::Instance(class)
+                            if self.class_member(class, "__eq__", 0).is_some()
+                                || !equal && self.class_member(class, "__ne__", 0).is_some())
+                    })
+                {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unresolved_comparison",
+                        "comparison method dispatch is outside the bounded model",
+                    );
+                }
             }
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
@@ -2117,6 +2153,16 @@ impl<'a> Graph<'a> {
         at: Location,
     ) {
         let target = arg.map_or(Value::Unknown, |expr| self.identity(scope, expr, before, 0));
+        self.activate_callback(scope, target, kind, at);
+    }
+
+    fn activate_callback(
+        &mut self,
+        scope: ScopeId,
+        target: Value,
+        kind: &'static str,
+        at: Location,
+    ) {
         if matches!(target, Value::Callable(_) | Value::Coroutine(_)) {
             self.expose(scope, target, kind, at);
         } else {
@@ -2929,9 +2975,28 @@ impl<'a> Graph<'a> {
                     );
                 }
             }
-            let aliases: Vec<_> = self.scopes[file].names.values().flatten().copied().filter(|&id| matches!(
-                self.symbols[id].binding, Binding::Import(import) if import.declares_export && self.files[file].is_package
-            )).collect();
+            if !self.files[file].is_package {
+                continue;
+            }
+            let aliases: Vec<_> = self.scopes[file]
+                .names
+                .values()
+                .filter_map(|bindings| {
+                    let &latest = bindings.last()?;
+                    // An unconditional assignment replaces older exports.
+                    // A conditional assignment may leave an older export in place.
+                    for &id in bindings.iter().rev() {
+                        if matches!(self.symbols[id].binding, Binding::Import(import) if import.declares_export)
+                        {
+                            return Some(latest);
+                        }
+                        if !self.binding_depends_on_branch(id, END) {
+                            break;
+                        }
+                    }
+                    None
+                })
+                .collect();
             for alias in aliases {
                 if let Value::Callable(invocation) = self.binding(alias, END, 0) {
                     self.invoke(
