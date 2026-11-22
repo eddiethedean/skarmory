@@ -86,6 +86,11 @@ and its reachable helpers without assuming the truth-test result. A reachable
 test that could dispatch to an unresolved selected hook makes coverage
 incomplete.
 
+Explicit calls to the built-in `len()` retain a resolved local `__len__` method
+and its reachable helpers. A reachable call reports incomplete coverage when
+the instance's length method cannot be resolved or an opaque argument may call
+a selected length method. This applies when the result is used in a comparison.
+
 Other framework and library APIs, namespace-package and arbitrary import-hook
 resolution, dynamic plugin loading, opaque lazy exports, text-based grep
 verification, arbitrary Python visitors and progress callbacks, and non-Python
