@@ -179,7 +179,76 @@ fn builtin_values_do_not_dispatch_unrelated_truth_hooks() {
 }
 
 #[test]
-fn custom_length_calls_do_not_make_an_ordering_guard_complete() {
+fn explicit_length_calls_follow_resolved_instances() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("inventory.py"),
+        concat!(
+            "def load_count():\n    return 1\n\n",
+            "def check_availability():\n    return True\n\n",
+            "class Collection:\n",
+            "    def __len__(self):\n        return load_count()\n",
+            "    def __bool__(self):\n        return check_availability()\n\n",
+            "class Inventory(Collection):\n    pass\n",
+        ),
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    fs::write(
+        &main,
+        "from inventory import Inventory\nsize = len(Inventory())\nprint(size)\n",
+    )
+    .unwrap();
+    let (direct, cold) = compare(project.path(), cache.path());
+    assert_eq!(cold["misses"], 2);
+    assert_eq!(direct["coverage"]["status"], "complete", "{direct}");
+    assert!(!finds(&direct, "load_count"), "{direct}");
+    assert!(finds(&direct, "check_availability"));
+    let evidence = direct["dead_code_evidence"].as_array().unwrap();
+    assert!(
+        evidence.iter().any(|item| {
+            item["full_name"] == "inventory.Collection.__len__" && item["kind"] == "length_call"
+        }),
+        "{evidence:?}"
+    );
+    let (warm, stats) = compare(project.path(), cache.path());
+    assert_eq!(stats["hits"], 2);
+    assert_eq!(warm, direct);
+
+    fs::write(
+        &main,
+        concat!(
+            "from builtins import len as count\n",
+            "from inventory import Inventory\n",
+            "def len(value):\n    print(value)\n    return 0\n",
+            "print(len(Inventory()))\n",
+            "print(count(Inventory()))\n",
+        ),
+    )
+    .unwrap();
+    let (alias, edited) = compare(project.path(), cache.path());
+    assert_eq!(edited["hits"], 1);
+    assert_eq!(alias["coverage"]["status"], "complete", "{alias}");
+    assert!(!finds(&alias, "load_count"), "{alias}");
+
+    fs::write(
+        &main,
+        concat!(
+            "from inventory import Inventory\n",
+            "def len(value):\n    print(value)\n    return 0\n",
+            "print(len(Inventory()))\n",
+        ),
+    )
+    .unwrap();
+    let (shadowed, _) = compare(project.path(), cache.path());
+    assert_eq!(shadowed["coverage"]["status"], "complete", "{shadowed}");
+    assert!(finds(&shadowed, "load_count"));
+}
+
+#[test]
+fn unresolved_length_calls_keep_ordering_guards_incomplete() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
@@ -196,11 +265,22 @@ fn custom_length_calls_do_not_make_an_ordering_guard_complete() {
     )
     .unwrap();
     let (custom, _) = compare(project.path(), cache.path());
-    assert_eq!(custom["coverage"]["status"], "incomplete", "{custom}");
-    let issues = custom["coverage"]["issues"].as_array().unwrap();
-    assert_eq!(issues.len(), 1, "{custom}");
-    assert_eq!(issues[0]["kind"], "unresolved_comparison");
-    assert_eq!(custom["unused_functions"], serde_json::json!([]));
+    assert_eq!(custom["coverage"]["status"], "complete", "{custom}");
+    assert!(!finds(&custom, "load_count"), "{custom}");
+
+    fs::write(
+        &main,
+        format!(
+            "{source}\ndef make():\n    return RankedItems()\nif len(make()) <= 0:\n    pass\n"
+        ),
+    )
+    .unwrap();
+    let (opaque, _) = compare(project.path(), cache.path());
+    assert_eq!(opaque["coverage"]["status"], "incomplete", "{opaque}");
+    let issues = opaque["coverage"]["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{opaque}");
+    assert_eq!(issues[0]["kind"], "unresolved_length_call");
+    assert_eq!(opaque["unused_functions"], serde_json::json!([]));
 
     fs::write(&main, format!("{source}\nif len([1]) <= 0:\n    pass\n")).unwrap();
     let (builtin, _) = compare(project.path(), cache.path());
@@ -221,6 +301,7 @@ fn reachable_opaque_truth_tests_are_incomplete() {
         "def check():\n    if dict():\n        pass\n\n",
         "if __name__ == '__main__':\n    print('ready')\n",
         "if len([1]):\n    pass\n",
+        "def builtin_items():\n    return [1]\nprint(len(builtin_items()))\n",
         "ordered = 0 < 1\nif ordered:\n    pass\n",
         "token = object()\nis_empty = token is None\nif is_empty:\n    pass\n",
     );

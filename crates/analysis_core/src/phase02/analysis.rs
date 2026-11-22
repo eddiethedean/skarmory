@@ -268,7 +268,8 @@ pub(super) fn analyze_with_verification(
         parameter_calls: Vec::new(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
-        has_truth_hooks: false,
+        has_bool_hooks: false,
+        has_length_hooks: false,
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
     };
@@ -294,7 +295,8 @@ pub(super) fn analyze_with_verification(
             match symbol.name.text.as_str() {
                 "__lt__" | "__le__" | "__gt__" | "__ge__" => graph.has_ordering_hooks = true,
                 "__eq__" => graph.has_equality_hooks = true,
-                "__bool__" | "__len__" => graph.has_truth_hooks = true,
+                "__bool__" => graph.has_bool_hooks = true,
+                "__len__" => graph.has_length_hooks = true,
                 _ => {}
             }
         }
@@ -348,7 +350,8 @@ struct Graph<'a> {
     parameter_calls: Vec<ParameterCall>,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
-    has_truth_hooks: bool,
+    has_bool_hooks: bool,
+    has_length_hooks: bool,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
 }
@@ -1076,6 +1079,7 @@ impl<'a> Graph<'a> {
                     | "decorator"
                     | "subclass_hook"
                     | "truth_test"
+                    | "length_call"
                     | "grep_dynamic_call"
             ) && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
@@ -1883,14 +1887,17 @@ impl<'a> Graph<'a> {
                     .map_or(Value::Unknown, |(value, _)| value),
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
                 Value::Provider(name)
-                    if keywords.is_empty()
-                        && matches!(name.as_str(), "builtins.bool" | "builtins.len") =>
+                    if name == "builtins.len" && arguments.len() == 1 && keywords.is_empty() =>
                 {
+                    // The call walker handles __len__ dispatch independently of its integer result.
+                    Value::Scalar
+                }
+                Value::Provider(name) if name == "builtins.bool" && keywords.is_empty() => {
                     match arguments.as_slice() {
-                        [] if name == "builtins.bool" => Value::Scalar,
+                        [] => Value::Scalar,
                         [argument] => {
                             let value = recurse(self, argument);
-                            // A scalar result alone cannot account for a custom truth or length call.
+                            // A scalar result alone cannot account for a custom truth test.
                             if value.is_builtin_scalar()
                                 || matches!(value, Value::Sequence(_) | Value::Mapping(_))
                             {
@@ -2277,23 +2284,13 @@ impl<'a> Graph<'a> {
                 else {
                     return;
                 };
-                if let Value::Callable(invocation) = hook
-                    && !invocation.verified
-                    && matches!(self.symbols[invocation.target].binding, Binding::Definition(definition, _)
-                        if definition.kind == DefinitionKind::Function && definition.decorators.is_empty())
-                {
-                    let invocation = if self.receiver_parameter(invocation.target).is_some() {
-                        invocation.bind_receiver(Receiver::Bound(*class))
-                    } else {
-                        invocation
-                    };
-                    self.invoke(scope, invocation, "truth_test", "certain", test.at);
+                if self.invoke_instance_hook(scope, *class, hook, "truth_test", test.at) {
                     return;
                 }
             }
             // Comparison expressions check their own dispatch during the walk.
             Value::Unknown | Value::OperatorResult
-                if self.has_truth_hooks
+                if (self.has_bool_hooks || self.has_length_hooks)
                     && !matches!(
                         test.kind,
                         ExpressionKind::Compare { .. } | ExpressionKind::OrderingComparison { .. }
@@ -2306,6 +2303,52 @@ impl<'a> Graph<'a> {
             "unresolved_truth_test",
             "truth-value method dispatch is outside the bounded model",
         );
+    }
+
+    fn record_length_call(&mut self, scope: ScopeId, value: Value, at: Location) {
+        match value {
+            Value::Instance(class) => {
+                if let Some(hook) = self.class_member(class, "__len__", 0)
+                    && self.invoke_instance_hook(scope, class, hook, "length_call", at)
+                {
+                    return;
+                }
+            }
+            Value::Unknown | Value::OperatorResult if self.has_length_hooks => {}
+            _ => return,
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_length_call",
+            "len() dispatch is outside the bounded model",
+        );
+    }
+
+    fn invoke_instance_hook(
+        &mut self,
+        scope: ScopeId,
+        class: SymbolId,
+        hook: Value,
+        kind: &'static str,
+        at: Location,
+    ) -> bool {
+        let Value::Callable(invocation) = hook else {
+            return false;
+        };
+        if invocation.verified
+            || !matches!(self.symbols[invocation.target].binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Function && definition.decorators.is_empty())
+        {
+            return false;
+        }
+        let invocation = if self.receiver_parameter(invocation.target).is_some() {
+            invocation.bind_receiver(Receiver::Bound(class))
+        } else {
+            invocation
+        };
+        self.invoke(scope, invocation, kind, "certain", at);
+        true
     }
 
     fn walk_expression(
@@ -2364,6 +2407,14 @@ impl<'a> Graph<'a> {
                         {
                             let value = self.identity(scope, argument, before, 0);
                             self.expose(scope, value, "passed_callable", argument.at);
+                        }
+                    }
+                    Value::Provider(name) if name == "builtins.len" => {
+                        if let [argument] = arguments.as_slice()
+                            && keywords.is_empty()
+                        {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.record_length_call(scope, value, expr.at);
                         }
                     }
                     Value::Provider(name) if name == "asyncio.create_task" => {
