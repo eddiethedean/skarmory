@@ -42,17 +42,17 @@ The conformance matrix must include the following surfaces:
 | --- | --- | --- |
 | Source discovery | Paths, exclusions, generated files, package roots, encoding and failure behavior | Phase 0 / 0.2 |
 | Python dead-code findings | Categories, resolved symbol identity, locations, dispositions, evidence | 0.2 for the initial subset and 0.3 for expanded resolution and unused dependencies |
-| JavaScript and TypeScript dead code | Declared module resolution, entry points, unused files, unnecessary exports, and coverage | 0.3 |
+| JavaScript and TypeScript dead code | Declared module resolution, entry points, unused files and symbols, unnecessary exports, unused npm dependencies, and coverage | 0.3 |
 | Other upstream-tested frontends | Dead-code behavior asserted by the pinned suite, including mixed-language cases and required backends | 0.3 |
 | Confidence | Scoring order, caps, thresholds, category-specific visibility | 0.2 |
 | Framework use | Identity, registration, activation, lifecycle and callback contracts | 0.2 for initial pytest and FastAPI models and 0.3 for expanded framework coverage |
 | Configuration | Discovery, inheritance, explicit configuration, environment inputs, precedence | 0.2 |
 | Suppressions | Rule ignores, inline directives, whitelists, path overrides, custom entry points | 0.2 |
 | Python API | Supported arguments, return type, validation, errors, callbacks | 0.2, with explicit gaps |
-| Machine output | JSON field semantics, SARIF, absence/null distinctions, escaping and locations | 0.2 |
+| Machine output | JSON field semantics, SARIF, absence/null distinctions, escaping and locations | 0.2, with pinned dead-code JSON-CI behavior in 0.3 |
 | CLI | Supported invocations, stdout/stderr separation, command-specific exit behavior | 0.2 |
-| Dead-code verification | Opt-in grep evidence, trace and coverage import, explicitly requested trace collection, and artifact freshness | 0.3 |
-| Diff, baselines, and gates | Reporting scope, finding identity, baseline policy, gate outcome and operational errors | 0.3 for dead code and 0.6 for general integrations |
+| Dead-code verification | Grep defaults by profile, trace and coverage import, explicitly requested collection, and separate verified and legacy evidence | 0.3 |
+| Diff, baselines, and gates | Reporting scope, complete base and head comparisons, finding identity, baseline policy, and gate verdict distinct from coverage | 0.3 for dead code and 0.6 for general integrations |
 | Cleanup | Review queue, patch eligibility, source fingerprints, edit applicability, and rollback | 0.3 for pinned dead-code cases and 0.6 for broader transformations |
 | Quality and secrets | Declared rules, file universe, severity and evidence | 0.4 |
 | Security | Declared rules, source/sink/sanitizer models, propagation and limits | 0.5 |

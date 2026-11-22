@@ -128,7 +128,7 @@ or profile.
 | Unused imports | — | Supported import bindings and aliases | Yes |
 | Unused variables | — | Supported lexical bindings | Yes |
 | Unused parameters | — | Supported function signatures and reads | Yes |
-| Unused declared dependencies | — | — | Python dependency check (`SKY-U005`) with quality scanning |
+| Unused declared dependencies | — | — | Python and npm dependency checks (`SKY-U005`) with quality scanning |
 | Empty Python files | — | Empty, comment-only, and docstring-only files, with entry-file exemptions | Yes |
 | Library exports | Declared public callables and resolvable literal `__all__` | Explicit re-exports, literal `__all__`, and selected literal lazy exports | Public API and export detection |
 | pytest | — | Statically collected tests and selected fixture patterns | Test and fixture awareness |
@@ -139,7 +139,7 @@ or profile.
 | Reports | Native JSON | Compatibility JSON, strict CLI exit status, and SARIF | JSON, strict CLI exit status, and SARIF |
 | Git diff and baseline workflows | — | — | Changed-file scans, baselines, and configurable gates |
 | Cleanup workflow | — | — | Review queue and patch previews for supported findings |
-| JavaScript and TypeScript dead code | — | — | Unused files (`SKY-E003`) and unnecessary exports (`SKY-E004`) |
+| JavaScript and TypeScript dead code | — | — | Unused files (`SKY-E003`), unnecessary exports (`SKY-E004`), unused symbols, and unused enum members (`SKY-U007`) |
 
 Opaque lazy exports, dynamic plugin loading, custom import hooks, and
 unresolved receiver dispatch can make a scan incomplete when they affect

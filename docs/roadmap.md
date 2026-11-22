@@ -249,21 +249,24 @@ See the [pinned reference results](phase-02-reference.md),
 
 ## 0.3: expanded dead-code coverage and workflows
 
-Phase 0.3 requires the full pinned Skylos dead-code test suite to pass before
-starting new rule families. The [Phase 0.3 plan](phase-03.md) defines the
-implementation order and [required test gate](phase-03.md#required-upstream-test-gate).
+Phase 0.3 requires every case and required variant in the pinned Skylos
+dead-code suite to pass against Skarmory before release. The
+[Phase 0.3 plan](phase-03.md) defines the workstream acceptance checks and
+[upstream test gate](phase-03.md#required-upstream-test-gate). See the
+[workstream issues](phase-03.md#scope-and-acceptance) to track implementation.
 
-- [ ] Freeze a reviewed inventory of every upstream dead-code test and run
-  each case against Skarmory with the upstream expectations intact.
-- [ ] Expand Python reachability, Django and Flask registration models, and
+- [ ] Freeze the case and variant inventory, record pinned reference results,
+  and map each assertion to Skarmory.
+- [ ] Expand Python reachability, framework and test discovery models, and
   unused declared dependency checks.
 - [ ] Add JavaScript and TypeScript unused-file and export analysis and the
-  coverage required by tests of other upstream frontends.
-- [ ] Add opt-in grep verification and positive runtime use evidence.
-- [ ] Add dead-code diff reports, baselines, gates, and cleanup behaviors
-  exercised by the pinned suite.
-- [ ] Verify reference conformance, independent correctness controls, and
-  CLI/SDK and cached/uncached equivalence before publishing support claims.
+  liveness behavior exercised in other upstream frontends.
+- [ ] Add grep verification and positive runtime use evidence with versioned
+  compatibility defaults and provenance.
+- [ ] Add dead-code diff reports, complete base and head comparisons, baselines,
+  coverage-aware gates, and cleanup behaviors exercised by the pinned suite.
+- [ ] Require the reconciled upstream results before publication. Verify
+  independent controls, CLI and SDK agreement, and cache and worker equivalence.
 
 ## 0.4: quality and secrets
 
