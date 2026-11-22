@@ -78,6 +78,129 @@ fn edits_rebuild_roots_and_recursive_reachability() {
 }
 
 #[test]
+fn exported_callable_instances_retain_effective_call_methods() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    let pkg = project.path().join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    fs::write(
+        pkg.join("helpers.py"),
+        concat!(
+            "def called():\n    pass\n",
+            "def inherited():\n    pass\n",
+            "def public_method():\n    pass\n",
+            "def decorated():\n    pass\n",
+            "def unused():\n    pass\n",
+        ),
+    )
+    .unwrap();
+    let source = r#"from .helpers import called, decorated, inherited, public_method
+
+class Client:
+    def __call__(self):
+        self._dispatch()
+
+    def _dispatch(self):
+        called()
+
+    def run(self):
+        public_method()
+
+class Base:
+    def __call__(self):
+        inherited()
+
+class Inherited(Base):
+    pass
+
+class Disabled(Base):
+    __call__ = None
+
+class StaticClient:
+    @staticmethod
+    def __call__():
+        decorated()
+
+client = Client()
+child = Inherited()
+disabled = Disabled()
+static_client = StaticClient()
+"#;
+    let initializer = pkg.join("__init__.py");
+    fs::write(
+        &initializer,
+        format!("{source}\n__all__ = ['client', 'child', 'static_client']\n"),
+    )
+    .unwrap();
+    let (report, _) = compare(project.path(), cache.path());
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    for live in ["called", "decorated", "inherited", "public_method"] {
+        assert!(!finds(&report, live), "{live}: {report}");
+    }
+    assert!(finds(&report, "unused"), "{report}");
+    for call in [
+        "pkg.Client.__call__",
+        "pkg.Base.__call__",
+        "pkg.StaticClient.__call__",
+    ] {
+        assert!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == call
+                    && item["kind"] == "public_export"
+                    && item["certainty"] == "possible"),
+            "{call}: {report}"
+        );
+    }
+    let (warm, stats) = compare(project.path(), cache.path());
+    assert_eq!(stats["hits"], 2);
+    assert_eq!(warm, report);
+
+    fs::write(&initializer, format!("{source}\n__all__ = ['disabled']\n")).unwrap();
+    let (unrooted, stats) = compare(project.path(), cache.path());
+    assert_eq!(stats["hits"], 1);
+    assert_eq!(unrooted["coverage"]["status"], "complete", "{unrooted}");
+    for unused in [
+        "called",
+        "decorated",
+        "inherited",
+        "public_method",
+        "unused",
+    ] {
+        assert!(finds(&unrooted, unused), "{unused}: {unrooted}");
+    }
+}
+
+#[test]
+fn exported_instances_with_opaque_call_methods_are_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("main.py"),
+        concat!(
+            "def choose_callback():\n    return print\n",
+            "class Client:\n    __call__ = choose_callback()\n",
+            "client = Client()\n__all__ = ['client']\n",
+        ),
+    )
+    .unwrap();
+    let (report, _) = compare(project.path(), cache.path());
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_export"),
+        "{report}"
+    );
+}
+
+#[test]
 fn conditional_truth_tests_follow_instance_hooks() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
