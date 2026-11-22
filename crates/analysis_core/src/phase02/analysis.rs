@@ -200,6 +200,7 @@ enum ModuleMember<'a> {
 enum ModuleMemberAccess {
     Attribute,
     FromImport,
+    ExplicitExport(Location),
 }
 
 enum SubmoduleAttachment {
@@ -1256,6 +1257,10 @@ impl<'a> Graph<'a> {
         if depth >= MAX_BINDING_CHAIN {
             return Value::Unknown;
         }
+        let (scope, at) = match mode {
+            ModuleMemberAccess::ExplicitExport(at) => (access.0, at),
+            _ => access,
+        };
         if let Some(&file) = self.modules.get(module) {
             return match self.selected_module_member(file, member, before, access, mode) {
                 ModuleMember::Binding(id, import) => {
@@ -1268,17 +1273,17 @@ impl<'a> Graph<'a> {
                 }
                 ModuleMember::Lazy(id, branch) => {
                     self.read.insert(id);
-                    self.lazy_value(access.0, &branch, depth + 2, ValueEvaluation::LazyIdentity)
+                    self.lazy_value(scope, &branch, depth + 2, ValueEvaluation::LazyIdentity)
                 }
                 ModuleMember::Ambiguous => {
-                    self.scope_issue(access.0, access.1, "ambiguous_binding",
+                    self.scope_issue(scope, at, "ambiguous_binding",
                         format!("cannot establish whether submodule {submodule} was attached before this lookup"));
                     Value::Unknown
                 }
                 ModuleMember::ConditionalHook => {
                     self.scope_issue(
-                        access.0,
-                        access.1,
+                        scope,
+                        at,
                         "ambiguous_binding",
                         format!("lazy lookup of {submodule} depends on a conditional __getattr__"),
                     );
@@ -1286,8 +1291,8 @@ impl<'a> Graph<'a> {
                 }
                 ModuleMember::OpaqueHook => {
                     self.scope_issue(
-                        access.0,
-                        access.1,
+                        scope,
+                        at,
                         "unresolved_lazy_export",
                         format!(
                             "lazy lookup of {submodule} is outside the bounded __getattr__ model"
@@ -1297,17 +1302,17 @@ impl<'a> Graph<'a> {
                 }
                 ModuleMember::UnattachedSubmodule => {
                     self.scope_issue(
-                        access.0,
-                        access.1,
+                        scope,
+                        at,
                         "unresolved_attribute",
                         format!("submodule {submodule} is not attached to package {module:?}"),
                     );
                     Value::Unknown
                 }
-                ModuleMember::Missing if matches!(mode, ModuleMemberAccess::Attribute) => {
+                ModuleMember::Missing if !matches!(mode, ModuleMemberAccess::FromImport) => {
                     self.scope_issue(
-                        access.0,
-                        access.1,
+                        scope,
+                        at,
                         "unresolved_attribute",
                         format!("module {module:?} has no selected binding for {member:?}"),
                     );
@@ -3011,9 +3016,6 @@ impl<'a> Graph<'a> {
                     );
                 }
             }
-            if !self.files[file].is_package {
-                continue;
-            }
             let aliases: Vec<_> = self.scopes[file]
                 .names
                 .values()
@@ -3027,9 +3029,22 @@ impl<'a> Graph<'a> {
                 })
                 .collect();
             for alias in aliases {
-                let at = self.symbols[alias].name.at;
+                let name = self.symbols[alias].name;
+                let at = name.at;
                 let previous_issues = self.scope_issues.len();
-                match self.binding(alias, END, 0) {
+                let value = if self.files[file].is_package {
+                    self.module_member_at(
+                        &self.files[file].module,
+                        &name.text,
+                        END,
+                        (file, END),
+                        ModuleMemberAccess::ExplicitExport(at),
+                        0,
+                    )
+                } else {
+                    self.binding(alias, END, 0)
+                };
+                match value {
                     Value::Callable(invocation) => {
                         self.invoke(file, invocation, "explicit_re_export", "certain", at)
                     }

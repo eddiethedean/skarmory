@@ -1492,6 +1492,112 @@ fn skylos_roots_only_effective_explicit_reexports() {
 }
 
 #[test]
+fn skylos_resolves_explicit_reexports_after_submodule_attachment() {
+    let project = skylos_fixture();
+    let root = project.path();
+    let pkg = root.join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    fs::write(pkg.join("impl.py"), "def public():\n    pass\n").unwrap();
+    fs::write(pkg.join("public.py"), "print('loaded')\n").unwrap();
+    fs::write(root.join("main.py"), "import pkg\nprint(pkg)\n").unwrap();
+
+    let reexport = "from .impl import public as public";
+    let attach = "import pkg.public";
+    for (initializer, replaced) in [
+        (format!("{reexport}\n{attach}\n"), true),
+        (format!("{attach}\n{reexport}\n"), false),
+    ] {
+        fs::write(pkg.join("__init__.py"), &initializer).unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(i32::from(replaced)),
+            "{initializer}\n{report}"
+        );
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        let expected: Vec<&str> = if replaced {
+            vec!["pkg.impl.public"]
+        } else {
+            vec![]
+        };
+        for category in ["unused_functions", "unused_imports"] {
+            let names: Vec<_> = report[category]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["full_name"].as_str().unwrap())
+                .collect();
+            assert_eq!(names, expected, "{category}\n{report}");
+        }
+        assert_eq!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == "pkg.impl.public"
+                    && item["kind"] == "explicit_re_export"),
+            !replaced,
+            "{report}"
+        );
+    }
+
+    fs::write(
+        pkg.join("__init__.py"),
+        format!("{reexport}\nif int('0'):\n    {attach}\n"),
+    )
+    .unwrap();
+    let output = skylos(root, &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{report}");
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert_eq!(report["analysis_errors"][0]["kind"], "ambiguous_binding");
+    assert_eq!(report["analysis_errors"][0]["file"], "pkg/__init__.py");
+    assert_eq!(report["analysis_errors"][0]["line"], 1);
+}
+
+#[test]
+fn skylos_retains_explicit_reexport_chains_in_ordinary_modules() {
+    let project = skylos_fixture();
+    let root = project.path();
+    fs::remove_file(root.join("main.py")).unwrap();
+    fs::write(root.join("api.py"), "from bridge import launch as launch\n").unwrap();
+    fs::write(
+        root.join("bridge.py"),
+        "from implementation import launch as launch, dormant\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("implementation.py"),
+        "def launch():\n    pass\n\ndef dormant():\n    pass\n",
+    )
+    .unwrap();
+
+    let output = skylos(root, &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    for category in ["unused_functions", "unused_imports"] {
+        let names: Vec<_> = report[category]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["full_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["implementation.dormant"], "{category}\n{report}");
+    }
+    assert!(
+        report["dead_code_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["full_name"] == "implementation.launch"
+                && item["kind"] == "explicit_re_export"),
+        "{report}"
+    );
+}
+
+#[test]
 fn skylos_awaits_tasks_that_were_already_scheduled() {
     let project = skylos_fixture();
     fs::write(
