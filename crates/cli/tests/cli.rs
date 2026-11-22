@@ -311,6 +311,54 @@ fn skylos_rejects_misplaced_future_imports() {
 }
 
 #[test]
+fn skylos_rejects_bindings_to_debug_and_accepts_reads() {
+    let project = skylos_fixture();
+    let main = project.path().join("main.py");
+    for profile in ["skylos", "skylos-0.3"] {
+        let run = |source: &str| {
+            fs::write(&main, source).unwrap();
+            let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+                .current_dir(project.path())
+                .env_remove("SKYLOS_CONFIG_FILE")
+                .args(["--profile", profile, "--json", "--strict", "."])
+                .output()
+                .unwrap();
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            (output.status.code(), report)
+        };
+        for (source, line, column) in [
+            ("__debug__ = True\nprint(__debug__)\n", 1, 1),
+            (
+                "\ndef run(__debug__):\n    print(__debug__)\nrun(True)\n",
+                2,
+                9,
+            ),
+            ("__debug__: bool\n", 1, 1),
+            ("__ｄｅｂｕｇ__ = True\n", 1, 1),
+            ("def run(*, __debug__): pass\n", 1, 12),
+            ("with manager as __debug__:\n    pass\n", 1, 17),
+            ("def __debug__(): pass\n", 1, 5),
+            ("class __debug__: pass\n", 1, 7),
+            ("import __debug__.submodule\n", 1, 8),
+            ("from module import value as __debug__\n", 1, 29),
+        ] {
+            let (exit, report) = run(source);
+            assert_eq!(exit, Some(2), "{profile}: {source}\n{report}");
+            assert_eq!(report["gate"]["exit_code"], 2, "{report}");
+            assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+            let error = &report["coverage"]["issues"][0];
+            assert_eq!(error["kind"], "parse_error", "{report}");
+            assert_eq!(error["line"], line, "{report}");
+            assert_eq!(error["column"], column, "{report}");
+        }
+
+        let (exit, report) = run("print(__debug__)\n");
+        assert_eq!(exit, Some(0), "{profile}: {report}");
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    }
+}
+
+#[test]
 fn skylos_rejects_repeated_call_keywords() {
     let project = skylos_fixture();
     let main = project.path().join("main.py");
