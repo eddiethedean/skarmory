@@ -2,7 +2,7 @@
 
 Status: specification. See the [Phase 0 inventory](skylos-5.7.0-contract.md) and
 [prototype comparisons](../benchmarks/phase0.md) for recorded evidence.
-The [Phase 0.2 plan](phase-02.md) defines the initial proposed subset,
+The [Phase 0.2 scope](phase-02.md) defines the implemented subset,
 compatibility entry points, and release evidence. The [Phase 0.3 plan](phase-03.md)
 extends dead-code coverage and adds verification and reporting workflows.
 Passing the [full pinned dead-code test suite](phase-03.md#required-upstream-test-gate)

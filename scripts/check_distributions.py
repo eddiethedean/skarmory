@@ -120,7 +120,10 @@ def build_combined(cli, temporary, maturin):
     # Stage a separate project so the supported SDK wheel keeps its own layout.
     project = temporary / "project"
     project.mkdir()
-    for name in ("Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.txt"):
+    for name in (
+        "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "README.md", "LICENSE",
+        "THIRD_PARTY_NOTICES.txt",
+    ):
         shutil.copy2(ROOT / name, project / name)
     for name in ("crates", "python"):
         shutil.copytree(ROOT / name, project / name, ignore=shutil.ignore_patterns("__pycache__"))

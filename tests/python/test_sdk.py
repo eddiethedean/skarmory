@@ -152,6 +152,43 @@ class SdkTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 skylos.analyze(project, config_file=config)
 
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_compatibility_cache_and_worker_equivalence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            cache = root / "facts"
+            config = project / ".skylos.toml"
+            config.write_text("root = true\n", encoding="utf-8")
+            (project / "helper.py").write_text("def target():\n    pass\n", encoding="utf-8")
+            entry = project / "main.py"
+            options = {"config_file": config, "all_advice": False}
+
+            for source, expected, cache_runs in (
+                ("from helper import target\ntarget()\n", [], [(1, 0, 2), (2, 2, 0)]),
+                ("pass\n", ["helper.target"], [(2, 1, 1)]),
+            ):
+                entry.write_text(source, encoding="utf-8")
+                clean = json.loads(skylos.analyze(project, **options))
+                self.assertEqual(clean["coverage"]["status"], "complete", clean)
+                self.assertEqual([row["full_name"] for row in clean["unused_functions"]], expected)
+                self.assertEqual(json.loads(skylos.analyze(project, workers=2, **options)), clean)
+                for workers, hits, misses in cache_runs:
+                    report = json.loads(skylos.analyze(project, workers=workers, cache_dir=cache, **options))
+                    stats = report.pop("cache")
+                    self.assertEqual((stats["hits"], stats["misses"]), (hits, misses))
+                    self.assertEqual(report, clean)
+
+                if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                    output = subprocess.check_output([
+                        cli, project, "--profile", "skylos", "--json", "--config-file", config,
+                        "--include-generated", "--confidence", "60", "--workers", "2", "--cache-dir", cache,
+                    ])
+                    report = json.loads(output)
+                    self.assertEqual(report.pop("cache")["hits"], 2)
+                    self.assertEqual(report, clean)
+
     def test_compatibility_rejects_unsupported_work(self):
         for key in ("grep_verify", "grep_cache", "enable_dependency_hallucinations"):
             with self.subTest(option=key), self.assertRaises(ValueError):

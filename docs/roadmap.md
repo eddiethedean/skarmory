@@ -2,6 +2,8 @@
 
 [Phase 0](phase-0.md) shipped in [0.0.1](../CHANGELOG.md#001).
 The [Phase 0.1 preview](phase-01.md) is included in [0.1.0](../CHANGELOG.md#010).
+[Phase 0.2 Python dead-code compatibility](phase-02.md) is included in
+[0.2.0](../CHANGELOG.md#020).
 Subsequent version labels describe planned milestones.
 
 The default distribution uses a PyO3 SDK wheel and a native Cargo CLI. The
@@ -227,19 +229,23 @@ explicit coverage. Compatibility and speed claims require separate evidence.
 
 ## 0.2: declared Python dead-code compatibility
 
-The [Phase 0.2 plan](phase-02.md) defines a Python 3.11 subset of the pinned
+The [Phase 0.2 scope](phase-02.md) defines a Python 3.11 subset of the pinned
 Skylos 5.7.0 dead-code contract alongside the native interfaces.
 
-- [ ] Freeze the supported configuration, semantic, and output fixtures
+- [x] Freeze the supported configuration, semantic, and output fixtures
   against the pinned reference and independently reviewed expectations.
-- [ ] Implement the declared finding categories, export and callback cases,
+- [x] Implement the declared finding categories, export and callback cases,
   and bounded pytest and FastAPI models in the native engine.
-- [ ] Deliver an explicit Skylos profile for the supported CLI and SDK
+- [x] Deliver an explicit Skylos profile for the supported CLI and SDK
   invocations, including confidence, suppressions, JSON, and SARIF.
-- [ ] Cache per-file facts and rebuild the graph from current inputs on every
+- [x] Cache per-file facts and rebuild the graph from current inputs on every
   scan. Validate clean, cached, edited, serial, and parallel equivalence.
-- [ ] Publish the compatibility matrix, reviewed discrepancies, and matched
+- [x] Record the compatibility matrix, reviewed discrepancies, and matched
   cold, warm, and edited benchmark receipts.
+
+See the [pinned reference results](phase-02-reference.md),
+[carry-forward holdout](phase-02-holdout.md), and
+[cache benchmark](../benchmarks/phase02.md).
 
 ## 0.3: expanded dead-code coverage and workflows
 

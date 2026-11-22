@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp_utc": "2026-11-20T22:16:47.717412+00:00",
+  "timestamp_utc": "2026-11-22T03:47:41.244858+00:00",
   "workload_generator_sha256": "f03fa450072f4899af6116943bcff0d927d0a0b27e2a95ce8c00ac3d3bdbdc3f",
   "profile": "skylos",
   "target_python": "3.11",
@@ -12,8 +12,8 @@
   ],
   "cache": "fresh cache per workload, repetition, and worker budget; OS page cache uncontrolled",
   "host": {
-    "platform": "macOS-26.5.2-arm64-arm-64bit",
-    "processor": "arm",
+    "platform": "macOS-26.7.3-arm64-arm-64bit",
+    "processor": "Apple M4 Pro",
     "logical_cpus": 12,
     "memory_bytes": 25769803776,
     "storage": "local temporary directory"
@@ -26,9 +26,9 @@
   },
   "binary": {
     "version": "skarmory 0.2.0",
-    "sha256": "e1e28b9dc8089454a815d225a998f4c37b16e7e03c5b6b8a9583a1cbc5f8e896",
-    "workspace_base_revision": "cd969b2837e89491e26ab416efe49d97801f2ad5",
-    "build_sources_sha256": "8e91071c1341009fe8e831284e3041e31c2ed985c6eb02db29b03a24f63d0364"
+    "sha256": "f9830cc373fca50e2fb684e2168923c19fce8b0a73bedbad1825737728482cd5",
+    "workspace_base_revision": "bcc5ab3130775c00c8e8affbec502a210b307ca2",
+    "build_sources_sha256": "31a9fd924269d96d37ffaf238687124ce5ef5aa6e47ac140a14e53ee72f290e5"
   },
   "complete_and_equivalent": true,
   "workloads": {
@@ -50,20 +50,20 @@
           "edits": {},
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+          "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 7064375,
+                "wall_ns_median": 6269916,
                 "samples": [
                   {
-                    "wall_ns": 1031078500,
-                    "user_cpu_s": 0.0018169999999999998,
-                    "system_cpu_s": 0.00579,
-                    "peak_rss_bytes": 4374528,
+                    "wall_ns": 607993833,
+                    "user_cpu_s": 0.005757,
+                    "system_cpu_s": 0.014447999999999999,
+                    "peak_rss_bytes": 4620288,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -74,13 +74,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6203792,
-                    "user_cpu_s": 0.001241,
-                    "system_cpu_s": 0.002378,
-                    "peak_rss_bytes": 4374528,
+                    "wall_ns": 5623667,
+                    "user_cpu_s": 0.0012109999999999998,
+                    "system_cpu_s": 0.002127,
+                    "peak_rss_bytes": 4587520,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -91,13 +91,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7064375,
-                    "user_cpu_s": 0.00131,
-                    "system_cpu_s": 0.002538,
-                    "peak_rss_bytes": 4374528,
+                    "wall_ns": 7131584,
+                    "user_cpu_s": 0.00132,
+                    "system_cpu_s": 0.0023669999999999997,
+                    "peak_rss_bytes": 4685824,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -108,13 +108,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6125291,
-                    "user_cpu_s": 0.001297,
-                    "system_cpu_s": 0.002603,
-                    "peak_rss_bytes": 4374528,
+                    "wall_ns": 5752333,
+                    "user_cpu_s": 0.0012029999999999999,
+                    "system_cpu_s": 0.002075,
+                    "peak_rss_bytes": 4669440,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -125,13 +125,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7490875,
-                    "user_cpu_s": 0.001441,
-                    "system_cpu_s": 0.003168,
-                    "peak_rss_bytes": 4440064,
+                    "wall_ns": 6269916,
+                    "user_cpu_s": 0.00122,
+                    "system_cpu_s": 0.002275,
+                    "peak_rss_bytes": 4685824,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -144,16 +144,16 @@
                 ]
               },
               "cold": {
-                "wall_ns_median": 12078291,
+                "wall_ns_median": 10581917,
                 "samples": [
                   {
-                    "wall_ns": 13872000,
-                    "user_cpu_s": 0.001754,
-                    "system_cpu_s": 0.007793,
-                    "peak_rss_bytes": 4587520,
+                    "wall_ns": 24329291,
+                    "user_cpu_s": 0.0035789999999999997,
+                    "system_cpu_s": 0.013189999999999999,
+                    "peak_rss_bytes": 4718592,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -169,13 +169,13 @@
                     }
                   },
                   {
-                    "wall_ns": 12078291,
-                    "user_cpu_s": 0.001473,
-                    "system_cpu_s": 0.007528,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 10581917,
+                    "user_cpu_s": 0.001364,
+                    "system_cpu_s": 0.006268999999999999,
+                    "peak_rss_bytes": 4653056,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -191,13 +191,13 @@
                     }
                   },
                   {
-                    "wall_ns": 13860916,
-                    "user_cpu_s": 0.001517,
-                    "system_cpu_s": 0.007652,
-                    "peak_rss_bytes": 4620288,
+                    "wall_ns": 10822166,
+                    "user_cpu_s": 0.0013629999999999998,
+                    "system_cpu_s": 0.006555,
+                    "peak_rss_bytes": 4767744,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -213,13 +213,13 @@
                     }
                   },
                   {
-                    "wall_ns": 11184833,
-                    "user_cpu_s": 0.0014169999999999999,
-                    "system_cpu_s": 0.0066099999999999996,
-                    "peak_rss_bytes": 4521984,
+                    "wall_ns": 10080042,
+                    "user_cpu_s": 0.001325,
+                    "system_cpu_s": 0.0059099999999999995,
+                    "peak_rss_bytes": 4800512,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -235,13 +235,13 @@
                     }
                   },
                   {
-                    "wall_ns": 10857167,
-                    "user_cpu_s": 0.0014249999999999998,
-                    "system_cpu_s": 0.006404,
-                    "peak_rss_bytes": 4587520,
+                    "wall_ns": 10034542,
+                    "user_cpu_s": 0.001318,
+                    "system_cpu_s": 0.005907,
+                    "peak_rss_bytes": 4816896,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -259,16 +259,16 @@
                 ]
               },
               "warm": {
-                "wall_ns_median": 19391167,
+                "wall_ns_median": 19999333,
                 "samples": [
                   {
-                    "wall_ns": 23665875,
-                    "user_cpu_s": 0.0015739999999999999,
-                    "system_cpu_s": 0.0044659999999999995,
-                    "peak_rss_bytes": 4259840,
+                    "wall_ns": 42688125,
+                    "user_cpu_s": 0.002505,
+                    "system_cpu_s": 0.007082,
+                    "peak_rss_bytes": 4456448,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -284,13 +284,13 @@
                     }
                   },
                   {
-                    "wall_ns": 17983959,
-                    "user_cpu_s": 0.0015,
-                    "system_cpu_s": 0.003852,
-                    "peak_rss_bytes": 4243456,
+                    "wall_ns": 18893167,
+                    "user_cpu_s": 0.0013759999999999998,
+                    "system_cpu_s": 0.00349,
+                    "peak_rss_bytes": 4440064,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -306,13 +306,13 @@
                     }
                   },
                   {
-                    "wall_ns": 32496834,
-                    "user_cpu_s": 0.001557,
-                    "system_cpu_s": 0.004288999999999999,
-                    "peak_rss_bytes": 4227072,
+                    "wall_ns": 19999333,
+                    "user_cpu_s": 0.0013989999999999999,
+                    "system_cpu_s": 0.0037519999999999997,
+                    "peak_rss_bytes": 4456448,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -328,13 +328,13 @@
                     }
                   },
                   {
-                    "wall_ns": 19391167,
-                    "user_cpu_s": 0.001459,
-                    "system_cpu_s": 0.003979,
-                    "peak_rss_bytes": 4210688,
+                    "wall_ns": 22551125,
+                    "user_cpu_s": 0.00139,
+                    "system_cpu_s": 0.0037089999999999996,
+                    "peak_rss_bytes": 4407296,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -350,13 +350,13 @@
                     }
                   },
                   {
-                    "wall_ns": 18942583,
-                    "user_cpu_s": 0.0014119999999999998,
-                    "system_cpu_s": 0.003885,
-                    "peak_rss_bytes": 4194304,
+                    "wall_ns": 17401375,
+                    "user_cpu_s": 0.0013859999999999999,
+                    "system_cpu_s": 0.00342,
+                    "peak_rss_bytes": 4456448,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -376,16 +376,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5300417,
+                "wall_ns_median": 4450250,
                 "samples": [
                   {
-                    "wall_ns": 5300417,
-                    "user_cpu_s": 0.001547,
-                    "system_cpu_s": 0.00343,
-                    "peak_rss_bytes": 4636672,
+                    "wall_ns": 4477333,
+                    "user_cpu_s": 0.001464,
+                    "system_cpu_s": 0.0029159999999999998,
+                    "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -396,13 +396,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5048917,
-                    "user_cpu_s": 0.0015099999999999998,
-                    "system_cpu_s": 0.003143,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 4450250,
+                    "user_cpu_s": 0.001408,
+                    "system_cpu_s": 0.002562,
+                    "peak_rss_bytes": 4915200,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -413,13 +413,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5631250,
-                    "user_cpu_s": 0.0015249999999999999,
-                    "system_cpu_s": 0.003349,
-                    "peak_rss_bytes": 4636672,
+                    "wall_ns": 4404959,
+                    "user_cpu_s": 0.001397,
+                    "system_cpu_s": 0.0024809999999999997,
+                    "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -430,13 +430,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 4957333,
-                    "user_cpu_s": 0.0014789999999999998,
-                    "system_cpu_s": 0.0030989999999999998,
-                    "peak_rss_bytes": 4620288,
+                    "wall_ns": 4339166,
+                    "user_cpu_s": 0.001366,
+                    "system_cpu_s": 0.002489,
+                    "peak_rss_bytes": 4800512,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -447,13 +447,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5344083,
-                    "user_cpu_s": 0.001597,
-                    "system_cpu_s": 0.003261,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 4640500,
+                    "user_cpu_s": 0.001366,
+                    "system_cpu_s": 0.002535,
+                    "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -466,16 +466,16 @@
                 ]
               },
               "cold": {
-                "wall_ns_median": 7662959,
+                "wall_ns_median": 6906667,
                 "samples": [
                   {
-                    "wall_ns": 7617458,
-                    "user_cpu_s": 0.001743,
-                    "system_cpu_s": 0.012173999999999999,
-                    "peak_rss_bytes": 4767744,
+                    "wall_ns": 6913917,
+                    "user_cpu_s": 0.00173,
+                    "system_cpu_s": 0.010315999999999999,
+                    "peak_rss_bytes": 4915200,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -491,13 +491,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7662959,
-                    "user_cpu_s": 0.001769,
-                    "system_cpu_s": 0.010731,
-                    "peak_rss_bytes": 4833280,
+                    "wall_ns": 6906667,
+                    "user_cpu_s": 0.0016279999999999999,
+                    "system_cpu_s": 0.011319,
+                    "peak_rss_bytes": 4882432,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -513,13 +513,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8556875,
-                    "user_cpu_s": 0.001653,
-                    "system_cpu_s": 0.010125,
-                    "peak_rss_bytes": 4816896,
+                    "wall_ns": 6866584,
+                    "user_cpu_s": 0.0015739999999999999,
+                    "system_cpu_s": 0.010059,
+                    "peak_rss_bytes": 4915200,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -535,13 +535,13 @@
                     }
                   },
                   {
-                    "wall_ns": 6994500,
-                    "user_cpu_s": 0.0016489999999999999,
-                    "system_cpu_s": 0.011106999999999999,
-                    "peak_rss_bytes": 4800512,
+                    "wall_ns": 7341500,
+                    "user_cpu_s": 0.001558,
+                    "system_cpu_s": 0.010206999999999999,
+                    "peak_rss_bytes": 5029888,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -557,13 +557,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7885375,
-                    "user_cpu_s": 0.001921,
-                    "system_cpu_s": 0.012934999999999999,
+                    "wall_ns": 6901542,
+                    "user_cpu_s": 0.001566,
+                    "system_cpu_s": 0.010948,
                     "peak_rss_bytes": 4849664,
                     "exit": 0,
-                    "stdout_bytes": 27019,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21753,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -581,16 +581,16 @@
                 ]
               },
               "warm": {
-                "wall_ns_median": 9773042,
+                "wall_ns_median": 10092833,
                 "samples": [
                   {
-                    "wall_ns": 9773042,
-                    "user_cpu_s": 0.001754,
-                    "system_cpu_s": 0.005229999999999999,
-                    "peak_rss_bytes": 4456448,
+                    "wall_ns": 10039750,
+                    "user_cpu_s": 0.001811,
+                    "system_cpu_s": 0.00487,
+                    "peak_rss_bytes": 4603904,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -606,79 +606,79 @@
                     }
                   },
                   {
-                    "wall_ns": 13523500,
-                    "user_cpu_s": 0.001663,
-                    "system_cpu_s": 0.0048579999999999995,
-                    "peak_rss_bytes": 4472832,
-                    "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 36,
-                      "misses": 0,
-                      "writes": 0,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 10960625,
-                    "user_cpu_s": 0.0016849999999999999,
-                    "system_cpu_s": 0.0051849999999999995,
-                    "peak_rss_bytes": 4521984,
-                    "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 36,
-                      "misses": 0,
-                      "writes": 0,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 9244334,
-                    "user_cpu_s": 0.001555,
-                    "system_cpu_s": 0.004814,
-                    "peak_rss_bytes": 4407296,
-                    "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 36,
-                      "misses": 0,
-                      "writes": 0,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 9551334,
-                    "user_cpu_s": 0.001637,
-                    "system_cpu_s": 0.004765999999999999,
+                    "wall_ns": 10023417,
+                    "user_cpu_s": 0.001704,
+                    "system_cpu_s": 0.004804,
                     "peak_rss_bytes": 4489216,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 36,
+                      "misses": 0,
+                      "writes": 0,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 10805666,
+                    "user_cpu_s": 0.0017369999999999998,
+                    "system_cpu_s": 0.005131999999999999,
+                    "peak_rss_bytes": 4472832,
+                    "exit": 0,
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 36,
+                      "misses": 0,
+                      "writes": 0,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 10293000,
+                    "user_cpu_s": 0.0016619999999999998,
+                    "system_cpu_s": 0.004702,
+                    "peak_rss_bytes": 4603904,
+                    "exit": 0,
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 36,
+                      "misses": 0,
+                      "writes": 0,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 10092833,
+                    "user_cpu_s": 0.00166,
+                    "system_cpu_s": 0.0048519999999999995,
+                    "peak_rss_bytes": 4554752,
+                    "exit": 0,
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -705,20 +705,20 @@
           },
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+          "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 6962250,
+                "wall_ns_median": 5954834,
                 "samples": [
                   {
-                    "wall_ns": 7087709,
-                    "user_cpu_s": 0.001423,
-                    "system_cpu_s": 0.002767,
-                    "peak_rss_bytes": 4440064,
+                    "wall_ns": 11359708,
+                    "user_cpu_s": 0.0021509999999999997,
+                    "system_cpu_s": 0.0038959999999999997,
+                    "peak_rss_bytes": 4653056,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -729,13 +729,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6962250,
-                    "user_cpu_s": 0.001437,
-                    "system_cpu_s": 0.002685,
-                    "peak_rss_bytes": 4341760,
+                    "wall_ns": 5594084,
+                    "user_cpu_s": 0.001197,
+                    "system_cpu_s": 0.002062,
+                    "peak_rss_bytes": 4571136,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -746,13 +746,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7789166,
-                    "user_cpu_s": 0.0014089999999999999,
-                    "system_cpu_s": 0.002695,
-                    "peak_rss_bytes": 4358144,
+                    "wall_ns": 5954834,
+                    "user_cpu_s": 0.001217,
+                    "system_cpu_s": 0.0023569999999999997,
+                    "peak_rss_bytes": 4620288,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -763,13 +763,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6666083,
-                    "user_cpu_s": 0.0013809999999999998,
-                    "system_cpu_s": 0.002598,
-                    "peak_rss_bytes": 4390912,
+                    "wall_ns": 6172458,
+                    "user_cpu_s": 0.001259,
+                    "system_cpu_s": 0.0024619999999999998,
+                    "peak_rss_bytes": 4571136,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -780,13 +780,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6871750,
-                    "user_cpu_s": 0.001415,
-                    "system_cpu_s": 0.002913,
-                    "peak_rss_bytes": 4407296,
+                    "wall_ns": 5737750,
+                    "user_cpu_s": 0.001201,
+                    "system_cpu_s": 0.002098,
+                    "peak_rss_bytes": 4669440,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -799,16 +799,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 7954917,
+                "wall_ns_median": 7297959,
                 "samples": [
                   {
-                    "wall_ns": 8531417,
-                    "user_cpu_s": 0.001565,
-                    "system_cpu_s": 0.003953,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 11305167,
+                    "user_cpu_s": 0.001865,
+                    "system_cpu_s": 0.0044139999999999995,
+                    "peak_rss_bytes": 4685824,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -824,13 +824,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7954917,
-                    "user_cpu_s": 0.001444,
-                    "system_cpu_s": 0.0034879999999999998,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 6995083,
+                    "user_cpu_s": 0.001279,
+                    "system_cpu_s": 0.00298,
+                    "peak_rss_bytes": 4800512,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -846,13 +846,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9911250,
-                    "user_cpu_s": 0.001459,
-                    "system_cpu_s": 0.003912,
-                    "peak_rss_bytes": 4587520,
+                    "wall_ns": 7333209,
+                    "user_cpu_s": 0.001282,
+                    "system_cpu_s": 0.003225,
+                    "peak_rss_bytes": 4816896,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -868,13 +868,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7337000,
-                    "user_cpu_s": 0.001258,
-                    "system_cpu_s": 0.00329,
-                    "peak_rss_bytes": 4653056,
+                    "wall_ns": 7297959,
+                    "user_cpu_s": 0.0012749999999999999,
+                    "system_cpu_s": 0.003322,
+                    "peak_rss_bytes": 4800512,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -890,13 +890,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7874708,
-                    "user_cpu_s": 0.001503,
-                    "system_cpu_s": 0.003975,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 7269417,
+                    "user_cpu_s": 0.001246,
+                    "system_cpu_s": 0.003211,
+                    "peak_rss_bytes": 4767744,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -916,16 +916,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5396292,
+                "wall_ns_median": 4645417,
                 "samples": [
                   {
-                    "wall_ns": 5403792,
-                    "user_cpu_s": 0.001542,
-                    "system_cpu_s": 0.003116,
-                    "peak_rss_bytes": 4669440,
+                    "wall_ns": 4837125,
+                    "user_cpu_s": 0.00145,
+                    "system_cpu_s": 0.002598,
+                    "peak_rss_bytes": 4784128,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -936,13 +936,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6178292,
-                    "user_cpu_s": 0.001615,
-                    "system_cpu_s": 0.003882,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 4773917,
+                    "user_cpu_s": 0.001451,
+                    "system_cpu_s": 0.002819,
+                    "peak_rss_bytes": 4767744,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -953,13 +953,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5255541,
-                    "user_cpu_s": 0.0014969999999999998,
-                    "system_cpu_s": 0.003016,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 4645417,
+                    "user_cpu_s": 0.0013809999999999998,
+                    "system_cpu_s": 0.002521,
+                    "peak_rss_bytes": 4849664,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -970,13 +970,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5391417,
-                    "user_cpu_s": 0.001432,
-                    "system_cpu_s": 0.002925,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 4562209,
+                    "user_cpu_s": 0.00138,
+                    "system_cpu_s": 0.002522,
+                    "peak_rss_bytes": 4833280,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -987,13 +987,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5396292,
-                    "user_cpu_s": 0.001555,
-                    "system_cpu_s": 0.003088,
-                    "peak_rss_bytes": 4554752,
+                    "wall_ns": 4580500,
+                    "user_cpu_s": 0.0014089999999999999,
+                    "system_cpu_s": 0.002525,
+                    "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 26957,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21691,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1006,16 +1006,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 5625917,
+                "wall_ns_median": 4618416,
                 "samples": [
                   {
-                    "wall_ns": 5625917,
-                    "user_cpu_s": 0.00166,
-                    "system_cpu_s": 0.005003,
-                    "peak_rss_bytes": 4866048,
+                    "wall_ns": 5331542,
+                    "user_cpu_s": 0.0015869999999999999,
+                    "system_cpu_s": 0.0037719999999999997,
+                    "peak_rss_bytes": 4947968,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1031,13 +1031,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5840166,
-                    "user_cpu_s": 0.0016409999999999999,
-                    "system_cpu_s": 0.0050149999999999995,
-                    "peak_rss_bytes": 4882432,
+                    "wall_ns": 4618416,
+                    "user_cpu_s": 0.001536,
+                    "system_cpu_s": 0.0036769999999999997,
+                    "peak_rss_bytes": 4964352,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1053,13 +1053,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5266125,
-                    "user_cpu_s": 0.0015459999999999998,
-                    "system_cpu_s": 0.004293,
-                    "peak_rss_bytes": 4816896,
+                    "wall_ns": 4758000,
+                    "user_cpu_s": 0.0014629999999999999,
+                    "system_cpu_s": 0.003609,
+                    "peak_rss_bytes": 4980736,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1075,13 +1075,13 @@
                     }
                   },
                   {
-                    "wall_ns": 4990167,
-                    "user_cpu_s": 0.001449,
-                    "system_cpu_s": 0.004007,
-                    "peak_rss_bytes": 4866048,
+                    "wall_ns": 4515625,
+                    "user_cpu_s": 0.0014449999999999999,
+                    "system_cpu_s": 0.003516,
+                    "peak_rss_bytes": 4915200,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1097,13 +1097,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5948875,
-                    "user_cpu_s": 0.0016489999999999999,
-                    "system_cpu_s": 0.004859,
-                    "peak_rss_bytes": 4784128,
+                    "wall_ns": 4612000,
+                    "user_cpu_s": 0.0015019999999999999,
+                    "system_cpu_s": 0.003645,
+                    "peak_rss_bytes": 4947968,
                     "exit": 0,
-                    "stdout_bytes": 27018,
-                    "report_sha256": "298f60bb8fdf3c3beb560ebbd77e383472cf81b318265915036c97b5fde8088e",
+                    "stdout_bytes": 21752,
+                    "report_sha256": "a5b5528964eab3a7e5b97d65fb96627ece5044facd7df2a9601e701840cc4515",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1130,20 +1130,20 @@
           },
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+          "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 7005791,
+                "wall_ns_median": 6307333,
                 "samples": [
                   {
-                    "wall_ns": 6824667,
-                    "user_cpu_s": 0.001343,
-                    "system_cpu_s": 0.002534,
-                    "peak_rss_bytes": 4587520,
+                    "wall_ns": 8837708,
+                    "user_cpu_s": 0.001668,
+                    "system_cpu_s": 0.0027949999999999997,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1154,13 +1154,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 8125042,
-                    "user_cpu_s": 0.0013289999999999999,
-                    "system_cpu_s": 0.002738,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 6307333,
+                    "user_cpu_s": 0.001237,
+                    "system_cpu_s": 0.00219,
+                    "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1171,13 +1171,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 8787750,
-                    "user_cpu_s": 0.00138,
-                    "system_cpu_s": 0.0026939999999999998,
-                    "peak_rss_bytes": 4538368,
+                    "wall_ns": 6391667,
+                    "user_cpu_s": 0.0012259999999999999,
+                    "system_cpu_s": 0.002417,
+                    "peak_rss_bytes": 4685824,
                     "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1188,13 +1188,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6318500,
-                    "user_cpu_s": 0.0012309999999999999,
-                    "system_cpu_s": 0.00235,
-                    "peak_rss_bytes": 4505600,
+                    "wall_ns": 6188292,
+                    "user_cpu_s": 0.00123,
+                    "system_cpu_s": 0.002097,
+                    "peak_rss_bytes": 4685824,
                     "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1205,13 +1205,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7005791,
-                    "user_cpu_s": 0.001338,
-                    "system_cpu_s": 0.0025069999999999997,
-                    "peak_rss_bytes": 4472832,
+                    "wall_ns": 5974958,
+                    "user_cpu_s": 0.0012209999999999999,
+                    "system_cpu_s": 0.002113,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1224,16 +1224,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 8166208,
+                "wall_ns_median": 7136042,
                 "samples": [
                   {
-                    "wall_ns": 8166208,
-                    "user_cpu_s": 0.00148,
-                    "system_cpu_s": 0.0036669999999999997,
-                    "peak_rss_bytes": 4784128,
+                    "wall_ns": 9755125,
+                    "user_cpu_s": 0.001611,
+                    "system_cpu_s": 0.003643,
+                    "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1249,13 +1249,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9080209,
-                    "user_cpu_s": 0.001432,
-                    "system_cpu_s": 0.0036539999999999997,
-                    "peak_rss_bytes": 4800512,
+                    "wall_ns": 7086458,
+                    "user_cpu_s": 0.001318,
+                    "system_cpu_s": 0.003062,
+                    "peak_rss_bytes": 4898816,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1271,13 +1271,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9987375,
-                    "user_cpu_s": 0.0014579999999999999,
-                    "system_cpu_s": 0.003741,
-                    "peak_rss_bytes": 4833280,
+                    "wall_ns": 7951791,
+                    "user_cpu_s": 0.00133,
+                    "system_cpu_s": 0.003757,
+                    "peak_rss_bytes": 4931584,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1293,13 +1293,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7462708,
-                    "user_cpu_s": 0.0013059999999999999,
-                    "system_cpu_s": 0.0033469999999999997,
-                    "peak_rss_bytes": 4866048,
+                    "wall_ns": 7014792,
+                    "user_cpu_s": 0.001277,
+                    "system_cpu_s": 0.0029449999999999997,
+                    "peak_rss_bytes": 4947968,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1315,13 +1315,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7844792,
-                    "user_cpu_s": 0.001426,
-                    "system_cpu_s": 0.003489,
-                    "peak_rss_bytes": 4882432,
+                    "wall_ns": 7136042,
+                    "user_cpu_s": 0.001274,
+                    "system_cpu_s": 0.00316,
+                    "peak_rss_bytes": 4849664,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1341,16 +1341,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5271375,
+                "wall_ns_median": 4431041,
                 "samples": [
                   {
-                    "wall_ns": 5271375,
-                    "user_cpu_s": 0.001588,
-                    "system_cpu_s": 0.0034029999999999998,
-                    "peak_rss_bytes": 4767744,
+                    "wall_ns": 5175625,
+                    "user_cpu_s": 0.0014659999999999999,
+                    "system_cpu_s": 0.00259,
+                    "peak_rss_bytes": 4898816,
                     "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1361,64 +1361,64 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 4861750,
-                    "user_cpu_s": 0.0014839999999999999,
-                    "system_cpu_s": 0.003209,
-                    "peak_rss_bytes": 4718592,
-                    "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 4844000,
-                    "user_cpu_s": 0.001446,
-                    "system_cpu_s": 0.003163,
-                    "peak_rss_bytes": 4751360,
-                    "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 5401833,
-                    "user_cpu_s": 0.001625,
-                    "system_cpu_s": 0.003417,
-                    "peak_rss_bytes": 4784128,
-                    "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 5739542,
-                    "user_cpu_s": 0.0016619999999999998,
-                    "system_cpu_s": 0.003544,
+                    "wall_ns": 4417667,
+                    "user_cpu_s": 0.001375,
+                    "system_cpu_s": 0.002479,
                     "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 38177,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 4431041,
+                    "user_cpu_s": 0.001393,
+                    "system_cpu_s": 0.002522,
+                    "peak_rss_bytes": 4931584,
+                    "exit": 0,
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 4363500,
+                    "user_cpu_s": 0.001389,
+                    "system_cpu_s": 0.002584,
+                    "peak_rss_bytes": 4980736,
+                    "exit": 0,
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 4553125,
+                    "user_cpu_s": 0.001351,
+                    "system_cpu_s": 0.002565,
+                    "peak_rss_bytes": 4931584,
+                    "exit": 0,
+                    "stdout_bytes": 32911,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1431,60 +1431,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 5799583,
+                "wall_ns_median": 4521625,
                 "samples": [
                   {
-                    "wall_ns": 6205708,
-                    "user_cpu_s": 0.0016879999999999998,
-                    "system_cpu_s": 0.005457,
-                    "peak_rss_bytes": 5095424,
-                    "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 35,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 5387750,
-                    "user_cpu_s": 0.0016439999999999998,
-                    "system_cpu_s": 0.004906,
-                    "peak_rss_bytes": 5144576,
-                    "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 35,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 5799583,
-                    "user_cpu_s": 0.0016359999999999999,
-                    "system_cpu_s": 0.004781,
+                    "wall_ns": 4661208,
+                    "user_cpu_s": 0.001449,
+                    "system_cpu_s": 0.003525,
                     "peak_rss_bytes": 4997120,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1500,13 +1456,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5038500,
-                    "user_cpu_s": 0.001431,
-                    "system_cpu_s": 0.004079999999999999,
-                    "peak_rss_bytes": 5046272,
+                    "wall_ns": 4655083,
+                    "user_cpu_s": 0.001483,
+                    "system_cpu_s": 0.0035889999999999997,
+                    "peak_rss_bytes": 5144576,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1522,13 +1478,57 @@
                     }
                   },
                   {
-                    "wall_ns": 6120167,
-                    "user_cpu_s": 0.0017699999999999999,
-                    "system_cpu_s": 0.005157999999999999,
-                    "peak_rss_bytes": 5013504,
+                    "wall_ns": 4521625,
+                    "user_cpu_s": 0.001519,
+                    "system_cpu_s": 0.0035459999999999997,
+                    "peak_rss_bytes": 5095424,
                     "exit": 0,
-                    "stdout_bytes": 38238,
-                    "report_sha256": "b39c8a8e90cf761db5a75a9ed20ac253d8d2fc406a7ab66e0464d88d1bc580a1",
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 35,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 4274958,
+                    "user_cpu_s": 0.001428,
+                    "system_cpu_s": 0.0034389999999999998,
+                    "peak_rss_bytes": 5128192,
+                    "exit": 0,
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 35,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 4498625,
+                    "user_cpu_s": 0.0014629999999999999,
+                    "system_cpu_s": 0.0036019999999999997,
+                    "peak_rss_bytes": 4997120,
+                    "exit": 0,
+                    "stdout_bytes": 32972,
+                    "report_sha256": "ac88f872c608033f98b7fa808abe902d50b9e04076c36b85011d7e4a5f48f0d1",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1555,88 +1555,88 @@
           },
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+          "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 7646667,
+                "wall_ns_median": 6691875,
                 "samples": [
                   {
-                    "wall_ns": 6946958,
-                    "user_cpu_s": 0.001326,
-                    "system_cpu_s": 0.002505,
-                    "peak_rss_bytes": 4521984,
-                    "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 8043459,
-                    "user_cpu_s": 0.001402,
-                    "system_cpu_s": 0.002702,
-                    "peak_rss_bytes": 4521984,
-                    "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 8248041,
-                    "user_cpu_s": 0.001326,
-                    "system_cpu_s": 0.002591,
-                    "peak_rss_bytes": 4554752,
-                    "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 6464209,
-                    "user_cpu_s": 0.0012569999999999999,
-                    "system_cpu_s": 0.00246,
-                    "peak_rss_bytes": 4587520,
-                    "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 7646667,
-                    "user_cpu_s": 0.001583,
-                    "system_cpu_s": 0.003065,
+                    "wall_ns": 7925416,
+                    "user_cpu_s": 0.001432,
+                    "system_cpu_s": 0.002516,
                     "peak_rss_bytes": 4571136,
                     "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 6351875,
+                    "user_cpu_s": 0.001227,
+                    "system_cpu_s": 0.002144,
+                    "peak_rss_bytes": 4669440,
+                    "exit": 0,
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 6272375,
+                    "user_cpu_s": 0.001201,
+                    "system_cpu_s": 0.002289,
+                    "peak_rss_bytes": 4636672,
+                    "exit": 0,
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 6691875,
+                    "user_cpu_s": 0.001214,
+                    "system_cpu_s": 0.002325,
+                    "peak_rss_bytes": 4587520,
+                    "exit": 0,
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 6944583,
+                    "user_cpu_s": 0.001207,
+                    "system_cpu_s": 0.002274,
+                    "peak_rss_bytes": 4718592,
+                    "exit": 0,
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1649,16 +1649,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 8814792,
+                "wall_ns_median": 7199875,
                 "samples": [
                   {
-                    "wall_ns": 8370959,
-                    "user_cpu_s": 0.0014839999999999999,
-                    "system_cpu_s": 0.0036339999999999996,
-                    "peak_rss_bytes": 4685824,
+                    "wall_ns": 8854125,
+                    "user_cpu_s": 0.0014449999999999999,
+                    "system_cpu_s": 0.003328,
+                    "peak_rss_bytes": 4816896,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1674,13 +1674,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8814792,
-                    "user_cpu_s": 0.0014919999999999998,
-                    "system_cpu_s": 0.003676,
-                    "peak_rss_bytes": 4718592,
+                    "wall_ns": 7570541,
+                    "user_cpu_s": 0.001449,
+                    "system_cpu_s": 0.00331,
+                    "peak_rss_bytes": 4816896,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1696,13 +1696,13 @@
                     }
                   },
                   {
-                    "wall_ns": 10235250,
-                    "user_cpu_s": 0.001519,
-                    "system_cpu_s": 0.0037979999999999997,
+                    "wall_ns": 7143792,
+                    "user_cpu_s": 0.0013,
+                    "system_cpu_s": 0.00307,
                     "peak_rss_bytes": 4669440,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1718,13 +1718,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8267917,
-                    "user_cpu_s": 0.0014659999999999999,
-                    "system_cpu_s": 0.003903,
+                    "wall_ns": 7165584,
+                    "user_cpu_s": 0.001242,
+                    "system_cpu_s": 0.002928,
                     "peak_rss_bytes": 4669440,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1740,13 +1740,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8955500,
-                    "user_cpu_s": 0.0015689999999999999,
-                    "system_cpu_s": 0.004235,
-                    "peak_rss_bytes": 4702208,
+                    "wall_ns": 7199875,
+                    "user_cpu_s": 0.0012779999999999998,
+                    "system_cpu_s": 0.0031899999999999997,
+                    "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1766,50 +1766,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5226125,
+                "wall_ns_median": 4852250,
                 "samples": [
                   {
-                    "wall_ns": 5295917,
-                    "user_cpu_s": 0.001548,
-                    "system_cpu_s": 0.003166,
-                    "peak_rss_bytes": 4866048,
-                    "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 5090959,
-                    "user_cpu_s": 0.001455,
-                    "system_cpu_s": 0.003015,
-                    "peak_rss_bytes": 4751360,
-                    "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 36,
-                      "extracted_files": 36,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": null
-                  },
-                  {
-                    "wall_ns": 5226125,
-                    "user_cpu_s": 0.0015069999999999999,
-                    "system_cpu_s": 0.003194,
+                    "wall_ns": 5021333,
+                    "user_cpu_s": 0.0014479999999999999,
+                    "system_cpu_s": 0.002784,
                     "peak_rss_bytes": 4784128,
                     "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1820,13 +1786,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5170125,
-                    "user_cpu_s": 0.001447,
-                    "system_cpu_s": 0.003238,
-                    "peak_rss_bytes": 4833280,
+                    "wall_ns": 4579791,
+                    "user_cpu_s": 0.001385,
+                    "system_cpu_s": 0.002497,
+                    "peak_rss_bytes": 4767744,
                     "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1837,13 +1803,47 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5700209,
-                    "user_cpu_s": 0.001624,
-                    "system_cpu_s": 0.0035039999999999997,
-                    "peak_rss_bytes": 4784128,
+                    "wall_ns": 4563250,
+                    "user_cpu_s": 0.001344,
+                    "system_cpu_s": 0.0024679999999999997,
+                    "peak_rss_bytes": 4849664,
                     "exit": 0,
-                    "stdout_bytes": 37737,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 4852250,
+                    "user_cpu_s": 0.0013959999999999999,
+                    "system_cpu_s": 0.002633,
+                    "peak_rss_bytes": 4816896,
+                    "exit": 0,
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 36,
+                      "extracted_files": 36,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": null
+                  },
+                  {
+                    "wall_ns": 5018834,
+                    "user_cpu_s": 0.001374,
+                    "system_cpu_s": 0.002696,
+                    "peak_rss_bytes": 4931584,
+                    "exit": 0,
+                    "stdout_bytes": 32471,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1856,16 +1856,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 5707834,
+                "wall_ns_median": 4522791,
                 "samples": [
                   {
-                    "wall_ns": 5707834,
-                    "user_cpu_s": 0.001632,
-                    "system_cpu_s": 0.0049099999999999994,
-                    "peak_rss_bytes": 4980736,
+                    "wall_ns": 4513125,
+                    "user_cpu_s": 0.001464,
+                    "system_cpu_s": 0.003519,
+                    "peak_rss_bytes": 4964352,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1881,13 +1881,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5504792,
-                    "user_cpu_s": 0.0015819999999999999,
-                    "system_cpu_s": 0.004882,
-                    "peak_rss_bytes": 4980736,
+                    "wall_ns": 4581209,
+                    "user_cpu_s": 0.001495,
+                    "system_cpu_s": 0.003532,
+                    "peak_rss_bytes": 4947968,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1903,13 +1903,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5392458,
-                    "user_cpu_s": 0.001646,
-                    "system_cpu_s": 0.004941,
-                    "peak_rss_bytes": 5013504,
+                    "wall_ns": 4566125,
+                    "user_cpu_s": 0.0014739999999999998,
+                    "system_cpu_s": 0.003573,
+                    "peak_rss_bytes": 4882432,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1925,13 +1925,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5895542,
-                    "user_cpu_s": 0.0016309999999999999,
-                    "system_cpu_s": 0.004893,
-                    "peak_rss_bytes": 4931584,
+                    "wall_ns": 4510666,
+                    "user_cpu_s": 0.001457,
+                    "system_cpu_s": 0.0035819999999999997,
+                    "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1947,13 +1947,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5897917,
-                    "user_cpu_s": 0.001697,
-                    "system_cpu_s": 0.004794,
-                    "peak_rss_bytes": 4915200,
+                    "wall_ns": 4522791,
+                    "user_cpu_s": 0.001452,
+                    "system_cpu_s": 0.003554,
+                    "peak_rss_bytes": 4964352,
                     "exit": 0,
-                    "stdout_bytes": 37798,
-                    "report_sha256": "dbe38602fa86bea02083f26614168678f45debb29dca003e25a1f9b8921ffc85",
+                    "stdout_bytes": 32532,
+                    "report_sha256": "c0d68ecb70214a0f37478f0dcf94a68eed445cf8fde73a835a2eee5a31867f81",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 36,
@@ -1993,20 +1993,20 @@
           "edits": {},
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+          "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 7230000,
+                "wall_ns_median": 5681250,
                 "samples": [
                   {
-                    "wall_ns": 16125125,
-                    "user_cpu_s": 0.001526,
-                    "system_cpu_s": 0.003584,
-                    "peak_rss_bytes": 4440064,
+                    "wall_ns": 13661542,
+                    "user_cpu_s": 0.0012309999999999999,
+                    "system_cpu_s": 0.002542,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2017,13 +2017,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7018334,
-                    "user_cpu_s": 0.001472,
-                    "system_cpu_s": 0.002882,
-                    "peak_rss_bytes": 4407296,
+                    "wall_ns": 5608875,
+                    "user_cpu_s": 0.001217,
+                    "system_cpu_s": 0.002068,
+                    "peak_rss_bytes": 4554752,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2034,13 +2034,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6696167,
-                    "user_cpu_s": 0.0013449999999999998,
-                    "system_cpu_s": 0.002828,
-                    "peak_rss_bytes": 4407296,
+                    "wall_ns": 5688709,
+                    "user_cpu_s": 0.00121,
+                    "system_cpu_s": 0.002072,
+                    "peak_rss_bytes": 4702208,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2051,13 +2051,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7230000,
-                    "user_cpu_s": 0.001504,
-                    "system_cpu_s": 0.0030239999999999998,
-                    "peak_rss_bytes": 4390912,
+                    "wall_ns": 5550125,
+                    "user_cpu_s": 0.001163,
+                    "system_cpu_s": 0.0020499999999999997,
+                    "peak_rss_bytes": 4685824,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2068,13 +2068,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 8721458,
-                    "user_cpu_s": 0.001452,
-                    "system_cpu_s": 0.0028139999999999997,
-                    "peak_rss_bytes": 4456448,
+                    "wall_ns": 5681250,
+                    "user_cpu_s": 0.0012109999999999998,
+                    "system_cpu_s": 0.002043,
+                    "peak_rss_bytes": 4702208,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2087,16 +2087,16 @@
                 ]
               },
               "cold": {
-                "wall_ns_median": 12396750,
+                "wall_ns_median": 10274333,
                 "samples": [
                   {
-                    "wall_ns": 12274583,
-                    "user_cpu_s": 0.001695,
-                    "system_cpu_s": 0.007345,
-                    "peak_rss_bytes": 4554752,
+                    "wall_ns": 10492125,
+                    "user_cpu_s": 0.001339,
+                    "system_cpu_s": 0.006317,
+                    "peak_rss_bytes": 4784128,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2112,13 +2112,13 @@
                     }
                   },
                   {
-                    "wall_ns": 12092584,
-                    "user_cpu_s": 0.0016389999999999998,
-                    "system_cpu_s": 0.007239,
-                    "peak_rss_bytes": 4620288,
+                    "wall_ns": 10641000,
+                    "user_cpu_s": 0.0013469999999999999,
+                    "system_cpu_s": 0.006679,
+                    "peak_rss_bytes": 4800512,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2134,13 +2134,13 @@
                     }
                   },
                   {
-                    "wall_ns": 12396750,
-                    "user_cpu_s": 0.0016229999999999999,
-                    "system_cpu_s": 0.007757999999999999,
-                    "peak_rss_bytes": 4636672,
+                    "wall_ns": 9919541,
+                    "user_cpu_s": 0.001341,
+                    "system_cpu_s": 0.005808,
+                    "peak_rss_bytes": 4816896,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2156,13 +2156,13 @@
                     }
                   },
                   {
-                    "wall_ns": 12500667,
-                    "user_cpu_s": 0.001725,
-                    "system_cpu_s": 0.007509,
-                    "peak_rss_bytes": 4587520,
+                    "wall_ns": 10274333,
+                    "user_cpu_s": 0.0012929999999999999,
+                    "system_cpu_s": 0.00605,
+                    "peak_rss_bytes": 4767744,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2178,13 +2178,13 @@
                     }
                   },
                   {
-                    "wall_ns": 13427959,
-                    "user_cpu_s": 0.001679,
-                    "system_cpu_s": 0.007376,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 9970250,
+                    "user_cpu_s": 0.0013319999999999999,
+                    "system_cpu_s": 0.0058189999999999995,
+                    "peak_rss_bytes": 4669440,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2202,16 +2202,16 @@
                 ]
               },
               "warm": {
-                "wall_ns_median": 19506459,
+                "wall_ns_median": 18801083,
                 "samples": [
                   {
-                    "wall_ns": 19541584,
-                    "user_cpu_s": 0.001594,
-                    "system_cpu_s": 0.004510999999999999,
-                    "peak_rss_bytes": 4243456,
+                    "wall_ns": 18801083,
+                    "user_cpu_s": 0.001356,
+                    "system_cpu_s": 0.003502,
+                    "peak_rss_bytes": 4390912,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2227,13 +2227,13 @@
                     }
                   },
                   {
-                    "wall_ns": 19308875,
-                    "user_cpu_s": 0.0016569999999999998,
-                    "system_cpu_s": 0.004508,
-                    "peak_rss_bytes": 4243456,
+                    "wall_ns": 18263750,
+                    "user_cpu_s": 0.001356,
+                    "system_cpu_s": 0.003457,
+                    "peak_rss_bytes": 4472832,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2249,13 +2249,13 @@
                     }
                   },
                   {
-                    "wall_ns": 19352750,
-                    "user_cpu_s": 0.001689,
-                    "system_cpu_s": 0.0043809999999999995,
-                    "peak_rss_bytes": 4177920,
+                    "wall_ns": 18847917,
+                    "user_cpu_s": 0.00134,
+                    "system_cpu_s": 0.0035199999999999997,
+                    "peak_rss_bytes": 4505600,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2271,13 +2271,13 @@
                     }
                   },
                   {
-                    "wall_ns": 19506459,
-                    "user_cpu_s": 0.001707,
-                    "system_cpu_s": 0.004468,
-                    "peak_rss_bytes": 4145152,
+                    "wall_ns": 21713833,
+                    "user_cpu_s": 0.00138,
+                    "system_cpu_s": 0.0038469999999999997,
+                    "peak_rss_bytes": 4456448,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2293,13 +2293,13 @@
                     }
                   },
                   {
-                    "wall_ns": 25126625,
-                    "user_cpu_s": 0.001699,
-                    "system_cpu_s": 0.004588,
-                    "peak_rss_bytes": 4292608,
+                    "wall_ns": 17954250,
+                    "user_cpu_s": 0.00133,
+                    "system_cpu_s": 0.003368,
+                    "peak_rss_bytes": 4440064,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2319,16 +2319,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5826500,
+                "wall_ns_median": 4258458,
                 "samples": [
                   {
-                    "wall_ns": 5826500,
-                    "user_cpu_s": 0.0016539999999999999,
-                    "system_cpu_s": 0.00417,
-                    "peak_rss_bytes": 4653056,
+                    "wall_ns": 4223583,
+                    "user_cpu_s": 0.001343,
+                    "system_cpu_s": 0.0024909999999999997,
+                    "peak_rss_bytes": 4898816,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2339,13 +2339,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 4842583,
-                    "user_cpu_s": 0.001454,
-                    "system_cpu_s": 0.0031219999999999998,
-                    "peak_rss_bytes": 4685824,
+                    "wall_ns": 4303208,
+                    "user_cpu_s": 0.001377,
+                    "system_cpu_s": 0.002473,
+                    "peak_rss_bytes": 4931584,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2356,13 +2356,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6078917,
-                    "user_cpu_s": 0.0017909999999999998,
-                    "system_cpu_s": 0.0040999999999999995,
-                    "peak_rss_bytes": 4620288,
+                    "wall_ns": 4104625,
+                    "user_cpu_s": 0.001315,
+                    "system_cpu_s": 0.002446,
+                    "peak_rss_bytes": 4767744,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2373,13 +2373,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5271917,
-                    "user_cpu_s": 0.0015869999999999999,
-                    "system_cpu_s": 0.003251,
-                    "peak_rss_bytes": 4669440,
+                    "wall_ns": 4304709,
+                    "user_cpu_s": 0.001377,
+                    "system_cpu_s": 0.0026839999999999998,
+                    "peak_rss_bytes": 4784128,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2390,13 +2390,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6455333,
-                    "user_cpu_s": 0.001883,
-                    "system_cpu_s": 0.0040349999999999995,
-                    "peak_rss_bytes": 4669440,
+                    "wall_ns": 4258458,
+                    "user_cpu_s": 0.0013269999999999998,
+                    "system_cpu_s": 0.0025109999999999998,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2409,16 +2409,16 @@
                 ]
               },
               "cold": {
-                "wall_ns_median": 8155917,
+                "wall_ns_median": 6495750,
                 "samples": [
                   {
-                    "wall_ns": 7481084,
-                    "user_cpu_s": 0.0018549999999999999,
-                    "system_cpu_s": 0.012142,
-                    "peak_rss_bytes": 4816896,
+                    "wall_ns": 6488500,
+                    "user_cpu_s": 0.001562,
+                    "system_cpu_s": 0.010132,
+                    "peak_rss_bytes": 4898816,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2434,13 +2434,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8155917,
-                    "user_cpu_s": 0.0018529999999999998,
-                    "system_cpu_s": 0.012518,
-                    "peak_rss_bytes": 4882432,
+                    "wall_ns": 7134250,
+                    "user_cpu_s": 0.001601,
+                    "system_cpu_s": 0.010813,
+                    "peak_rss_bytes": 4964352,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2456,13 +2456,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8301875,
-                    "user_cpu_s": 0.002026,
-                    "system_cpu_s": 0.011977999999999999,
-                    "peak_rss_bytes": 4800512,
+                    "wall_ns": 6495750,
+                    "user_cpu_s": 0.001593,
+                    "system_cpu_s": 0.010064,
+                    "peak_rss_bytes": 4931584,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2478,13 +2478,13 @@
                     }
                   },
                   {
-                    "wall_ns": 7059541,
-                    "user_cpu_s": 0.001718,
-                    "system_cpu_s": 0.010842,
-                    "peak_rss_bytes": 4816896,
+                    "wall_ns": 6395791,
+                    "user_cpu_s": 0.001563,
+                    "system_cpu_s": 0.009927,
+                    "peak_rss_bytes": 4898816,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2500,13 +2500,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9369292,
-                    "user_cpu_s": 0.001952,
-                    "system_cpu_s": 0.011888,
-                    "peak_rss_bytes": 4816896,
+                    "wall_ns": 6552459,
+                    "user_cpu_s": 0.0015409999999999998,
+                    "system_cpu_s": 0.010527,
+                    "peak_rss_bytes": 4849664,
                     "exit": 0,
-                    "stdout_bytes": 26707,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21725,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2524,16 +2524,16 @@
                 ]
               },
               "warm": {
-                "wall_ns_median": 9899583,
+                "wall_ns_median": 10725084,
                 "samples": [
                   {
-                    "wall_ns": 9455209,
-                    "user_cpu_s": 0.0017289999999999999,
-                    "system_cpu_s": 0.0046619999999999995,
-                    "peak_rss_bytes": 4440064,
+                    "wall_ns": 10841958,
+                    "user_cpu_s": 0.001767,
+                    "system_cpu_s": 0.005111999999999999,
+                    "peak_rss_bytes": 4571136,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2549,13 +2549,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8719375,
-                    "user_cpu_s": 0.0017569999999999999,
-                    "system_cpu_s": 0.005654,
-                    "peak_rss_bytes": 4472832,
+                    "wall_ns": 11290333,
+                    "user_cpu_s": 0.0016719999999999999,
+                    "system_cpu_s": 0.006409,
+                    "peak_rss_bytes": 4587520,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2571,13 +2571,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9998125,
-                    "user_cpu_s": 0.001807,
-                    "system_cpu_s": 0.0052629999999999994,
-                    "peak_rss_bytes": 4440064,
+                    "wall_ns": 10725084,
+                    "user_cpu_s": 0.001771,
+                    "system_cpu_s": 0.004961,
+                    "peak_rss_bytes": 4521984,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2593,13 +2593,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9899583,
-                    "user_cpu_s": 0.0017679999999999998,
-                    "system_cpu_s": 0.0058119999999999995,
-                    "peak_rss_bytes": 4489216,
+                    "wall_ns": 8379583,
+                    "user_cpu_s": 0.001532,
+                    "system_cpu_s": 0.004301999999999999,
+                    "peak_rss_bytes": 4636672,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2615,13 +2615,13 @@
                     }
                   },
                   {
-                    "wall_ns": 11865083,
-                    "user_cpu_s": 0.001772,
-                    "system_cpu_s": 0.004576,
-                    "peak_rss_bytes": 4423680,
+                    "wall_ns": 10280834,
+                    "user_cpu_s": 0.001712,
+                    "system_cpu_s": 0.0049099999999999994,
+                    "peak_rss_bytes": 4603904,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2648,20 +2648,20 @@
           },
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+          "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 7495666,
+                "wall_ns_median": 5604792,
                 "samples": [
                   {
-                    "wall_ns": 7077958,
-                    "user_cpu_s": 0.001472,
-                    "system_cpu_s": 0.002858,
-                    "peak_rss_bytes": 4358144,
+                    "wall_ns": 5752042,
+                    "user_cpu_s": 0.001238,
+                    "system_cpu_s": 0.0021219999999999998,
+                    "peak_rss_bytes": 4685824,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2672,13 +2672,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7017833,
-                    "user_cpu_s": 0.001424,
-                    "system_cpu_s": 0.0029189999999999997,
-                    "peak_rss_bytes": 4407296,
+                    "wall_ns": 5604792,
+                    "user_cpu_s": 0.00122,
+                    "system_cpu_s": 0.0020759999999999997,
+                    "peak_rss_bytes": 4669440,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2689,13 +2689,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7866209,
-                    "user_cpu_s": 0.001575,
-                    "system_cpu_s": 0.003303,
-                    "peak_rss_bytes": 4440064,
+                    "wall_ns": 5442625,
+                    "user_cpu_s": 0.001171,
+                    "system_cpu_s": 0.002009,
+                    "peak_rss_bytes": 4587520,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2706,13 +2706,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7495666,
-                    "user_cpu_s": 0.001607,
-                    "system_cpu_s": 0.0035719999999999997,
-                    "peak_rss_bytes": 4456448,
+                    "wall_ns": 5632958,
+                    "user_cpu_s": 0.0012029999999999999,
+                    "system_cpu_s": 0.002071,
+                    "peak_rss_bytes": 4603904,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2723,13 +2723,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 8337625,
-                    "user_cpu_s": 0.001624,
-                    "system_cpu_s": 0.0031609999999999997,
-                    "peak_rss_bytes": 4423680,
+                    "wall_ns": 5578791,
+                    "user_cpu_s": 0.001158,
+                    "system_cpu_s": 0.002079,
+                    "peak_rss_bytes": 4702208,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2742,16 +2742,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 9320666,
+                "wall_ns_median": 6900291,
                 "samples": [
                   {
-                    "wall_ns": 9320666,
-                    "user_cpu_s": 0.001599,
-                    "system_cpu_s": 0.004206,
-                    "peak_rss_bytes": 4587520,
+                    "wall_ns": 6932708,
+                    "user_cpu_s": 0.0012569999999999999,
+                    "system_cpu_s": 0.002918,
+                    "peak_rss_bytes": 4669440,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2767,13 +2767,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8652458,
-                    "user_cpu_s": 0.0014889999999999999,
-                    "system_cpu_s": 0.004186,
-                    "peak_rss_bytes": 4521984,
+                    "wall_ns": 7025500,
+                    "user_cpu_s": 0.001277,
+                    "system_cpu_s": 0.0030299999999999997,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2789,13 +2789,13 @@
                     }
                   },
                   {
-                    "wall_ns": 10722250,
-                    "user_cpu_s": 0.001771,
-                    "system_cpu_s": 0.005464999999999999,
-                    "peak_rss_bytes": 4603904,
+                    "wall_ns": 6688375,
+                    "user_cpu_s": 0.001258,
+                    "system_cpu_s": 0.002888,
+                    "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2811,13 +2811,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8734209,
-                    "user_cpu_s": 0.001646,
-                    "system_cpu_s": 0.004576,
-                    "peak_rss_bytes": 4620288,
+                    "wall_ns": 6900291,
+                    "user_cpu_s": 0.001271,
+                    "system_cpu_s": 0.0029089999999999997,
+                    "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2833,13 +2833,13 @@
                     }
                   },
                   {
-                    "wall_ns": 11215375,
-                    "user_cpu_s": 0.001758,
-                    "system_cpu_s": 0.004804,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 6855583,
+                    "user_cpu_s": 0.001248,
+                    "system_cpu_s": 0.0028799999999999997,
+                    "peak_rss_bytes": 4816896,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2859,16 +2859,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5603792,
+                "wall_ns_median": 4367917,
                 "samples": [
                   {
-                    "wall_ns": 5033750,
-                    "user_cpu_s": 0.0015609999999999999,
-                    "system_cpu_s": 0.003248,
-                    "peak_rss_bytes": 4636672,
+                    "wall_ns": 4354917,
+                    "user_cpu_s": 0.0014119999999999998,
+                    "system_cpu_s": 0.002454,
+                    "peak_rss_bytes": 4784128,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2879,13 +2879,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6178167,
-                    "user_cpu_s": 0.0017439999999999999,
-                    "system_cpu_s": 0.004177,
-                    "peak_rss_bytes": 4636672,
+                    "wall_ns": 4367917,
+                    "user_cpu_s": 0.0013679999999999999,
+                    "system_cpu_s": 0.0024579999999999997,
+                    "peak_rss_bytes": 4849664,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2896,13 +2896,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5603792,
-                    "user_cpu_s": 0.00172,
-                    "system_cpu_s": 0.004042,
-                    "peak_rss_bytes": 4653056,
+                    "wall_ns": 4736167,
+                    "user_cpu_s": 0.001371,
+                    "system_cpu_s": 0.002861,
+                    "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2913,13 +2913,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5917500,
-                    "user_cpu_s": 0.001784,
-                    "system_cpu_s": 0.004076,
-                    "peak_rss_bytes": 4636672,
+                    "wall_ns": 4278375,
+                    "user_cpu_s": 0.001369,
+                    "system_cpu_s": 0.002513,
+                    "peak_rss_bytes": 4915200,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2930,13 +2930,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5579209,
-                    "user_cpu_s": 0.0016899999999999999,
-                    "system_cpu_s": 0.0036829999999999996,
-                    "peak_rss_bytes": 4636672,
+                    "wall_ns": 4388583,
+                    "user_cpu_s": 0.001385,
+                    "system_cpu_s": 0.002626,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 26645,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21663,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2949,38 +2949,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 5612708,
+                "wall_ns_median": 4583708,
                 "samples": [
                   {
-                    "wall_ns": 5288208,
-                    "user_cpu_s": 0.0015689999999999999,
-                    "system_cpu_s": 0.004478,
-                    "peak_rss_bytes": 4800512,
-                    "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 34,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 6774708,
-                    "user_cpu_s": 0.001984,
-                    "system_cpu_s": 0.006516999999999999,
+                    "wall_ns": 4409625,
+                    "user_cpu_s": 0.0014349999999999999,
+                    "system_cpu_s": 0.003423,
                     "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -2996,13 +2974,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5515333,
-                    "user_cpu_s": 0.0017009999999999998,
-                    "system_cpu_s": 0.0043089999999999995,
-                    "peak_rss_bytes": 4816896,
+                    "wall_ns": 4856916,
+                    "user_cpu_s": 0.0014709999999999999,
+                    "system_cpu_s": 0.0036509999999999997,
+                    "peak_rss_bytes": 4931584,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3018,13 +2996,13 @@
                     }
                   },
                   {
-                    "wall_ns": 6599000,
-                    "user_cpu_s": 0.001877,
-                    "system_cpu_s": 0.0060869999999999995,
-                    "peak_rss_bytes": 4833280,
+                    "wall_ns": 4583708,
+                    "user_cpu_s": 0.00146,
+                    "system_cpu_s": 0.003596,
+                    "peak_rss_bytes": 4980736,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3040,13 +3018,35 @@
                     }
                   },
                   {
-                    "wall_ns": 5612708,
-                    "user_cpu_s": 0.001655,
-                    "system_cpu_s": 0.004533,
-                    "peak_rss_bytes": 4800512,
+                    "wall_ns": 4586833,
+                    "user_cpu_s": 0.00146,
+                    "system_cpu_s": 0.003581,
+                    "peak_rss_bytes": 4866048,
                     "exit": 0,
-                    "stdout_bytes": 26706,
-                    "report_sha256": "584c7755af8761b56eba6e2ddfe7ff9a70f714c7fb20c444afceb2e57fb6fc4b",
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 34,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 4498458,
+                    "user_cpu_s": 0.0014609999999999998,
+                    "system_cpu_s": 0.003557,
+                    "peak_rss_bytes": 4964352,
+                    "exit": 0,
+                    "stdout_bytes": 21724,
+                    "report_sha256": "48694111ba37f64233b645066134e45d56e68566e3d24d48935f5c08dc4725bd",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3073,20 +3073,20 @@
           },
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+          "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 7981792,
+                "wall_ns_median": 5695458,
                 "samples": [
                   {
-                    "wall_ns": 7186541,
-                    "user_cpu_s": 0.001534,
-                    "system_cpu_s": 0.002947,
-                    "peak_rss_bytes": 5095424,
+                    "wall_ns": 6155584,
+                    "user_cpu_s": 0.00129,
+                    "system_cpu_s": 0.002374,
+                    "peak_rss_bytes": 5373952,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3097,13 +3097,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6491167,
-                    "user_cpu_s": 0.001369,
-                    "system_cpu_s": 0.0025599999999999998,
-                    "peak_rss_bytes": 5111808,
+                    "wall_ns": 5714625,
+                    "user_cpu_s": 0.0012829999999999999,
+                    "system_cpu_s": 0.0020729999999999998,
+                    "peak_rss_bytes": 5406720,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3114,13 +3114,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 8135167,
-                    "user_cpu_s": 0.0016979999999999999,
-                    "system_cpu_s": 0.003541,
-                    "peak_rss_bytes": 5144576,
+                    "wall_ns": 5695458,
+                    "user_cpu_s": 0.001276,
+                    "system_cpu_s": 0.002051,
+                    "peak_rss_bytes": 5423104,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3131,13 +3131,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7981792,
-                    "user_cpu_s": 0.001746,
-                    "system_cpu_s": 0.00344,
-                    "peak_rss_bytes": 5111808,
+                    "wall_ns": 5666291,
+                    "user_cpu_s": 0.001259,
+                    "system_cpu_s": 0.002051,
+                    "peak_rss_bytes": 5390336,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3148,13 +3148,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 8647959,
-                    "user_cpu_s": 0.001865,
-                    "system_cpu_s": 0.0037289999999999997,
-                    "peak_rss_bytes": 5062656,
+                    "wall_ns": 5547875,
+                    "user_cpu_s": 0.001259,
+                    "system_cpu_s": 0.002023,
+                    "peak_rss_bytes": 5324800,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3167,16 +3167,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 9330792,
+                "wall_ns_median": 6833500,
                 "samples": [
                   {
-                    "wall_ns": 9254708,
-                    "user_cpu_s": 0.001692,
-                    "system_cpu_s": 0.004187,
-                    "peak_rss_bytes": 4997120,
+                    "wall_ns": 6544875,
+                    "user_cpu_s": 0.001354,
+                    "system_cpu_s": 0.0029809999999999997,
+                    "peak_rss_bytes": 5128192,
                     "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3192,13 +3192,13 @@
                     }
                   },
                   {
-                    "wall_ns": 8249083,
-                    "user_cpu_s": 0.0014249999999999998,
-                    "system_cpu_s": 0.003717,
-                    "peak_rss_bytes": 4947968,
+                    "wall_ns": 6847959,
+                    "user_cpu_s": 0.001352,
+                    "system_cpu_s": 0.0028599999999999997,
+                    "peak_rss_bytes": 5160960,
                     "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3214,13 +3214,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9458833,
-                    "user_cpu_s": 0.001741,
-                    "system_cpu_s": 0.004467,
-                    "peak_rss_bytes": 4915200,
+                    "wall_ns": 6833500,
+                    "user_cpu_s": 0.001323,
+                    "system_cpu_s": 0.002804,
+                    "peak_rss_bytes": 5079040,
                     "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3236,13 +3236,13 @@
                     }
                   },
                   {
-                    "wall_ns": 9330792,
-                    "user_cpu_s": 0.0018059999999999999,
-                    "system_cpu_s": 0.004239,
-                    "peak_rss_bytes": 4931584,
+                    "wall_ns": 6789042,
+                    "user_cpu_s": 0.001298,
+                    "system_cpu_s": 0.002784,
+                    "peak_rss_bytes": 5144576,
                     "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3258,13 +3258,13 @@
                     }
                   },
                   {
-                    "wall_ns": 10829916,
-                    "user_cpu_s": 0.001883,
-                    "system_cpu_s": 0.004555,
-                    "peak_rss_bytes": 4898816,
+                    "wall_ns": 6885750,
+                    "user_cpu_s": 0.001316,
+                    "system_cpu_s": 0.002745,
+                    "peak_rss_bytes": 5144576,
                     "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3284,16 +3284,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5860834,
+                "wall_ns_median": 4589709,
                 "samples": [
                   {
-                    "wall_ns": 5162625,
-                    "user_cpu_s": 0.001596,
-                    "system_cpu_s": 0.003346,
-                    "peak_rss_bytes": 5275648,
+                    "wall_ns": 4504333,
+                    "user_cpu_s": 0.001421,
+                    "system_cpu_s": 0.0024939999999999997,
+                    "peak_rss_bytes": 5455872,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3304,13 +3304,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6155042,
-                    "user_cpu_s": 0.0019329999999999998,
-                    "system_cpu_s": 0.004118999999999999,
-                    "peak_rss_bytes": 5259264,
+                    "wall_ns": 4649209,
+                    "user_cpu_s": 0.0014709999999999999,
+                    "system_cpu_s": 0.0030659999999999997,
+                    "peak_rss_bytes": 5472256,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3321,13 +3321,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5860834,
-                    "user_cpu_s": 0.0019,
-                    "system_cpu_s": 0.003792,
-                    "peak_rss_bytes": 5308416,
+                    "wall_ns": 4594792,
+                    "user_cpu_s": 0.001482,
+                    "system_cpu_s": 0.0025599999999999998,
+                    "peak_rss_bytes": 5472256,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3338,13 +3338,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6352000,
-                    "user_cpu_s": 0.001859,
-                    "system_cpu_s": 0.004683,
-                    "peak_rss_bytes": 5275648,
+                    "wall_ns": 4416250,
+                    "user_cpu_s": 0.001495,
+                    "system_cpu_s": 0.002568,
+                    "peak_rss_bytes": 5472256,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3355,13 +3355,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5294791,
-                    "user_cpu_s": 0.0015849999999999998,
-                    "system_cpu_s": 0.003113,
-                    "peak_rss_bytes": 5292032,
+                    "wall_ns": 4589709,
+                    "user_cpu_s": 0.001475,
+                    "system_cpu_s": 0.002802,
+                    "peak_rss_bytes": 5439488,
                     "exit": 0,
-                    "stdout_bytes": 26321,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21339,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3374,16 +3374,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 6058667,
+                "wall_ns_median": 4564833,
                 "samples": [
                   {
-                    "wall_ns": 5480000,
-                    "user_cpu_s": 0.0016569999999999998,
-                    "system_cpu_s": 0.004523,
-                    "peak_rss_bytes": 5111808,
+                    "wall_ns": 4725333,
+                    "user_cpu_s": 0.001536,
+                    "system_cpu_s": 0.0035399999999999997,
+                    "peak_rss_bytes": 5242880,
                     "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3399,79 +3399,79 @@
                     }
                   },
                   {
-                    "wall_ns": 6058667,
-                    "user_cpu_s": 0.0018529999999999998,
-                    "system_cpu_s": 0.004849,
+                    "wall_ns": 4832542,
+                    "user_cpu_s": 0.001487,
+                    "system_cpu_s": 0.003951,
+                    "peak_rss_bytes": 5226496,
+                    "exit": 0,
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 35,
+                      "misses": 0,
+                      "writes": 0,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 4458084,
+                    "user_cpu_s": 0.001506,
+                    "system_cpu_s": 0.0033799999999999998,
+                    "peak_rss_bytes": 5226496,
+                    "exit": 0,
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 35,
+                      "misses": 0,
+                      "writes": 0,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 4564833,
+                    "user_cpu_s": 0.0014889999999999999,
+                    "system_cpu_s": 0.0033829999999999997,
+                    "peak_rss_bytes": 5144576,
+                    "exit": 0,
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 35,
+                      "misses": 0,
+                      "writes": 0,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 4554542,
+                    "user_cpu_s": 0.0014939999999999999,
+                    "system_cpu_s": 0.003342,
                     "peak_rss_bytes": 5079040,
                     "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 35,
-                      "misses": 0,
-                      "writes": 0,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 6903500,
-                    "user_cpu_s": 0.0021,
-                    "system_cpu_s": 0.005961,
-                    "peak_rss_bytes": 5111808,
-                    "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 35,
-                      "misses": 0,
-                      "writes": 0,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 6435250,
-                    "user_cpu_s": 0.002062,
-                    "system_cpu_s": 0.00626,
-                    "peak_rss_bytes": 5111808,
-                    "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 35,
-                      "misses": 0,
-                      "writes": 0,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 5312125,
-                    "user_cpu_s": 0.001669,
-                    "system_cpu_s": 0.00409,
-                    "peak_rss_bytes": 5111808,
-                    "exit": 0,
-                    "stdout_bytes": 26382,
-                    "report_sha256": "c1a6213949c3a9258ad9902bd2830df5997f4cafb608cb35177a57e10e5d3449",
+                    "stdout_bytes": 21400,
+                    "report_sha256": "fe81a29753bd9ec07b5a68f9e1f5d22eb2fb6f3ff23835dcbf55e7c72aec3588",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3498,20 +3498,20 @@
           },
           "extra_options": [],
           "complete_and_equivalent": true,
-          "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+          "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
           "runs": {
             "1": {
               "disabled": {
-                "wall_ns_median": 8073667,
+                "wall_ns_median": 5559666,
                 "samples": [
                   {
-                    "wall_ns": 8190292,
-                    "user_cpu_s": 0.001601,
-                    "system_cpu_s": 0.003395,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 5662875,
+                    "user_cpu_s": 0.001184,
+                    "system_cpu_s": 0.002103,
+                    "peak_rss_bytes": 4636672,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3522,13 +3522,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6868791,
-                    "user_cpu_s": 0.001352,
-                    "system_cpu_s": 0.00291,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 5557167,
+                    "user_cpu_s": 0.001194,
+                    "system_cpu_s": 0.0020369999999999997,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3539,13 +3539,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 7822583,
-                    "user_cpu_s": 0.00155,
-                    "system_cpu_s": 0.003493,
-                    "peak_rss_bytes": 4472832,
+                    "wall_ns": 5559666,
+                    "user_cpu_s": 0.001197,
+                    "system_cpu_s": 0.002048,
+                    "peak_rss_bytes": 4653056,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3556,13 +3556,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 8073667,
-                    "user_cpu_s": 0.001699,
-                    "system_cpu_s": 0.0035759999999999998,
-                    "peak_rss_bytes": 4587520,
+                    "wall_ns": 5529167,
+                    "user_cpu_s": 0.001158,
+                    "system_cpu_s": 0.0020169999999999997,
+                    "peak_rss_bytes": 4718592,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3573,13 +3573,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 9051209,
-                    "user_cpu_s": 0.0017029999999999999,
-                    "system_cpu_s": 0.003459,
-                    "peak_rss_bytes": 4571136,
+                    "wall_ns": 5595167,
+                    "user_cpu_s": 0.001181,
+                    "system_cpu_s": 0.002065,
+                    "peak_rss_bytes": 4636672,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3592,104 +3592,104 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 9095458,
+                "wall_ns_median": 6805167,
                 "samples": [
                   {
-                    "wall_ns": 8025833,
-                    "user_cpu_s": 0.001382,
-                    "system_cpu_s": 0.003692,
-                    "peak_rss_bytes": 4685824,
-                    "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 34,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 8888583,
-                    "user_cpu_s": 0.001433,
-                    "system_cpu_s": 0.004177,
-                    "peak_rss_bytes": 4669440,
-                    "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 34,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 9472459,
-                    "user_cpu_s": 0.0016439999999999998,
-                    "system_cpu_s": 0.004647,
-                    "peak_rss_bytes": 4685824,
-                    "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 34,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 9095458,
-                    "user_cpu_s": 0.0016359999999999999,
-                    "system_cpu_s": 0.003972,
-                    "peak_rss_bytes": 4669440,
-                    "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 34,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 9388375,
-                    "user_cpu_s": 0.001717,
-                    "system_cpu_s": 0.00455,
+                    "wall_ns": 6786958,
+                    "user_cpu_s": 0.0012259999999999999,
+                    "system_cpu_s": 0.0028239999999999997,
                     "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 34,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 6805167,
+                    "user_cpu_s": 0.001253,
+                    "system_cpu_s": 0.0028859999999999997,
+                    "peak_rss_bytes": 4816896,
+                    "exit": 0,
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 34,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 6742833,
+                    "user_cpu_s": 0.001241,
+                    "system_cpu_s": 0.002856,
+                    "peak_rss_bytes": 4751360,
+                    "exit": 0,
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 34,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 7111666,
+                    "user_cpu_s": 0.001258,
+                    "system_cpu_s": 0.003023,
+                    "peak_rss_bytes": 4833280,
+                    "exit": 0,
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 34,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 6950459,
+                    "user_cpu_s": 0.001249,
+                    "system_cpu_s": 0.002944,
+                    "peak_rss_bytes": 4816896,
+                    "exit": 0,
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3709,16 +3709,16 @@
             },
             "4": {
               "disabled": {
-                "wall_ns_median": 5893125,
+                "wall_ns_median": 4408667,
                 "samples": [
                   {
-                    "wall_ns": 5161458,
-                    "user_cpu_s": 0.0015329999999999999,
-                    "system_cpu_s": 0.003351,
-                    "peak_rss_bytes": 4784128,
+                    "wall_ns": 4408667,
+                    "user_cpu_s": 0.001382,
+                    "system_cpu_s": 0.002551,
+                    "peak_rss_bytes": 4882432,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3729,13 +3729,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6154000,
-                    "user_cpu_s": 0.0018909999999999999,
-                    "system_cpu_s": 0.004705,
-                    "peak_rss_bytes": 4849664,
+                    "wall_ns": 4279750,
+                    "user_cpu_s": 0.001333,
+                    "system_cpu_s": 0.0025199999999999997,
+                    "peak_rss_bytes": 4734976,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3746,13 +3746,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 5893125,
-                    "user_cpu_s": 0.001774,
-                    "system_cpu_s": 0.004049,
-                    "peak_rss_bytes": 4800512,
+                    "wall_ns": 4416000,
+                    "user_cpu_s": 0.001449,
+                    "system_cpu_s": 0.00278,
+                    "peak_rss_bytes": 4767744,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3763,13 +3763,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 6712417,
-                    "user_cpu_s": 0.002013,
-                    "system_cpu_s": 0.005284,
-                    "peak_rss_bytes": 4833280,
+                    "wall_ns": 4449000,
+                    "user_cpu_s": 0.001382,
+                    "system_cpu_s": 0.0026509999999999997,
+                    "peak_rss_bytes": 4947968,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3780,13 +3780,13 @@
                     "cache": null
                   },
                   {
-                    "wall_ns": 4772792,
-                    "user_cpu_s": 0.0014219999999999999,
-                    "system_cpu_s": 0.0028899999999999998,
-                    "peak_rss_bytes": 4784128,
+                    "wall_ns": 4310292,
+                    "user_cpu_s": 0.00139,
+                    "system_cpu_s": 0.0026089999999999998,
+                    "peak_rss_bytes": 4751360,
                     "exit": 0,
-                    "stdout_bytes": 37425,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32443,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3799,16 +3799,16 @@
                 ]
               },
               "edited": {
-                "wall_ns_median": 5655250,
+                "wall_ns_median": 4494166,
                 "samples": [
                   {
-                    "wall_ns": 5485250,
-                    "user_cpu_s": 0.001687,
-                    "system_cpu_s": 0.004377,
+                    "wall_ns": 4494166,
+                    "user_cpu_s": 0.001472,
+                    "system_cpu_s": 0.003436,
                     "peak_rss_bytes": 4882432,
                     "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3824,13 +3824,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5655250,
-                    "user_cpu_s": 0.0017,
-                    "system_cpu_s": 0.004543999999999999,
-                    "peak_rss_bytes": 4947968,
+                    "wall_ns": 4582417,
+                    "user_cpu_s": 0.001495,
+                    "system_cpu_s": 0.003436,
+                    "peak_rss_bytes": 5013504,
                     "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3846,13 +3846,13 @@
                     }
                   },
                   {
-                    "wall_ns": 5833500,
-                    "user_cpu_s": 0.001818,
-                    "system_cpu_s": 0.005311,
-                    "peak_rss_bytes": 4915200,
+                    "wall_ns": 4543459,
+                    "user_cpu_s": 0.001437,
+                    "system_cpu_s": 0.003433,
+                    "peak_rss_bytes": 5013504,
                     "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,
@@ -3868,35 +3868,35 @@
                     }
                   },
                   {
-                    "wall_ns": 7251916,
-                    "user_cpu_s": 0.002124,
-                    "system_cpu_s": 0.0072829999999999995,
-                    "peak_rss_bytes": 4997120,
-                    "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
-                    "coverage": {
-                      "status": "complete",
-                      "selected_files": 35,
-                      "extracted_files": 35,
-                      "issues": []
-                    },
-                    "complete": true,
-                    "cache": {
-                      "hits": 34,
-                      "misses": 1,
-                      "writes": 1,
-                      "write_failures": 0
-                    }
-                  },
-                  {
-                    "wall_ns": 5303541,
-                    "user_cpu_s": 0.0016049999999999999,
-                    "system_cpu_s": 0.004314,
+                    "wall_ns": 4383666,
+                    "user_cpu_s": 0.001447,
+                    "system_cpu_s": 0.003441,
                     "peak_rss_bytes": 4882432,
                     "exit": 0,
-                    "stdout_bytes": 37486,
-                    "report_sha256": "5d349a5683614d303f0a500c98db8cacd40fdd5945f6f8d75285f68b92afb13e",
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
+                    "coverage": {
+                      "status": "complete",
+                      "selected_files": 35,
+                      "extracted_files": 35,
+                      "issues": []
+                    },
+                    "complete": true,
+                    "cache": {
+                      "hits": 34,
+                      "misses": 1,
+                      "writes": 1,
+                      "write_failures": 0
+                    }
+                  },
+                  {
+                    "wall_ns": 4446291,
+                    "user_cpu_s": 0.0014399999999999999,
+                    "system_cpu_s": 0.003495,
+                    "peak_rss_bytes": 4800512,
+                    "exit": 0,
+                    "stdout_bytes": 32504,
+                    "report_sha256": "8acb500c3f9e37dedb5089bc367b693125ec77384296624ebbd523f7310045c7",
                     "coverage": {
                       "status": "complete",
                       "selected_files": 35,

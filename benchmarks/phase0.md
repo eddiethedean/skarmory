@@ -17,9 +17,10 @@ the exact upstream revision with its Cargo lockfile.
 python3.11 -m venv /tmp/skarmory-reference
 source /tmp/skarmory-reference/bin/activate
 python -m pip install maturin==1.16.0
+rustup toolchain install 1.96.0 --profile minimal
 git clone --branch v5.7.0 https://github.com/duriantaco/skylos.git /tmp/skylos-5.7.0
 test "$(git -C /tmp/skylos-5.7.0 rev-parse HEAD)" = 87978e69adf91b3811e97b00c40aa39d7937cd94
-maturin build --release --locked --manifest-path /tmp/skylos-5.7.0/rust/Cargo.toml -i python --out /tmp/skylos-wheels
+mkdir -p /tmp/skylos-wheels
 python - <<'VERIFY_WHEEL'
 from hashlib import sha256
 from pathlib import Path
@@ -27,18 +28,27 @@ import tomllib
 from urllib.request import urlopen
 
 baseline = Path("tests/conformance/baselines/skylos-5.7.0.toml")
-artifact = tomllib.loads(baseline.read_text())["distribution"]
+manifest = tomllib.loads(baseline.read_text())
+accelerator = manifest["accelerator"]
+lockfile = Path("/tmp/skylos-5.7.0", accelerator["lockfile"])
+assert sha256(lockfile.read_bytes()).hexdigest() == accelerator["lockfile_sha256"]
+artifact = manifest["distribution"]
 with urlopen(artifact["url"]) as response:
     data = response.read()
 assert sha256(data).hexdigest() == artifact["sha256"]
 Path("/tmp/skylos-wheels", artifact["wheel"]).write_bytes(data)
 VERIFY_WHEEL
+RUSTUP_TOOLCHAIN=1.96.0 maturin build --release --locked \
+  --manifest-path /tmp/skylos-5.7.0/rust/Cargo.toml -i python --out /tmp/skylos-wheels
 python -m pip install -r tests/conformance/baselines/skylos-5.7.0-macos-arm64-cp311.txt \
   /tmp/skylos-wheels/skylos-5.7.0-*.whl /tmp/skylos-wheels/skylos_fast-*.whl
 cargo build --locked --release -p skarmory_cli
 python tests/conformance/check_phase0.py target/release/skarmory
 python benchmarks/phase0.py target/release/skarmory /tmp/skarmory-reference/bin/python --samples 5 > phase0-results.json
 ```
+
+The baseline records the hash of the accelerator wheel used in the original
+measurement. A fresh build uses the pinned source, lockfile, and toolchain.
 
 The harness uses the same sources for both tools in standalone temporary
 directories. It verifies Skylos' file selections and requires successful native

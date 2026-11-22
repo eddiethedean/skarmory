@@ -1,15 +1,22 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0
 
-- Adds a bounded Skylos 5.7.0 Python dead-code profile with configuration,
-  confidence filtering, suppression, JSON reports, and SARIF output.
-- Models scoped bindings, public exports, and selected static pytest,
-  FastAPI, and callback cases.
+- Adds the Skylos profile to the native CLI and Python SDK for a declared
+  subset of Skylos 5.7.0 Python dead-code analysis. It reports unreachable
+  functions and unused classes, methods, imports, variables, parameters, and
+  empty files in supported Python 3.11 projects.
+- Models scoped bindings, explicit re-exports, literal `__all__`, and selected
+  lazy exports, pytest fixtures, FastAPI routes, and callback patterns.
+- Supports Skylos config discovery, confidence filtering, suppressions, JSON
+  reports, and SARIF output. The CLI's `--strict` mode exits `1` for findings in
+  a complete scan. Incomplete scans retain coverage diagnostics and exit `2`.
 - Adds opt-in caching for file-local facts with fresh project resolution on
   every scan.
 
-See the [Phase 0.2 plan](docs/phase-02.md) for scope and release gates.
+See the [Phase 0.2 scope and limits](docs/phase-02.md), the
+[pinned reference results](docs/phase-02-reference.md), and the
+[cache benchmark](benchmarks/phase02.md).
 
 ## 0.1.0
 

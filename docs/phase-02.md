@@ -1,7 +1,7 @@
 # Phase 0.2 Python dead-code compatibility
 
-Phase 0.2 is in development. The starting point is the
-[0.1 packaged-project preview](phase-01.md). The reference is Skylos 5.7.0 at
+Skarmory 0.2.0 includes the Phase 0.2 profile alongside the native
+[packaged-project preview](phase-01.md). The reference is Skylos 5.7.0 at
 revision `87978e69adf91b3811e97b00c40aa39d7937cd94`, with the artifact,
 environment, and backends recorded in the
 [baseline manifest](../tests/conformance/baselines/skylos-5.7.0.toml).
@@ -58,9 +58,9 @@ reference CLI and API defaults can differ.
 
 ## Declared analysis scope
 
-Each row below is a proposed release target. Freeze positive, retain, and
-incomplete or uncertain controls for each supported pattern before implementing
-it. The [reference inventory](skylos-5.7.0-contract.md) guides those fixtures.
+The table defines the Phase 0.2 analysis scope. The
+[reference results](phase-02-reference.md) document the verified patterns and
+reviewed differences against the [Skylos inventory](skylos-5.7.0-contract.md).
 
 | Surface | Required 0.2 behavior |
 | --- | --- |

@@ -45,10 +45,17 @@ The library result is an intentional difference under the declared boundary.
 The final list names `factory` and `metadata`. The assignment naming
 `private` is unreachable, and the fixture contains no call or other export
 of that function. The independent expectation stays `api.private` at line 25.
-The application has no differences in the stated projection. Both Skylos
-backends set `resolution_scope_limited`, so their coverage fields carry a
-different meaning from Skarmory's completion status. These cases establish
-no timing or general accuracy claim.
+Both Skylos backends set `resolution_scope_limited`, so their coverage fields
+carry a different meaning from Skarmory's completion status. These cases
+establish no timing or general accuracy claim.
+
+The application matches when extracted into a standalone project. With the
+same source bytes under a parent directory named `tests`, both Skylos backends
+still selected all three files and reported no unused functions. Skylos
+attaches test-entry evidence based on the absolute file path. Skarmory reports
+the three functions in both locations because the parent directory outside
+the project supplies no pytest collection evidence. The frozen application
+expectations stay the same. [Pinned Skylos evidence code](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/deadcode/evidence.py#L574)
 
 ## Reproduce
 
@@ -60,10 +67,11 @@ and assign its executable path to `REFERENCE_PYTHON`. Clear ambient
 ```sh
 scratch=$(mktemp -d)
 scratch=$(cd "$scratch" && pwd -P)
-git archive v0.1.0 tests/conformance/preview/packages | tar -x -C "$scratch"
-app="$scratch/tests/conformance/preview/packages"
+app="$scratch/application"
 library="$scratch/library"
-mkdir "$library"
+mkdir "$app" "$library"
+git archive v0.1.0 tests/conformance/preview/packages |
+  tar -x --strip-components 4 -C "$app"
 git show v0.1.0:tests/conformance/preview/library/api.py > "$library/api.py"
 
 target/debug/skarmory "$app" --source-root src --entry-module shop.start

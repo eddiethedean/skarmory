@@ -6,13 +6,15 @@
 [![CLI builds with Rust 1.98+](https://img.shields.io/badge/Rust-1.98%2B-orange?logo=rust&logoColor=white)](https://crates.io/crates/skarmory_cli)
 [![MIT license](https://img.shields.io/badge/license-MIT-green)](https://github.com/eddiethedean/skarmory/blob/main/LICENSE)
 
-**Find unreachable functions in Python projects with a native Rust analyzer.**
+**Find dead code in Python projects with a native Rust analyzer.**
 
-Skarmory 0.1.0 ships a dead-code preview for packaged Python 3.11 projects.
-Choose the source roots and entry points of an application or the public API of
-a library. The native CLI and Python SDK use the same engine and return the
-same versioned report, with findings, reachability evidence, uncertainty, and
-coverage. See the [0.1.0 release notes](https://github.com/eddiethedean/skarmory/blob/main/CHANGELOG.md#010).
+The native CLI and Python SDK share a Rust engine that reports findings,
+reachability evidence, uncertainty, and analysis coverage.
+
+Skarmory 0.2.0 adds a Skylos 5.7.0 compatibility profile for a defined subset
+of Python 3.11 dead-code analysis. It detects unreachable functions, unused
+classes, methods, imports, variables, and parameters, and empty Python files.
+It models selected pytest and FastAPI patterns. [0.2.0 release notes](CHANGELOG.md#020)
 
 ## Install
 
@@ -21,21 +23,49 @@ environment. Wheels support standard CPython 3.11+ on x86-64 and ARM64 for Linux
 (glibc and musl), macOS, and Windows. A source distribution is also available.
 
 ```bash
-python -m pip install "skarmory==0.1.0"
+python -m pip install "skarmory==0.2.0"
 ```
 
 Install the [native CLI](https://crates.io/crates/skarmory_cli) with Rust 1.98
 or newer. The installed executable runs independently of Python.
 
 ```bash
-cargo install --locked --version 0.1.0 skarmory_cli
+cargo install --locked --version 0.2.0 skarmory_cli
 skarmory --version
 ```
 
 ## Quick start
 
-Run this from the root of a project with a package entry at
-`src/example/main.py`.
+Run the Skylos profile from the root of your Python project.
+
+```sh
+skarmory --profile skylos . --json
+```
+
+The compatibility API returns a JSON string.
+
+```python
+import json
+from skarmory.compat.skylos import analyze
+
+report = json.loads(analyze("."))
+if report["coverage"]["status"] == "complete":
+    print(report["unused_functions"])
+else:
+    print(report["analysis_errors"])
+```
+
+The CLI exits `0` on a complete scan by default. With `--strict`, it exits `1`
+when a complete scan reports findings. Exit `2` indicates incomplete analysis,
+an invalid invocation, or an output error. Use `--sarif results.sarif.json` to
+also write SARIF and `--cache-dir ../analysis-cache` to reuse file-local facts.
+Each scan rebuilds project resolution from the current sources and configuration.
+
+## Scan with explicit entry points
+
+Use the default native profile to find unreachable functions from declared
+entry points or library exports. Run this from the root of a project with an
+entry at `src/example/main.py`.
 
 ```sh
 skarmory . --source-root src --entry-module example.main
@@ -67,7 +97,7 @@ also declare public modules with resolvable literal `__all__` lists.
 skarmory . --source-root src --policy library --public-callable example:open_file
 ```
 
-## Read the report
+## Read the native report
 
 - **Findings** identify functions with no reachable path from the declared
   entries or exports in a complete scan.
@@ -81,19 +111,17 @@ The CLI writes JSON to stdout. It exits `0` for a complete scan, including
 scans with findings. Exit `2` signals incomplete analysis or an invocation or
 output error. The SDK exposes completeness through `coverage.status`.
 
-The 0.1.0 preview implements one rule, `unreachable_function`, within a closed
-set of Python 3.11 sources. See the [scan contract](https://github.com/eddiethedean/skarmory/blob/main/docs/phase-01.md)
-for supported syntax, import resolution, and scan limits. The [Skylos 5.7.0
-comparison](https://github.com/eddiethedean/skarmory/blob/main/docs/phase-01-reference.md)
-records the two fixtures checked against the pinned baseline.
+The native profile implements `unreachable_function` within a closed set of
+Python 3.11 sources. Supported syntax, import resolution, and analysis limits
+are defined in the [native scan contract](docs/phase-01.md).
 
 ## Dead-code features
 
-The table compares released Skarmory 0.1.0 and its in-development Phase 0.2
-profile with the pinned Skylos 5.7.0 baseline. A dash means the feature is
-unavailable in that version or profile.
+The table compares the 0.2.0 Skylos profile with Skarmory 0.1.0 and the pinned
+Skylos 5.7.0 baseline. A dash means the feature is unavailable in that version
+or profile.
 
-| Feature | Skarmory 0.1.0 | Skarmory Phase 0.2 (in development) | Skylos 5.7.0 |
+| Feature | Skarmory 0.1.0 | Skarmory 0.2.0 Skylos profile | Skylos 5.7.0 |
 | --- | --- | --- | --- |
 | Unreachable functions | Bounded reachability from declared roots | Functions and unreachable groups within the supported call graph | Unused functions and unreachable groups |
 | Unused methods and classes | — | Module-level classes and selected method dispatch patterns | Unused classes and methods |
@@ -113,9 +141,9 @@ unavailable in that version or profile.
 | Cleanup workflow | — | — | Review queue and patch previews for supported findings |
 | JavaScript and TypeScript dead code | — | — | Unused files (`SKY-E003`) and unnecessary exports (`SKY-E004`) |
 
-Phase 0.2 also has limits within its supported Python features. Opaque lazy
-exports, dynamic plugin loading, custom import hooks, and unresolved receiver
-dispatch can make a scan incomplete when they affect reachability.
+Opaque lazy exports, dynamic plugin loading, custom import hooks, and
+unresolved receiver dispatch can make a scan incomplete when they affect
+reachability.
 
 See the [Phase 0.2 scope](docs/phase-02.md),
 [tested matches and differences](docs/phase-02-reference.md), and
@@ -145,8 +173,12 @@ cargo test --locked --workspace
 cargo build --locked -p skarmory_cli
 python tests/conformance/check_phase0.py target/debug/skarmory
 python tests/conformance/check_phase01.py target/debug/skarmory
+python tests/conformance/check_phase02.py target/debug/skarmory
 python -m unittest discover -s tests/python -v
 ```
+
+The Phase 0.2 command runs the Skarmory fixtures. The pinned Skylos comparison
+requires a separate reference environment. [Reproduction instructions](docs/phase-02-reference.md#reproduce)
 
 Run the Python tests after installing the SDK. On POSIX, verify the
 source-only error path separately.
@@ -157,7 +189,7 @@ PYTHONPATH=python python -m unittest discover -s tests/python -v
 
 ### Project documentation
 
-- [Phase 0.2](docs/phase-02.md) describes the development Skylos profile and
+- [Phase 0.2](docs/phase-02.md) describes the Skylos profile and
   opt-in module-fact cache.
 - [Phase 0.3](docs/phase-03.md) plans expanded dead-code coverage, verification,
   and workflows.
