@@ -16,6 +16,7 @@ CANDIDATE = "a" * 40
 CASE_ID = "test/test_exports.py::test_reexport[pkg]"
 NATIVE_CASE = "go:example.org/engine::TestResolve/preserve"
 ASSERTION = "retain the re-exported implementation"
+EARLIER_ASSERTION = "initialize the export provider"
 PREREQUISITE = "fixture package created"
 
 
@@ -60,7 +61,8 @@ artifact = "candidate"
 id = "{CASE_ID}"
 source = "test/test_exports.py"
 provenance = "pinned checkout fixture"
-assertions = ["{ASSERTION}"]
+assertions = ["{EARLIER_ASSERTION}", "{ASSERTION}"]
+reference_xfail = "{ASSERTION}"
 prerequisites = ["{PREREQUISITE}"]
 omitted_assertions = ["independent quality report assertion"]
 variants = ["python-sdk"]
@@ -96,8 +98,10 @@ port = "crates/analysis_core/tests/resolve.rs"
             "results": [{
                 "case_id": CASE_ID if sdk else NATIVE_CASE,
                 "reference_status": "xfailed" if sdk else "passed",
+                "reference_assertions": [EARLIER_ASSERTION] if sdk else [ASSERTION],
+                "reference_failed_assertion": ASSERTION if sdk else None,
                 "status": "passed",
-                "assertions": [ASSERTION],
+                "assertions": [EARLIER_ASSERTION, ASSERTION] if sdk else [ASSERTION],
                 "prerequisites": {PREREQUISITE: "passed"},
             }],
         }
@@ -184,6 +188,32 @@ port = "crates/analysis_core/tests/resolve.rs"
         raw = self.inventory.read_text(encoding="utf-8")
         self.inventory.write_text(raw.replace(REFERENCE, "d" * 40), encoding="utf-8")
         self.assert_blocked([], "differs from the pinned Skylos baseline")
+
+    def test_reference_failure_requires_the_reviewed_marker_and_assertion(self):
+        self.write_inventory()
+        sdk = self.receipt("python-sdk")
+        engine = self.receipt("go-engine")
+        outcome = sdk["results"][0]
+        for status in ("failed", "xpassed", "passed"):
+            with self.subTest(status=status):
+                ledger = dict(sdk, results=[dict(outcome, reference_status=status)])
+                self.assert_blocked([ledger, engine], "expected 'xfailed'")
+        for assertion in (None, "failure in unrelated fixture setup"):
+            with self.subTest(assertion=assertion):
+                ledger = dict(sdk, results=[dict(outcome, reference_failed_assertion=assertion)])
+                self.assert_blocked([ledger, engine], "expected failing reference assertion")
+        ledger = dict(sdk, results=[dict(outcome, reference_assertions=[])])
+        self.assert_blocked([ledger, engine], "completed reference assertions")
+
+    def test_reference_pass_requires_completed_assertions(self):
+        self.write_inventory()
+        sdk = self.receipt("python-sdk")
+        engine = self.receipt("go-engine")
+        outcome = engine["results"][0]
+        for assertions in ([], ["an unrelated assertion"]):
+            with self.subTest(assertions=assertions):
+                ledger = dict(engine, results=[dict(outcome, reference_assertions=assertions)])
+                self.assert_blocked([sdk, ledger], "completed reference assertions")
 
     def test_skips_errors_and_failed_assertions_block_release(self):
         self.write_inventory()

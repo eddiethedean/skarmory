@@ -24,8 +24,11 @@ revision, candidate revision, exact inventory, environment, and SHA-256 of the
 artifact actually tested. A receipt records the reference and Skarmory
 commands and their separate case outcomes. A Skarmory pass must account for
 the listed assertions and verify every listed prerequisite. A reference
-`xfailed` result can accompany a Skarmory pass when the original assertions
-execute and pass on Skarmory with the upstream marker disabled.
+pass must account for the listed assertions. For a reviewed `xfail`, record
+the expected failing assertion as `reference_xfail` in the inventory. The
+receipt records the failure location in `reference_failed_assertion` and
+the preceding completed assertions in `reference_assertions`. The candidate
+must pass the original assertions with the upstream marker disabled.
 
 For a local check, use the same artifact file that the runner tested and
 provide its receipt. Repeat `--artifact` and `--ledger` for additional
@@ -50,11 +53,11 @@ The release workflow produces the Linux CPython 3.11 SDK receipt by installing
 the same-run wheel into a clean environment and running the
 [seed adapter](../tests/conformance/run_phase03_seed.py). The adapter executes
 the original upstream pytest cases with their markers in the frozen Skylos
-environment. For the candidate run it redirects the analyzer entry point to
-the installed Skarmory SDK and disables upstream expected-failure markers.
-It checks that the wheel's files match the installed package and that the
-original assertion lines execute. Cases requiring unavailable grep behavior
-remain blocked.
+environment. For the candidate run it selects `skylos-0.3` in the installed
+Skarmory SDK, forwards the upstream scan options, and disables upstream
+expected-failure markers. It checks that the wheel's files match the installed
+package and that the original assertion lines execute. The seed SDK runner
+currently covers cases that explicitly disable tracing.
 
 Run the checker regression tests with the following command.
 

@@ -19,7 +19,6 @@ SCHEMA_VERSION = 1
 RESULT_STATUSES = {
     "passed", "failed", "xfailed", "xpassed", "skipped", "blocked", "error",
 }
-EXECUTED_REFERENCE_STATUSES = {"passed", "failed", "xfailed", "xpassed"}
 
 
 def sha256(path):
@@ -95,7 +94,12 @@ def read_inventory(path):
             raise ValueError(f"{case_id}: port must be a string")
         if "blocker" in case:
             require_string(case, "blocker")
-        string_list(case, "assertions", required=True, unique=True)
+        assertions = string_list(case, "assertions", required=True, unique=True)
+        if (
+            "reference_xfail" in case
+            and require_string(case, "reference_xfail") not in assertions
+        ):
+            raise ValueError(f"{case_id}: reference_xfail must name a mapped assertion")
         string_list(case, "prerequisites", unique=True)
         string_list(case, "omitted_assertions", unique=True)
         for variant in string_list(case, "variants", required=True, unique=True):
@@ -143,8 +147,20 @@ def verify_result(result, case):
     reasons = []
     reference_status = require_string(result, "reference_status")
     status = require_string(result, "status")
-    if reference_status not in EXECUTED_REFERENCE_STATUSES:
-        reasons.append(f"reference outcome {reference_status!r} lacks executed evidence")
+    expected_failure = case.get("reference_xfail")
+    expected_status = "xfailed" if expected_failure else "passed"
+    if reference_status != expected_status:
+        reasons.append(
+            f"reference outcome {reference_status!r} lacks executed evidence "
+            f"for the expected {expected_status!r} result"
+        )
+    if result.get("reference_failed_assertion") != expected_failure:
+        reasons.append("expected failing reference assertion does not match the execution evidence")
+    mapped = case["assertions"]
+    required_reference = mapped[:mapped.index(expected_failure)] if expected_failure else mapped
+    reference_assertions = set(string_list(result, "reference_assertions", unique=True))
+    if not set(required_reference) <= reference_assertions <= set(mapped):
+        reasons.append("completed reference assertions do not match the inventory")
     if status != "passed":
         if status not in RESULT_STATUSES:
             reasons.append(f"unknown Skarmory outcome {status!r}")
@@ -152,7 +168,7 @@ def verify_result(result, case):
             reasons.append(f"Skarmory outcome {status!r} is not an ordinary pass")
 
     assertions = set(string_list(result, "assertions", unique=True))
-    if assertions != set(case["assertions"]):
+    if assertions != set(mapped):
         reasons.append("executed assertions do not match the inventory")
     prerequisites = result.get("prerequisites")
     if not isinstance(prerequisites, dict) or (
