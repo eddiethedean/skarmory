@@ -45,13 +45,16 @@ type References = BTreeMap<String, Vec<ConfigReference>>;
 pub(super) struct Snapshot {
     inventory: Option<Inventory>,
     module_paths: References,
+    qualified_paths: References,
     qualified_names: References,
     issues: Vec<Issue>,
 }
 
 impl Snapshot {
     pub(super) fn has_configuration_references(&self) -> bool {
-        !self.module_paths.is_empty() || !self.qualified_names.is_empty()
+        !self.module_paths.is_empty()
+            || !self.qualified_paths.is_empty()
+            || !self.qualified_names.is_empty()
     }
 
     pub(super) fn read(project: &Project, selection: Option<&Selection>) -> Self {
@@ -74,8 +77,10 @@ impl Snapshot {
                 }
             };
             let mut scalars = Scalars::default();
-            for (line, text) in source.split('\n').enumerate() {
-                let Some((target, column)) = scalars.value(text, line == 0) else {
+            let mut lines = source.split('\n').enumerate();
+            while let Some((line, text)) = lines.next() {
+                let remaining = lines.clone().map(|(_, text)| text);
+                let Some((target, column)) = scalars.value(text, line == 0, remaining) else {
                     continue;
                 };
                 let Some((key, kind, target_map)) = snapshot.target(target) else {
@@ -114,16 +119,14 @@ impl Snapshot {
             if !dotted_name(member) {
                 return None;
             }
-            let owner = match python_path(owner) {
-                Some(path) => path,
-                None if dotted_name(owner) => owner.to_owned(),
-                None => return None,
+            let (owner, targets) = if let Some(path) = python_path(owner) {
+                (path, &mut self.qualified_paths)
+            } else if dotted_name(owner) {
+                (owner.to_owned(), &mut self.qualified_names)
+            } else {
+                return None;
             };
-            return Some((
-                format!("{owner}:{member}"),
-                "configuration_symbol",
-                &mut self.qualified_names,
-            ));
+            return Some((format!("{owner}:{member}"), "configuration_symbol", targets));
         }
         if let Some(path) = python_path(target) {
             return Some((path, "configuration_module", &mut self.module_paths));
@@ -147,12 +150,14 @@ impl Snapshot {
         let module_file = include_module_reference
             .then(|| self.module_paths.get(path))
             .flatten();
-        // A path selector distinguishes sources even when they share a basename.
-        let [by_path, by_module, by_qualified_name] = if self.qualified_names.is_empty() {
-            [None; 3]
+        // Filenames and dotted module names can have identical spellings.
+        let by_path = (!self.qualified_paths.is_empty())
+            .then(|| self.qualified_paths.get(&format!("{path}:{member}")))
+            .flatten();
+        let [by_module, by_qualified_name] = if self.qualified_names.is_empty() {
+            [None; 2]
         } else {
             [
-                self.qualified_names.get(&format!("{path}:{member}")),
                 self.qualified_names.get(&format!("{module}:{member}")),
                 self.qualified_names.get(&format!("{module}.{member}")),
             ]
@@ -275,14 +280,19 @@ fn python_path(text: &str) -> Option<String> {
 
 #[derive(Default)]
 struct Scalars {
-    block_indent: Option<usize>,
+    multiline_indent: Option<usize>,
     open_quote: Option<u8>,
 }
 
 impl Scalars {
     // Single-line block mapping values and sequence items are the supported
-    // YAML subset. Ignore comments and skip interior text of block scalars.
-    fn value<'a>(&mut self, line: &'a str, first: bool) -> Option<(&'a str, usize)> {
+    // YAML subset. Ignore comments and skip interior text of multiline scalars.
+    fn value<'a>(
+        &mut self,
+        line: &'a str,
+        first: bool,
+        remaining: impl Iterator<Item = &'a str>,
+    ) -> Option<(&'a str, usize)> {
         let visible = if first {
             line.strip_prefix('\u{feff}').unwrap_or(line)
         } else {
@@ -298,21 +308,23 @@ impl Scalars {
         let indent = visible.len() - entry.len();
         if entry.is_empty()
             || entry.starts_with('#')
-            || self.block_indent.is_some_and(|parent| indent > parent)
+            || self.multiline_indent.is_some_and(|parent| indent > parent)
         {
             return None;
         }
-        self.block_indent = None;
+        self.multiline_indent = None;
         let sequence = entry.strip_prefix("- ");
         let entry = sequence.unwrap_or(entry).trim_start();
-        let value = mapping_value(entry).or(sequence)?.trim_start();
+        let mapping = mapping_value(entry);
+        let value = mapping.or(sequence)?.trim_start();
+        // For "- key: value", a sibling key starts at the key indentation.
+        let parent = if mapping.is_some() {
+            visible.len() - entry.len()
+        } else {
+            indent
+        };
         if value.starts_with(['|', '>']) {
-            // For "- key: |", a sibling key starts at the key indentation.
-            self.block_indent = Some(if mapping_value(entry).is_some() {
-                visible.len() - entry.len()
-            } else {
-                indent
-            });
+            self.multiline_indent = Some(parent);
             return None;
         }
         let column = line.len() - value.len() + 1;
@@ -331,19 +343,39 @@ impl Scalars {
             .match_indices('#')
             .find(|(index, _)| *index == 0 || value.as_bytes()[index - 1].is_ascii_whitespace())
             .map_or(value.len(), |(index, _)| index);
-        Some((value[..end].trim_end(), column))
+        let value = value[..end].trim_end();
+        if !value.is_empty()
+            && remaining
+                .map(|line| (line, line.trim_start_matches(' ')))
+                .find(|(_, content)| !content.is_empty() && !content.starts_with('#'))
+                .is_some_and(|(line, content)| line.len() - content.len() > parent)
+        {
+            self.multiline_indent = Some(parent);
+            return None;
+        }
+        Some((value, column))
     }
 }
 
 fn mapping_value(entry: &str) -> Option<&str> {
-    let (key, value) = entry.split_once(':')?;
-    let key = key.trim_end();
-    (!key.is_empty()
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        && (value.is_empty() || value.starts_with([' ', '\t'])))
-    .then_some(value)
+    let value = if let Some(quote @ (b'\'' | b'"')) = entry.as_bytes().first().copied() {
+        let end = quoted_end(&entry[1..], quote)?;
+        entry[end + 2..]
+            .trim_start_matches([' ', '\t'])
+            .strip_prefix(':')?
+    } else {
+        let (key, value) = entry.split_once(':')?;
+        let key = key.trim_end();
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            return None;
+        }
+        value
+    };
+    (value.is_empty() || value.starts_with([' ', '\t'])).then_some(value)
 }
 
 fn quoted_end(value: &str, quote: u8) -> Option<usize> {
@@ -424,6 +456,88 @@ mod tests {
                 .count(),
             1
         );
+        assert!(snapshot.finish(&project, None).is_empty());
+    }
+
+    #[test]
+    fn quoted_yaml_keys_preserve_block_scalar_boundaries() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("jobs.yaml"),
+            concat!(
+                "\"documentation\": |\n",
+                "  handler: worker.py:run\n",
+                "steps:\n",
+                "  - 'escaped'' colon: in key': >-\n",
+                "      handler: worker.py\n",
+                "    \"handler\": 'selected.py:run'\n",
+            ),
+        )
+        .unwrap();
+        let project = discover(root.path(), &[], FileEntry::None);
+        let snapshot = Snapshot::read(&project, None);
+        assert_eq!(
+            snapshot.matches("worker.py", "worker", "run", true).count(),
+            0
+        );
+        let target = snapshot
+            .matches("selected.py", "selected", "run", true)
+            .next()
+            .unwrap();
+        assert_eq!(target.path, "jobs.yaml");
+        assert_eq!((target.at.line, target.at.column), (6, 17));
+        assert!(snapshot.finish(&project, None).is_empty());
+    }
+
+    #[test]
+    fn plain_yaml_matches_must_be_single_line() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("jobs.yaml"),
+            concat!(
+                "handler: worker.py:run\n",
+                "\n",
+                "  additional prose\n",
+                "steps:\n",
+                "  - worker.py\n",
+                "    more prose\n",
+                "  - handler: selected.py:run\n",
+                "    label: standalone\n",
+            ),
+        )
+        .unwrap();
+        let project = discover(root.path(), &[], FileEntry::None);
+        let snapshot = Snapshot::read(&project, None);
+        assert_eq!(
+            snapshot.matches("worker.py", "worker", "run", true).count(),
+            0
+        );
+        let target = snapshot
+            .matches("selected.py", "selected", "run", true)
+            .next()
+            .unwrap();
+        assert_eq!((target.at.line, target.at.column), (7, 14));
+        assert!(snapshot.finish(&project, None).is_empty());
+    }
+
+    #[test]
+    fn yaml_file_qualified_names_do_not_match_dotted_module_owners() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("jobs.yaml"),
+            "file: workflow.py:run\nmodule: workflow.py.run\n",
+        )
+        .unwrap();
+        let project = discover(root.path(), &[], FileEntry::None);
+        let snapshot = Snapshot::read(&project, None);
+        let matching_lines = |path, module| {
+            snapshot
+                .matches(path, module, "run", false)
+                .map(|reference| reference.at.line)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(matching_lines("workflow.py", "workflow"), [1]);
+        assert_eq!(matching_lines("workflow/py.py", "workflow.py"), [2]);
         assert!(snapshot.finish(&project, None).is_empty());
     }
 

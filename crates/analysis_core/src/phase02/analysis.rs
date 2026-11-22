@@ -2115,13 +2115,23 @@ impl<'a> Graph<'a> {
     }
 
     fn walk(&mut self, scope: ScopeId, expr: &Expression, before: Location) {
+        self.walk_expression(scope, expr, before, false);
+    }
+
+    fn walk_expression(
+        &mut self,
+        scope: ScopeId,
+        expr: &Expression,
+        before: Location,
+        as_callee: bool,
+    ) {
         match &expr.kind {
             ExpressionKind::Call {
                 function,
                 arguments,
                 keywords,
             } => {
-                self.walk(scope, function, before);
+                self.walk_expression(scope, function, before, true);
                 for expr in arguments
                     .iter()
                     .chain(keywords.iter().map(|(_, value)| value))
@@ -2134,10 +2144,10 @@ impl<'a> Graph<'a> {
                         let id = invocation.target;
                         if !invocation.verified {
                             self.direct.insert(id);
-                            self.record_direct_arguments(
-                                scope, id, before, expr.at, arguments, keywords,
-                            );
                         }
+                        self.record_direct_arguments(
+                            scope, id, before, expr.at, arguments, keywords,
+                        );
                         if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
                         {
                             let invocation = self.with_explicit_receiver(
@@ -2217,7 +2227,15 @@ impl<'a> Graph<'a> {
                     Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
                         match self.verification_member(scope, arguments, keywords, before, 0) {
                             Some((Value::Callable(invocation), at)) => {
-                                self.invoke(scope, invocation, "grep_dynamic", "possible", at);
+                                // An immediately called function gets its edge and
+                                // arguments from the enclosing call. A standalone
+                                // lookup still supplies possible external use.
+                                if !as_callee
+                                    || !matches!(self.symbols[invocation.target].binding,
+                                        Binding::Definition(def, _) if def.kind == DefinitionKind::Function)
+                                {
+                                    self.invoke(scope, invocation, "grep_dynamic", "possible", at);
+                                }
                                 let reference = (scope, invocation.target, at.line, at.column);
                                 if self.dynamic_references.len() < grep_verification::MAX_EVIDENCE {
                                     self.dynamic_references.insert(reference);
@@ -3815,7 +3833,8 @@ impl<'a> Graph<'a> {
         let independently_retained: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
-                (kind != "direct_call" && kind != "type_reference").then_some(target)
+                (!matches!(kind, "direct_call" | "grep_dynamic_call" | "type_reference"))
+                    .then_some(target)
             })
             .collect();
         for call in self

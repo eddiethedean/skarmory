@@ -152,6 +152,55 @@ fn grep_verification_honors_profile_defaults_and_explicit_flags() {
 }
 
 #[test]
+fn grep_verification_strict_gate_respects_yaml_scalar_context_and_file_identity() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(root.join("workflow.py"), "def run(): return 1\n").unwrap();
+    fs::create_dir(root.join("workflow")).unwrap();
+    fs::write(root.join("workflow/py.py"), "def run(): return 2\n").unwrap();
+
+    for (config, unused, matched) in [
+        (
+            "\"documentation\": |\n  handler: workflow.py:run\n",
+            &["workflow.py", "workflow/py.py"][..],
+            &[][..],
+        ),
+        (
+            "'handler': workflow.py:run\n",
+            &["workflow/py.py"][..],
+            &["workflow.py"][..],
+        ),
+    ] {
+        fs::write(root.join("jobs.yaml"), config).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+            .current_dir(root)
+            .env_remove("SKYLOS_CONFIG_FILE")
+            .args([".", "--profile", "skylos-0.3", "--strict"])
+            .output()
+            .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{config}: {report}");
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(report["gate"]["passed"], false);
+        let unused_files: Vec<_> = report["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| finding["file"].as_str().unwrap())
+            .collect();
+        assert_eq!(unused_files, unused, "{config}: {report}");
+        let matched_files: Vec<_> = report["grep_verification_evidence"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|evidence| evidence["definition_path"].as_str().unwrap())
+            .collect();
+        assert_eq!(matched_files, matched, "{config}: {report}");
+    }
+}
+
+#[test]
 fn grep_verification_limit_blocks_the_strict_gate() {
     let project = skylos_fixture();
     fs::write(

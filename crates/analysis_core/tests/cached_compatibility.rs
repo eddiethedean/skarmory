@@ -107,23 +107,24 @@ fn grep_roots_and_literal_dispatch_follow_current_configuration_with_a_warm_cach
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
-    fs::write(
-        project.path().join("workflow.py"),
-        concat!(
-            "import plugin as handler\n",
-            "# getattr(handler, 'lookalike')()\n",
-            "example = \"getattr(handler, 'lookalike')()\"\n",
-            "def queue_task():\n",
-            "    return getattr(handler, 'process')()\n",
-        ),
-    )
-    .unwrap();
+    let workflow = project.path().join("workflow.py");
+    let workflow_source = concat!(
+        "import plugin as handler\n",
+        "# getattr(handler, 'lookalike')()\n",
+        "example = \"getattr(handler, 'lookalike')()\"\n",
+        "def queue_task():\n",
+        "    getattr(handler, 'dispatch')(handler.done)\n",
+        "    return getattr(handler, 'process')()\n",
+    );
+    fs::write(&workflow, workflow_source).unwrap();
     fs::write(
         project.path().join("plugin.py"),
         concat!(
             "def process():\n    return helper(terminal)\n",
             "def helper(callback):\n    return callback()\n",
             "def terminal():\n    return 42\n",
+            "def dispatch(callback):\n    return callback()\n",
+            "def done():\n    return 1\n",
             "def lookalike():\n    return 0\n",
         ),
     )
@@ -174,9 +175,10 @@ fn grep_roots_and_literal_dispatch_follow_current_configuration_with_a_warm_cach
         ["other.process".into(), "plugin.lookalike".into()].into()
     );
     let evidence = initial["grep_verification_evidence"].as_array().unwrap();
-    assert_eq!(evidence.len(), 2);
+    assert_eq!(evidence.len(), 3);
     for (qualified, kind, path, line, column) in [
-        ("plugin.process", "dynamic_member", "workflow.py", 5, 29),
+        ("plugin.dispatch", "dynamic_member", "workflow.py", 5, 22),
+        ("plugin.process", "dynamic_member", "workflow.py", 6, 29),
         (
             "workflow.queue_task",
             "configuration_module",
@@ -209,6 +211,34 @@ fn grep_roots_and_literal_dispatch_follow_current_configuration_with_a_warm_cach
         })
     );
 
+    for use_of_dispatch in [
+        "getattr(handler, 'dispatch')\n    getattr(handler, 'dispatch')(handler.done)",
+        "getattr(handler, 'dispatch')(None)",
+    ] {
+        fs::write(
+            &workflow,
+            workflow_source.replace(
+                "getattr(handler, 'dispatch')(handler.done)",
+                use_of_dispatch,
+            ),
+        )
+        .unwrap();
+        let report = run(&options);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unresolved_call"
+                        && issue["path"] == "plugin.py"
+                        && issue["line"] == 8
+                })
+        );
+    }
+    fs::write(&workflow, workflow_source).unwrap();
+
     fs::remove_file(jobs).unwrap();
     let mut edited = run(&parallel);
     assert_eq!(normalized(&mut edited)["hits"], 3);
@@ -219,5 +249,5 @@ fn grep_roots_and_literal_dispatch_follow_current_configuration_with_a_warm_cach
         0
     );
     assert!(edited.get("grep_verification_evidence").is_none());
-    assert_eq!(unused(&edited).len(), 6);
+    assert_eq!(unused(&edited).len(), 8);
 }
