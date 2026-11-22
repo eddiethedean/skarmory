@@ -142,6 +142,7 @@ struct Scope<'a> {
     body: &'a [Statement],
     names: BTreeMap<&'a str, Vec<SymbolId>>,
     namespace_reads: BTreeMap<[usize; 2], NamespaceRead>,
+    namespace_copy_cutoffs: BTreeMap<[usize; 2], [usize; 2]>,
     namespace_captures: OnceCell<Vec<SymbolId>>,
     namespace_exclusions: Vec<RangeInclusive<[usize; 2]>>,
     namespace_escape_exclusions: BTreeMap<[usize; 2], Vec<RangeInclusive<[usize; 2]>>>,
@@ -429,6 +430,7 @@ impl<'a> Graph<'a> {
             body,
             names: BTreeMap::new(),
             namespace_reads: BTreeMap::new(),
+            namespace_copy_cutoffs: BTreeMap::new(),
             namespace_captures: OnceCell::new(),
             namespace_exclusions: Vec::new(),
             namespace_escape_exclusions: BTreeMap::new(),
@@ -2106,10 +2108,15 @@ impl<'a> Graph<'a> {
                                 Value::Mapping(result)
                             }
                             Value::LocalNamespace(owner, first) => {
+                                let cutoff = self.scopes[scope]
+                                    .namespace_copy_cutoffs
+                                    .get(&site.1)
+                                    .copied()
+                                    .unwrap_or(site.1);
                                 Value::NamespaceCopy(Box::new(NamespaceCopy {
                                     owner,
                                     first,
-                                    copied_at: site,
+                                    copied_at: (scope, cutoff),
                                     site,
                                     keywords: named,
                                 }))
@@ -2906,6 +2913,15 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name) if is_known_call(&name) => {
+                        let row = &mut self.scopes[scope];
+                        if name == "builtins.dict"
+                            && let Some((&read, _)) = row.namespace_reads.last_key_value()
+                            && read > position(expr.at)
+                        {
+                            // The call copies after all arguments have run,
+                            // including any reads that refreshed its input.
+                            row.namespace_copy_cutoffs.insert(position(expr.at), read);
+                        }
                         if let Value::Object(object, ObjectKind::App) =
                             self.identity(scope, expr, before, 0)
                         {
@@ -5482,6 +5498,37 @@ def snapshot():
             names(&result, Category::Function),
             ["after_copy", "callback"]
         );
+    }
+
+    #[test]
+    fn namespace_copy_includes_refreshes_during_argument_evaluation() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build", "snapshot"]
+
+def handle():
+    return 42
+
+def build():
+    saved = locals()
+    def action():
+        return handle()
+    return dict(saved, size=len(locals()))
+
+def snapshot():
+    saved = locals()
+    def too_late():
+        return 42
+    return dict(saved), len(locals())
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["too_late"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "pkg.build.action" && entry.kind == "local_namespace"
+        }));
     }
 
     #[test]

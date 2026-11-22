@@ -173,7 +173,7 @@ In both Skylos profiles, zero-argument calls to the built-in `locals()` and
 call site, including captured cells. A namespace that escapes can retain
 possible callable targets with evidence, including coroutines and values
 supplied by selected callers and executor submissions. Dictionary copies keep
-the namespace entries present at the copy and apply explicit keyword
+the entries present after argument evaluation and apply explicit keyword
 overrides. Unresolved values and escaping results of unsupported namespace
 expressions, such as a dictionary union, report incomplete coverage. Length
 checks and provable truth tests can read the namespace without exposing its
