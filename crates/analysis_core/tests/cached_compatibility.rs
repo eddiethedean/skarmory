@@ -78,6 +78,168 @@ fn edits_rebuild_roots_and_recursive_reachability() {
 }
 
 #[test]
+fn conditional_truth_tests_follow_instance_hooks() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("flags.py"),
+        concat!(
+            "def bool_helper():\n    return True\n\n",
+            "def shadowed_length():\n    return 0\n\n",
+            "def length_helper():\n    return 1\n\n",
+            "class Base:\n    def __bool__(self):\n        return bool_helper()\n",
+            "    def __len__(self):\n        return shadowed_length()\n\n",
+            "class Flag(Base):\n    pass\n\n",
+            "class Sized:\n    def __len__(self):\n        return self.measure()\n",
+            "    def measure(self):\n        return length_helper()\n",
+        ),
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    fs::write(
+        &main,
+        concat!(
+            "from flags import Flag, Sized\n",
+            "flag = Flag()\n",
+            "if flag:\n    pass\n",
+            "if not (True and Sized()):\n    pass\n",
+        ),
+    )
+    .unwrap();
+    let (active, cold) = compare(project.path(), cache.path());
+    assert_eq!(cold["misses"], 2);
+    assert_eq!(active["coverage"]["status"], "complete", "{active}");
+    assert!(!finds(&active, "bool_helper"), "{active}");
+    assert!(!finds(&active, "length_helper"), "{active}");
+    assert!(finds(&active, "shadowed_length"));
+    let evidence = active["dead_code_evidence"].as_array().unwrap();
+    for method in ["flags.Base.__bool__", "flags.Sized.__len__"] {
+        assert!(
+            evidence
+                .iter()
+                .any(|item| { item["full_name"] == method && item["kind"] == "truth_test" }),
+            "{evidence:?}"
+        );
+    }
+    let (again, warm) = compare(project.path(), cache.path());
+    assert_eq!(warm["hits"], 2);
+    assert_eq!(again, active);
+
+    fs::write(
+        &main,
+        concat!(
+            "from flags import Flag\nFlag()\n",
+            "if False and Flag():\n    pass\n",
+            "disabled = False\n",
+            "if (len([1]) and disabled) and Flag():\n    pass\n",
+            "enabled = True\n",
+            "if (len([]) or enabled) or Flag():\n    pass\n",
+        ),
+    )
+    .unwrap();
+    let (dormant, edited) = compare(project.path(), cache.path());
+    assert_eq!(edited["hits"], 1);
+    assert_eq!(dormant["coverage"]["status"], "complete", "{dormant}");
+    assert!(finds(&dormant, "bool_helper"));
+    assert!(finds(&dormant, "length_helper"));
+}
+
+#[test]
+fn builtin_values_do_not_dispatch_unrelated_truth_hooks() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("flags.py"),
+        "class Flag:\n    def __bool__(self):\n        return True\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("main.py"),
+        concat!(
+            "settings = {'active': True}\n",
+            "if dict(settings):\n    pass\n",
+            "if list([1]):\n    pass\n",
+            "if tuple([1]):\n    pass\n",
+            "if range(3):\n    pass\n",
+            "count = int(1)\nif count:\n    pass\n",
+            "same = 1 == 1\nif same:\n    pass\n",
+            "def unused():\n    pass\n",
+        ),
+    )
+    .unwrap();
+
+    let (report, _) = compare(project.path(), cache.path());
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert!(finds(&report, "unused"));
+    let (warm, stats) = compare(project.path(), cache.path());
+    assert_eq!(stats["hits"], 2);
+    assert_eq!(warm, report);
+}
+
+#[test]
+fn custom_length_calls_do_not_make_an_ordering_guard_complete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    let main = project.path().join("main.py");
+    let source = concat!(
+        "def load_count():\n    return 1\n\n",
+        "class RankedItems:\n",
+        "    def __len__(self):\n        return load_count()\n",
+        "    def __lt__(self, other):\n        return len(self) < len(other)\n",
+    );
+    fs::write(
+        &main,
+        format!("{source}\nif len(RankedItems()) <= 0:\n    pass\n"),
+    )
+    .unwrap();
+    let (custom, _) = compare(project.path(), cache.path());
+    assert_eq!(custom["coverage"]["status"], "incomplete", "{custom}");
+    let issues = custom["coverage"]["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{custom}");
+    assert_eq!(issues[0]["kind"], "unresolved_comparison");
+    assert_eq!(custom["unused_functions"], serde_json::json!([]));
+
+    fs::write(&main, format!("{source}\nif len([1]) <= 0:\n    pass\n")).unwrap();
+    let (builtin, _) = compare(project.path(), cache.path());
+    assert_eq!(builtin["coverage"]["status"], "complete", "{builtin}");
+    assert!(finds(&builtin, "load_count"));
+}
+
+#[test]
+fn reachable_opaque_truth_tests_are_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    let main = project.path().join("main.py");
+    let source = concat!(
+        "def observed():\n    return True\n\n",
+        "class Flag:\n    def __bool__(self):\n        return observed()\n\n",
+        "def dict():\n    return Flag()\n\n",
+        "def check():\n    if dict():\n        pass\n\n",
+        "if __name__ == '__main__':\n    print('ready')\n",
+        "if len([1]):\n    pass\n",
+        "ordered = 0 < 1\nif ordered:\n    pass\n",
+        "token = object()\nis_empty = token is None\nif is_empty:\n    pass\n",
+    );
+    fs::write(&main, source).unwrap();
+    let (dormant, _) = compare(project.path(), cache.path());
+    assert_eq!(dormant["coverage"]["status"], "complete", "{dormant}");
+    assert!(finds(&dormant, "observed"));
+
+    fs::write(&main, format!("{source}check()\n")).unwrap();
+    let (active, _) = compare(project.path(), cache.path());
+    assert_eq!(active["coverage"]["status"], "incomplete", "{active}");
+    let issues = active["coverage"]["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{active}");
+    assert_eq!(issues[0]["kind"], "unresolved_truth_test");
+    assert_eq!(issues[0]["line"], 12);
+    assert_eq!(active["unused_functions"], serde_json::json!([]));
+}
+
+#[test]
 fn reachable_ordering_dispatch_stays_incomplete() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

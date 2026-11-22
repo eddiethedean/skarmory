@@ -80,6 +80,12 @@ non-use makes the relevant analysis incomplete. Reuse Phase 0.1 source
 snapshots and coverage diagnostics. Static analysis reads sources and
 configuration without importing or executing target code.
 
+In `if` conditions, a resolved instance can call a local `__bool__` method or
+fall back to `__len__` when `__bool__` is absent. The analyzer retains the method
+and its reachable helpers without assuming the truth-test result. A reachable
+test that could dispatch to an unresolved selected hook makes coverage
+incomplete.
+
 Other framework and library APIs, namespace-package and arbitrary import-hook
 resolution, dynamic plugin loading, opaque lazy exports, text-based grep
 verification, arbitrary Python visitors and progress callbacks, and non-Python

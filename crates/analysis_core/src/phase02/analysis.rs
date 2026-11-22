@@ -50,6 +50,12 @@ enum Value {
     Unknown,
 }
 
+impl Value {
+    fn is_builtin_scalar(&self) -> bool {
+        matches!(self, Self::Scalar | Self::Bool(_) | Self::Text(_))
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Invocation {
     target: SymbolId,
@@ -262,6 +268,7 @@ pub(super) fn analyze_with_verification(
         parameter_calls: Vec::new(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
+        has_truth_hooks: false,
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
     };
@@ -287,6 +294,7 @@ pub(super) fn analyze_with_verification(
             match symbol.name.text.as_str() {
                 "__lt__" | "__le__" | "__gt__" | "__ge__" => graph.has_ordering_hooks = true,
                 "__eq__" => graph.has_equality_hooks = true,
+                "__bool__" | "__len__" => graph.has_truth_hooks = true,
                 _ => {}
             }
         }
@@ -340,6 +348,7 @@ struct Graph<'a> {
     parameter_calls: Vec<ParameterCall>,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
+    has_truth_hooks: bool,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
 }
@@ -1062,7 +1071,12 @@ impl<'a> Graph<'a> {
         self.scopes[scope].edges.iter().filter_map(|edge| {
             if matches!(
                 edge.kind,
-                "direct_call" | "constructor" | "decorator" | "subclass_hook" | "grep_dynamic_call"
+                "direct_call"
+                    | "constructor"
+                    | "decorator"
+                    | "subclass_hook"
+                    | "truth_test"
+                    | "grep_dynamic_call"
             ) && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
                 Some(body)
@@ -1641,6 +1655,17 @@ impl<'a> Graph<'a> {
             })
     }
 
+    fn ordering_may_call_method(&self, left: &Value, right: &Value) -> bool {
+        let operands = [left, right];
+        // Only two potential sequences can invoke element equality during ordering.
+        let unknown_may_dispatch = self.has_ordering_hooks
+            || (self.has_equality_hooks && !operands.into_iter().any(Value::is_builtin_scalar));
+        operands.into_iter().any(|operand| match operand {
+            Value::Unknown | Value::OperatorResult => unknown_may_dispatch,
+            _ => !operand.is_builtin_scalar(),
+        })
+    }
+
     /// None means the attribute is absent in a fully resolved base chain.
     fn class_member(&mut self, id: SymbolId, name: &str, depth: usize) -> Option<Value> {
         if depth >= MAX_BINDING_CHAIN {
@@ -1858,6 +1883,66 @@ impl<'a> Graph<'a> {
                     .map_or(Value::Unknown, |(value, _)| value),
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
                 Value::Provider(name)
+                    if keywords.is_empty()
+                        && matches!(name.as_str(), "builtins.bool" | "builtins.len") =>
+                {
+                    match arguments.as_slice() {
+                        [] if name == "builtins.bool" => Value::Scalar,
+                        [argument] => {
+                            let value = recurse(self, argument);
+                            // A scalar result alone cannot account for a custom truth or length call.
+                            if value.is_builtin_scalar()
+                                || matches!(value, Value::Sequence(_) | Value::Mapping(_))
+                            {
+                                Value::Scalar
+                            } else {
+                                Value::Unknown
+                            }
+                        }
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name) if name == "builtins.dict" && keywords.is_empty() => {
+                    match arguments.as_slice() {
+                        [] => Value::Mapping(Vec::new()),
+                        [argument] => match recurse(self, argument) {
+                            value @ Value::Mapping(_) => value,
+                            _ => Value::Unknown,
+                        },
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name)
+                    if keywords.is_empty()
+                        && matches!(name.as_str(), "builtins.list" | "builtins.tuple") =>
+                {
+                    match arguments.as_slice() {
+                        [] => Value::Sequence(Vec::new()),
+                        [argument] => match recurse(self, argument) {
+                            value @ Value::Sequence(_) => value,
+                            _ => Value::Unknown,
+                        },
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name)
+                    if keywords.is_empty()
+                        && matches!(
+                            name.as_str(),
+                            "builtins.range"
+                                | "builtins.int"
+                                | "builtins.float"
+                                | "builtins.str"
+                                | "builtins.bytes"
+                                | "builtins.print"
+                        )
+                        && arguments
+                            .iter()
+                            .all(|argument| recurse(self, argument).is_builtin_scalar()) =>
+                {
+                    Value::Scalar
+                }
+                Value::Provider(name)
                     if matches!(
                         name.as_str(),
                         "fastapi.FastAPI" | "fastapi.applications.FastAPI"
@@ -1923,16 +2008,19 @@ impl<'a> Graph<'a> {
             } => {
                 let left = recurse(self, left);
                 let right = recurse(self, right);
-                let same = match (left, right) {
+                let same = match (&left, &right) {
                     (Value::Text(left), Value::Text(right)) if !identity => left == right,
                     (Value::Bool(left), Value::Bool(right)) => left == right,
+                    _ if *identity || (left.is_builtin_scalar() && right.is_builtin_scalar()) => {
+                        return Value::Scalar;
+                    }
                     _ => return Value::Unknown,
                 };
                 Value::Bool(same == *equal)
             }
             ExpressionKind::Not(value) => match recurse(self, value) {
                 Value::Bool(value) => Value::Bool(!value),
-                _ => Value::Unknown,
+                _ => Value::Scalar,
             },
             ExpressionKind::Boolean { and, values } => {
                 for value in values {
@@ -1944,7 +2032,16 @@ impl<'a> Graph<'a> {
                 }
                 Value::Bool(*and)
             }
-            ExpressionKind::Await(_) | ExpressionKind::OrderingComparison { .. } => Value::Unknown,
+            ExpressionKind::OrderingComparison { left, right } => {
+                let left = recurse(self, left);
+                let right = recurse(self, right);
+                if self.ordering_may_call_method(&left, &right) {
+                    Value::Unknown
+                } else {
+                    Value::Scalar
+                }
+            }
+            ExpressionKind::Await(_) => Value::Unknown,
         }
     }
 
@@ -2135,6 +2232,80 @@ impl<'a> Graph<'a> {
 
     fn walk(&mut self, scope: ScopeId, expr: &Expression, before: Location) {
         self.walk_expression(scope, expr, before, false);
+    }
+
+    fn walk_if_test(
+        &mut self,
+        scope: ScopeId,
+        test: &Expression,
+        before: Location,
+    ) -> Option<bool> {
+        match &test.kind {
+            ExpressionKind::Not(operand) => self
+                .walk_if_test(scope, operand, before)
+                .map(|value| !value),
+            ExpressionKind::Boolean { and, values } => {
+                let mut known = true;
+                for operand in values {
+                    match self.walk_if_test(scope, operand, before) {
+                        Some(value) if value != *and => return Some(value),
+                        Some(_) => {}
+                        None => known = false,
+                    }
+                }
+                known.then_some(*and)
+            }
+            _ => {
+                self.walk(scope, test, before);
+                let value = self.identity(scope, test, before, 0);
+                self.record_truth_test(scope, test, &value);
+                match value {
+                    Value::Bool(value) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    fn record_truth_test(&mut self, scope: ScopeId, test: &Expression, value: &Value) {
+        match value {
+            Value::Instance(class) => {
+                // Fall back to length only after proving that __bool__ is absent.
+                let Some(hook) = self
+                    .class_member(*class, "__bool__", 0)
+                    .or_else(|| self.class_member(*class, "__len__", 0))
+                else {
+                    return;
+                };
+                if let Value::Callable(invocation) = hook
+                    && !invocation.verified
+                    && matches!(self.symbols[invocation.target].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function && definition.decorators.is_empty())
+                {
+                    let invocation = if self.receiver_parameter(invocation.target).is_some() {
+                        invocation.bind_receiver(Receiver::Bound(*class))
+                    } else {
+                        invocation
+                    };
+                    self.invoke(scope, invocation, "truth_test", "certain", test.at);
+                    return;
+                }
+            }
+            // Comparison expressions check their own dispatch during the walk.
+            Value::Unknown | Value::OperatorResult
+                if self.has_truth_hooks
+                    && !matches!(
+                        test.kind,
+                        ExpressionKind::Compare { .. } | ExpressionKind::OrderingComparison { .. }
+                    ) => {}
+            _ => return,
+        }
+        self.scope_issue(
+            scope,
+            test.at,
+            "unresolved_truth_test",
+            "truth-value method dispatch is outside the bounded model",
+        );
     }
 
     fn walk_expression(
@@ -2351,21 +2522,9 @@ impl<'a> Graph<'a> {
             ExpressionKind::OrderingComparison { left, right } => {
                 self.walk(scope, left, before);
                 self.walk(scope, right, before);
-                let operands = [
-                    self.identity(scope, left, before, 0),
-                    self.identity(scope, right, before, 0),
-                ];
-                let is_scalar = |operand: &Value| {
-                    matches!(operand, Value::Scalar | Value::Bool(_) | Value::Text(_))
-                };
-                // Only two potential sequences can invoke element equality during ordering.
-                let unknown_may_dispatch = self.has_ordering_hooks
-                    || (self.has_equality_hooks && !operands.iter().any(is_scalar));
-                let may_dispatch = operands.iter().any(|operand| match operand {
-                    Value::Unknown | Value::OperatorResult => unknown_may_dispatch,
-                    _ => !is_scalar(operand),
-                });
-                if may_dispatch {
+                let left = self.identity(scope, left, before, 0);
+                let right = self.identity(scope, right, before, 0);
+                if self.ordering_may_call_method(&left, &right) {
                     self.scope_issue(
                         scope,
                         expr.at,
@@ -2648,12 +2807,10 @@ impl<'a> Graph<'a> {
                     body,
                     otherwise,
                 } => {
-                    self.walk(scope, test, at);
-                    let test = self.identity(scope, test, at, 0);
-                    let stop = match test {
-                        Value::Bool(true) => self.suite(scope, body),
-                        Value::Bool(false) => self.suite(scope, otherwise),
-                        _ => self.suite(scope, body) & self.suite(scope, otherwise),
+                    let stop = match self.walk_if_test(scope, test, at) {
+                        Some(true) => self.suite(scope, body),
+                        Some(false) => self.suite(scope, otherwise),
+                        None => self.suite(scope, body) & self.suite(scope, otherwise),
                     };
                     if stop {
                         return true;
