@@ -83,10 +83,12 @@ configuration without importing or executing target code.
 Other framework and library APIs, namespace-package and arbitrary import-hook
 resolution, dynamic plugin loading, opaque lazy exports, text-based grep
 verification, arbitrary Python visitors and progress callbacks, and non-Python
-rules are outside the declared 0.2 comparison. CI gates and baseline policy,
-diff and runtime evidence, cleanup, and resident sessions follow later
-milestones. Document unsupported observations in the result when they affect
-the requested scan.
+rules are outside the declared 0.2 comparison. The [Phase 0.3 plan](phase-03.md)
+schedules selected extensions and dead-code-specific diff reports, baselines,
+gates, runtime evidence, and cleanup previews. Resident sessions and general
+developer integrations are scheduled in [Phase 0.6](roadmap.md#06-developer-workflows).
+Document unsupported observations in the result when they affect the requested
+scan.
 
 ## Configuration, findings, and output
 

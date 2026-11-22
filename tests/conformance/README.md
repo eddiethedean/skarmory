@@ -5,6 +5,11 @@ prototype. Run `python tests/conformance/check_phase0.py target/debug/skarmory`
 after building the CLI. The [reference harness](../../benchmarks/phase0.md)
 records the pinned Skylos comparison alongside those expectations.
 
+The [Phase 0.3 release gate](../../docs/phase-03.md#required-upstream-test-gate)
+requires every pinned Skylos dead-code test to pass against Skarmory. Preserve
+upstream expectations and publish per-case evidence alongside the independent
+semantic controls described here.
+
 ## Two separate questions
 
 **Compatibility:** does Skarmory reproduce the declared observable behavior of

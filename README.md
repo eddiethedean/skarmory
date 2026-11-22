@@ -87,6 +87,43 @@ for supported syntax, import resolution, and scan limits. The [Skylos 5.7.0
 comparison](https://github.com/eddiethedean/skarmory/blob/main/docs/phase-01-reference.md)
 records the two fixtures checked against the pinned baseline.
 
+## Dead-code features
+
+The table compares released Skarmory 0.1.0 and its in-development Phase 0.2
+profile with the pinned Skylos 5.7.0 baseline. A dash means the feature is
+unavailable in that version or profile.
+
+| Feature | Skarmory 0.1.0 | Skarmory Phase 0.2 (in development) | Skylos 5.7.0 |
+| --- | --- | --- | --- |
+| Unreachable functions | Bounded reachability from declared roots | Functions and unreachable groups within the supported call graph | Unused functions and unreachable groups |
+| Unused methods and classes | — | Module-level classes and selected method dispatch patterns | Unused classes and methods |
+| Unused imports | — | Supported import bindings and aliases | Yes |
+| Unused variables | — | Supported lexical bindings | Yes |
+| Unused parameters | — | Supported function signatures and reads | Yes |
+| Unused declared dependencies | — | — | Python dependency check (`SKY-U005`) with quality scanning |
+| Empty Python files | — | Empty, comment-only, and docstring-only files, with entry-file exemptions | Yes |
+| Library exports | Declared public callables and resolvable literal `__all__` | Explicit re-exports, literal `__all__`, and selected literal lazy exports | Public API and export detection |
+| pytest | — | Statically collected tests and selected fixture patterns | Test and fixture awareness |
+| FastAPI | — | Selected routes and router registration | Framework-aware analysis |
+| Django and Flask | — | — | Framework-aware analysis |
+| Finding controls | — | Confidence thresholds, whitelists, and inline ignores | Confidence thresholds, whitelists, and inline ignores |
+| Grep verification and runtime evidence | — | — | Text-based verification and optional tracing or coverage |
+| Reports | Native JSON | Compatibility JSON, strict CLI exit status, and SARIF | JSON, strict CLI exit status, and SARIF |
+| Git diff and baseline workflows | — | — | Changed-file scans, baselines, and configurable gates |
+| Cleanup workflow | — | — | Review queue and patch previews for supported findings |
+| JavaScript and TypeScript dead code | — | — | Unused files (`SKY-E003`) and unnecessary exports (`SKY-E004`) |
+
+Phase 0.2 also has limits within its supported Python features. Opaque lazy
+exports, dynamic plugin loading, custom import hooks, and unresolved receiver
+dispatch can make a scan incomplete when they affect reachability.
+
+See the [Phase 0.2 scope](docs/phase-02.md),
+[tested matches and differences](docs/phase-02-reference.md), and
+[Skylos 5.7.0 reference inventory](docs/skylos-5.7.0-contract.md) for details.
+The [Phase 0.3 plan](docs/phase-03.md) schedules the missing dead-code features.
+Its release gate requires all pinned Skylos dead-code tests to pass against
+Skarmory.
+
 ## Development
 
 Use Python 3.11 or newer. The repository pins Rust 1.98.1 with `rustfmt`
@@ -122,6 +159,8 @@ PYTHONPATH=python python -m unittest discover -s tests/python -v
 
 - [Phase 0.2](docs/phase-02.md) describes the development Skylos profile and
   opt-in module-fact cache.
+- [Phase 0.3](docs/phase-03.md) plans expanded dead-code coverage, verification,
+  and workflows.
 - [Contributing](CONTRIBUTING.md) covers development, testing, and publishing.
 - [Architecture](docs/architecture.md) describes the Rust engine and Python SDK.
 - [Roadmap](docs/roadmap.md) lists milestones and release gates.
