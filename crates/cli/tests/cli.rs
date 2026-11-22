@@ -1802,7 +1802,22 @@ fn skylos_retains_members_of_exported_modules_and_literal_containers() {
     fs::create_dir(&api).unwrap();
     fs::write(
         api.join("__init__.py"),
-        "import pkg.api.attached\n\ndef _used():\n    pass\n\ndef run():\n    _used()\n\ndef _unused():\n    pass\n",
+        r#"import pkg.api.attached
+
+def _used():
+    pass
+
+def run():
+    _used()
+
+def _unused():
+    pass
+
+def __getattr__(name):
+    if name == 'attached':
+        return _unused
+    raise AttributeError(name)
+"#,
     )
     .unwrap();
     fs::write(api.join("attached.py"), "def public():\n    pass\n").unwrap();
@@ -1837,6 +1852,128 @@ fn skylos_retains_members_of_exported_modules_and_literal_containers() {
             "{report}"
         );
     }
+}
+
+#[test]
+fn skylos_retains_public_methods_of_exported_instances() {
+    let project = skylos_fixture();
+    let root = project.path();
+    fs::remove_file(root.join("main.py")).unwrap();
+    let pkg = root.join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    let source = r#"def _live():
+    pass
+
+class Client:
+    def run(self):
+        _live()
+
+    def _internal(self):
+        pass
+
+client = Client()
+"#;
+
+    for (exports, expected) in [
+        ("__all__ = ['client']", vec!["pkg.Client._internal"]),
+        (
+            "",
+            vec!["pkg.Client._internal", "pkg.Client.run", "pkg._live"],
+        ),
+    ] {
+        fs::write(pkg.join("__init__.py"), format!("{source}\n{exports}\n")).unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        let mut unused: Vec<_> = report["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["full_name"].as_str().unwrap())
+            .collect();
+        unused.sort_unstable();
+        assert_eq!(unused, expected, "{report}");
+        assert_eq!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == "pkg.Client.run"
+                    && item["kind"] == "public_export"
+                    && item["certainty"] == "possible"),
+            !exports.is_empty(),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn skylos_retains_effective_lazy_members_of_exported_modules() {
+    let project = skylos_fixture();
+    let root = project.path();
+    fs::remove_file(root.join("main.py")).unwrap();
+    let pkg = root.join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    let source = r#"def _live():
+    pass
+
+def _shadowed():
+    pass
+
+ready = True
+
+def __getattr__(name):
+    if name == 'run':
+        return _live
+    if name == 'ready':
+        return _shadowed
+"#;
+
+    for (initializer, expected) in [
+        ("from . import api as api\n", vec!["pkg.api._shadowed"]),
+        ("", vec!["pkg.api._live", "pkg.api._shadowed"]),
+    ] {
+        fs::write(pkg.join("__init__.py"), initializer).unwrap();
+        fs::write(
+            pkg.join("api.py"),
+            format!("{source}    raise AttributeError(name)\n"),
+        )
+        .unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        let mut unused: Vec<_> = report["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["full_name"].as_str().unwrap())
+            .collect();
+        unused.sort_unstable();
+        assert_eq!(unused, expected, "{report}");
+        assert_eq!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == "pkg.api._live"
+                    && item["kind"] == "explicit_re_export"
+                    && item["certainty"] == "possible"),
+            !initializer.is_empty(),
+            "{report}"
+        );
+    }
+
+    fs::write(pkg.join("__init__.py"), "from . import api as api\n").unwrap();
+    fs::write(pkg.join("api.py"), format!("{source}    return _live\n")).unwrap();
+    let output = skylos(root, &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(2), "{report}");
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert!(report["analysis_errors"].as_array().unwrap().iter().any(
+        |issue| issue["kind"] == "unresolved_lazy_export" && issue["file"] == "pkg/api.py"
+    ), "{report}");
 }
 
 #[test]

@@ -1423,6 +1423,17 @@ impl<'a> Graph<'a> {
     }
 
     fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
+        self.lazy_dispatch(id, before, |name, scope, body| {
+            (name == member).then(|| Self::lazy_branch(scope, body))
+        })
+    }
+
+    fn lazy_dispatch(
+        &self,
+        id: SymbolId,
+        before: Location,
+        mut visit: impl FnMut(&'a str, ScopeId, &'a [Statement]) -> Option<LazyMember<'a>>,
+    ) -> LazyMember<'a> {
         if self.binding_depends_on_branch(id, before) {
             return LazyMember::Conditional;
         }
@@ -1479,24 +1490,31 @@ impl<'a> Graph<'a> {
             if name != &parameter.text {
                 break;
             }
-            if text == member {
-                if let Some(Statement {
-                    kind: StatementKind::Return(Some(value)),
-                    at,
-                }) = body.last()
-                    && body[..body.len() - 1]
-                        .iter()
-                        .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
-                {
-                    return LazyMember::Branch(LazyBranch {
-                        scope,
-                        imports: &body[..body.len() - 1],
-                        value,
-                        at: *at,
-                    });
-                }
-                return LazyMember::Unknown;
+            if let Some(result) = visit(text, scope, body) {
+                return result;
             }
+        }
+        LazyMember::Unknown
+    }
+
+    fn lazy_branch(scope: ScopeId, body: &'a [Statement]) -> LazyMember<'a> {
+        if let Some((
+            Statement {
+                kind: StatementKind::Return(Some(value)),
+                at,
+            },
+            imports,
+        )) = body.split_last()
+            && imports
+                .iter()
+                .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
+        {
+            return LazyMember::Branch(LazyBranch {
+                scope,
+                imports,
+                value,
+                at: *at,
+            });
         }
         LazyMember::Unknown
     }
@@ -3059,7 +3077,8 @@ impl<'a> Graph<'a> {
             .map(|export| (export, "certain"))
             .collect();
         let mut modules = BTreeSet::new();
-        let mut classes = BTreeSet::new();
+        let mut exported_constructors = BTreeSet::new();
+        let mut visited_instances = BTreeSet::new();
         while let Some((
             Export {
                 scope,
@@ -3074,12 +3093,15 @@ impl<'a> Graph<'a> {
                 Value::Callable(invocation) => {
                     self.invoke(scope, invocation, kind, certainty, at);
                     let class = invocation.target;
-                    if self.is_class(class) && classes.insert(class) {
+                    if self.is_class(class) && exported_constructors.insert(class) {
                         self.constructor(scope, class, "constructor", "possible", at);
-                        self.exported_class_members(class, scope, at)
+                        vec![Value::Instance(class)]
                     } else {
                         Vec::new()
                     }
+                }
+                Value::Instance(class) if visited_instances.insert(class) => {
+                    self.exported_class_members(class, scope, at)
                 }
                 Value::Module(file) if modules.insert(file) => {
                     self.exported_module_members(file, initialization_edges)
@@ -3141,6 +3163,26 @@ impl<'a> Graph<'a> {
         file: usize,
         initialization_edges: &[Vec<ScopeId>],
     ) -> Vec<Value> {
+        let hook = self.local(file, "__getattr__", END);
+        let mut lazy_members = BTreeMap::new();
+        if let Some(hook) = hook {
+            let fallback = self.lazy_dispatch(hook, END, |name, scope, body| {
+                if !name.starts_with('_') && self.local(file, name, END).is_none() {
+                    lazy_members
+                        .entry(name)
+                        .or_insert_with(|| Self::lazy_branch(scope, body));
+                }
+                None
+            });
+            if !matches!(fallback, LazyMember::Missing) {
+                self.scope_issue(
+                    file,
+                    self.symbols[hook].name.at,
+                    "unresolved_lazy_export",
+                    "public lazy module members could not be bounded",
+                );
+            }
+        }
         let names: Vec<_> = self.scopes[file]
             .names
             .iter()
@@ -3192,14 +3234,38 @@ impl<'a> Graph<'a> {
                     SubmoduleAttachment::Attached(import) => {
                         self.read.insert(import);
                         members.push(Value::Module(child));
+                        lazy_members.remove(name);
                     }
-                    SubmoduleAttachment::Ambiguous => self.scope_issue(
-                        file,
-                        at,
-                        "ambiguous_binding",
-                        format!("cannot establish whether public submodule {name} was attached"),
-                    ),
+                    SubmoduleAttachment::Ambiguous => {
+                        self.scope_issue(
+                            file,
+                            at,
+                            "ambiguous_binding",
+                            format!(
+                                "cannot establish whether public submodule {name} was attached"
+                            ),
+                        );
+                        lazy_members.remove(name);
+                    }
                     _ => {}
+                }
+            }
+        }
+        if let Some(hook) = hook {
+            for (name, member) in lazy_members {
+                if let LazyMember::Branch(branch) = member {
+                    self.read.insert(hook);
+                    let value = self.execute_lazy_branch(file, &branch);
+                    if !matches!(value, Value::Unknown) {
+                        members.push(value);
+                    }
+                } else {
+                    self.scope_issue(
+                        file,
+                        self.symbols[hook].name.at,
+                        "unresolved_lazy_export",
+                        format!("public lazy module member {name:?} could not be bounded"),
+                    );
                 }
             }
         }
