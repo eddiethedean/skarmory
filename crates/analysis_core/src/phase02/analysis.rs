@@ -50,6 +50,12 @@ enum Value {
     Unknown,
 }
 
+impl Value {
+    fn is_builtin_scalar(&self) -> bool {
+        matches!(self, Self::Scalar | Self::Bool(_) | Self::Text(_))
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Invocation {
     target: SymbolId,
@@ -1651,14 +1657,12 @@ impl<'a> Graph<'a> {
 
     fn ordering_may_call_method(&self, left: &Value, right: &Value) -> bool {
         let operands = [left, right];
-        let is_scalar =
-            |operand: &Value| matches!(operand, Value::Scalar | Value::Bool(_) | Value::Text(_));
         // Only two potential sequences can invoke element equality during ordering.
         let unknown_may_dispatch = self.has_ordering_hooks
-            || (self.has_equality_hooks && !operands.into_iter().any(is_scalar));
+            || (self.has_equality_hooks && !operands.into_iter().any(Value::is_builtin_scalar));
         operands.into_iter().any(|operand| match operand {
             Value::Unknown | Value::OperatorResult => unknown_may_dispatch,
-            _ => !is_scalar(operand),
+            _ => !operand.is_builtin_scalar(),
         })
     }
 
@@ -1879,10 +1883,62 @@ impl<'a> Graph<'a> {
                     .map_or(Value::Unknown, |(value, _)| value),
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
                 Value::Provider(name)
-                    if matches!(
-                        name.as_str(),
-                        "builtins.bool" | "builtins.len" | "builtins.print"
-                    ) =>
+                    if keywords.is_empty()
+                        && matches!(name.as_str(), "builtins.bool" | "builtins.len") =>
+                {
+                    match arguments.as_slice() {
+                        [] if name == "builtins.bool" => Value::Scalar,
+                        [argument] => {
+                            let value = recurse(self, argument);
+                            // A scalar result alone cannot account for a custom truth or length call.
+                            if value.is_builtin_scalar()
+                                || matches!(value, Value::Sequence(_) | Value::Mapping(_))
+                            {
+                                Value::Scalar
+                            } else {
+                                Value::Unknown
+                            }
+                        }
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name) if name == "builtins.dict" && keywords.is_empty() => {
+                    match arguments.as_slice() {
+                        [] => Value::Mapping(Vec::new()),
+                        [argument] => match recurse(self, argument) {
+                            value @ Value::Mapping(_) => value,
+                            _ => Value::Unknown,
+                        },
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name)
+                    if keywords.is_empty()
+                        && matches!(name.as_str(), "builtins.list" | "builtins.tuple") =>
+                {
+                    match arguments.as_slice() {
+                        [] => Value::Sequence(Vec::new()),
+                        [argument] => match recurse(self, argument) {
+                            value @ Value::Sequence(_) => value,
+                            _ => Value::Unknown,
+                        },
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name)
+                    if keywords.is_empty()
+                        && matches!(
+                            name.as_str(),
+                            "builtins.range"
+                                | "builtins.int"
+                                | "builtins.float"
+                                | "builtins.str"
+                                | "builtins.bytes"
+                                | "builtins.print"
+                        )
+                        && arguments
+                            .iter()
+                            .all(|argument| recurse(self, argument).is_builtin_scalar()) =>
                 {
                     Value::Scalar
                 }
@@ -1952,10 +2008,12 @@ impl<'a> Graph<'a> {
             } => {
                 let left = recurse(self, left);
                 let right = recurse(self, right);
-                let same = match (left, right) {
+                let same = match (&left, &right) {
                     (Value::Text(left), Value::Text(right)) if !identity => left == right,
                     (Value::Bool(left), Value::Bool(right)) => left == right,
-                    _ if *identity => return Value::Scalar,
+                    _ if *identity || (left.is_builtin_scalar() && right.is_builtin_scalar()) => {
+                        return Value::Scalar;
+                    }
                     _ => return Value::Unknown,
                 };
                 Value::Bool(same == *equal)
@@ -2176,27 +2234,37 @@ impl<'a> Graph<'a> {
         self.walk_expression(scope, expr, before, false);
     }
 
-    fn walk_if_test(&mut self, scope: ScopeId, test: &Expression, before: Location) -> Value {
+    fn walk_if_test(
+        &mut self,
+        scope: ScopeId,
+        test: &Expression,
+        before: Location,
+    ) -> Option<bool> {
         match &test.kind {
-            ExpressionKind::Not(operand) => {
-                self.walk_if_test(scope, operand, before);
-            }
+            ExpressionKind::Not(operand) => self
+                .walk_if_test(scope, operand, before)
+                .map(|value| !value),
             ExpressionKind::Boolean { and, values } => {
+                let mut known = true;
                 for operand in values {
-                    if matches!(self.walk_if_test(scope, operand, before), Value::Bool(value) if value != *and)
-                    {
-                        break;
+                    match self.walk_if_test(scope, operand, before) {
+                        Some(value) if value != *and => return Some(value),
+                        Some(_) => {}
+                        None => known = false,
                     }
                 }
+                known.then_some(*and)
             }
             _ => {
                 self.walk(scope, test, before);
                 let value = self.identity(scope, test, before, 0);
                 self.record_truth_test(scope, test, &value);
-                return value;
+                match value {
+                    Value::Bool(value) => Some(value),
+                    _ => None,
+                }
             }
         }
-        self.identity(scope, test, before, 0)
     }
 
     fn record_truth_test(&mut self, scope: ScopeId, test: &Expression, value: &Value) {
@@ -2740,9 +2808,9 @@ impl<'a> Graph<'a> {
                     otherwise,
                 } => {
                     let stop = match self.walk_if_test(scope, test, at) {
-                        Value::Bool(true) => self.suite(scope, body),
-                        Value::Bool(false) => self.suite(scope, otherwise),
-                        _ => self.suite(scope, body) & self.suite(scope, otherwise),
+                        Some(true) => self.suite(scope, body),
+                        Some(false) => self.suite(scope, otherwise),
+                        None => self.suite(scope, body) & self.suite(scope, otherwise),
                     };
                     if stop {
                         return true;
