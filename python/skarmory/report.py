@@ -42,6 +42,19 @@ class Evidence(TypedDict):
     column: int
 
 
+class GrepVerificationEvidence(TypedDict):
+    symbol_id: str
+    qualified_name: str
+    definition_path: str
+    definition_line: int
+    definition_column: int
+    path: str
+    line: int
+    column: int
+    kind: str
+    certainty: Literal["possible"]
+
+
 class Root(TypedDict):
     kind: str
     target: str
@@ -74,6 +87,7 @@ class PreviewReport(_Report):
     selected_paths: list[str]
     exclusions: list[Exclusion]
     evidence: list[Evidence]
+    grep_verification_evidence: NotRequired[list[GrepVerificationEvidence]]
     findings: list[PreviewFinding]
 
 

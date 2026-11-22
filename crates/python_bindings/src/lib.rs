@@ -19,11 +19,13 @@ struct Options {
     public_callables: Vec<String>,
     workers: usize,
     cache_dir: Option<PathBuf>,
+    grep_verify: bool,
 }
 
 #[derive(FromPyObject)]
 #[pyo3(from_item_all)]
 struct SkylosOptions {
+    phase03: bool,
     config_file: Option<PathBuf>,
     exclude_folders: Vec<String>,
     skip_generated: bool,
@@ -32,6 +34,7 @@ struct SkylosOptions {
     all_advice: bool,
     workers: usize,
     cache_dir: Option<PathBuf>,
+    grep_verify: Option<bool>,
 }
 
 #[pyfunction]
@@ -61,6 +64,7 @@ fn scan(py: Python<'_>, path: PathBuf, options: Options) -> PyResult<String> {
         public_modules: options.public_modules,
         public_callables: options.public_callables,
         workers: options.workers,
+        grep_verify: options.grep_verify,
     };
     py.detach(move || {
         if let Some(directory) = cache_dir {
@@ -76,6 +80,11 @@ fn scan(py: Python<'_>, path: PathBuf, options: Options) -> PyResult<String> {
 #[pyfunction]
 fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResult<String> {
     let options = phase02::Options {
+        profile: if options.phase03 {
+            phase02::Profile::SkylosPhase03
+        } else {
+            phase02::Profile::SkylosPhase02
+        },
         config_file: options.config_file,
         excludes: options.exclude_folders,
         include_generated: Some(!options.skip_generated),
@@ -84,6 +93,7 @@ fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResul
         all_advice: options.all_advice,
         workers: options.workers,
         cache_dir: options.cache_dir,
+        grep_verify: options.grep_verify,
         ..phase02::Options::default()
     };
     py.detach(move || {

@@ -11,6 +11,7 @@ use skarmory_python::preview::{
 };
 
 use super::{Evidence, PreviewFinding, PreviewReport, ScanOptions, ScanPolicy};
+use crate::grep_verification::{self, Evidence as VerificationEvidence};
 use crate::preview_source::Project;
 use crate::{Issue, Timings};
 
@@ -210,6 +211,8 @@ pub(super) struct Engine<'a> {
     modules: &'a [Module],
     definitions: BTreeMap<Definition, FunctionInfo<'a>>,
     evidence: BTreeSet<Evidence>,
+    verification: BTreeSet<VerificationEvidence>,
+    grep_verify: bool,
     reached: BTreeSet<Definition>,
     uncertainties: BTreeSet<Issue>,
     issues: BTreeSet<Issue>,
@@ -239,6 +242,8 @@ impl<'a> Engine<'a> {
             modules,
             definitions,
             evidence: BTreeSet::new(),
+            verification: BTreeSet::new(),
+            grep_verify: false,
             reached: BTreeSet::new(),
             uncertainties: BTreeSet::new(),
             issues: BTreeSet::new(),
@@ -252,6 +257,7 @@ impl<'a> Engine<'a> {
     }
 
     pub(super) fn run(&mut self, options: &ScanOptions) {
+        self.grep_verify = options.grep_verify;
         let site = Site::entry(0);
         if self.modules.is_empty() {
             self.issues.insert(Issue::new(
@@ -312,6 +318,110 @@ impl<'a> Engine<'a> {
                     self.invoke_external(state, function, loc, "callable_entry");
                 }
             }
+        }
+    }
+
+    pub(super) fn apply_verification(&mut self, snapshot: &grep_verification::Snapshot) {
+        if !snapshot.has_configuration_references() {
+            return;
+        }
+        // External module entry points can name a module-level binding. A
+        // nested closure has no directly addressable module binding.
+        let mut matches = BTreeMap::<_, BTreeMap<_, Vec<_>>>::new();
+        let mut count = 0;
+        'definitions: for (&definition, info) in &self.definitions {
+            if !info.scope.is_empty() {
+                continue;
+            }
+            let file = &self.project.files[definition.file];
+            for reference in snapshot.matches(&file.label, &file.name, &info.node.name, true) {
+                if count == grep_verification::MAX_EVIDENCE {
+                    self.issues.insert(grep_verification::evidence_limit());
+                    break 'definitions;
+                }
+                count += 1;
+                matches
+                    .entry(definition.file)
+                    .or_default()
+                    .entry(definition)
+                    .or_default()
+                    .push(reference);
+            }
+        }
+        for (file_index, definitions) in matches {
+            let file = &self.project.files[file_index];
+            let site = Site::entry(file_index);
+            let state = State {
+                possible: true,
+                ..State::default()
+            };
+            let mut observed = BTreeSet::new();
+            for (state, frame) in self.load(state, &file.name, site) {
+                for &definition in definitions.keys() {
+                    if !self.step(site) {
+                        break;
+                    }
+                    let name = &self.definitions[&definition].node.name;
+                    if let Some(Value::Function(closure)) = state.frame(frame).locals.get(name)
+                        && closure.definition == definition
+                    {
+                        observed.insert(definition);
+                        self.invoke_external(state.clone(), closure.clone(), site, "grep_rescue");
+                    }
+                }
+            }
+            for definition in observed {
+                for reference in &definitions[&definition] {
+                    self.record_verification_at(
+                        definition,
+                        &reference.path,
+                        reference.at,
+                        reference.kind,
+                    );
+                }
+            }
+        }
+    }
+
+    fn record_verification(&mut self, definition: Definition, site: Site, kind: &'static str) {
+        self.record_verification_at(
+            definition,
+            &self.project.files[site.file].label,
+            site.location,
+            kind,
+        );
+    }
+
+    fn record_verification_at(
+        &mut self,
+        definition: Definition,
+        path: &str,
+        at: Location,
+        kind: &'static str,
+    ) {
+        let file = &self.project.files[definition.file];
+        let info = &self.definitions[&definition];
+        let qualified_name = if info.scope.is_empty() {
+            format!("{}.{}", file.name, info.node.name)
+        } else {
+            format!("{}.{}.{}", file.name, info.scope, info.node.name)
+        };
+        let evidence = VerificationEvidence {
+            symbol_id: info.id.clone(),
+            qualified_name,
+            definition_path: file.label.clone(),
+            definition_line: definition.line,
+            definition_column: definition.column,
+            path: path.to_owned(),
+            line: at.line,
+            column: at.column,
+            kind,
+            certainty: "possible",
+        };
+        if self.verification.len() < grep_verification::MAX_EVIDENCE {
+            self.verification.insert(evidence);
+        } else if !self.verification.contains(&evidence) {
+            self.issues.insert(grep_verification::evidence_limit());
         }
     }
 
@@ -836,6 +946,9 @@ impl<'a> Engine<'a> {
 
     fn retain(&mut self, state: &State, definition: Definition, site: Site, kind: &'static str) {
         self.reached.insert(definition);
+        if kind == "grep_rescue" {
+            return;
+        }
         self.evidence.insert(Evidence {
             symbol_id: self.definitions[&definition].id.clone(),
             certainty: if state.possible {
@@ -1083,6 +1196,7 @@ impl<'a> Engine<'a> {
         report.coverage.issues.extend(self.issues);
         report.uncertainties.extend(self.uncertainties);
         report.evidence.extend(self.evidence);
+        report.grep_verification_evidence.extend(self.verification);
         let dead = self
             .definitions
             .into_iter()

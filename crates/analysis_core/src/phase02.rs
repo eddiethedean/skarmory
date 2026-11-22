@@ -11,14 +11,24 @@ use serde_json::{Value, json};
 use skarmory_python::phase02::{ModuleFacts, extract};
 
 use crate::fact_cache::{CacheStats, FactCache};
+use crate::grep_verification::{self, Evidence as VerificationEvidence};
 use crate::preview_source::{self, Exclusion, FileEntry};
 use crate::{Coverage, Issue};
 
 mod analysis;
 pub(crate) mod config;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Profile {
+    #[default]
+    SkylosPhase02,
+    SkylosPhase03,
+}
+
 #[derive(Clone, Debug)]
 pub struct Options {
+    pub profile: Profile,
+    pub grep_verify: Option<bool>,
     pub config_file: Option<PathBuf>,
     pub excludes: Vec<String>,
     pub includes: Vec<String>,
@@ -35,6 +45,8 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            profile: Profile::default(),
+            grep_verify: None,
             config_file: None,
             excludes: Vec::new(),
             includes: Vec::new(),
@@ -118,6 +130,8 @@ struct Analysis {
     evidence: Vec<Evidence>,
     issues: Vec<Issue>,
     uncertainties: Vec<Issue>,
+    verification: Vec<VerificationEvidence>,
+    rescued_count: usize,
 }
 
 struct AnalyzedFile {
@@ -247,6 +261,81 @@ struct Summary {
     analysis_error_count: usize,
     coverage_status: &'static str,
     languages: BTreeMap<&'static str, usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grep_verify: Option<VerificationSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct VerificationSummary {
+    enabled: bool,
+    rescued_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum RetainedEvidence {
+    Flat(Vec<Evidence>),
+    Grouped { symbols: Vec<SymbolEvidence> },
+}
+
+#[derive(Debug, Serialize)]
+struct SymbolEvidence {
+    qualified_name: String,
+    file: String,
+    line: usize,
+    evidence: Vec<SymbolEvent>,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct SymbolEvent {
+    kind: &'static str,
+    certainty: &'static str,
+}
+
+impl RetainedEvidence {
+    fn for_profile(
+        profile: Profile,
+        evidence: Vec<Evidence>,
+        verification: &[VerificationEvidence],
+    ) -> Self {
+        if profile == Profile::SkylosPhase02 {
+            return Self::Flat(evidence);
+        }
+        let mut symbols = BTreeMap::<_, BTreeSet<_>>::new();
+        for event in evidence {
+            symbols
+                .entry((event.full_name, event.file, event.line))
+                .or_default()
+                .insert(SymbolEvent {
+                    kind: event.kind,
+                    certainty: event.certainty,
+                });
+        }
+        for event in verification {
+            symbols
+                .entry((
+                    event.qualified_name.clone(),
+                    event.definition_path.clone(),
+                    event.definition_line,
+                ))
+                .or_default()
+                .insert(SymbolEvent {
+                    kind: "grep_rescue",
+                    certainty: event.certainty,
+                });
+        }
+        Self::Grouped {
+            symbols: symbols
+                .into_iter()
+                .map(|((qualified_name, file, line), evidence)| SymbolEvidence {
+                    qualified_name,
+                    file,
+                    line,
+                    evidence: evidence.into_iter().collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -266,7 +355,9 @@ pub struct Report {
     coverage: Coverage,
     analysis_errors: Vec<Value>,
     analysis_summary: Summary,
-    dead_code_evidence: Vec<Evidence>,
+    dead_code_evidence: RetainedEvidence,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    grep_verification_evidence: Vec<VerificationEvidence>,
     dead_code_abstentions: Vec<Issue>,
     suppressed: Vec<Diagnostic>,
     whitelisted: Vec<Diagnostic>,
@@ -445,6 +536,8 @@ struct Snapshot {
 pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     validate_category(options.category.as_deref())?;
     let config = config::load(path, options)?;
+    let phase03 = options.profile == Profile::SkylosPhase03;
+    let grep_verify = options.grep_verify.unwrap_or(phase03);
     let roots = if path.is_dir() && path.join("src").is_dir() {
         vec![PathBuf::from("src"), PathBuf::from(".")]
     } else {
@@ -542,9 +635,11 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         }
     }
 
+    let verification = (grep_verify && issues.is_empty())
+        .then(|| grep_verification::Snapshot::read(&project, Some(&config.selection)));
     let mut analysis = if issues.is_empty() {
         if local_configs.is_empty() {
-            analysis::analyze(&files, &config.entrypoints)
+            analysis::analyze_with_verification(&files, &config.entrypoints, verification.as_ref())
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
             let mut root_paths = BTreeSet::new();
@@ -562,12 +657,15 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 let paths = Arc::new(paths);
                 entrypoints.extend(config.entrypoints.iter().map(|item| item.scoped(&paths)));
             }
-            analysis::analyze(&files, &entrypoints)
+            analysis::analyze_with_verification(&files, &entrypoints, verification.as_ref())
         }
     } else {
         Analysis::default()
     };
     issues.append(&mut analysis.issues);
+    if let Some(verification) = verification {
+        issues.extend(verification.finish(&project, Some(&config.selection)));
+    }
     issues.extend(project.verify(stamps));
     if !config.unchanged(path, options)
         || directory_configs.iter().any(|(directory, index)| {
@@ -587,6 +685,8 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     analysis.uncertainties.dedup();
     analysis.evidence.sort();
     analysis.evidence.dedup();
+    analysis.verification.sort();
+    analysis.verification.dedup();
     project
         .exclusions
         .sort_by(|left, right| left.path.cmp(&right.path));
@@ -697,13 +797,21 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         .into_iter()
         .collect();
     Ok(Report {
-        schema_version: 1,
-        profile: "skylos-5.7.0-python-dead-code",
+        schema_version: if phase03 { 2 } else { 1 },
+        profile: if phase03 {
+            "skylos-5.7.0-python-dead-code-phase03"
+        } else {
+            "skylos-5.7.0-python-dead-code"
+        },
         analysis_summary: Summary {
             total_files: selected_paths.len(),
             analysis_error_count: issues.len(),
             coverage_status: status,
             languages: BTreeMap::from([("Python", selected_paths.len())]),
+            grep_verify: (phase03 || grep_verify).then_some(VerificationSummary {
+                enabled: grep_verify,
+                rescued_count: analysis.rescued_count,
+            }),
         },
         coverage: Coverage {
             status,
@@ -720,7 +828,12 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         confidence_threshold: config.confidence,
         all_advice: options.all_advice,
         analysis_errors,
-        dead_code_evidence: analysis.evidence,
+        dead_code_evidence: RetainedEvidence::for_profile(
+            options.profile,
+            analysis.evidence,
+            &analysis.verification,
+        ),
+        grep_verification_evidence: analysis.verification,
         dead_code_abstentions: analysis.uncertainties,
         suppressed,
         whitelisted,
