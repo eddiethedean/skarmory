@@ -96,6 +96,29 @@ fn absolute_exclusion_is_anchored_to_the_target_path() {
     assert_eq!(selected_paths(&excluded, &options), json!([]));
 }
 
+#[test]
+fn absolute_exclusions_treat_the_scan_root_as_a_literal_path() {
+    let fixture = tempfile::tempdir().unwrap();
+    let project = fixture.path().canonicalize().unwrap().join("reports[2026]");
+    fs::create_dir(&project).unwrap();
+    let target = project.join("old.py");
+    fs::write(&target, "pass\n").unwrap();
+    fs::write(project.join("main.py"), "pass\n").unwrap();
+
+    for pattern in ["old.py", "old*.py"] {
+        let options = Options {
+            excludes: vec![project.join(pattern).to_string_lossy().into_owned()],
+            ..Options::default()
+        };
+        assert_eq!(
+            selected_paths(&project, &options),
+            json!(["main.py"]),
+            "{pattern}"
+        );
+        assert_eq!(selected_paths(&target, &options), json!([]), "{pattern}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn absolute_exclusion_globs_resolve_aliased_directory_prefixes() {
@@ -156,6 +179,29 @@ fn absolute_exclusion_globs_keep_resolved_directory_names_literal() {
     assert_eq!(
         selected_paths(&project, &options),
         json!(["generated/1/old_generated.py"])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn absolute_exclusion_globs_keep_backslashes_in_unix_directory_names() {
+    let fixture = tempfile::tempdir().unwrap();
+    let project = fixture.path().join("project");
+    let target = project.join(r"legacy\notes");
+    let other = project.join("legacy/notes");
+    for directory in [&target, &other] {
+        fs::create_dir_all(directory).unwrap();
+        fs::write(directory.join("old.py"), "pass\n").unwrap();
+    }
+    let alias = fixture.path().join("alias");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    let options = Options {
+        excludes: vec![alias.join("old*.py").to_string_lossy().into_owned()],
+        ..Options::default()
+    };
+    assert_eq!(
+        selected_paths(&project, &options),
+        json!(["legacy/notes/old.py"])
     );
 }
 

@@ -65,10 +65,13 @@ struct Pattern {
 
 impl Pattern {
     fn new(pattern: &str) -> Result<Self, ConfigError> {
-        if pattern.is_empty() {
+        Self::from_normalized(pattern.replace('\\', "/"))
+    }
+
+    fn from_normalized(text: String) -> Result<Self, ConfigError> {
+        if text.is_empty() {
             return Err(ConfigError::new("empty configuration pattern"));
         }
-        let text = pattern.replace('\\', "/");
         let matcher = Self::compile(&text)?;
         Ok(Self {
             text,
@@ -88,8 +91,8 @@ impl Pattern {
             .map_err(|error| ConfigError::new(format!("invalid pattern {pattern:?}: {error}")))
     }
 
-    fn new_selection(value: &str) -> Result<Self, ConfigError> {
-        let mut pattern = Self::new(value)?;
+    fn new_selection(text: String) -> Result<Self, ConfigError> {
+        let mut pattern = Self::from_normalized(text)?;
         // A leading recursive component can match zero directories.
         pattern.root_matcher = pattern
             .text
@@ -105,12 +108,12 @@ impl Pattern {
             let text = value.replace('\\', "/");
             let normalized = text.trim_start_matches("./").trim_end_matches('/');
             return Self::new_selection(if normalized.is_empty() {
-                &text
+                text
             } else {
-                normalized
+                normalized.to_owned()
             });
         }
-        let mut text = value.to_owned();
+        let mut text = value.replace('\\', "/");
         if let Ok(root) = fs::canonicalize(input) {
             let root = if root.is_file() {
                 root.parent().unwrap_or(&root)
@@ -121,7 +124,7 @@ impl Pattern {
                 text = relative;
             }
         }
-        let mut pattern = Self::new_selection(&text)?;
+        let mut pattern = Self::new_selection(text)?;
         // Absolute patterns match only their rebased location in the project.
         pattern.anchored = true;
         Ok(pattern)
@@ -171,6 +174,21 @@ impl Pattern {
 }
 
 fn rebase_absolute_pattern(path: &Path, root: &Path) -> Option<String> {
+    // Existing paths can contain glob characters in their directory names.
+    let resolved = match path.canonicalize() {
+        Ok(resolved) => resolved,
+        Err(_) => {
+            if let Some(pattern) = rebase_absolute_glob(path, root) {
+                return Some(pattern);
+            }
+            path.to_owned()
+        }
+    };
+    let relative = resolved.strip_prefix(root).ok()?;
+    (!relative.as_os_str().is_empty()).then(|| relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn rebase_absolute_glob(path: &Path, root: &Path) -> Option<String> {
     let literal_prefix: PathBuf = path
         .components()
         .take_while(|component| {
@@ -179,9 +197,7 @@ fn rebase_absolute_pattern(path: &Path, root: &Path) -> Option<String> {
         .collect();
     let suffix = path.strip_prefix(&literal_prefix).ok()?;
     if suffix.as_os_str().is_empty() {
-        let resolved = path.canonicalize().unwrap_or_else(|_| path.to_owned());
-        let relative = resolved.strip_prefix(root).ok()?;
-        return (!relative.as_os_str().is_empty()).then(|| relative.to_string_lossy().into_owned());
+        return None;
     }
 
     let resolved = literal_prefix.canonicalize().unwrap_or(literal_prefix);
@@ -189,18 +205,20 @@ fn rebase_absolute_pattern(path: &Path, root: &Path) -> Option<String> {
     // Keep metacharacters in filesystem names literal after resolving aliases.
     let mut pattern = String::new();
     for character in relative.to_string_lossy().chars() {
-        if matches!(character, '*' | '?' | '[' | ']') {
-            pattern.push('[');
-            pattern.push(character);
-            pattern.push(']');
-        } else {
-            pattern.push(character);
+        match character {
+            '*' | '?' | '[' | ']' => {
+                pattern.push('[');
+                pattern.push(character);
+                pattern.push(']');
+            }
+            '\\' if cfg!(windows) => pattern.push('/'),
+            _ => pattern.push(character),
         }
     }
     if !pattern.is_empty() {
         pattern.push('/');
     }
-    pattern.push_str(&suffix.to_string_lossy());
+    pattern.push_str(&suffix.to_string_lossy().replace('\\', "/"));
     Some(pattern)
 }
 
@@ -661,7 +679,7 @@ fn directory_selection_patterns(
             })?;
             (prefix < parts.len()).then(|| parts[prefix..].join("/"))
         })
-        .map(|pattern| Pattern::new_selection(&pattern))
+        .map(Pattern::new_selection)
         .collect::<Result<Vec<_>, _>>()?;
     patterns.extend(rebased);
     Ok(patterns)
