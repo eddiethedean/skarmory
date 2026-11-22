@@ -259,19 +259,21 @@ impl Lowering<'_> {
         Ok(())
     }
 
-    fn name(&self, identifier: &ruff_python_ast::Identifier) -> Name {
-        Name {
-            text: identifier.to_string(),
-            at: self.0.locate(identifier.start()),
+    fn binding_name(&self, text: &str, node: &impl Ranged) -> Result<Name, FrontendError> {
+        if text == "__debug__" {
+            return Err(self
+                .0
+                .error("parse_error", node, "cannot assign to __debug__"));
         }
+        Ok(Name {
+            text: text.into(),
+            at: self.0.locate(node.start()),
+        })
     }
 
     fn target(&self, target: &Expr) -> Result<Name, FrontendError> {
         match target {
-            Expr::Name(name) => Ok(Name {
-                text: name.id.to_string(),
-                at: self.0.locate(name.start()),
-            }),
+            Expr::Name(name) => self.binding_name(name.id.as_str(), name),
             _ => Err(self
                 .0
                 .unsupported(target, "assignment target must be a simple name")),
@@ -304,13 +306,16 @@ impl Lowering<'_> {
                     .0
                     .unsupported(alias, "star imports cannot resolve finite bindings"));
             }
-            let mut local = self.name(alias.asname.as_ref().unwrap_or(&alias.name));
-            let exposes_top_level = !from && alias.asname.is_none() && name.contains('.');
-            if exposes_top_level {
-                local
-                    .text
-                    .truncate(name.find('.').expect("checked for a dot"));
-            }
+            let identifier = alias.asname.as_ref().unwrap_or(&alias.name);
+            let (local_name, exposes_top_level) = if let Some((root, _)) = name.split_once('.')
+                && !from
+                && alias.asname.is_none()
+            {
+                (root, true)
+            } else {
+                (identifier.as_str(), false)
+            };
+            let local = self.binding_name(local_name, identifier)?;
             output.push(Statement {
                 at: self.0.locate(alias.start()),
                 kind: StatementKind::Import(Import {
@@ -378,15 +383,18 @@ impl Lowering<'_> {
                 }
                 Stmt::FunctionDef(node) => {
                     let mut annotations = Vec::new();
+                    let mut parameters = Vec::new();
                     let mut parameter_names = BTreeSet::new();
                     for parameter in node.parameters.iter() {
-                        if !parameter_names.insert(parameter.name().as_str()) {
+                        let name = parameter.name();
+                        if !parameter_names.insert(name.as_str()) {
                             return Err(self.0.error(
                                 "parse_error",
-                                parameter.name(),
+                                name,
                                 "duplicate parameter name",
                             ));
                         }
+                        parameters.push(self.binding_name(name.as_str(), name)?);
                         if let Some(annotation) = parameter.annotation() {
                             annotations.push(self.annotation(annotation, next)?);
                         }
@@ -395,7 +403,7 @@ impl Lowering<'_> {
                         annotations.push(self.annotation(returns, next)?);
                     }
                     StatementKind::Define(Definition {
-                        name: self.name(&node.name),
+                        name: self.binding_name(node.name.as_str(), &node.name)?,
                         kind: if node.is_async {
                             DefinitionKind::Coroutine
                         } else {
@@ -415,11 +423,7 @@ impl Lowering<'_> {
                             .iter()
                             .map(|item| expression(&item.expression))
                             .collect::<Result<_, _>>()?,
-                        parameters: node
-                            .parameters
-                            .iter()
-                            .map(|parameter| self.name(parameter.name()))
-                            .collect(),
+                        parameters,
                         has_positional_parameter: !(node.parameters.posonlyargs.is_empty()
                             && node.parameters.args.is_empty()),
                         simple_positional_parameters: (node.parameters.posonlyargs.is_empty()
@@ -443,7 +447,7 @@ impl Lowering<'_> {
                         .is_none_or(|args| args.keywords.is_empty()) =>
                 {
                     StatementKind::Define(Definition {
-                        name: self.name(&node.name),
+                        name: self.binding_name(node.name.as_str(), &node.name)?,
                         kind: DefinitionKind::Class,
                         body: Lowering(self.0, SyntaxScope::ModuleOrClass)
                             .suite(&node.body, next)?,
