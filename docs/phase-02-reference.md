@@ -31,7 +31,7 @@ The independent source assumptions and observed library difference are in the
 | Surface | Decision |
 | --- | --- |
 | Source paths and error evidence | Skarmory uses stable project-relative labels and reports its own Ruff parser locations and messages. The invalid fixture has the same incomplete-analysis rule identity. The exact error text and column differ from CPython. |
-| Absolute source exclusions | Skarmory anchors an absolute exclusion to the selected path. In the same-name control, pinned Skylos also excluded a nested file with the same basename. |
+| Absolute source exclusions | Skarmory anchors an absolute exclusion to the selected path and resolves aliases in the literal directory prefix of an absolute glob. In the same-name control, pinned Skylos also excluded a nested file with the same basename. In the macOS path-alias control, pinned Skylos included the file with either absolute glob spelling. |
 | Coverage | Skarmory reports selection, configuration provenance, and completeness explicitly. Skylos's resolution-scope flags are separate reference results. The comparator preserves completion and error outcomes. |
 | Generated Python headers | Both tools analyze files with recognized generated headers so their imports and uses count. Generated-file findings are hidden by default. Skarmory lists those files in `generated_sources`. |
 | Pytest autouse | A fixture with a statically false autouse flag and no requesting test remains reportable, along with its uncalled helpers. Pinned Skylos retained both in this control. |
