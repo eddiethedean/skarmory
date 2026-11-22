@@ -134,6 +134,12 @@ enum Binding<'a> {
     Parameter,
 }
 
+enum LexicalBinding {
+    Found(SymbolId),
+    UnboundLocal,
+    Missing,
+}
+
 struct Symbol<'a> {
     scope: ScopeId,
     name: &'a Name,
@@ -595,7 +601,14 @@ impl<'a> Graph<'a> {
             })
     }
 
-    fn lexical(&self, origin: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+    fn lexical(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+        match self.lexical_binding(scope, name, before) {
+            LexicalBinding::Found(id) => Some(id),
+            LexicalBinding::UnboundLocal | LexicalBinding::Missing => None,
+        }
+    }
+
+    fn lexical_binding(&self, origin: ScopeId, name: &str, before: Location) -> LexicalBinding {
         let mut scope = origin;
         let mut before = before;
         loop {
@@ -605,14 +618,22 @@ impl<'a> Graph<'a> {
             // capture a class namespace as an enclosing lexical scope.
             if scope == origin || !class {
                 if let Some(id) = self.local(scope, name, before) {
-                    return Some(id);
+                    return LexicalBinding::Found(id);
                 }
-                if row.owner.is_some() && !class && row.names.contains_key(name) {
-                    // A local binding shadows the outer name even before assignment.
-                    return None;
+                if row.owner.is_some()
+                    && !class
+                    && (row.names.contains_key(name)
+                        || matches!(name, "locals" | "vars") && suite_binds_name(row.body, name))
+                {
+                    // A function declaration shadows these builtins even in a
+                    // branch omitted from the runtime binding index.
+                    return LexicalBinding::UnboundLocal;
                 }
             }
-            scope = row.parent?;
+            let Some(parent) = row.parent else {
+                return LexicalBinding::Missing;
+            };
+            scope = parent;
             before = END;
         }
     }
@@ -1254,7 +1275,6 @@ impl<'a> Graph<'a> {
         }
         self.read.insert(id);
         let scope = symbol.scope;
-        let file = self.scopes[scope].file;
         if self.binding_depends_on_branch(id, before) {
             self.scope_issue(
                 scope,
@@ -1264,6 +1284,13 @@ impl<'a> Graph<'a> {
             );
             return Value::Unknown;
         }
+        self.binding_value(id, depth)
+    }
+
+    fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
+        let symbol = &self.symbols[id];
+        let scope = symbol.scope;
+        let file = self.scopes[scope].file;
         match symbol.binding {
             Binding::Definition(_, _) => Value::Callable(Invocation::ordinary(id)),
             Binding::Variable(Some(value), before) => {
@@ -1811,7 +1838,8 @@ impl<'a> Graph<'a> {
         };
         match &expression.kind {
             ExpressionKind::Name(name) => {
-                if let Some(id) = self.lexical(scope, name, before) {
+                let binding = self.lexical_binding(scope, name, before);
+                if let LexicalBinding::Found(id) = binding {
                     let binding_scope = self.symbols[id].scope;
                     let before = if binding_scope == scope {
                         before
@@ -1828,6 +1856,12 @@ impl<'a> Graph<'a> {
                         self.record_class_reference(caller, &value);
                     }
                     return value;
+                }
+                if matches!(name.as_str(), "locals" | "vars") {
+                    return match binding {
+                        LexicalBinding::Missing => Value::Provider(format!("builtins.{name}")),
+                        _ => Value::Unknown,
+                    };
                 }
                 if name == "__name__" {
                     return Value::Unknown;
@@ -2412,6 +2446,35 @@ impl<'a> Graph<'a> {
         true
     }
 
+    fn read_local_namespace(&mut self, scope: ScopeId, before: Location, at: Location) {
+        let has_value =
+            |&id: &SymbolId| !matches!(self.symbols[id].binding, Binding::Variable(None, _));
+        let bindings: Vec<_> = self.scopes[scope]
+            .names
+            .values()
+            .flat_map(|bindings| {
+                let end = bindings
+                    .partition_point(|&id| position(self.symbols[id].name.at) < position(before));
+                // Include the last definite assignment and any later possible
+                // assignments. Annotation-only declarations create no value.
+                let start = bindings[..end]
+                    .iter()
+                    .rposition(|id| has_value(id) && !self.binding_depends_on_branch(*id, before))
+                    .unwrap_or(0);
+                bindings[start..end]
+                    .iter()
+                    .filter(|id| has_value(id))
+                    .copied()
+            })
+            .collect();
+        for id in bindings {
+            self.read.insert(id);
+            // The dictionary can carry callable values out of the scope.
+            let value = self.binding_value(id, 0);
+            self.expose(scope, value, "local_namespace", at);
+        }
+    }
+
     fn walk_expression(
         &mut self,
         scope: ScopeId,
@@ -2468,6 +2531,25 @@ impl<'a> Graph<'a> {
                         {
                             let value = self.identity(scope, argument, before, 0);
                             self.expose(scope, value, "passed_callable", argument.at);
+                        }
+                    }
+                    Value::Provider(name)
+                        if matches!(name.as_str(), "builtins.locals" | "builtins.vars") =>
+                    {
+                        if arguments.is_empty()
+                            && keywords.is_empty()
+                            && self.scopes[scope]
+                                .owner
+                                .is_some_and(|owner| !self.is_class(owner))
+                        {
+                            self.read_local_namespace(scope, before, expr.at);
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "only zero-argument namespace reads in functions are bounded",
+                            );
                         }
                     }
                     Value::Provider(name) if name == "builtins.len" => {
@@ -4392,6 +4474,26 @@ fn position(at: Location) -> [usize; 2] {
     [at.line, at.column]
 }
 
+// Function locals are declared at compile time, including bindings in
+// branches that the runtime index can prove are never executed.
+fn suite_binds_name(body: &[Statement], name: &str) -> bool {
+    body.iter().any(|statement| match &statement.kind {
+        StatementKind::Define(definition) => definition.name.text == name,
+        StatementKind::Import(import) => import.local.text == name,
+        StatementKind::Assign { names, .. } => names.iter().any(|target| target.text == name),
+        StatementKind::If {
+            body, otherwise, ..
+        } => suite_binds_name(body, name) || suite_binds_name(otherwise, name),
+        StatementKind::With { items, body } => {
+            items
+                .iter()
+                .any(|(_, target)| target.as_ref().is_some_and(|target| target.text == name))
+                || suite_binds_name(body, name)
+        }
+        _ => false,
+    })
+}
+
 fn suite_end(body: &[Statement]) -> [usize; 2] {
     let Some(last) = body.last() else {
         return [0, 0];
@@ -4579,6 +4681,90 @@ mod tests {
         assert_eq!(names(&result, Category::Variable), ["quiet"]);
         assert_eq!(names(&result, Category::Parameter), ["unread"]);
         assert_eq!(names(&result, Category::File), ["empty.py"]);
+    }
+
+    #[test]
+    fn local_namespace_observes_possible_bindings_at_the_call() {
+        let files = [module(
+            "main.py",
+            "main",
+            r#"import os
+
+def _entry(flag):
+    visible = 0
+    visible = 1
+    if flag:
+        visible = 2
+    ignored: int
+    def callback():
+        return 0
+    result = locals()
+    later = 1
+    return result
+
+_entry(True)
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Variable),
+            ["ignored", "later", "visible"]
+        );
+        assert!(result.findings.iter().any(|finding| {
+            finding.category == Category::Variable && finding.name == "visible" && finding.line == 4
+        }));
+        assert_eq!(names(&result, Category::Import), ["os"]);
+        assert!(result.evidence.iter().any(|evidence| {
+            evidence.full_name == "main._entry.callback"
+                && evidence.kind == "local_namespace"
+                && evidence.certainty == "possible"
+        }));
+    }
+
+    #[test]
+    fn local_namespace_requires_a_proven_zero_argument_builtin() {
+        let files = [module(
+            "main.py",
+            "main",
+            r#"from builtins import vars as collect
+
+def _entry():
+    def locals():
+        return 0
+    unread = 1
+    return locals()
+
+def _opaque(value, source):
+    candidate = 1
+    collect(value)
+    return eval(source)
+
+def _unbound():
+    if False:
+        vars = object
+    return vars()
+
+_entry()
+_opaque(object(), "pass")
+_unbound()
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert_eq!(names(&result, Category::Variable), ["candidate", "unread"]);
+        assert_eq!(
+            result
+                .issues
+                .iter()
+                .map(|issue| (issue.kind, issue.line))
+                .collect::<BTreeSet<_>>(),
+            [
+                ("unresolved_call", Some(11)),
+                ("unresolved_call", Some(12)),
+                ("unresolved_call", Some(17))
+            ]
+            .into()
+        );
     }
 
     #[test]

@@ -166,6 +166,15 @@ guard when its operands have bounded scalar behavior. Comparisons that could
 invoke a selected class hook report incomplete coverage when reached. This
 supports the pinned recursive-group and caller-edit cases. [#52](https://github.com/eddiethedean/skarmory/issues/52)
 
+### Bounded Python function namespace reads
+
+In both Skylos profiles, zero-argument calls to the built-in `locals()` and
+`vars()` within a function retain the bindings that can be present at the
+call site. This includes resolved aliases of the builtins and keeps possible
+callable values with evidence. Shadowed names use ordinary call resolution.
+Object-argument `vars`, module and class namespace access, and arbitrary code
+evaluation remain outside this model. [#42](https://github.com/eddiethedean/skarmory/issues/42)
+
 ### Grep verification preview
 
 The native CLI enables grep verification with `--grep-verify`. In the native
