@@ -46,6 +46,7 @@ enum Value {
     Sequence(Vec<Value>),
     Mapping(Vec<Value>),
     Scalar,
+    OperatorResult,
     Unknown,
 }
 
@@ -260,6 +261,7 @@ pub(super) fn analyze_with_verification(
         direct_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
         has_ordering_hooks: false,
+        has_equality_hooks: false,
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
     };
@@ -277,15 +279,18 @@ pub(super) fn analyze_with_verification(
         }
         graph.index(file, &source.facts.body);
     }
-    // Sequence ordering can also compare elements for equality.
-    graph.has_ordering_hooks = graph.symbols.iter().any(|symbol| {
-        matches!(
-            symbol.name.text.as_str(),
-            "__lt__" | "__le__" | "__gt__" | "__ge__" | "__eq__"
-        ) && graph.scopes[symbol.scope]
+    for symbol in &graph.symbols {
+        if graph.scopes[symbol.scope]
             .owner
             .is_some_and(|id| graph.is_class(id))
-    });
+        {
+            match symbol.name.text.as_str() {
+                "__lt__" | "__le__" | "__gt__" | "__ge__" => graph.has_ordering_hooks = true,
+                "__eq__" => graph.has_equality_hooks = true,
+                _ => {}
+            }
+        }
+    }
     graph.index_submodule_imports();
     graph.index_base_classes();
     for scope in 0..graph.scopes.len() {
@@ -334,6 +339,7 @@ struct Graph<'a> {
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
     has_ordering_hooks: bool,
+    has_equality_hooks: bool,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
 }
@@ -1901,7 +1907,8 @@ impl<'a> Graph<'a> {
             },
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
-            ExpressionKind::Scalar | ExpressionKind::Operands(_) => Value::Scalar,
+            ExpressionKind::Scalar => Value::Scalar,
+            ExpressionKind::Operands(_) => Value::OperatorResult,
             ExpressionKind::Sequence(items) => {
                 Value::Sequence(items.iter().map(|expr| recurse(self, expr)).collect())
             }
@@ -2344,17 +2351,19 @@ impl<'a> Graph<'a> {
             ExpressionKind::OrderingComparison { left, right } => {
                 self.walk(scope, left, before);
                 self.walk(scope, right, before);
-                // Retain both branches of an ordering guard. An indirect
-                // operand could call a selected comparison hook.
-                let may_dispatch = [left, right].into_iter().any(|operand| {
-                    !matches!(
-                        operand.kind,
-                        ExpressionKind::Scalar | ExpressionKind::Bool(_) | ExpressionKind::Text(_)
-                    ) && (self.has_ordering_hooks
-                        || !matches!(
-                            self.identity(scope, operand, before, 0),
-                            Value::Unknown | Value::Scalar | Value::Bool(_) | Value::Text(_)
-                        ))
+                let operands = [
+                    self.identity(scope, left, before, 0),
+                    self.identity(scope, right, before, 0),
+                ];
+                let is_scalar = |operand: &Value| {
+                    matches!(operand, Value::Scalar | Value::Bool(_) | Value::Text(_))
+                };
+                // Only two potential sequences can invoke element equality during ordering.
+                let unknown_may_dispatch = self.has_ordering_hooks
+                    || (self.has_equality_hooks && !operands.iter().any(is_scalar));
+                let may_dispatch = operands.iter().any(|operand| match operand {
+                    Value::Unknown | Value::OperatorResult => unknown_may_dispatch,
+                    _ => !is_scalar(operand),
                 });
                 if may_dispatch {
                     self.scope_issue(
