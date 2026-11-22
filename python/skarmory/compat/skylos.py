@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from os import fspath
+from typing import Literal
 
 from ..api import SourcePath, _load_native
 
@@ -11,27 +12,42 @@ def analyze(
     conf: int = 60,
     exclude_folders: Sequence[str] | None = None,
     *,
+    profile: Literal["skylos", "skylos-0.3"] = "skylos",
     config_file: SourcePath | None = None,
     skip_generated: bool = False,
     generated_keep_paths: Sequence[str] | None = None,
     all_advice: bool = True,
-    grep_verify: bool = False,
+    grep_verify: bool | None = None,
     grep_cache: bool = False,
+    trace_file: Literal[False] | None = None,
     enable_dependency_hallucinations: bool = False,
     workers: int = 1,
     cache_dir: SourcePath | None = None,
 ) -> str:
     """Return the declared Skylos-compatible result as a JSON string.
 
-    The offline profile defaults to disabled grep verification, grep caching,
-    and dependency analysis. Incomplete scans retain their coverage diagnostics
-    in the returned JSON. Invalid options or configuration raise ValueError.
+    The default Phase 0.2 profile disables grep verification. Select
+    `profile="skylos-0.3"` to enable it when omitted, or pass
+    `grep_verify=False` to disable it explicitly. Phase 0.3 accepts the pinned
+    `grep_cache` argument and rebuilds grep evidence from the current snapshot.
+    Pass `cache_dir` to reuse validated file-local facts across scans.
+    The supported Phase 0.3 trace option is explicit disablement
+    (`trace_file=False`). Incomplete scans retain their coverage diagnostics
+    in the returned JSON.
     """
-    if grep_verify or grep_cache or enable_dependency_hallucinations:
+    if profile not in ("skylos", "skylos-0.3"):
+        raise ValueError("profile must be skylos or skylos-0.3")
+    phase03 = profile == "skylos-0.3"
+    if not phase03 and (grep_verify or grep_cache):
         raise ValueError(
-            "The Skylos profile requires disabled grep verification, grep caching, "
-            "and dependency analysis"
+            "The Skylos Phase 0.2 profile requires disabled grep verification and caching"
         )
+    if enable_dependency_hallucinations:
+        raise ValueError("The Skylos profile requires disabled dependency analysis")
+    if trace_file is not None and not phase03:
+        raise TypeError("trace_file requires profile='skylos-0.3'")
+    if trace_file is not None and trace_file is not False:
+        raise ValueError("The Skylos Phase 0.3 profile only supports trace_file=False")
     if not isinstance(conf, int):
         raise TypeError("conf must be an integer")
     if not 0 <= conf <= 100:
@@ -47,6 +63,7 @@ def analyze(
     return native.scan_skylos(
         fspath(path),
         {
+            "phase03": phase03,
             "config_file": fspath(config_file) if config_file is not None else None,
             "exclude_folders": exclude_folders if exclude_folders is not None else (),
             "skip_generated": skip_generated,
@@ -57,5 +74,6 @@ def analyze(
             "all_advice": all_advice,
             "workers": workers,
             "cache_dir": fspath(cache_dir) if cache_dir is not None else None,
+            "grep_verify": grep_verify,
         },
     )

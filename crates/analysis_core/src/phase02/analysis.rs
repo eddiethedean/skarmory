@@ -13,6 +13,7 @@ use skarmory_python::phase02::{
 use super::config::Entrypoint;
 use super::{Analysis, AnalyzedFile, Category, Evidence, Finding};
 use crate::Issue;
+use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -52,6 +53,7 @@ enum Value {
 struct Invocation {
     target: SymbolId,
     receiver: Receiver,
+    verified: bool,
 }
 
 impl Invocation {
@@ -59,6 +61,7 @@ impl Invocation {
         Self {
             target,
             receiver: Receiver::Ordinary,
+            verified: false,
         }
     }
 
@@ -224,7 +227,16 @@ enum SubmoduleAttachment {
     Ambiguous,
 }
 
-pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
+#[cfg(test)]
+fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
+    analyze_with_verification(files, entrypoints, None)
+}
+
+pub(super) fn analyze_with_verification(
+    files: &[AnalyzedFile],
+    entrypoints: &[Entrypoint],
+    verification: Option<&grep_verification::Snapshot>,
+) -> Analysis {
     let mut graph = Graph {
         files,
         modules: BTreeMap::new(),
@@ -247,6 +259,8 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
+        grep_verify: verification.is_some(),
+        dynamic_references: BTreeSet::new(),
     };
     for (file, source) in files.iter().enumerate() {
         graph.push_scope(file, None, None, &source.facts.body);
@@ -284,7 +298,7 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
     };
     let mut roots = graph.external_roots(entrypoints, &initialization_edges);
     roots.extend(graph.test_edges());
-    graph.finish(roots)
+    graph.finish(roots, verification)
 }
 
 struct Graph<'a> {
@@ -309,6 +323,8 @@ struct Graph<'a> {
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
+    grep_verify: bool,
+    dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
 }
 
 impl<'a> Graph<'a> {
@@ -1029,7 +1045,7 @@ impl<'a> Graph<'a> {
         self.scopes[scope].edges.iter().filter_map(|edge| {
             if matches!(
                 edge.kind,
-                "direct_call" | "constructor" | "decorator" | "subclass_hook"
+                "direct_call" | "constructor" | "decorator" | "subclass_hook" | "grep_dynamic_call"
             ) && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
                 Some(body)
@@ -1747,30 +1763,32 @@ impl<'a> Graph<'a> {
                 if name == "__name__" {
                     return Value::Unknown;
                 }
-                if matches!(
-                    name.as_str(),
-                    "print"
-                        | "len"
-                        | "range"
-                        | "str"
-                        | "int"
-                        | "bool"
-                        | "object"
-                        | "list"
-                        | "tuple"
-                        | "dict"
-                        | "set"
-                        | "float"
-                        | "bytes"
-                        | "ValueError"
-                        | "RuntimeError"
-                        | "AttributeError"
-                        | "TypeError"
-                        | "Exception"
-                        | "staticmethod"
-                        | "classmethod"
-                        | "property"
-                ) && !self.scopes[scope].names.contains_key(name.as_str())
+                if (self.grep_verify && name == "getattr"
+                    || matches!(
+                        name.as_str(),
+                        "print"
+                            | "len"
+                            | "range"
+                            | "str"
+                            | "int"
+                            | "bool"
+                            | "object"
+                            | "list"
+                            | "tuple"
+                            | "dict"
+                            | "set"
+                            | "float"
+                            | "bytes"
+                            | "ValueError"
+                            | "RuntimeError"
+                            | "AttributeError"
+                            | "TypeError"
+                            | "Exception"
+                            | "staticmethod"
+                            | "classmethod"
+                            | "property"
+                    ))
+                    && !self.scopes[scope].names.contains_key(name.as_str())
                 {
                     return Value::Provider(format!("builtins.{name}"));
                 }
@@ -1817,6 +1835,9 @@ impl<'a> Graph<'a> {
                         self.with_explicit_receiver(invocation, arguments, keywords, recurse),
                     )
                 }
+                Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
+                    .verification_member(scope, arguments, keywords, before, depth)
+                    .map_or(Value::Unknown, |(value, _)| value),
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
                 Value::Provider(name)
                     if matches!(
@@ -1930,6 +1951,11 @@ impl<'a> Graph<'a> {
         certainty: &'static str,
         at: Location,
     ) {
+        let (kind, certainty) = match (invocation.verified, kind) {
+            (true, "direct_call") => ("grep_dynamic_call", "possible"),
+            (true, _) => ("grep_dynamic", "possible"),
+            (false, _) => (kind, certainty),
+        };
         let owner = self.scopes[self.symbols[invocation.target].scope].owner;
         if matches!(invocation.receiver, Receiver::Ordinary)
             || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner)
@@ -1973,6 +1999,7 @@ impl<'a> Graph<'a> {
             if self.receiver_conflicts(Invocation {
                 target: call.edge.target,
                 receiver: call.receiver,
+                verified: false,
             }) {
                 self.scope_issue(
                     call.scope,
@@ -2052,14 +2079,59 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn verification_member(
+        &mut self,
+        scope: ScopeId,
+        args: &[Expression],
+        keywords: &[(String, Expression)],
+        before: Location,
+        depth: usize,
+    ) -> Option<(Value, Location)> {
+        let [receiver, member] = args else {
+            return None;
+        };
+        let ExpressionKind::Text(name) = &member.kind else {
+            return None;
+        };
+        if !keywords.is_empty() {
+            return None;
+        }
+        let receiver = self.identity(scope, receiver, before, depth + 1);
+        let known_receiver = matches!(receiver, Value::Module(_) | Value::Instance(_))
+            || matches!(receiver, Value::Callable(invocation) if self.is_class(invocation.target));
+        if !known_receiver {
+            return None;
+        }
+        let value = self.member(receiver, name, (scope, before), depth + 1);
+        let value = match value {
+            Value::Unknown => return None,
+            Value::Callable(invocation) => Value::Callable(Invocation {
+                verified: true,
+                ..invocation
+            }),
+            value => value,
+        };
+        Some((value, member.at))
+    }
+
     fn walk(&mut self, scope: ScopeId, expr: &Expression, before: Location) {
+        self.walk_expression(scope, expr, before, false);
+    }
+
+    fn walk_expression(
+        &mut self,
+        scope: ScopeId,
+        expr: &Expression,
+        before: Location,
+        as_callee: bool,
+    ) {
         match &expr.kind {
             ExpressionKind::Call {
                 function,
                 arguments,
                 keywords,
             } => {
-                self.walk(scope, function, before);
+                self.walk_expression(scope, function, before, true);
                 for expr in arguments
                     .iter()
                     .chain(keywords.iter().map(|(_, value)| value))
@@ -2070,7 +2142,9 @@ impl<'a> Graph<'a> {
                 match callee {
                     Value::Callable(invocation) => {
                         let id = invocation.target;
-                        self.direct.insert(id);
+                        if !invocation.verified {
+                            self.direct.insert(id);
+                        }
                         self.record_direct_arguments(
                             scope, id, before, expr.at, arguments, keywords,
                         );
@@ -2085,7 +2159,12 @@ impl<'a> Graph<'a> {
                             self.invoke(scope, invocation, "direct_call", "certain", expr.at);
                         }
                         if self.is_class(id) {
-                            self.constructor(scope, id, "constructor", "certain", expr.at);
+                            let (kind, certainty) = if invocation.verified {
+                                ("grep_dynamic_call", "possible")
+                            } else {
+                                ("constructor", "certain")
+                            };
+                            self.constructor(scope, id, kind, certainty, expr.at);
                         }
                         // Callback parameter substitution is bounded by retaining the
                         // finite supplied values even if the callee dispatches dynamically.
@@ -2143,6 +2222,34 @@ impl<'a> Graph<'a> {
                                 "unresolved_registration",
                                 "router identity could not be resolved",
                             );
+                        }
+                    }
+                    Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
+                        match self.verification_member(scope, arguments, keywords, before, 0) {
+                            Some((Value::Callable(invocation), at)) => {
+                                // An immediately called function gets its edge and
+                                // arguments from the enclosing call. A standalone
+                                // lookup still supplies possible external use.
+                                if !as_callee
+                                    || !matches!(self.symbols[invocation.target].binding,
+                                        Binding::Definition(def, _) if def.kind == DefinitionKind::Function)
+                                {
+                                    self.invoke(scope, invocation, "grep_dynamic", "possible", at);
+                                }
+                                let reference = (scope, invocation.target, at.line, at.column);
+                                if self.dynamic_references.len() < grep_verification::MAX_EVIDENCE {
+                                    self.dynamic_references.insert(reference);
+                                } else if !self.dynamic_references.contains(&reference) {
+                                    self.issues.push(grep_verification::evidence_limit());
+                                }
+                            }
+                            Some(_) => {}
+                            None => self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "dynamic member is outside the bounded verification model",
+                            ),
                         }
                     }
                     Value::Provider(name) if is_known_call(&name) => {
@@ -2684,7 +2791,7 @@ impl<'a> Graph<'a> {
             let Some(bindings) = names.get(name) else {
                 continue;
             };
-            let candidates = self.pytest_candidates(bindings);
+            let candidates = self.effective_bindings(bindings);
             let disables_collection = |id: SymbolId| {
                 name != "__test__"
                     || matches!(self.symbols[id].binding, Binding::Variable(Some(value), _) if static_bool(value) == Some(false))
@@ -2722,7 +2829,7 @@ impl<'a> Graph<'a> {
         filename.starts_with("test_") || filename.ends_with("_test.py")
     }
 
-    fn pytest_candidates<'b>(&self, bindings: &'b [SymbolId]) -> &'b [SymbolId] {
+    fn effective_bindings<'b>(&self, bindings: &'b [SymbolId]) -> &'b [SymbolId] {
         // Conditional attributes may leave a previous binding in place.
         let first = bindings
             .iter()
@@ -2865,7 +2972,7 @@ impl<'a> Graph<'a> {
             .iter()
             .filter(|(name, _)| name.starts_with(prefix))
             .flat_map(|(_, bindings)| {
-                let candidates = self.pytest_candidates(bindings);
+                let candidates = self.effective_bindings(bindings);
                 candidates.iter().filter_map(move |id| {
                     let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
                     self.pytest_target(*id).map(|target| (target, certain))
@@ -2969,7 +3076,7 @@ impl<'a> Graph<'a> {
             for (&alias, bindings) in names {
                 // Keep possible conditional bindings at the same precedence.
                 let mut alternatives = BTreeMap::<&str, Vec<_>>::new();
-                let candidates = self.pytest_candidates(bindings);
+                let candidates = self.effective_bindings(bindings);
                 let has_unconditional_binding = !self.conditional.contains_key(&candidates[0]);
                 for &binding in candidates.iter().rev() {
                     if let Some(resolved) = self.pytest_target(binding)
@@ -3480,70 +3587,143 @@ impl<'a> Graph<'a> {
         roots
     }
 
-    fn finish(mut self, roots: Vec<Edge>) -> Analysis {
-        self.resolve_class_invocations();
-        let mut reachable_scopes: BTreeSet<_> = (0..self.files.len()).collect();
-        let mut reachable_symbols = BTreeSet::new();
-        let mut active_objects = BTreeSet::new();
-        let mut evidence = BTreeSet::new();
-        let mut pending = VecDeque::from(roots);
-        // Only visited class declarations execute when their parent is reached.
-        // An indexed class inside a dormant branch can still be reported unused.
-        let class_bodies: BTreeSet<_> = self
+    fn verification_evidence(
+        &self,
+        id: SymbolId,
+        path: &str,
+        at: Location,
+        kind: &'static str,
+    ) -> VerificationEvidence {
+        let symbol = &self.symbols[id];
+        let file = &self.files[self.scopes[symbol.scope].file];
+        let qualified_name = self.full_name(id);
+        let Location { line, column } = symbol.name.at;
+        VerificationEvidence {
+            symbol_id: format!("{}::{qualified_name}@{line}:{column}", file.path),
+            qualified_name,
+            definition_path: file.path.clone(),
+            definition_line: line,
+            definition_column: column,
+            path: path.to_owned(),
+            line: at.line,
+            column: at.column,
+            kind,
+            certainty: "possible",
+        }
+    }
+
+    fn configuration_roots(
+        &self,
+        snapshot: &grep_verification::Snapshot,
+        derived: &mut Verification,
+    ) -> bool {
+        if !snapshot.has_configuration_references() {
+            return true;
+        }
+        let effective: BTreeSet<_> = self
             .scopes
             .iter()
-            .flat_map(|scope| scope.class_bodies.iter().copied())
+            .flat_map(|scope| scope.names.values())
+            .flat_map(|bindings| self.effective_bindings(bindings))
+            .copied()
+            .filter(|&id| matches!(self.symbols[id].binding, Binding::Definition(..)))
             .collect();
-        for &scope in &class_bodies {
-            if self.scopes[scope]
-                .parent
-                .is_some_and(|parent| reachable_scopes.contains(&parent))
+        for &id in &effective {
+            let symbol = &self.symbols[id];
+            let Binding::Definition(definition, _) = symbol.binding else {
+                continue;
+            };
+            let scope = &self.scopes[symbol.scope];
+            // Only a module member or a member of an addressable class can
+            // be selected by a qualified configuration reference.
+            let mut owner = scope.owner;
+            while let Some(id) = owner {
+                if !self.is_class(id) || !effective.contains(&id) {
+                    break;
+                }
+                owner = self.scopes[self.symbols[id].scope].owner;
+            }
+            if owner.is_some() {
+                continue;
+            }
+            let file = &self.files[scope.file];
+            let qualified = self.full_name(id);
+            let member = &qualified[file.module.len() + 1..];
+            let include_module_reference =
+                scope.owner.is_none() && definition.kind != DefinitionKind::Class;
+            for reference in
+                snapshot.matches(&file.path, &file.module, member, include_module_reference)
             {
-                reachable_scopes.insert(scope);
+                if derived.evidence.len() + self.dynamic_references.len()
+                    >= grep_verification::MAX_EVIDENCE
+                {
+                    return false;
+                }
+                derived.roots.insert(id);
+                derived.evidence.push(self.verification_evidence(
+                    id,
+                    &reference.path,
+                    reference.at,
+                    reference.kind,
+                ));
             }
         }
-        for &scope in &reachable_scopes {
-            pending.extend(&self.scopes[scope].edges);
-        }
-        let mut converged = false;
+        true
+    }
+
+    fn traverse(
+        &self,
+        reach: &mut Reachability,
+        mut pending: VecDeque<Edge>,
+        class_bodies: &BTreeSet<ScopeId>,
+        verification: bool,
+    ) -> bool {
         for _ in 0..MAX_FRAMEWORK_PASSES {
             let before = (
-                reachable_scopes.len(),
-                active_objects.len(),
-                reachable_symbols.len(),
+                reach.scopes.len(),
+                reach.active_objects.len(),
+                reach.symbols.len(),
             );
             while let Some(edge) = pending.pop_front() {
-                evidence.insert((edge.target, edge.kind, edge.certainty));
-                reachable_symbols.insert(edge.target);
+                if !verification && is_verification_edge(edge.kind) {
+                    continue;
+                }
+                let certainty = if verification {
+                    "possible"
+                } else {
+                    edge.certainty
+                };
+                reach.evidence.insert((edge.target, edge.kind, certainty));
+                reach.symbols.insert(edge.target);
                 if edge.kind == "type_reference" {
                     continue;
                 }
                 let Binding::Definition(_, scope) = self.symbols[edge.target].binding else {
                     continue;
                 };
-                if reachable_scopes.insert(scope) {
+                if reach.scopes.insert(scope) {
                     pending.extend(&self.scopes[scope].edges);
                 }
             }
-            for &scope in &class_bodies {
+            for &scope in class_bodies {
                 if self.scopes[scope]
                     .parent
-                    .is_some_and(|parent| reachable_scopes.contains(&parent))
-                    && reachable_scopes.insert(scope)
+                    .is_some_and(|parent| reach.scopes.contains(&parent))
+                    && reach.scopes.insert(scope)
                 {
                     pending.extend(&self.scopes[scope].edges);
                 }
             }
-            for &scope in &reachable_scopes {
+            for &scope in &reach.scopes {
                 let scope = &self.scopes[scope];
-                active_objects.extend(&scope.activated_apps);
+                reach.active_objects.extend(&scope.activated_apps);
                 for &(parent, child) in &scope.mounts {
-                    if active_objects.contains(&parent) {
-                        active_objects.insert(child);
+                    if reach.active_objects.contains(&parent) {
+                        reach.active_objects.insert(child);
                     }
                 }
                 for &(object, target) in &scope.routes {
-                    if active_objects.contains(&object) && !reachable_symbols.contains(&target) {
+                    if reach.active_objects.contains(&object) && !reach.symbols.contains(&target) {
                         pending.push_back(Edge {
                             target,
                             kind: "fastapi_registration",
@@ -3555,26 +3735,106 @@ impl<'a> Graph<'a> {
             if pending.is_empty()
                 && before
                     == (
-                        reachable_scopes.len(),
-                        active_objects.len(),
-                        reachable_symbols.len(),
+                        reach.scopes.len(),
+                        reach.active_objects.len(),
+                        reach.symbols.len(),
                     )
             {
-                converged = true;
-                break;
+                return true;
             }
         }
-        if !converged {
-            self.issues.push(Issue::new(
-                "analysis_limit",
-                ".",
-                "framework activation limit exceeded",
-            ));
+        false
+    }
+
+    fn finish(
+        mut self,
+        roots: Vec<Edge>,
+        snapshot: Option<&grep_verification::Snapshot>,
+    ) -> Analysis {
+        self.resolve_class_invocations();
+        let mut reach = Reachability {
+            scopes: (0..self.files.len()).collect(),
+            ..Reachability::default()
+        };
+        let mut pending = VecDeque::from(roots);
+        // Only visited class declarations execute when their parent is reached.
+        let class_bodies: BTreeSet<_> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.class_bodies.iter().copied())
+            .collect();
+        for &scope in &class_bodies {
+            if self.scopes[scope]
+                .parent
+                .is_some_and(|parent| reach.scopes.contains(&parent))
+            {
+                reach.scopes.insert(scope);
+            }
         }
+        for &scope in &reach.scopes {
+            pending.extend(&self.scopes[scope].edges);
+        }
+        let baseline_converged = self.traverse(&mut reach, pending, &class_bodies, false);
+        let mut verification = Verification::default();
+        if let Some(snapshot) = snapshot {
+            let baseline = reach.symbols.clone();
+            if !self.configuration_roots(snapshot, &mut verification) {
+                self.issues.push(grep_verification::evidence_limit());
+            }
+            let mut pending: VecDeque<_> = verification
+                .roots
+                .iter()
+                .map(|&target| Edge {
+                    target,
+                    kind: "grep_configuration",
+                    certainty: "possible",
+                })
+                .collect();
+            pending.extend(reach.scopes.iter().flat_map(|&scope| {
+                self.scopes[scope]
+                    .edges
+                    .iter()
+                    .copied()
+                    .filter(|edge| is_verification_edge(edge.kind))
+            }));
+            if !pending.is_empty() && !self.traverse(&mut reach, pending, &class_bodies, true) {
+                self.issues.push(framework_limit());
+            }
+            for &(scope, target, line, column) in &self.dynamic_references {
+                if reach.scopes.contains(&scope) && reach.symbols.contains(&target) {
+                    if !baseline.contains(&target) {
+                        verification.roots.insert(target);
+                    }
+                    verification.evidence.push(self.verification_evidence(
+                        target,
+                        &self.files[self.scopes[scope].file].path,
+                        Location { line, column },
+                        "dynamic_member",
+                    ));
+                }
+            }
+            verification.rescued_count = verification.roots.difference(&baseline).count();
+            verification.transitive = reach
+                .symbols
+                .difference(&baseline)
+                .filter(|target| !verification.roots.contains(target))
+                .copied()
+                .collect();
+        }
+        if !baseline_converged {
+            self.issues.push(framework_limit());
+        }
+        let Reachability {
+            scopes: reachable_scopes,
+            symbols: reachable_symbols,
+            evidence,
+            ..
+        } = reach;
         let independently_retained: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
-                (kind != "direct_call" && kind != "type_reference").then_some(target)
+                (!matches!(kind, "direct_call" | "grep_dynamic_call" | "type_reference"))
+                    .then_some(target)
             })
             .collect();
         for call in self
@@ -3614,7 +3874,14 @@ impl<'a> Graph<'a> {
 
         let mut findings = Vec::new();
         let mut retained = Vec::new();
-        for (id, kind, certainty) in evidence {
+        let transitive = verification
+            .transitive
+            .iter()
+            .map(|&target| (target, "reachable_from_root", "possible"));
+        for (id, kind, certainty) in evidence.into_iter().chain(transitive) {
+            if is_verification_edge(kind) {
+                continue;
+            }
             let symbol = &self.symbols[id];
             retained.push(Evidence {
                 file: self.files[self.scopes[symbol.scope].file].path.clone(),
@@ -3751,8 +4018,37 @@ impl<'a> Graph<'a> {
             evidence: retained,
             issues: self.issues,
             uncertainties: self.uncertainties,
+            verification: verification.evidence,
+            rescued_count: verification.rescued_count,
         }
     }
+}
+
+#[derive(Default)]
+struct Reachability {
+    scopes: BTreeSet<ScopeId>,
+    symbols: BTreeSet<SymbolId>,
+    active_objects: BTreeSet<Object>,
+    evidence: BTreeSet<(SymbolId, &'static str, &'static str)>,
+}
+
+#[derive(Default)]
+struct Verification {
+    roots: BTreeSet<SymbolId>,
+    transitive: BTreeSet<SymbolId>,
+    evidence: Vec<VerificationEvidence>,
+    rescued_count: usize,
+}
+
+fn is_verification_edge(kind: &str) -> bool {
+    matches!(
+        kind,
+        "grep_configuration" | "grep_dynamic" | "grep_dynamic_call"
+    )
+}
+
+fn framework_limit() -> Issue {
+    Issue::new("analysis_limit", ".", "framework activation limit exceeded")
 }
 
 fn position(at: Location) -> [usize; 2] {

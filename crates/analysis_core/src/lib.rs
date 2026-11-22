@@ -2,6 +2,7 @@
 
 mod fact_cache;
 mod graph;
+mod grep_verification;
 pub mod phase02;
 mod preview;
 mod preview_source;

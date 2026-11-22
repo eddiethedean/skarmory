@@ -91,7 +91,7 @@ enum SeenEntry {
 }
 
 impl Stamp {
-    fn new(metadata: &Metadata) -> Self {
+    pub(super) fn new(metadata: &Metadata) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
 
@@ -592,7 +592,11 @@ impl Project {
         issues
     }
 
-    fn label(&self, path: &Path) -> String {
+    pub(super) fn verification_directories(&self) -> impl Iterator<Item = &PathBuf> {
+        self.directories.keys()
+    }
+
+    pub(super) fn label(&self, path: &Path) -> String {
         display(path.strip_prefix(&self.base).unwrap_or(path))
     }
 }
@@ -704,47 +708,51 @@ impl SourceFile {
     }
 
     fn read(&self) -> Result<(Vec<u8>, Stamp), Issue> {
-        let failure = |error: std::io::Error| Issue::new("read_error", &self.label, error);
-        let changed = || Issue::new("source_changed", &self.label, "source changed during read");
-        let before = fs::symlink_metadata(&self.path).map_err(failure)?;
-        if !before.is_file() {
-            return Err(Issue::new(
-                "unsupported_file",
-                &self.label,
-                "expected a regular file without a symlink",
-            ));
-        }
-        let stamp = Stamp::new(&before);
-        if self.discovered.as_ref().is_some_and(|seen| *seen != stamp) {
-            return Err(changed());
-        }
-        let mut file = File::open(&self.path).map_err(failure)?;
-        if Stamp::new(&file.metadata().map_err(failure)?) != stamp {
-            return Err(changed());
-        }
-        let mut bytes = Vec::new();
-        (&mut file)
-            .take(source::MAX_SOURCE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(failure)?;
-        if bytes.len() as u64 > source::MAX_SOURCE_BYTES {
-            return Err(Issue::new(
-                "source_limit",
-                &self.label,
-                "source exceeds 1 MiB",
-            ));
-        }
-        let after = file.metadata().map_err(failure)?;
-        let live = fs::symlink_metadata(&self.path).map_err(failure)?;
-        if !live.is_file()
-            || after.len() != bytes.len() as u64
-            || Stamp::new(&after) != stamp
-            || Stamp::new(&live) != stamp
-        {
-            return Err(changed());
-        }
-        Ok((bytes, stamp))
+        read_snapshot(&self.path, &self.label, self.discovered.as_ref())
     }
+}
+
+pub(super) fn read_snapshot(
+    path: &Path,
+    label: &str,
+    discovered: Option<&Stamp>,
+) -> Result<(Vec<u8>, Stamp), Issue> {
+    let failure = |error: std::io::Error| Issue::new("read_error", label, error);
+    let changed = || Issue::new("source_changed", label, "source changed during read");
+    let before = fs::symlink_metadata(path).map_err(failure)?;
+    if !before.is_file() {
+        return Err(Issue::new(
+            "unsupported_file",
+            label,
+            "expected a regular file without a symlink",
+        ));
+    }
+    let stamp = Stamp::new(&before);
+    if discovered.is_some_and(|seen| *seen != stamp) {
+        return Err(changed());
+    }
+    let mut file = File::open(path).map_err(failure)?;
+    if Stamp::new(&file.metadata().map_err(failure)?) != stamp {
+        return Err(changed());
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(source::MAX_SOURCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(failure)?;
+    if bytes.len() as u64 > source::MAX_SOURCE_BYTES {
+        return Err(Issue::new("source_limit", label, "source exceeds 1 MiB"));
+    }
+    let after = file.metadata().map_err(failure)?;
+    let live = fs::symlink_metadata(path).map_err(failure)?;
+    if !live.is_file()
+        || after.len() != bytes.len() as u64
+        || Stamp::new(&after) != stamp
+        || Stamp::new(&live) != stamp
+    {
+        return Err(changed());
+    }
+    Ok((bytes, stamp))
 }
 
 fn module_name(

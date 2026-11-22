@@ -12,6 +12,8 @@ use skarmory_core::{CacheStats, ScanOptions, ScanPolicy, Timings};
 enum Profile {
     Native,
     Skylos,
+    #[value(name = "skylos-0.3")]
+    SkylosPhase03,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -34,7 +36,7 @@ struct Cli {
     #[arg(value_name = "PATH")]
     path: PathBuf,
 
-    /// Choose the native preview or the declared Skylos compatibility profile.
+    /// Choose the native preview or a versioned Skylos compatibility profile.
     #[arg(long, value_enum)]
     profile: Option<Profile>,
 
@@ -94,6 +96,10 @@ struct PreviewArgs {
     /// Declare a library callable exposed to callers. Repeat as needed.
     #[arg(long = "public-callable", value_name = "MODULE:FUNCTION")]
     public_callables: Vec<String>,
+
+    /// Search selected sources and supported configuration for possible use.
+    #[arg(long)]
+    grep_verify: bool,
 }
 
 #[derive(Args, Default)]
@@ -131,9 +137,9 @@ struct SkylosArgs {
     #[arg(long)]
     all_advice: bool,
 
-    /// Explicitly select the offline scan with grep verification disabled.
+    /// Disable grep verification in the Skylos compatibility profile.
     #[arg(long = "no-grep-verify")]
-    _no_grep_verify: bool,
+    no_grep_verify: bool,
 
     /// Write the legacy JSON report (the compatibility default).
     #[arg(long = "json")]
@@ -185,19 +191,27 @@ fn main() -> ExitCode {
             report.to_json()
         });
     }
-    if matches!(cli.profile, Some(Profile::Skylos)) {
+    let compatibility_profile = match cli.profile {
+        Some(Profile::Skylos) => Some(phase02::Profile::SkylosPhase02),
+        Some(Profile::SkylosPhase03) => Some(phase02::Profile::SkylosPhase03),
+        Some(Profile::Native) | None => None,
+    };
+    if let Some(profile) = compatibility_profile {
         if cli.preview.is_some() || cli.timings {
             return fail("native preview options and --timings require the native profile");
         }
         return write_skylos_report(
             &cli.path,
+            profile,
             cli.skylos.unwrap_or_default(),
             cli.workers,
             cli.cache_dir,
         );
     }
     if cli.skylos.is_some() {
-        return fail("Skylos compatibility options require --profile skylos");
+        return fail(
+            "Skylos compatibility options require --profile skylos or --profile skylos-0.3",
+        );
     }
 
     let preview = cli.preview.unwrap_or_default();
@@ -213,6 +227,7 @@ fn main() -> ExitCode {
         public_modules: preview.public_modules,
         public_callables: preview.public_callables,
         workers: cli.workers,
+        grep_verify: preview.grep_verify,
     };
     let (report, timings, cache) = if let Some(directory) = cli.cache_dir {
         let (report, timings, stats) = skarmory_core::scan_cached(&cli.path, &options, &directory);
@@ -228,6 +243,7 @@ fn main() -> ExitCode {
 
 fn write_skylos_report(
     path: &Path,
+    profile: phase02::Profile,
     args: SkylosArgs,
     workers: usize,
     cache_dir: Option<PathBuf>,
@@ -238,6 +254,7 @@ fn write_skylos_report(
         return fail("JSON and SARIF require different output paths");
     }
     let options = phase02::Options {
+        profile,
         config_file: args.config_file,
         excludes: args.excludes,
         generated_keep_paths: args.includes.clone(),
@@ -249,6 +266,7 @@ fn write_skylos_report(
         all_advice: args.all_advice,
         workers,
         cache_dir,
+        grep_verify: args.no_grep_verify.then_some(false),
     };
     let report = match phase02::scan(path, &options) {
         Ok(report) => report,

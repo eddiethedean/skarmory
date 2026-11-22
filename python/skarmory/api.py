@@ -38,6 +38,7 @@ def analyze(
     public_callables: Sequence[str] = (),
     workers: int = 1,
     cache_dir: SourcePath | None = None,
+    grep_verify: bool = False,
     phase0: bool = False,
 ) -> NativeReport:
     """Analyze selected Python sources and return the native report.
@@ -45,6 +46,8 @@ def analyze(
     Declare source roots in import search order. Specify callable roots as
     `"module:function"`. Check `coverage.status` before using findings.
     Pass `cache_dir` to reuse validated file-local facts.
+    Set `grep_verify=True` to search for possible use in selected sources and
+    supported configuration.
     Set `phase0=True` to use the flat-project prototype with its original report.
     """
     native = _load_native()
@@ -60,6 +63,7 @@ def analyze(
             or public_callables
             or workers != 1
             or cache_dir is not None
+            or grep_verify
         ):
             raise ValueError("Phase 0 does not accept preview scan options")
         return cast(NativeReport, json.loads(native.analyze(fspath(path))))
@@ -85,6 +89,7 @@ def analyze(
             "public_callables": public_callables,
             "workers": workers,
             "cache_dir": fspath(cache_dir) if cache_dir is not None else None,
+            "grep_verify": grep_verify,
         },
     )
     return cast(NativeReport, json.loads(serialized))
