@@ -45,6 +45,7 @@ enum Value {
     Bool(bool),
     Sequence(Vec<Value>),
     Mapping(Vec<Value>),
+    Range,
     /// An exact built-in container with scalar elements and untracked length and order.
     BuiltinIterable,
     Scalar,
@@ -58,7 +59,7 @@ impl Value {
     }
 
     fn is_builtin_scalar_or_iterable(&self) -> bool {
-        self.is_builtin_scalar() || matches!(self, Self::BuiltinIterable)
+        self.is_builtin_scalar() || matches!(self, Self::Range | Self::BuiltinIterable)
     }
 }
 
@@ -274,6 +275,7 @@ pub(super) fn analyze_with_verification(
         parameter_calls: Vec::new(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
+        has_hash_hooks: false,
         has_bool_hooks: false,
         has_length_hooks: false,
         grep_verify: verification.is_some(),
@@ -301,6 +303,7 @@ pub(super) fn analyze_with_verification(
             match symbol.name.text.as_str() {
                 "__lt__" | "__le__" | "__gt__" | "__ge__" => graph.has_ordering_hooks = true,
                 "__eq__" => graph.has_equality_hooks = true,
+                "__hash__" => graph.has_hash_hooks = true,
                 "__bool__" => graph.has_bool_hooks = true,
                 "__len__" => graph.has_length_hooks = true,
                 _ => {}
@@ -356,6 +359,7 @@ struct Graph<'a> {
     parameter_calls: Vec<ParameterCall>,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
+    has_hash_hooks: bool,
     has_bool_hooks: bool,
     has_length_hooks: bool,
     grep_verify: bool,
@@ -1678,7 +1682,10 @@ impl<'a> Graph<'a> {
         let operands = [left, right];
         // Only two potential sequences can invoke element equality during ordering.
         let unknown_may_dispatch = self.has_ordering_hooks
-            || (self.has_equality_hooks && !operands.into_iter().any(Value::is_builtin_scalar));
+            || (self.has_equality_hooks
+                && !operands
+                    .into_iter()
+                    .any(|value| value.is_builtin_scalar() || matches!(value, Value::Range)));
         operands.into_iter().any(|operand| match operand {
             Value::Unknown | Value::OperatorResult => unknown_may_dispatch,
             _ => !operand.is_builtin_scalar_or_iterable(),
@@ -1947,20 +1954,26 @@ impl<'a> Graph<'a> {
                         [] => Value::Sequence(Vec::new()),
                         [argument] => match recurse(self, argument) {
                             value @ (Value::Sequence(_) | Value::BuiltinIterable) => value,
-                            Value::Text(_) => Value::BuiltinIterable,
+                            Value::Range | Value::Text(_) => Value::BuiltinIterable,
                             _ => Value::Unknown,
                         },
                         _ => Value::Unknown,
                     }
                 }
                 Value::Provider(name) if name == "builtins.set" && keywords.is_empty() => {
+                    // A mutable input can acquire elements through aliases. When
+                    // selected hooks can matter, trust scalar elements only in a
+                    // fresh literal or an immutable input.
+                    let has_element_hooks = self.has_hash_hooks || self.has_equality_hooks;
                     match arguments.as_slice() {
                         [] => Value::BuiltinIterable,
                         [argument] => match recurse(self, argument) {
-                            Value::BuiltinIterable | Value::Text(_) => Value::BuiltinIterable,
-                            // Constructing the set may hash or compare its elements.
+                            Value::Range | Value::Text(_) => Value::BuiltinIterable,
+                            Value::BuiltinIterable if !has_element_hooks => Value::BuiltinIterable,
                             Value::Sequence(items)
-                                if items.iter().all(Value::is_builtin_scalar) =>
+                                if (!has_element_hooks
+                                    || matches!(argument.kind, ExpressionKind::Sequence(_)))
+                                    && items.iter().all(Value::is_builtin_scalar) =>
                             {
                                 Value::BuiltinIterable
                             }
@@ -1976,7 +1989,7 @@ impl<'a> Graph<'a> {
                             .iter()
                             .all(|argument| recurse(self, argument).is_builtin_scalar()) =>
                 {
-                    Value::BuiltinIterable
+                    Value::Range
                 }
                 Value::Provider(name)
                     if keywords.is_empty()
