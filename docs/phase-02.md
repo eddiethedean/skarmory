@@ -90,6 +90,10 @@ Explicit calls to the built-in `len()` retain a resolved local `__len__` method
 and its reachable helpers. A reachable call reports incomplete coverage when
 the instance's length method cannot be resolved or an opaque argument may call
 a selected length method. This applies when the result is used in a comparison.
+Built-in container results retain their built-in length behavior when the
+constructor and its inputs are bounded. When a selected hash or equality method
+could run during set construction, an earlier assignment alone cannot prove
+that a mutable input still contains only built-in scalars.
 
 Other framework and library APIs, namespace-package and arbitrary import-hook
 resolution, dynamic plugin loading, opaque lazy exports, text-based grep

@@ -179,6 +179,169 @@ fn builtin_values_do_not_dispatch_unrelated_truth_hooks() {
 }
 
 #[test]
+fn builtin_container_lengths_ignore_unrelated_length_hooks() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("inventory.py"),
+        "class Inventory:\n    def __len__(self):\n        return 1\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("main.py"),
+        concat!(
+            "items = [1, 2, 2]\n",
+            "print(len(set(items)))\n",
+            "print(len(dict(active=True)))\n",
+            "print(len(list(range(3))))\n",
+            "indices = range(3)\nprint(len(list(indices)))\n",
+            "def unused():\n    pass\n",
+        ),
+    )
+    .unwrap();
+
+    let (report, cold) = compare(project.path(), cache.path());
+    assert_eq!(cold["misses"], 2);
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert!(finds(&report, "unused"));
+    let (warm, stats) = compare(project.path(), cache.path());
+    assert_eq!(stats["hits"], 2);
+    assert_eq!(warm, report);
+}
+
+#[test]
+fn builtin_container_lengths_preserve_unresolved_constructor_effects() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("inventory.py"),
+        concat!(
+            "class Inventory:\n",
+            "    def __len__(self):\n        return 1\n",
+            "    def __iter__(self):\n        return iter([1])\n",
+            "    def __hash__(self):\n        return 1\n",
+            "    def __eq__(self, other):\n        return True\n",
+        ),
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    for (source, kind) in [
+        ("print(len(dict(active=missing())))\n", "unresolved_call"),
+        (
+            "from inventory import Inventory\nprint(len(list(Inventory())))\n",
+            "unresolved_length_call",
+        ),
+        (
+            "from inventory import Inventory\nprint(len(set([Inventory()])))\n",
+            "unresolved_length_call",
+        ),
+        (
+            "from inventory import Inventory\nif list(range(1)) == [Inventory()]:\n    pass\n",
+            "unresolved_comparison",
+        ),
+    ] {
+        fs::write(&main, source).unwrap();
+        let (report, _) = compare(project.path(), cache.path());
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == kind),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn set_length_does_not_trust_mutable_container_contents() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("inventory.py"),
+        concat!(
+            "def record_hash():\n    return 7\n",
+            "class Inventory:\n",
+            "    def __len__(self):\n        return 1\n",
+            "    def __hash__(self):\n        return record_hash()\n",
+        ),
+    )
+    .unwrap();
+    let main = project.path().join("main.py");
+    for initial in ["[1]", "list(range(1))"] {
+        fs::write(
+            &main,
+            format!(
+                "from inventory import Inventory\n\
+                 items = {initial}\n\
+                 alias = items\n\
+                 extend = list.extend\n\
+                 extend(alias, [Inventory()])\n\
+                 print(len(set(items)))\n"
+            ),
+        )
+        .unwrap();
+        let (report, _) = compare(project.path(), cache.path());
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_length_call"),
+            "{report}"
+        );
+        assert!(!finds(&report, "record_hash"), "{report}");
+        let (warm, stats) = compare(project.path(), cache.path());
+        assert_eq!(stats["hits"], 2);
+        assert_eq!(warm, report);
+    }
+
+    fs::write(
+        &main,
+        concat!(
+            "print(len(set([1, 2, 2])))\n",
+            "indices = range(3)\nprint(len(set(indices)))\n",
+            "def unused():\n    pass\n",
+        ),
+    )
+    .unwrap();
+    let (bounded, _) = compare(project.path(), cache.path());
+    assert_eq!(bounded["coverage"]["status"], "complete", "{bounded}");
+    assert!(finds(&bounded, "unused"), "{bounded}");
+}
+
+#[test]
+fn ranges_do_not_dispatch_container_element_equality() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(project.path().join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        project.path().join("main.py"),
+        concat!(
+            "def compare_entry():\n    return True\n",
+            "class Entry:\n    def __eq__(self, other):\n        return compare_entry()\n",
+            "indices = range(1)\n",
+            "print(indices == [Entry()])\n",
+            "print([Entry()] == indices)\n",
+            "print(indices != {'key': Entry()})\n",
+        ),
+    )
+    .unwrap();
+
+    let (report, _) = compare(project.path(), cache.path());
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    assert!(finds(&report, "compare_entry"), "{report}");
+    let (warm, stats) = compare(project.path(), cache.path());
+    assert_eq!(stats["hits"], 1);
+    assert_eq!(warm, report);
+}
+
+#[test]
 fn explicit_length_calls_follow_resolved_instances() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
