@@ -577,15 +577,25 @@ fn skylos_reports_cycles_through_imported_initialization_helpers() {
 fn skylos_reports_cycles_through_synchronous_initialization_callbacks() {
     let project = skylos_fixture();
     fs::remove_file(project.path().join("main.py")).unwrap();
-    fs::write(
-        project.path().join("a.py"),
-        "def used():\n    return 1\n\ndef callback():\n    from a import used\n    used()\n\nfrom b import invoke\ninvoke(callback)\n\ndef used():\n    return 2\n",
-    )
-    .unwrap();
-    for body in [
-        "    fn()\n",
-        "    def nested():\n        fn()\n    nested()\n",
+    for (definition, body) in [
+        (
+            "def callback():\n    from a import used\n    used()",
+            "    fn()\n",
+        ),
+        (
+            "def callback():\n    from a import used\n    used()",
+            "    def nested():\n        fn()\n    nested()\n",
+        ),
+        (
+            "class callback:\n    def __init__(self):\n        from a import used\n        used()",
+            "    fn()\n",
+        ),
     ] {
+        fs::write(
+            project.path().join("a.py"),
+            format!("def used():\n    return 1\n\n{definition}\n\nfrom b import invoke\ninvoke(callback)\n\ndef used():\n    return 2\n"),
+        )
+        .unwrap();
         fs::write(
             project.path().join("b.py"),
             format!("def invoke(fn):\n{body}"),
@@ -1681,7 +1691,7 @@ fn skylos_ignores_unexecuted_attachments_when_resolving_exports() {
 }
 
 #[test]
-fn skylos_retains_constructor_dependencies_of_exported_classes() {
+fn skylos_retains_constructor_and_public_method_dependencies_of_exported_classes() {
     let project = skylos_fixture();
     let root = project.path();
     fs::remove_file(root.join("main.py")).unwrap();
@@ -1690,12 +1700,22 @@ fn skylos_retains_constructor_dependencies_of_exported_classes() {
     let source = r#"def prepare():
     print("prepared")
 
+def _render():
+    print("rendered")
+
 def unused():
     pass
 
-class Client:
+class Base:
+    def render(self):
+        _render()
+
+class Client(Base):
     def __init__(self):
         prepare()
+
+    def _internal(self):
+        pass
 "#;
     fs::write(pkg.join("impl.py"), source).unwrap();
 
@@ -1704,20 +1724,95 @@ class Client:
             "from pkg.impl import Client as Client\n",
             "",
             "",
-            vec!["pkg.impl.unused"],
+            vec!["pkg.impl.Client._internal", "pkg.impl.unused"],
         ),
         (
             "",
             "from .impl import Client as Client\n",
             "",
-            vec!["pkg.impl.unused"],
+            vec!["pkg.impl.Client._internal", "pkg.impl.unused"],
         ),
-        ("", "", "__all__ = ['Client']\n", vec!["pkg.impl.unused"]),
-        ("", "", "", vec!["pkg.impl.prepare", "pkg.impl.unused"]),
+        (
+            "",
+            "",
+            "__all__ = ['Client']\n",
+            vec!["pkg.impl.Client._internal", "pkg.impl.unused"],
+        ),
+        (
+            "",
+            "",
+            "",
+            vec![
+                "pkg.impl.Base.render",
+                "pkg.impl.Client._internal",
+                "pkg.impl._render",
+                "pkg.impl.prepare",
+                "pkg.impl.unused",
+            ],
+        ),
     ] {
         fs::write(root.join("api.py"), format!("print('api')\n{ordinary}")).unwrap();
         fs::write(pkg.join("__init__.py"), initializer).unwrap();
         fs::write(pkg.join("impl.py"), format!("{source}\n{implementation}")).unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        let mut unused: Vec<_> = report["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["full_name"].as_str().unwrap())
+            .collect();
+        unused.sort_unstable();
+        assert_eq!(
+            unused, expected,
+            "{ordinary}{initializer}{implementation}\n{report}"
+        );
+        if expected.len() == 2 {
+            assert!(
+                report["dead_code_evidence"].as_array().unwrap().iter().any(
+                    |item| item["full_name"] == "pkg.impl.Client.__init__"
+                        && item["kind"] == "constructor"
+                        && item["certainty"] == "possible"
+                ),
+                "{report}"
+            );
+            assert!(
+                report["dead_code_evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["full_name"] == "pkg.impl.Base.render"
+                        && item["certainty"] == "possible"),
+                "{report}"
+            );
+        }
+    }
+}
+
+#[test]
+fn skylos_retains_members_of_exported_modules_and_literal_containers() {
+    let project = skylos_fixture();
+    let root = project.path();
+    fs::remove_file(root.join("main.py")).unwrap();
+    let pkg = root.join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    let api = pkg.join("api");
+    fs::create_dir(&api).unwrap();
+    fs::write(
+        api.join("__init__.py"),
+        "import pkg.api.attached\n\ndef _used():\n    pass\n\ndef run():\n    _used()\n\ndef _unused():\n    pass\n",
+    )
+    .unwrap();
+    fs::write(api.join("attached.py"), "def public():\n    pass\n").unwrap();
+    fs::write(api.join("dormant.py"), "def unused():\n    pass\n").unwrap();
+
+    for initializer in [
+        "from . import api as api\n",
+        "from . import api\nexports = [api]\n__all__ = ['exports']\n",
+    ] {
+        fs::write(pkg.join("__init__.py"), initializer).unwrap();
         let output = skylos(root, &["--json", "--strict"]);
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output.status.code(), Some(1), "{report}");
@@ -1729,19 +1824,135 @@ class Client:
             .map(|row| row["full_name"].as_str().unwrap())
             .collect();
         assert_eq!(
-            unused, expected,
-            "{ordinary}{initializer}{implementation}\n{report}"
+            unused,
+            ["pkg.api._unused", "pkg.api.dormant.unused"],
+            "{initializer}\n{report}"
         );
-        if expected.len() == 1 {
-            assert!(
-                report["dead_code_evidence"].as_array().unwrap().iter().any(
-                    |item| item["full_name"] == "pkg.impl.Client.__init__"
-                        && item["kind"] == "constructor"
-                        && item["certainty"] == "possible"
-                ),
-                "{report}"
-            );
-        }
+        assert!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == "pkg.api.run" && item["certainty"] == "possible"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn skylos_retains_initializers_for_invoked_class_callbacks_and_configured_classes() {
+    let project = skylos_fixture();
+    let root = project.path();
+    let class =
+        "def _prepare():\n    pass\n\nclass Worker:\n    def __init__(self):\n        _prepare()\n";
+    for (activation, configured, constructed) in [
+        (
+            "def invoke(callback):\n    callback()\ninvoke(Worker)\n",
+            false,
+            true,
+        ),
+        (
+            "def read(callback):\n    print(callback)\nread(Worker)\n",
+            false,
+            false,
+        ),
+        (
+            "def invoke(callback):\n    if False:\n        callback()\ninvoke(Worker)\n",
+            false,
+            false,
+        ),
+        (
+            "def invoke(callback):\n    def deferred():\n        callback()\ninvoke(Worker)\n",
+            false,
+            false,
+        ),
+        (
+            "def invoke(callback):\n    def nested():\n        callback()\n    nested()\ninvoke(Worker)\n",
+            false,
+            true,
+        ),
+        ("", true, true),
+    ] {
+        fs::write(root.join("main.py"), format!("{class}\n{activation}")).unwrap();
+        fs::write(
+            root.join(".skylos.toml"),
+            if configured {
+                "root = true\n[[dead_code.entrypoints]]\nname = 'Worker'\nmodule = 'main'\n"
+            } else {
+                "root = true\n"
+            },
+        )
+        .unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        assert_eq!(
+            report["unused_functions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["full_name"] == "main._prepare"),
+            !constructed,
+            "{activation}\n{report}"
+        );
+        assert_eq!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == "main.Worker.__init__"
+                    && item["kind"] == "constructor"
+                    && item["certainty"] == "possible"),
+            constructed,
+            "{activation}\n{report}"
+        );
+    }
+}
+
+#[test]
+fn skylos_retains_initializers_for_started_class_callbacks() {
+    let project = skylos_fixture();
+    let root = project.path();
+    let class =
+        "def _prepare():\n    pass\n\nclass Worker:\n    def __init__(self):\n        _prepare()\n";
+    for (source, started) in [
+        (
+            "from concurrent.futures import ThreadPoolExecutor\nexecutor = ThreadPoolExecutor()\nexecutor.submit(Worker)\n",
+            true,
+        ),
+        (
+            "from multiprocessing import Process\nprocess = Process(target=Worker)\nprocess.start()\n",
+            true,
+        ),
+        (
+            "from multiprocessing import Process\nprocess = Process(target=Worker)\nprint(process)\n",
+            false,
+        ),
+    ] {
+        fs::write(root.join("main.py"), format!("{class}\n{source}")).unwrap();
+        let output = skylos(root, &["--json", "--strict"]);
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        assert_eq!(
+            report["unused_functions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["full_name"] == "main._prepare"),
+            !started,
+            "{source}\n{report}"
+        );
+        assert_eq!(
+            report["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["full_name"] == "main.Worker.__init__"
+                    && item["kind"] == "callback_constructor"
+                    && item["certainty"] == "possible"),
+            started,
+            "{source}\n{report}"
+        );
     }
 }
 

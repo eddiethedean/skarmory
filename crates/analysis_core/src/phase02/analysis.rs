@@ -139,7 +139,15 @@ struct ClassInvocation {
 
 struct DirectArguments {
     caller: ScopeId,
+    at: Location,
     bounded_callbacks: BTreeMap<String, Invocation>,
+}
+
+struct Export {
+    scope: ScopeId,
+    at: Location,
+    kind: &'static str,
+    value: Value,
 }
 
 struct ParameterCall {
@@ -261,7 +269,9 @@ pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Ana
         graph.suite(scope, body);
     }
     graph.resolve_class_invocations();
-    let Some(initialization_edges) = graph.acyclic_initialization_edges() else {
+    let callbacks = graph.initialization_callbacks();
+    graph.resolve_class_invocations();
+    let Some(initialization_edges) = graph.acyclic_initialization_edges(&callbacks) else {
         graph.issues.push(Issue::new(
             "cyclic_imports",
             ".",
@@ -1029,7 +1039,7 @@ impl<'a> Graph<'a> {
         })
     }
 
-    fn initialization_callbacks(&self) -> Vec<Vec<ScopeId>> {
+    fn initialization_callbacks(&mut self) -> Vec<Vec<ScopeId>> {
         let mut invocations = BTreeMap::<_, Vec<_>>::new();
         for call in &self.parameter_calls {
             let parameter = &self.symbols[call.parameter];
@@ -1044,6 +1054,7 @@ impl<'a> Graph<'a> {
             }
         }
         let mut callbacks = vec![Vec::new(); self.scopes.len()];
+        let mut constructors = Vec::new();
         for ((callee, body), invocations) in invocations {
             // A captured parameter call matters only in a nested body that
             // can execute during this invocation of the enclosing function.
@@ -1068,19 +1079,29 @@ impl<'a> Graph<'a> {
                         && !self.receiver_conflicts(invocation)
                         && let Binding::Definition(definition, body) =
                             self.symbols[invocation.target].binding
-                        && definition.kind == DefinitionKind::Function
                     {
-                        callbacks[call.caller].push(body);
+                        match definition.kind {
+                            DefinitionKind::Function => callbacks[call.caller].push(body),
+                            DefinitionKind::Class => {
+                                constructors.push((call.caller, invocation.target, call.at));
+                            }
+                            DefinitionKind::Coroutine => {}
+                        }
                     }
                 }
             }
         }
+        for (caller, class, at) in constructors {
+            self.constructor(caller, class, "constructor", "possible", at);
+        }
         callbacks
     }
 
-    fn acyclic_initialization_edges(&self) -> Option<Vec<Vec<ScopeId>>> {
+    fn acyclic_initialization_edges(
+        &self,
+        callbacks: &[Vec<ScopeId>],
+    ) -> Option<Vec<Vec<ScopeId>>> {
         let count = self.scopes.len();
-        let callbacks = self.initialization_callbacks();
         let mut outgoing = vec![Vec::new(); count];
         let mut incoming = vec![Vec::new(); count];
         let mut reached = vec![false; count];
@@ -1970,6 +1991,7 @@ impl<'a> Graph<'a> {
         &mut self,
         scope: ScopeId,
         class: SymbolId,
+        kind: &'static str,
         certainty: &'static str,
         at: Location,
     ) {
@@ -1980,7 +2002,7 @@ impl<'a> Graph<'a> {
                 self.invoke(
                     scope,
                     invocation.bind_receiver(Receiver::Explicit(None)),
-                    "constructor",
+                    kind,
                     certainty,
                     at,
                 );
@@ -1999,7 +2021,7 @@ impl<'a> Graph<'a> {
             Some(Value::Callable(invocation)) => self.invoke(
                 scope,
                 invocation.bind_receiver(Receiver::Bound(class)),
-                "constructor",
+                kind,
                 certainty,
                 at,
             ),
@@ -2031,7 +2053,9 @@ impl<'a> Graph<'a> {
                     Value::Callable(invocation) => {
                         let id = invocation.target;
                         self.direct.insert(id);
-                        self.record_direct_arguments(scope, id, before, arguments, keywords);
+                        self.record_direct_arguments(
+                            scope, id, before, expr.at, arguments, keywords,
+                        );
                         if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
                         {
                             let invocation = self.with_explicit_receiver(
@@ -2043,7 +2067,7 @@ impl<'a> Graph<'a> {
                             self.invoke(scope, invocation, "direct_call", "certain", expr.at);
                         }
                         if self.is_class(id) {
-                            self.constructor(scope, id, "certain", expr.at);
+                            self.constructor(scope, id, "constructor", "certain", expr.at);
                         }
                         // Callback parameter substitution is bounded by retaining the
                         // finite supplied values even if the callee dispatches dynamically.
@@ -2072,7 +2096,9 @@ impl<'a> Graph<'a> {
                         expr.at,
                     ),
                     Value::Start(value) => match *value {
-                        Value::Callable(_) => self.expose(scope, *value, "process_target", expr.at),
+                        Value::Callable(_) => {
+                            self.activate_callback(scope, *value, "process_target", expr.at);
+                        }
                         _ => self.scope_issue(
                             scope,
                             expr.at,
@@ -2207,6 +2233,7 @@ impl<'a> Graph<'a> {
         caller: ScopeId,
         callee: SymbolId,
         before: Location,
+        at: Location,
         args: &[Expression],
         keywords: &[(String, Expression)],
     ) {
@@ -2237,6 +2264,7 @@ impl<'a> Graph<'a> {
             .or_default()
             .push(DirectArguments {
                 caller,
+                at,
                 bounded_callbacks,
             });
     }
@@ -2261,6 +2289,18 @@ impl<'a> Graph<'a> {
         at: Location,
     ) {
         if matches!(target, Value::Callable(_) | Value::Coroutine(_)) {
+            if matches!(kind, "executor_submission" | "process_target")
+                && let Value::Callable(invocation) = &target
+                && self.is_class(invocation.target)
+            {
+                self.constructor(
+                    scope,
+                    invocation.target,
+                    "callback_constructor",
+                    "possible",
+                    at,
+                );
+            }
             self.expose(scope, target, kind, at);
         } else {
             self.scope_issue(
@@ -2575,11 +2615,7 @@ impl<'a> Graph<'a> {
         false
     }
 
-    fn pytest_class_names(&mut self, class: SymbolId) -> Option<(PytestNames<'a>, bool)> {
-        let symbol = &self.symbols[class];
-        if symbol.scope != self.scopes[symbol.scope].file || !self.is_class(class) {
-            return None;
-        }
+    fn class_lineage(&mut self, class: SymbolId) -> (Vec<ScopeId>, bool) {
         let mut lineage = Vec::new();
         let mut current = class;
         let mut resolved = false;
@@ -2608,7 +2644,15 @@ impl<'a> Graph<'a> {
                 _ => break,
             }
         }
+        (lineage, resolved)
+    }
 
+    fn pytest_class_names(&mut self, class: SymbolId) -> Option<(PytestNames<'a>, bool)> {
+        let symbol = &self.symbols[class];
+        if symbol.scope != self.scopes[symbol.scope].file || !self.is_class(class) {
+            return None;
+        }
+        let (lineage, resolved) = self.class_lineage(class);
         // Pytest sees the effective attributes of the collected class, so a
         // subclass can shadow both a test method and a fixture of its base.
         let mut names = PytestNames::new();
@@ -3009,17 +3053,157 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn invoke_export(
-        &mut self,
-        scope: ScopeId,
-        invocation: Invocation,
-        kind: &'static str,
-        at: Location,
-    ) {
-        self.invoke(scope, invocation, kind, "certain", at);
-        if self.is_class(invocation.target) {
-            self.constructor(scope, invocation.target, "possible", at);
+    fn retain_exports(&mut self, exports: Vec<Export>, initialization_edges: &[Vec<ScopeId>]) {
+        let mut pending: VecDeque<_> = exports
+            .into_iter()
+            .map(|export| (export, "certain"))
+            .collect();
+        let mut modules = BTreeSet::new();
+        let mut classes = BTreeSet::new();
+        while let Some((
+            Export {
+                scope,
+                at,
+                kind,
+                value,
+            },
+            certainty,
+        )) = pending.pop_front()
+        {
+            let members = match value {
+                Value::Callable(invocation) => {
+                    self.invoke(scope, invocation, kind, certainty, at);
+                    let class = invocation.target;
+                    if self.is_class(class) && classes.insert(class) {
+                        self.constructor(scope, class, "constructor", "possible", at);
+                        self.exported_class_members(class, scope, at)
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Value::Module(file) if modules.insert(file) => {
+                    self.exported_module_members(file, initialization_edges)
+                }
+                Value::Sequence(items) | Value::Mapping(items) => items,
+                Value::Unknown => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_export",
+                        "a public member could not be resolved",
+                    );
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
+            pending.extend(members.into_iter().map(|value| {
+                (
+                    Export {
+                        scope,
+                        at,
+                        kind,
+                        value,
+                    },
+                    "possible",
+                )
+            }));
         }
+    }
+
+    fn exported_class_members(
+        &mut self,
+        class: SymbolId,
+        scope: ScopeId,
+        at: Location,
+    ) -> Vec<Value> {
+        let (lineage, resolved) = self.class_lineage(class);
+        if !resolved {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_export",
+                "public methods of the exported class could not be bounded",
+            );
+        }
+        let names: BTreeSet<_> = lineage
+            .into_iter()
+            .flat_map(|scope| self.scopes[scope].names.keys().copied())
+            .filter(|name| !name.starts_with('_'))
+            .collect();
+        names
+            .into_iter()
+            .map(|name| self.member(Value::Instance(class), name, (scope, at), 0))
+            .collect()
+    }
+
+    fn exported_module_members(
+        &mut self,
+        file: usize,
+        initialization_edges: &[Vec<ScopeId>],
+    ) -> Vec<Value> {
+        let names: Vec<_> = self.scopes[file]
+            .names
+            .iter()
+            .filter(|(name, _)| !name.starts_with('_'))
+            .filter_map(|(&name, bindings)| {
+                bindings.last().map(|&id| (name, self.symbols[id].name.at))
+            })
+            .collect();
+        let initialization_imports = OnceCell::new();
+        let mut members: Vec<_> = names
+            .into_iter()
+            .map(|(name, at)| {
+                self.module_member_at(
+                    &self.files[file].module,
+                    name,
+                    END,
+                    (file, END),
+                    ModuleMemberAccess::Export {
+                        at,
+                        initialization_edges,
+                        initialization_imports: &initialization_imports,
+                    },
+                    0,
+                )
+            })
+            .collect();
+        if self.files[file].is_package {
+            // Dotted imports can attach public children without a lexical
+            // binding in the package. A child found only on disk is absent.
+            let prefix = format!("{}.", self.files[file].module);
+            let children: Vec<_> = self
+                .modules
+                .range(prefix.as_str()..)
+                .map_while(|(&module, &child)| Some((module.strip_prefix(&prefix)?, child)))
+                .filter(|(name, _)| {
+                    !name.contains('.')
+                        && !name.starts_with('_')
+                        && self.local(file, name, END).is_none()
+                })
+                .collect();
+            let at = Location { line: 1, column: 1 };
+            let mode = ModuleMemberAccess::Export {
+                at,
+                initialization_edges,
+                initialization_imports: &initialization_imports,
+            };
+            for (name, child) in children {
+                match self.submodule_attachment(file, child, None, (file, END), mode) {
+                    SubmoduleAttachment::Attached(import) => {
+                        self.read.insert(import);
+                        members.push(Value::Module(child));
+                    }
+                    SubmoduleAttachment::Ambiguous => self.scope_issue(
+                        file,
+                        at,
+                        "ambiguous_binding",
+                        format!("cannot establish whether public submodule {name} was attached"),
+                    ),
+                    _ => {}
+                }
+            }
+        }
+        members
     }
 
     fn external_roots(
@@ -3027,13 +3211,13 @@ impl<'a> Graph<'a> {
         entrypoints: &[Entrypoint],
         initialization_edges: &[Vec<ScopeId>],
     ) -> Vec<Edge> {
-        let mut roots = Vec::new();
+        let mut exports = Vec::new();
         for file in 0..self.files.len() {
             let initialization_imports = OnceCell::new();
             if let Some(all) = self.local(file, "__all__", END) {
                 let value = self.binding(all, END, 0);
-                if let Value::Sequence(exports) = value {
-                    for export in exports {
+                if let Value::Sequence(export_names) = value {
+                    for export in export_names {
                         let Value::Text(export) = export else {
                             self.issue(
                                 file,
@@ -3065,19 +3249,18 @@ impl<'a> Graph<'a> {
                             )
                         };
                         match value {
-                            Value::Callable(invocation) => self.invoke_export(
-                                file,
-                                invocation,
-                                "public_export",
-                                self.symbols[all].name.at,
-                            ),
                             Value::Unknown => self.issue(
                                 file,
                                 self.symbols[all].name.at,
                                 "unresolved_export",
                                 format!("public export {export} could not be resolved"),
                             ),
-                            _ => {}
+                            value => exports.push(Export {
+                                scope: file,
+                                at: self.symbols[all].name.at,
+                                kind: "public_export",
+                                value,
+                            }),
                         }
                     }
                 } else {
@@ -3122,9 +3305,6 @@ impl<'a> Graph<'a> {
                     self.binding(alias, END, 0)
                 };
                 match value {
-                    Value::Callable(invocation) => {
-                        self.invoke_export(file, invocation, "explicit_re_export", at)
-                    }
                     Value::Unknown if self.scope_issues.len() == previous_issues => self
                         .scope_issue(
                             file,
@@ -3132,10 +3312,19 @@ impl<'a> Graph<'a> {
                             "unresolved_export",
                             "explicit re-export could not be resolved after initialization",
                         ),
-                    _ => {}
+                    Value::Unknown => {}
+                    value => exports.push(Export {
+                        scope: file,
+                        at,
+                        kind: "explicit_re_export",
+                        value,
+                    }),
                 }
             }
         }
+        self.retain_exports(exports, initialization_edges);
+
+        let mut roots = Vec::new();
         for id in 0..self.symbols.len() {
             let symbol = &self.symbols[id];
             let Binding::Definition(definition, _) = symbol.binding else {
@@ -3211,6 +3400,15 @@ impl<'a> Graph<'a> {
                     kind: "configured_entrypoint",
                     certainty: "certain",
                 });
+                if self.is_class(id) {
+                    self.constructor(
+                        self.scopes[scope].file,
+                        id,
+                        "constructor",
+                        "possible",
+                        definition.name.at,
+                    );
+                }
             }
         }
         roots
