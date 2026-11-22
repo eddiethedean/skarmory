@@ -1,0 +1,4206 @@
+//! Project binding resolution and reachability for the Skylos profile.
+
+use std::cell::OnceCell;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ops::RangeInclusive;
+
+use skarmory_python::Location;
+use skarmory_python::phase02::{
+    Definition, DefinitionKind, Expression, ExpressionKind, Import, Name, Statement, StatementKind,
+};
+
+use super::config::Entrypoint;
+use super::{Analysis, AnalyzedFile, Category, Evidence, Finding};
+use crate::Issue;
+
+const MAX_BINDING_CHAIN: usize = 64;
+const MAX_FRAMEWORK_PASSES: usize = 64;
+const MAX_PYTEST_REQUEST_STATES: usize = 16_384;
+const END: Location = Location {
+    line: usize::MAX,
+    column: usize::MAX,
+};
+
+type SymbolId = usize;
+type ScopeId = usize;
+type Object = (usize, usize, usize);
+
+#[derive(Clone)]
+enum Value {
+    Callable(Invocation),
+    Instance(SymbolId),
+    Coroutine(Invocation),
+    ScheduledTask,
+    Module(usize),
+    Provider(String),
+    Object(Object, ObjectKind),
+    Method(Object, String),
+    Executor,
+    Submit,
+    Process(Box<Value>),
+    Start(Box<Value>),
+    Text(String),
+    Bool(bool),
+    Sequence(Vec<Value>),
+    Mapping(Vec<Value>),
+    Scalar,
+    Unknown,
+}
+
+#[derive(Clone, Copy)]
+struct Invocation {
+    target: SymbolId,
+    receiver: Receiver,
+}
+
+impl Invocation {
+    fn ordinary(target: SymbolId) -> Self {
+        Self {
+            target,
+            receiver: Receiver::Ordinary,
+        }
+    }
+
+    fn bind_receiver(self, receiver: Receiver) -> Self {
+        if matches!(self.receiver, Receiver::Bound(_)) {
+            self
+        } else {
+            Self { receiver, ..self }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Receiver {
+    Ordinary,
+    Bound(SymbolId),
+    Explicit(Option<SymbolId>),
+}
+
+impl Receiver {
+    fn supplied(self) -> Option<SymbolId> {
+        match self {
+            Self::Ordinary => None,
+            Self::Bound(class) => Some(class),
+            Self::Explicit(class) => class,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ObjectKind {
+    App,
+    Router,
+}
+
+struct Scope<'a> {
+    file: usize,
+    parent: Option<ScopeId>,
+    owner: Option<SymbolId>,
+    body: &'a [Statement],
+    names: BTreeMap<&'a str, Vec<SymbolId>>,
+    edges: Vec<Edge>,
+    imports: Vec<usize>,
+    evaluated_imports: Vec<SymbolId>,
+    initializer_imports: Vec<(SymbolId, usize)>,
+    class_bodies: Vec<ScopeId>,
+    activated_apps: Vec<Object>,
+    mounts: Vec<(Object, Object)>,
+    routes: Vec<(Object, SymbolId)>,
+}
+
+enum Binding<'a> {
+    Definition(&'a Definition, ScopeId),
+    Import(&'a Import),
+    Variable(Option<&'a Expression>, Location),
+    Parameter,
+}
+
+struct Symbol<'a> {
+    scope: ScopeId,
+    name: &'a Name,
+    binding: Binding<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct Edge {
+    target: SymbolId,
+    kind: &'static str,
+    certainty: &'static str,
+}
+
+struct ClassInvocation {
+    scope: ScopeId,
+    at: Location,
+    edge: Edge,
+    receiver: Receiver,
+}
+
+struct DirectArguments {
+    caller: ScopeId,
+    at: Location,
+    bounded_callbacks: BTreeMap<String, Invocation>,
+}
+
+struct Export {
+    scope: ScopeId,
+    at: Location,
+    kind: &'static str,
+    value: Value,
+}
+
+struct ParameterCall {
+    scope: ScopeId,
+    parameter: SymbolId,
+    at: Location,
+}
+
+struct PytestFixture {
+    name: Option<String>,
+    autouse: bool,
+}
+
+struct PytestRegistration {
+    target: SymbolId,
+    bindings: Vec<SymbolId>,
+}
+
+type PytestNames<'a> = BTreeMap<&'a str, Vec<SymbolId>>;
+
+struct PytestFixtureChoices {
+    alternatives: Vec<PytestRegistration>,
+    may_be_absent: bool,
+}
+
+struct LazyBranch<'a> {
+    scope: ScopeId,
+    imports: &'a [Statement],
+    value: &'a Expression,
+    at: Location,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValueEvaluation {
+    Identity,
+    LazyIdentity,
+    LazyExecution(ScopeId),
+}
+
+enum LazyMember<'a> {
+    Branch(LazyBranch<'a>),
+    Missing,
+    Unknown,
+    Conditional,
+}
+
+enum ModuleMember<'a> {
+    Binding(SymbolId, Option<SymbolId>),
+    Submodule(usize, Vec<SymbolId>),
+    Lazy(SymbolId, LazyBranch<'a>),
+    Missing,
+    UnattachedSubmodule,
+    Unknown,
+    Ambiguous,
+    ConditionalHook,
+    OpaqueHook,
+}
+
+#[derive(Clone, Copy)]
+enum ModuleMemberAccess<'a> {
+    Attribute,
+    FromImport,
+    Export {
+        at: Location,
+        initialization_edges: &'a [Vec<ScopeId>],
+        initialization_imports: &'a OnceCell<BTreeSet<SymbolId>>,
+    },
+}
+
+enum SubmoduleAttachment {
+    Attached(SymbolId),
+    Rebound(SymbolId),
+    Absent,
+    Ambiguous,
+}
+
+pub(super) fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
+    let mut graph = Graph {
+        files,
+        modules: BTreeMap::new(),
+        scopes: Vec::new(),
+        symbols: Vec::new(),
+        direct_submodule_imports: BTreeMap::new(),
+        by_location: BTreeMap::new(),
+        read: BTreeSet::new(),
+        direct: BTreeSet::new(),
+        conditional: BTreeMap::new(),
+        dormant_classes: BTreeSet::new(),
+        subclassed: BTreeSet::new(),
+        instance_receivers: BTreeMap::new(),
+        class_invocations: Vec::new(),
+        issues: Vec::new(),
+        scope_issues: Vec::new(),
+        probing_identity: false,
+        nested_lazy_imports: Vec::new(),
+        uncertainties: Vec::new(),
+        fixtures: BTreeMap::new(),
+        direct_arguments: BTreeMap::new(),
+        parameter_calls: Vec::new(),
+    };
+    for (file, source) in files.iter().enumerate() {
+        graph.push_scope(file, None, None, &source.facts.body);
+    }
+    for (file, source) in files.iter().enumerate() {
+        if graph.modules.insert(source.module.as_str(), file).is_some() {
+            graph.issue(
+                file,
+                Location { line: 1, column: 1 },
+                "ambiguous_module",
+                "multiple selected files have the same module name",
+            );
+        }
+        graph.index(file, &source.facts.body);
+    }
+    graph.index_submodule_imports();
+    graph.index_base_classes();
+    for scope in 0..graph.scopes.len() {
+        let body = graph.scopes[scope].body;
+        graph.suite(scope, body);
+    }
+    graph.resolve_class_invocations();
+    let callbacks = graph.initialization_callbacks();
+    graph.resolve_class_invocations();
+    let Some(initialization_edges) = graph.acyclic_initialization_edges(&callbacks) else {
+        graph.issues.push(Issue::new(
+            "cyclic_imports",
+            ".",
+            "cyclic module initialization cannot use final module bindings to prove non-use",
+        ));
+        return Analysis {
+            issues: graph.issues,
+            ..Analysis::default()
+        };
+    };
+    let mut roots = graph.external_roots(entrypoints, &initialization_edges);
+    roots.extend(graph.test_edges());
+    graph.finish(roots)
+}
+
+struct Graph<'a> {
+    files: &'a [AnalyzedFile],
+    modules: BTreeMap<&'a str, usize>,
+    scopes: Vec<Scope<'a>>,
+    symbols: Vec<Symbol<'a>>,
+    direct_submodule_imports: BTreeMap<usize, Vec<SymbolId>>,
+    by_location: BTreeMap<(ScopeId, usize, usize), SymbolId>,
+    read: BTreeSet<SymbolId>,
+    direct: BTreeSet<SymbolId>,
+    conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
+    dormant_classes: BTreeSet<SymbolId>,
+    subclassed: BTreeSet<SymbolId>,
+    instance_receivers: BTreeMap<SymbolId, SymbolId>,
+    class_invocations: Vec<ClassInvocation>,
+    issues: Vec<Issue>,
+    scope_issues: Vec<(ScopeId, Issue)>,
+    probing_identity: bool,
+    nested_lazy_imports: Vec<(ScopeId, &'a [Statement])>,
+    uncertainties: Vec<Issue>,
+    fixtures: BTreeMap<SymbolId, PytestFixture>,
+    direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
+    parameter_calls: Vec<ParameterCall>,
+}
+
+impl<'a> Graph<'a> {
+    fn push_scope(
+        &mut self,
+        file: usize,
+        parent: Option<ScopeId>,
+        owner: Option<SymbolId>,
+        body: &'a [Statement],
+    ) -> ScopeId {
+        let index = self.scopes.len();
+        self.scopes.push(Scope {
+            file,
+            parent,
+            owner,
+            body,
+            names: BTreeMap::new(),
+            edges: Vec::new(),
+            imports: Vec::new(),
+            evaluated_imports: Vec::new(),
+            initializer_imports: Vec::new(),
+            class_bodies: Vec::new(),
+            activated_apps: Vec::new(),
+            mounts: Vec::new(),
+            routes: Vec::new(),
+        });
+        index
+    }
+
+    fn bind(&mut self, scope: ScopeId, name: &'a Name, binding: Binding<'a>) -> SymbolId {
+        let id = self.symbols.len();
+        self.symbols.push(Symbol {
+            scope,
+            name,
+            binding,
+        });
+        self.scopes[scope]
+            .names
+            .entry(&name.text)
+            .or_default()
+            .push(id);
+        self.by_location
+            .insert((scope, name.at.line, name.at.column), id);
+        id
+    }
+
+    fn index(&mut self, scope: ScopeId, body: &'a [Statement]) {
+        for statement in body {
+            match &statement.kind {
+                StatementKind::Define(definition) => {
+                    let file = self.scopes[scope].file;
+                    let id = self.symbols.len();
+                    let child = self.push_scope(file, Some(scope), Some(id), &definition.body);
+                    self.bind(
+                        scope,
+                        &definition.name,
+                        Binding::Definition(definition, child),
+                    );
+                    for parameter in &definition.parameters {
+                        self.bind(child, parameter, Binding::Parameter);
+                    }
+                    self.index(child, &definition.body);
+                }
+                StatementKind::Import(import) => {
+                    self.bind(scope, &import.local, Binding::Import(import));
+                }
+                StatementKind::Assign { names, value, .. } => {
+                    for name in names {
+                        self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
+                    }
+                }
+                StatementKind::With { items, body } => {
+                    for (expression, name) in items {
+                        if let Some(name) = name {
+                            self.bind(
+                                scope,
+                                name,
+                                Binding::Variable(Some(expression), statement.at),
+                            );
+                        }
+                    }
+                    self.index(scope, body);
+                }
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } => {
+                    if let Some(enabled) = static_bool(test) {
+                        self.index(scope, if enabled { body } else { otherwise });
+                        continue;
+                    }
+                    let first_symbol = self.symbols.len();
+                    match self.indexed_bool(scope, test, statement.at, 0) {
+                        Some(true) => {
+                            self.index(scope, body);
+                            self.index_dormant(scope, otherwise);
+                        }
+                        Some(false) => {
+                            self.index_dormant(scope, body);
+                            self.index(scope, otherwise);
+                        }
+                        None => {
+                            self.index(scope, body);
+                            self.mark_conditional(scope, first_symbol, body);
+                            let first_symbol = self.symbols.len();
+                            self.index(scope, otherwise);
+                            self.mark_conditional(scope, first_symbol, otherwise);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn indexed_bool(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Option<bool> {
+        if depth >= MAX_BINDING_CHAIN {
+            return None;
+        }
+        match &expression.kind {
+            ExpressionKind::Bool(value) => Some(*value),
+            ExpressionKind::Not(value) => self
+                .indexed_bool(scope, value, before, depth + 1)
+                .map(|value| !value),
+            // Module guards can use prior local bindings during indexing.
+            // Nested scopes can depend on bindings that are still being indexed.
+            ExpressionKind::Name(name) if self.scopes[scope].file == scope => {
+                let id = self.local(scope, name, before)?;
+                if self.binding_depends_on_branch(id, before) {
+                    return None;
+                }
+                let Binding::Variable(Some(value), assigned) = self.symbols[id].binding else {
+                    return None;
+                };
+                self.indexed_bool(scope, value, assigned, depth + 2)
+            }
+            _ => None,
+        }
+    }
+
+    fn index_dormant(&mut self, scope: ScopeId, body: &'a [Statement]) {
+        let first = self.symbols.len();
+        self.index(scope, body);
+        // These symbols are still reportable. They never change the module's
+        // effective bindings at runtime.
+        let names = &mut self.scopes[scope].names;
+        for id in (first..self.symbols.len()).rev() {
+            let symbol = &self.symbols[id];
+            if matches!(symbol.binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Class)
+            {
+                self.dormant_classes.insert(id);
+            }
+            if symbol.scope == scope
+                && let Entry::Occupied(mut entry) = names.entry(symbol.name.text.as_str())
+                && entry.get().last() == Some(&id)
+            {
+                entry.get_mut().pop();
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
+            }
+        }
+    }
+
+    fn mark_conditional(&mut self, scope: ScopeId, first_symbol: usize, body: &[Statement]) {
+        let Some(first) = body.first() else { return };
+        let end = suite_end(body);
+        for id in first_symbol..self.symbols.len() {
+            if self.symbols[id].scope == scope {
+                self.conditional
+                    .entry(id)
+                    .or_default()
+                    .push(position(first.at)..=end);
+            }
+        }
+    }
+
+    fn issue(&mut self, file: usize, at: Location, kind: &'static str, message: impl ToString) {
+        self.issues
+            .push(Issue::new(kind, &self.files[file].path, message).at(at));
+    }
+
+    fn scope_issue(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        kind: &'static str,
+        message: impl ToString,
+    ) {
+        // Speculative identity lookups can inform the graph. A runtime
+        // diagnostic requires an evaluated read.
+        if self.probing_identity {
+            return;
+        }
+        let file = &self.files[self.scopes[scope].file];
+        self.scope_issues
+            .push((scope, Issue::new(kind, &file.path, message).at(at)));
+    }
+
+    fn uncertain(&mut self, scope: ScopeId, at: Location, message: &str) {
+        self.uncertainties.push(
+            Issue::new(
+                "possible_use",
+                &self.files[self.scopes[scope].file].path,
+                message,
+            )
+            .at(at),
+        );
+    }
+
+    fn local(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+        self.scopes[scope]
+            .names
+            .get(name)?
+            .iter()
+            .copied()
+            .rev()
+            .find(|&id| {
+                let at = self.symbols[id].name.at;
+                (at.line, at.column) < (before.line, before.column)
+            })
+    }
+
+    fn lexical(&self, origin: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+        let mut scope = origin;
+        let mut before = before;
+        loop {
+            let row = &self.scopes[scope];
+            let class = row.owner.is_some_and(|id| self.is_class(id));
+            // A class body sees its own namespace, but nested scopes do not
+            // capture a class namespace as an enclosing lexical scope.
+            if scope == origin || !class {
+                if let Some(id) = self.local(scope, name, before) {
+                    return Some(id);
+                }
+                if row.owner.is_some() && !class && row.names.contains_key(name) {
+                    // A local binding shadows the outer name even before assignment.
+                    return None;
+                }
+            }
+            scope = row.parent?;
+            before = END;
+        }
+    }
+
+    fn is_class(&self, id: SymbolId) -> bool {
+        matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Class)
+    }
+
+    fn index_base_classes(&mut self) {
+        for id in 0..self.symbols.len() {
+            let scope = self.symbols[id].scope;
+            let Binding::Definition(definition, _) = self.symbols[id].binding else {
+                continue;
+            };
+            if definition.kind == DefinitionKind::Class && !self.dormant_classes.contains(&id) {
+                for base in &definition.bases {
+                    if let Value::Callable(Invocation { target: base, .. }) =
+                        self.probe_identity(scope, base, definition.name.at)
+                        && self.is_class(base)
+                    {
+                        self.subclassed.insert(base);
+                    }
+                }
+            }
+        }
+    }
+
+    fn full_name(&self, id: SymbolId) -> String {
+        let symbol = &self.symbols[id];
+        let mut names = vec![symbol.name.text.as_str()];
+        let mut scope = symbol.scope;
+        while let Some(owner) = self.scopes[scope].owner {
+            let entry = &self.symbols[owner];
+            names.push(&entry.name.text);
+            scope = entry.scope;
+        }
+        names.push(&self.files[self.scopes[scope].file].module);
+        names.reverse();
+        names.join(".")
+    }
+
+    fn relative_module(&self, file: usize, import: &Import) -> Option<String> {
+        if import.level == 0 {
+            return Some(import.module.clone());
+        }
+        let source = &self.files[file];
+        let mut parts: Vec<_> = source.module.split('.').collect();
+        if !source.is_package {
+            parts.pop();
+        }
+        if import.level as usize > parts.len() {
+            return None;
+        }
+        parts.truncate(parts.len() + 1 - import.level as usize);
+        if !import.module.is_empty() {
+            parts.push(&import.module);
+        }
+        Some(parts.join("."))
+    }
+
+    fn import_member_position(
+        &self,
+        scope: ScopeId,
+        module: &str,
+        import: &Import,
+    ) -> Option<Location> {
+        let file = self.scopes[scope].file;
+        (scope == file && import.level > 0 && self.files[file].module == module)
+            .then_some(import.local.at)
+    }
+
+    fn index_submodule_imports(&mut self) {
+        for (id, symbol) in self.symbols.iter().enumerate() {
+            let Binding::Import(import) = symbol.binding else {
+                continue;
+            };
+            if !self.scopes[symbol.scope]
+                .names
+                .get(symbol.name.text.as_str())
+                .is_some_and(|ids| ids.binary_search(&id).is_ok())
+            {
+                continue;
+            }
+            let source = self.scopes[symbol.scope].file;
+            let Some(module) = self.relative_module(source, import) else {
+                continue;
+            };
+            let unconditional = symbol.scope == source && !self.conditional.contains_key(&id);
+            let module_file = self.modules.get(module.as_str()).copied();
+            let fallback =
+                module_file
+                    .zip(import.member.as_deref())
+                    .and_then(|(package, member)| {
+                        self.fallback_submodule(package, member, import, symbol.scope)
+                    });
+            let loaded_child = fallback
+                .filter(|_| module_file.is_some_and(|package| self.files[package].is_package));
+            let loads_module = unconditional
+                && module_file.is_some_and(|file| {
+                    loaded_child.is_some()
+                        || import.member.as_ref().is_none_or(|member| {
+                            self.local(file, member, END)
+                                .is_some_and(|binding| !self.conditional.contains_key(&binding))
+                        })
+                });
+            for end in module
+                .match_indices('.')
+                .map(|(end, _)| end)
+                .chain(std::iter::once(module.len()))
+            {
+                let name = &module[..end];
+                let Some(&target) = self.modules.get(name) else {
+                    continue;
+                };
+                if name.contains('.') {
+                    self.direct_submodule_imports
+                        .entry(target)
+                        .or_default()
+                        .push(id);
+                }
+                // A successful dotted import also runs its parent packages.
+                // The source and its own ancestors may still be initializing.
+                if loads_module
+                    && (end == module.len() || self.files[target].is_package)
+                    && !within_package(&self.files[source].module, name)
+                {
+                    self.scopes[source].initializer_imports.push((id, target));
+                }
+            }
+            if let Some(child) = fallback {
+                self.direct_submodule_imports
+                    .entry(child)
+                    .or_default()
+                    .push(id);
+            }
+            if unconditional
+                && let Some(child) = loaded_child
+                && child != source
+            {
+                self.scopes[source].initializer_imports.push((id, child));
+            }
+        }
+    }
+
+    fn fallback_submodule(
+        &self,
+        package: usize,
+        member: &str,
+        import: &Import,
+        scope: ScopeId,
+    ) -> Option<usize> {
+        let file = &self.files[package];
+        let child = self
+            .modules
+            .get(format!("{}.{member}", file.module).as_str())?;
+        let before = self
+            .import_member_position(scope, &file.module, import)
+            .unwrap_or(END);
+        // From-import can load a child when ordinary and lazy lookup fail.
+        (!has_implicit_module_member(member, file.is_package)
+            && self.local(package, member, before).is_none()
+            && self
+                .local(package, "__getattr__", before)
+                .is_none_or(|hook| {
+                    matches!(self.lazy_lookup(hook, member, before), LazyMember::Missing)
+                }))
+        .then_some(*child)
+    }
+
+    fn submodule_attachment(
+        &self,
+        package: usize,
+        child: usize,
+        binding: Option<SymbolId>,
+        access: (ScopeId, Location),
+        mode: ModuleMemberAccess<'_>,
+    ) -> SubmoduleAttachment {
+        let candidates = self.direct_submodule_imports.get(&child);
+        let initialization_imports = match mode {
+            ModuleMemberAccess::Export {
+                initialization_edges,
+                initialization_imports,
+                ..
+            } if candidates.is_some() => Some(
+                initialization_imports
+                    .get_or_init(|| self.initialization_imports(package, initialization_edges)),
+            ),
+            _ => None,
+        };
+        let (scope, before) = access;
+        let mut attached: Option<SymbolId> = None;
+        let mut possible_attachment = false;
+        let mut possible_earlier_attachment = false;
+        for &id in candidates.into_iter().flatten() {
+            if initialization_imports.is_some_and(|imports| !imports.contains(&id)) {
+                continue;
+            }
+            let symbol = &self.symbols[id];
+            let earlier_in_scope =
+                symbol.scope == scope && position(symbol.name.at) < position(before);
+            let guaranteed = if earlier_in_scope {
+                self.conditional
+                    .get(&id)
+                    .is_none_or(|guards| guards.iter().all(|span| span.contains(&position(before))))
+            } else {
+                symbol.scope == package
+                    && self.scopes[scope].file != package
+                    && !self.conditional.contains_key(&id)
+            };
+            // Other scopes may already have executed. A later statement in
+            // this module's own initializer has not yet attached the child.
+            let possible = symbol.scope != scope || scope >= self.files.len() || earlier_in_scope;
+            if binding.is_some_and(|binding| {
+                symbol.scope == package
+                    && position(symbol.name.at) <= position(self.symbols[binding].name.at)
+            }) {
+                // The first successful child import sets the package attribute.
+                // A later import from the module cache leaves a reassignment in place.
+                if guaranteed {
+                    return SubmoduleAttachment::Rebound(id);
+                }
+                possible_earlier_attachment |= possible;
+            } else {
+                if guaranteed
+                    && attached.is_none_or(|first| {
+                        symbol.scope == package && self.symbols[first].scope != package
+                    })
+                {
+                    attached = Some(id);
+                }
+                possible_attachment |= possible;
+            }
+        }
+        if let Some(import) = attached
+            && !possible_earlier_attachment
+        {
+            SubmoduleAttachment::Attached(import)
+        } else if possible_attachment {
+            SubmoduleAttachment::Ambiguous
+        } else {
+            SubmoduleAttachment::Absent
+        }
+    }
+
+    fn imported_submodule(
+        &self,
+        child: usize,
+        access: (ScopeId, Location),
+    ) -> Option<Vec<SymbolId>> {
+        let (source, before) = access;
+        if source >= self.files.len() {
+            return None;
+        }
+        let attachments: BTreeMap<_, _> = self
+            .direct_submodule_imports
+            .get(&child)?
+            .iter()
+            .copied()
+            .filter(|id| !self.conditional.contains_key(id))
+            .map(|id| (self.symbols[id].scope, id))
+            .collect();
+        // Follow earlier imports through completed module initializers. Each
+        // link matters because deleting it could remove the attachment.
+        let mut pending = VecDeque::from([source]);
+        let mut via = BTreeMap::new();
+        while let Some(module) = pending.pop_front() {
+            if module != source
+                && let Some(&attachment) = attachments.get(&module)
+            {
+                let mut evidence = vec![attachment];
+                let mut current = module;
+                while let Some(&(caller, import)) = via.get(&current) {
+                    evidence.push(import);
+                    current = caller;
+                }
+                return Some(evidence);
+            }
+            for &(import, target) in &self.scopes[module].initializer_imports {
+                if target != source
+                    && (module != source
+                        || position(self.symbols[import].name.at) < position(before))
+                    && let std::collections::btree_map::Entry::Vacant(entry) = via.entry(target)
+                {
+                    entry.insert((module, import));
+                    pending.push_back(target);
+                }
+            }
+        }
+        None
+    }
+
+    fn record_import(
+        &mut self,
+        scope: ScopeId,
+        source_scope: ScopeId,
+        module: Option<&str>,
+        import: &Import,
+    ) -> Option<LazyBranch<'a>> {
+        let source = self.scopes[source_scope].file;
+        if let Some(&id) =
+            self.by_location
+                .get(&(source_scope, import.local.at.line, import.local.at.column))
+        {
+            // A selected lazy branch evaluates its imports in the caller's
+            // execution, even though their bindings belong to the hook.
+            self.scopes[scope].evaluated_imports.push(id);
+        }
+        let Some(module) = module else {
+            self.import_issue(
+                scope,
+                source,
+                import,
+                "relative import escapes its selected package".into(),
+            );
+            return None;
+        };
+        let own_module = &self.files[source].module;
+        let module_file = self.modules.get(module).copied();
+        let before = self.import_member_position(source_scope, module, import);
+        let member = import.member.as_deref();
+        let lookup = module_file.zip(member).map(|(file, member)| {
+            self.selected_module_member(
+                file,
+                member,
+                before.unwrap_or(END),
+                (source_scope, import.local.at),
+                ModuleMemberAccess::FromImport,
+            )
+        });
+        let child = match &lookup {
+            Some(ModuleMember::Submodule(child, _)) => Some(*child),
+            None => member.and_then(|member| {
+                self.modules
+                    .get(format!("{module}.{member}").as_str())
+                    .copied()
+            }),
+            _ => None,
+        };
+        if import.level > 0 && module_file.is_none() && child.is_none() {
+            self.import_issue(
+                scope,
+                source,
+                import,
+                "relative import has no selected module".into(),
+            );
+            return None;
+        }
+        // Package self-imports can read the bindings already established at
+        // this statement. Sibling submodule imports also need no final parent state.
+        if let Some(target) = module_file
+            && before.is_none()
+            && !(child.is_some() && within_package(own_module, module))
+        {
+            self.scopes[scope].imports.push(target);
+        }
+        if let Some(child) = child {
+            self.scopes[scope].imports.push(child);
+        }
+        // Importing a dotted module can also execute its package initializers.
+        let mut has_selected_parent = false;
+        for (end, _) in module.match_indices('.') {
+            let parent = &module[..end];
+            if let Some(&target) = self.modules.get(parent) {
+                has_selected_parent = true;
+                if !within_package(own_module, parent) {
+                    self.scopes[scope].imports.push(target);
+                }
+            }
+        }
+        if import.level == 0 && module_file.is_none() && has_selected_parent {
+            self.import_issue(
+                scope,
+                source,
+                import,
+                format!("no source selected for submodule {module:?}"),
+            );
+        }
+        if let (Some(member), Some(lookup)) = (member, lookup) {
+            match lookup {
+                ModuleMember::Lazy(_, branch) => return Some(branch),
+                ModuleMember::Missing => self.import_issue(
+                    scope,
+                    source,
+                    import,
+                    format!("{module:?} has no selected binding for {member:?}"),
+                ),
+                ModuleMember::Binding(id, _)
+                    if self.binding_depends_on_branch(id, before.unwrap_or(END)) =>
+                {
+                    // A from-import reads the member even if the local alias
+                    // is used only by an external collector such as pytest.
+                    self.scope_issues.push((
+                        scope,
+                        Issue::new(
+                            "ambiguous_binding",
+                            &self.files[source].path,
+                            format!("import of {module}.{member} depends on an unresolved branch"),
+                        )
+                        .at(import.local.at),
+                    ));
+                }
+                ModuleMember::Ambiguous => self.scope_issues.push((
+                    scope,
+                    Issue::new("ambiguous_binding", &self.files[source].path,
+                        format!("cannot establish whether submodule {module}.{member} was attached before this lookup"))
+                        .at(import.local.at),
+                )),
+                ModuleMember::ConditionalHook => self.scope_issues.push((
+                    scope,
+                    Issue::new(
+                        "ambiguous_binding",
+                        &self.files[source].path,
+                        format!("lazy import of {module}.{member} depends on a conditional __getattr__"),
+                    )
+                    .at(import.local.at),
+                )),
+                ModuleMember::OpaqueHook => self.scope_issues.push((
+                    scope,
+                    Issue::new(
+                        "unresolved_lazy_export",
+                        &self.files[source].path,
+                        format!("lazy import of {module}.{member} is outside the bounded __getattr__ model"),
+                    )
+                    .at(import.local.at),
+                )),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn import_issue(&mut self, scope: ScopeId, file: usize, import: &Import, message: String) {
+        self.scope_issues.push((
+            scope,
+            Issue::new("unresolved_import", &self.files[file].path, message).at(import.local.at),
+        ));
+    }
+
+    fn execute_lazy_branch(&mut self, scope: ScopeId, branch: &LazyBranch<'a>) -> Value {
+        // Keep imports discovered through return expressions on the same
+        // worklist as nested from-imports. All execute for the original caller.
+        let evaluation = ValueEvaluation::LazyExecution(scope);
+        let value = self.lazy_value(scope, branch, 0, evaluation);
+        let mut pending = vec![(branch.scope, branch.imports)];
+        pending.append(&mut self.nested_lazy_imports);
+        let mut visited = BTreeSet::new();
+        while let Some((handler, imports)) = pending.pop() {
+            let file = self.scopes[handler].file;
+            for statement in imports {
+                let StatementKind::Import(import) = &statement.kind else {
+                    continue;
+                };
+                if !visited.insert((handler, position(import.local.at))) {
+                    continue;
+                }
+                let module = self.relative_module(file, import);
+                if let Some(branch) = self.record_import(scope, handler, module.as_deref(), import)
+                {
+                    self.lazy_value(scope, &branch, 0, evaluation);
+                    pending.push((branch.scope, branch.imports));
+                    pending.append(&mut self.nested_lazy_imports);
+                }
+            }
+        }
+        value
+    }
+
+    fn synchronous_calls(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> {
+        self.scopes[scope].edges.iter().filter_map(|edge| {
+            if matches!(
+                edge.kind,
+                "direct_call" | "constructor" | "decorator" | "subclass_hook"
+            ) && let Binding::Definition(_, body) = self.symbols[edge.target].binding
+            {
+                Some(body)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn initialization_callbacks(&mut self) -> Vec<Vec<ScopeId>> {
+        let mut invocations = BTreeMap::<_, Vec<_>>::new();
+        for call in &self.parameter_calls {
+            let parameter = &self.symbols[call.parameter];
+            let owner = self.scopes[parameter.scope]
+                .owner
+                .expect("parameters belong to a definition");
+            if self.direct_arguments.contains_key(&owner) {
+                invocations
+                    .entry((owner, parameter.scope))
+                    .or_default()
+                    .push(call);
+            }
+        }
+        let mut callbacks = vec![Vec::new(); self.scopes.len()];
+        let mut constructors = Vec::new();
+        for ((callee, body), invocations) in invocations {
+            // A captured parameter call matters only in a nested body that
+            // can execute during this invocation of the enclosing function.
+            let mut reached = BTreeSet::new();
+            if invocations.iter().any(|call| call.scope != body) {
+                let mut pending = vec![body];
+                while let Some(scope) = pending.pop() {
+                    if reached.insert(scope) {
+                        pending.extend(&self.scopes[scope].class_bodies);
+                        pending.extend(self.synchronous_calls(scope));
+                    }
+                }
+            }
+            let parameters: BTreeSet<_> = invocations
+                .into_iter()
+                .filter(|call| call.scope == body || reached.contains(&call.scope))
+                .map(|call| self.symbols[call.parameter].name.text.as_str())
+                .collect();
+            for call in &self.direct_arguments[&callee] {
+                for parameter in &parameters {
+                    if let Some(&invocation) = call.bounded_callbacks.get(*parameter)
+                        && !self.receiver_conflicts(invocation)
+                        && let Binding::Definition(definition, body) =
+                            self.symbols[invocation.target].binding
+                    {
+                        match definition.kind {
+                            DefinitionKind::Function => callbacks[call.caller].push(body),
+                            DefinitionKind::Class => {
+                                constructors.push((call.caller, invocation.target, call.at));
+                            }
+                            DefinitionKind::Coroutine => {}
+                        }
+                    }
+                }
+            }
+        }
+        for (caller, class, at) in constructors {
+            self.constructor(caller, class, "constructor", "possible", at);
+        }
+        callbacks
+    }
+
+    fn acyclic_initialization_edges(
+        &self,
+        callbacks: &[Vec<ScopeId>],
+    ) -> Option<Vec<Vec<ScopeId>>> {
+        let count = self.scopes.len();
+        let mut outgoing = vec![Vec::new(); count];
+        let mut incoming = vec![Vec::new(); count];
+        let mut reached = vec![false; count];
+        let mut finished = Vec::with_capacity(count);
+        let mut pending: Vec<_> = (0..self.files.len()).map(|file| (file, false)).collect();
+        while let Some((id, exiting)) = pending.pop() {
+            if exiting {
+                finished.push(id);
+                continue;
+            }
+            if std::mem::replace(&mut reached[id], true) {
+                continue;
+            }
+            pending.push((id, true));
+            let scope = &self.scopes[id];
+            for target in scope
+                .imports
+                .iter()
+                .chain(&scope.class_bodies)
+                .chain(&callbacks[id])
+                .copied()
+                .chain(self.synchronous_calls(id))
+            {
+                incoming[target].push(id);
+                outgoing[id].push(target);
+                if !reached[target] {
+                    pending.push((target, false));
+                }
+            }
+        }
+        // Reverse finishing order gives the strongly connected components.
+        // A recursive call alone is valid. A component with an import edge
+        // can consult a module before its final bindings are established.
+        let mut component = vec![usize::MAX; count];
+        let mut pending = Vec::new();
+        for &root in finished.iter().rev() {
+            pending.push(root);
+            while let Some(id) = pending.pop() {
+                if component[id] == usize::MAX {
+                    component[id] = root;
+                    pending.extend(&incoming[id]);
+                }
+            }
+        }
+        if finished.iter().any(|&id| {
+            self.scopes[id]
+                .imports
+                .iter()
+                .any(|&target| component[id] == component[target])
+        }) {
+            return None;
+        }
+        Some(outgoing)
+    }
+
+    fn initialization_imports(
+        &self,
+        file: usize,
+        initialization_edges: &[Vec<ScopeId>],
+    ) -> BTreeSet<SymbolId> {
+        let mut imports = BTreeSet::new();
+        let mut reached = BTreeSet::new();
+        let mut pending = vec![file];
+        while let Some(scope) = pending.pop() {
+            if reached.insert(scope) {
+                imports.extend(&self.scopes[scope].evaluated_imports);
+                pending.extend(&initialization_edges[scope]);
+            }
+        }
+        imports
+    }
+
+    fn binding_depends_on_branch(&self, id: SymbolId, at: Location) -> bool {
+        self.conditional
+            .get(&id)
+            .is_some_and(|guards| guards.iter().any(|span| !span.contains(&position(at))))
+    }
+
+    fn binding(&mut self, id: SymbolId, before: Location, depth: usize) -> Value {
+        let symbol = &self.symbols[id];
+        if depth >= MAX_BINDING_CHAIN {
+            self.issue(
+                self.scopes[symbol.scope].file,
+                symbol.name.at,
+                "analysis_limit",
+                "binding resolution limit exceeded",
+            );
+            return Value::Unknown;
+        }
+        self.read.insert(id);
+        let scope = symbol.scope;
+        let file = self.scopes[scope].file;
+        if self.binding_depends_on_branch(id, before) {
+            self.scope_issue(
+                scope,
+                symbol.name.at,
+                "ambiguous_binding",
+                "a required binding depends on an unresolved branch",
+            );
+            return Value::Unknown;
+        }
+        match symbol.binding {
+            Binding::Definition(_, _) => Value::Callable(Invocation::ordinary(id)),
+            Binding::Variable(Some(value), before) => {
+                self.identity(scope, value, before, depth + 1)
+            }
+            Binding::Variable(None, _) => Value::Unknown,
+            Binding::Parameter => {
+                if let Some(&class) = self.instance_receivers.get(&id)
+                    && !self.subclassed.contains(&class)
+                {
+                    return Value::Instance(class);
+                }
+                Value::Unknown
+            }
+            Binding::Import(import) => {
+                let Some(module) = self.relative_module(file, import) else {
+                    return Value::Unknown;
+                };
+                if let Some(member) = import.member.as_deref() {
+                    let before = self
+                        .import_member_position(scope, &module, import)
+                        .unwrap_or(END);
+                    self.module_member_at(
+                        &module,
+                        member,
+                        before,
+                        (scope, import.local.at),
+                        ModuleMemberAccess::FromImport,
+                        depth + 1,
+                    )
+                } else {
+                    let visible_module = if import.exposes_top_level {
+                        module.split('.').next().unwrap_or(&module)
+                    } else {
+                        &module
+                    };
+                    self.modules.get(visible_module).map_or_else(
+                        || Value::Provider(visible_module.into()),
+                        |file| Value::Module(*file),
+                    )
+                }
+            }
+        }
+    }
+
+    fn selected_module_member(
+        &self,
+        file: usize,
+        member: &str,
+        before: Location,
+        access: (ScopeId, Location),
+        mode: ModuleMemberAccess<'_>,
+    ) -> ModuleMember<'a> {
+        let submodule = format!("{}.{member}", self.files[file].module);
+        let child = self.modules.get(submodule.as_str()).copied();
+        if let Some(binding) = self.local(file, member, before) {
+            if let Some(child) = child {
+                return match self.submodule_attachment(file, child, Some(binding), access, mode) {
+                    SubmoduleAttachment::Attached(import) => {
+                        ModuleMember::Submodule(child, vec![import])
+                    }
+                    SubmoduleAttachment::Rebound(import) => {
+                        ModuleMember::Binding(binding, Some(import))
+                    }
+                    SubmoduleAttachment::Ambiguous => ModuleMember::Ambiguous,
+                    SubmoduleAttachment::Absent => ModuleMember::Binding(binding, None),
+                };
+            }
+            return ModuleMember::Binding(binding, None);
+        }
+        if has_implicit_module_member(member, self.files[file].is_package) {
+            return ModuleMember::Unknown;
+        }
+        let hook = self.local(file, "__getattr__", before);
+        let lazy = hook.map_or(LazyMember::Missing, |hook| {
+            self.lazy_lookup(hook, member, before)
+        });
+        if let Some(child) = child {
+            match self.submodule_attachment(file, child, None, access, mode) {
+                SubmoduleAttachment::Attached(import) => {
+                    return ModuleMember::Submodule(child, vec![import]);
+                }
+                _ if matches!(
+                    mode,
+                    ModuleMemberAccess::FromImport | ModuleMemberAccess::Export { .. }
+                ) && matches!(lazy, LazyMember::Missing) =>
+                {
+                    return ModuleMember::Submodule(child, Vec::new());
+                }
+                SubmoduleAttachment::Absent if matches!(lazy, LazyMember::Missing) => {
+                    return ModuleMember::UnattachedSubmodule;
+                }
+                SubmoduleAttachment::Absent => {}
+                SubmoduleAttachment::Ambiguous => {
+                    return self
+                        .imported_submodule(child, access)
+                        .map_or(ModuleMember::Ambiguous, |imports| {
+                            ModuleMember::Submodule(child, imports)
+                        });
+                }
+                SubmoduleAttachment::Rebound(_) => return ModuleMember::Ambiguous,
+            }
+        }
+        match (hook, lazy) {
+            (Some(hook), LazyMember::Branch(branch)) => ModuleMember::Lazy(hook, branch),
+            (_, LazyMember::Missing) => ModuleMember::Missing,
+            (_, LazyMember::Conditional) => ModuleMember::ConditionalHook,
+            (_, LazyMember::Unknown) => ModuleMember::OpaqueHook,
+            _ => ModuleMember::Unknown,
+        }
+    }
+
+    fn module_member_at(
+        &mut self,
+        module: &str,
+        member: &str,
+        before: Location,
+        access: (ScopeId, Location),
+        mode: ModuleMemberAccess<'_>,
+        depth: usize,
+    ) -> Value {
+        let submodule = format!("{module}.{member}");
+        if depth >= MAX_BINDING_CHAIN {
+            return Value::Unknown;
+        }
+        let (scope, at) = match mode {
+            ModuleMemberAccess::Export { at, .. } => (access.0, at),
+            _ => access,
+        };
+        if let Some(&file) = self.modules.get(module) {
+            return match self.selected_module_member(file, member, before, access, mode) {
+                ModuleMember::Binding(id, import) => {
+                    self.read.extend(import);
+                    self.binding(id, before, depth + 1)
+                }
+                ModuleMember::Submodule(file, import) => {
+                    self.read.extend(import);
+                    Value::Module(file)
+                }
+                ModuleMember::Lazy(id, branch) => {
+                    self.read.insert(id);
+                    self.lazy_value(scope, &branch, depth + 2, ValueEvaluation::LazyIdentity)
+                }
+                ModuleMember::Ambiguous => {
+                    self.scope_issue(scope, at, "ambiguous_binding",
+                        format!("cannot establish whether submodule {submodule} was attached before this lookup"));
+                    Value::Unknown
+                }
+                ModuleMember::ConditionalHook => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "ambiguous_binding",
+                        format!("lazy lookup of {submodule} depends on a conditional __getattr__"),
+                    );
+                    Value::Unknown
+                }
+                ModuleMember::OpaqueHook => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_lazy_export",
+                        format!(
+                            "lazy lookup of {submodule} is outside the bounded __getattr__ model"
+                        ),
+                    );
+                    Value::Unknown
+                }
+                ModuleMember::UnattachedSubmodule => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_attribute",
+                        format!("submodule {submodule} is not attached to package {module:?}"),
+                    );
+                    Value::Unknown
+                }
+                ModuleMember::Missing if matches!(mode, ModuleMemberAccess::Attribute) => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_attribute",
+                        format!("module {module:?} has no selected binding for {member:?}"),
+                    );
+                    Value::Unknown
+                }
+                ModuleMember::Missing | ModuleMember::Unknown => Value::Unknown,
+            };
+        }
+        self.modules
+            .get(submodule.as_str())
+            .map_or(Value::Provider(submodule), |file| Value::Module(*file))
+    }
+
+    fn lazy_value(
+        &mut self,
+        caller: ScopeId,
+        branch: &LazyBranch<'a>,
+        depth: usize,
+        evaluation: ValueEvaluation,
+    ) -> Value {
+        let first_issue = self.scope_issues.len();
+        let value = self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation);
+        if matches!(value, Value::Unknown) && self.scope_issues.len() == first_issue {
+            self.scope_issue(
+                branch.scope,
+                branch.value.at,
+                "unresolved_lazy_export",
+                "lazy return value or its evaluation is outside the bounded model",
+            );
+        }
+        // A member access executes only the selected lazy branch. Keep the
+        // original diagnostic locations and use the caller for reachability.
+        for (owner, _) in &mut self.scope_issues[first_issue..] {
+            *owner = caller;
+        }
+        value
+    }
+
+    fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
+        self.lazy_dispatch(id, before, |name, scope, body| {
+            (name == member).then(|| Self::lazy_branch(scope, body))
+        })
+    }
+
+    fn lazy_dispatch(
+        &self,
+        id: SymbolId,
+        before: Location,
+        mut visit: impl FnMut(&'a str, ScopeId, &'a [Statement]) -> Option<LazyMember<'a>>,
+    ) -> LazyMember<'a> {
+        if self.binding_depends_on_branch(id, before) {
+            return LazyMember::Conditional;
+        }
+        let Binding::Definition(definition, scope) = self.symbols[id].binding else {
+            return LazyMember::Unknown;
+        };
+        let [parameter] = definition.parameters.as_slice() else {
+            return LazyMember::Unknown;
+        };
+        if definition.kind != DefinitionKind::Function {
+            return LazyMember::Unknown;
+        }
+        // Prove literal dispatch only, after ordinary module lookup failed.
+        for statement in &definition.body {
+            if let StatementKind::Raise(Some(exception)) = &statement.kind {
+                let target = match &exception.kind {
+                    ExpressionKind::Call { function, .. } => function,
+                    _ => exception,
+                };
+                if matches!(&target.kind, ExpressionKind::Name(name) if name == "AttributeError")
+                    && self
+                        .lexical(scope, "AttributeError", statement.at)
+                        .is_none()
+                    && !self.scopes[scope].names.contains_key("AttributeError")
+                {
+                    return LazyMember::Missing;
+                }
+            }
+            let StatementKind::If {
+                test,
+                body,
+                otherwise,
+            } = &statement.kind
+            else {
+                break;
+            };
+            if !otherwise.is_empty() {
+                break;
+            }
+            let ExpressionKind::Compare {
+                left,
+                right,
+                equal: true,
+                identity: false,
+            } = &test.kind
+            else {
+                break;
+            };
+            let (ExpressionKind::Name(name), ExpressionKind::Text(text)) =
+                (&left.kind, &right.kind)
+            else {
+                break;
+            };
+            if name != &parameter.text {
+                break;
+            }
+            if let Some(result) = visit(text, scope, body) {
+                return result;
+            }
+        }
+        LazyMember::Unknown
+    }
+
+    fn lazy_branch(scope: ScopeId, body: &'a [Statement]) -> LazyMember<'a> {
+        if let Some((
+            Statement {
+                kind: StatementKind::Return(Some(value)),
+                at,
+            },
+            imports,
+        )) = body.split_last()
+            && imports
+                .iter()
+                .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
+        {
+            return LazyMember::Branch(LazyBranch {
+                scope,
+                imports,
+                value,
+                at: *at,
+            });
+        }
+        LazyMember::Unknown
+    }
+
+    fn member(
+        &mut self,
+        base: Value,
+        name: &str,
+        access: (ScopeId, Location),
+        depth: usize,
+    ) -> Value {
+        match base {
+            Value::Module(file) => self.module_member_at(
+                &self.files[file].module,
+                name,
+                END,
+                access,
+                ModuleMemberAccess::Attribute,
+                depth,
+            ),
+            Value::Provider(module) => self.module_member_at(
+                &module,
+                name,
+                END,
+                access,
+                ModuleMemberAccess::Attribute,
+                depth,
+            ),
+            Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
+                if self.is_class(class) =>
+            {
+                let member = self
+                    .class_member(class, name, depth)
+                    .unwrap_or(Value::Unknown);
+                if let Value::Callable(invocation) = member
+                    && self.receiver_parameter(invocation.target).is_some()
+                {
+                    let receiver = match base {
+                        Value::Callable(_) => Receiver::Explicit(None),
+                        _ => Receiver::Bound(class),
+                    };
+                    Value::Callable(invocation.bind_receiver(receiver))
+                } else {
+                    member
+                }
+            }
+            Value::Object(object, _) => Value::Method(object, name.into()),
+            Value::Executor if name == "submit" => Value::Submit,
+            Value::Process(target) if name == "start" => Value::Start(target),
+            _ => Value::Unknown,
+        }
+    }
+
+    fn record_class_reference(&mut self, scope: ScopeId, base: &Value) {
+        if let Value::Callable(invocation) = base
+            && self.is_class(invocation.target)
+        {
+            self.edge(scope, invocation.target, "class_reference", "certain");
+        }
+    }
+
+    fn comparison_may_call_method(&mut self, left: &Value, right: &Value, equal: bool) -> bool {
+        // Sequence equality tests corresponding elements, and unequal
+        // lengths short-circuit even when the outer operation is !=.
+        if let (Value::Sequence(left), Value::Sequence(right)) = (left, right) {
+            return left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .any(|(left, right)| self.comparison_may_call_method(left, right, true));
+        }
+
+        [(left, right), (right, left)]
+            .into_iter()
+            .any(|(value, other)| match value {
+                Value::Instance(class) => {
+                    self.class_member(*class, "__eq__", 0).is_some()
+                        || !equal && self.class_member(*class, "__ne__", 0).is_some()
+                }
+                // A mapping can compare keys and values independent of the
+                // order in which the literals list their entries.
+                Value::Mapping(items) if matches!(other, Value::Mapping(_) | Value::Unknown) => {
+                    items
+                        .iter()
+                        .any(|item| self.comparison_may_call_method(item, &Value::Unknown, true))
+                }
+                Value::Sequence(items) if matches!(other, Value::Unknown) => items
+                    .iter()
+                    .any(|item| self.comparison_may_call_method(item, &Value::Unknown, true)),
+                _ => false,
+            })
+    }
+
+    /// None means the attribute is absent in a fully resolved base chain.
+    fn class_member(&mut self, id: SymbolId, name: &str, depth: usize) -> Option<Value> {
+        if depth >= MAX_BINDING_CHAIN {
+            return Some(Value::Unknown);
+        }
+        let symbol = &self.symbols[id];
+        let Binding::Definition(definition, class_scope) = symbol.binding else {
+            unreachable!()
+        };
+        if let Some(attribute) = self.local(class_scope, name, END) {
+            return Some(self.binding(attribute, END, depth + 1));
+        }
+        match definition.bases.as_slice() {
+            [] => None,
+            [base] => match self.identity(symbol.scope, base, definition.name.at, depth + 1) {
+                Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
+                    self.class_member(parent, name, depth + 1)
+                }
+                Value::Provider(name) if name == "builtins.object" => None,
+                Value::Provider(base)
+                    if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
+                {
+                    None
+                }
+                _ => Some(Value::Unknown),
+            },
+            _ => Some(Value::Unknown),
+        }
+    }
+
+    fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
+        let hook = match base {
+            Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
+                self.class_member(id, "__init_subclass__", 0)
+            }
+            Value::Provider(name) if builtin_noop_subclass_hook(&name) => None,
+            _ => Some(Value::Unknown),
+        };
+        match hook {
+            None => {}
+            Some(Value::Callable(Invocation { target: id, .. }))
+                if single_base
+                    && matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function) =>
+            {
+                self.edge(scope, id, "subclass_hook", "certain");
+            }
+            _ => self.scope_issue(
+                scope,
+                at,
+                "unresolved_subclass_hook",
+                "class creation hook dispatch is outside the bounded class hierarchy",
+            ),
+        }
+    }
+
+    fn probe_identity(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> Value {
+        let previous = std::mem::replace(&mut self.probing_identity, true);
+        let value = self.identity(scope, expression, before, 0);
+        self.probing_identity = previous;
+        value
+    }
+
+    fn identity(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Value {
+        self.expression_value(scope, expression, before, depth, ValueEvaluation::Identity)
+    }
+
+    fn expression_value(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+        evaluation: ValueEvaluation,
+    ) -> Value {
+        if depth >= MAX_BINDING_CHAIN {
+            self.issue(
+                self.scopes[scope].file,
+                expression.at,
+                "analysis_limit",
+                "expression identity limit exceeded",
+            );
+            return Value::Unknown;
+        }
+        // An evaluated lazy return can read a known binding. Effectful
+        // operations in the expression itself require additional execution.
+        if evaluation != ValueEvaluation::Identity
+            && matches!(
+                expression.kind,
+                ExpressionKind::Call { .. }
+                    | ExpressionKind::Await(_)
+                    | ExpressionKind::Operands(_)
+            )
+        {
+            self.scope_issue(
+                scope,
+                expression.at,
+                "unresolved_lazy_export",
+                "effects of the lazy return expression are outside the bounded model",
+            );
+            return Value::Unknown;
+        }
+        let recurse = |this: &mut Self, expression| {
+            this.expression_value(scope, expression, before, depth + 1, evaluation)
+        };
+        match &expression.kind {
+            ExpressionKind::Name(name) => {
+                if let Some(id) = self.lexical(scope, name, before) {
+                    let binding_scope = self.symbols[id].scope;
+                    let before = if binding_scope == scope {
+                        before
+                    } else {
+                        if self.scopes[binding_scope].names[name.as_str()].len() > 1 {
+                            self.scope_issue(scope, expression.at, "ambiguous_binding",
+                                "an enclosing name has multiple bindings and the active version is unresolved");
+                            return Value::Unknown;
+                        }
+                        END
+                    };
+                    let value = self.binding(id, before, depth + 1);
+                    if let ValueEvaluation::LazyExecution(caller) = evaluation {
+                        self.record_class_reference(caller, &value);
+                    }
+                    return value;
+                }
+                if name == "__name__" {
+                    return Value::Unknown;
+                }
+                if matches!(
+                    name.as_str(),
+                    "print"
+                        | "len"
+                        | "range"
+                        | "str"
+                        | "int"
+                        | "bool"
+                        | "object"
+                        | "list"
+                        | "tuple"
+                        | "dict"
+                        | "set"
+                        | "float"
+                        | "bytes"
+                        | "ValueError"
+                        | "RuntimeError"
+                        | "AttributeError"
+                        | "TypeError"
+                        | "Exception"
+                        | "staticmethod"
+                        | "classmethod"
+                        | "property"
+                ) && !self.scopes[scope].names.contains_key(name.as_str())
+                {
+                    return Value::Provider(format!("builtins.{name}"));
+                }
+                Value::Unknown
+            }
+            ExpressionKind::Member(base, name) => {
+                let base = recurse(self, base);
+                if let ValueEvaluation::LazyExecution(caller) = evaluation {
+                    if let Value::Module(file) = base
+                        && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
+                            file,
+                            name,
+                            END,
+                            (scope, before),
+                            ModuleMemberAccess::Attribute,
+                        )
+                    {
+                        self.read.insert(hook);
+                        self.nested_lazy_imports
+                            .push((branch.scope, branch.imports));
+                        return self.lazy_value(scope, &branch, depth + 3, evaluation);
+                    }
+                    let value = self.member(base, name, (scope, before), depth + 1);
+                    self.record_class_reference(caller, &value);
+                    return value;
+                }
+                self.member(base, name, (scope, before), depth + 1)
+            }
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } => match recurse(self, function) {
+                Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
+                    // Only default allocation proves which class the expression returns.
+                    if self.class_member(id, "__new__", depth + 1).is_none() {
+                        Value::Instance(id)
+                    } else {
+                        Value::Unknown
+                    }
+                }
+                Value::Callable(invocation) if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine) => {
+                    Value::Coroutine(
+                        self.with_explicit_receiver(invocation, arguments, keywords, recurse),
+                    )
+                }
+                Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
+                Value::Provider(name)
+                    if matches!(
+                        name.as_str(),
+                        "fastapi.FastAPI" | "fastapi.applications.FastAPI"
+                    ) =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::App,
+                    )
+                }
+                Value::Provider(name)
+                    if matches!(
+                        name.as_str(),
+                        "fastapi.APIRouter" | "fastapi.routing.APIRouter"
+                    ) =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::Router,
+                    )
+                }
+                Value::Provider(name)
+                    if matches!(
+                        name.as_str(),
+                        "concurrent.futures.ThreadPoolExecutor"
+                            | "concurrent.futures.ProcessPoolExecutor"
+                    ) =>
+                {
+                    Value::Executor
+                }
+                Value::Provider(name) if name == "multiprocessing.Process" => {
+                    let target = keywords
+                        .iter()
+                        .find(|(name, _)| name == "target")
+                        .map_or(Value::Unknown, |(_, target)| recurse(self, target));
+                    Value::Process(Box::new(target))
+                }
+                _ => Value::Unknown,
+            },
+            ExpressionKind::Text(text) => Value::Text(text.clone()),
+            ExpressionKind::Bool(value) => Value::Bool(*value),
+            ExpressionKind::Scalar | ExpressionKind::Operands(_) => Value::Scalar,
+            ExpressionKind::Sequence(items) => {
+                Value::Sequence(items.iter().map(|expr| recurse(self, expr)).collect())
+            }
+            ExpressionKind::Dictionary(items) => {
+                Value::Mapping(items.iter().map(|expr| recurse(self, expr)).collect())
+            }
+            ExpressionKind::Compare {
+                left,
+                right,
+                equal,
+                identity,
+            } => {
+                let left = recurse(self, left);
+                let right = recurse(self, right);
+                let same = match (left, right) {
+                    (Value::Text(left), Value::Text(right)) if !identity => left == right,
+                    (Value::Bool(left), Value::Bool(right)) => left == right,
+                    _ => return Value::Unknown,
+                };
+                Value::Bool(same == *equal)
+            }
+            ExpressionKind::Not(value) => match recurse(self, value) {
+                Value::Bool(value) => Value::Bool(!value),
+                _ => Value::Unknown,
+            },
+            ExpressionKind::Boolean { and, values } => {
+                for value in values {
+                    match recurse(self, value) {
+                        Value::Bool(value) if value != *and => return Value::Bool(value),
+                        Value::Bool(_) => {}
+                        _ => return Value::Unknown,
+                    }
+                }
+                Value::Bool(*and)
+            }
+            ExpressionKind::Await(_) => Value::Unknown,
+        }
+    }
+
+    fn edge(
+        &mut self,
+        scope: ScopeId,
+        target: SymbolId,
+        kind: &'static str,
+        certainty: &'static str,
+    ) {
+        self.scopes[scope].edges.push(Edge {
+            target,
+            kind,
+            certainty,
+        });
+    }
+
+    fn invoke(
+        &mut self,
+        scope: ScopeId,
+        invocation: Invocation,
+        kind: &'static str,
+        certainty: &'static str,
+        at: Location,
+    ) {
+        let owner = self.scopes[self.symbols[invocation.target].scope].owner;
+        if matches!(invocation.receiver, Receiver::Ordinary)
+            || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner)
+        {
+            self.edge(scope, invocation.target, kind, certainty);
+        } else {
+            self.class_invocations.push(ClassInvocation {
+                scope,
+                at,
+                edge: Edge {
+                    target: invocation.target,
+                    kind,
+                    certainty,
+                },
+                receiver: invocation.receiver,
+            });
+        }
+    }
+
+    fn receiver_conflicts(&self, invocation: Invocation) -> bool {
+        if matches!(invocation.receiver, Receiver::Ordinary) {
+            return false;
+        }
+        let inferred_class = self
+            .receiver_parameter(invocation.target)
+            .and_then(|parameter| {
+                self.instance_receivers
+                    .get(&parameter)
+                    .copied()
+                    .filter(|class| {
+                        self.read.contains(&parameter) && !self.subclassed.contains(class)
+                    })
+            });
+        inferred_class.is_some() && inferred_class != invocation.receiver.supplied()
+    }
+
+    fn resolve_class_invocations(&mut self) {
+        // A module can read a method before analysis has visited its class suite
+        // and determined whether decorators preserve instance binding.
+        for call in std::mem::take(&mut self.class_invocations) {
+            if self.receiver_conflicts(Invocation {
+                target: call.edge.target,
+                receiver: call.receiver,
+            }) {
+                self.scope_issue(
+                    call.scope,
+                    call.at,
+                    "unresolved_call",
+                    "explicit method receiver is outside the bounded model",
+                );
+            } else {
+                self.scopes[call.scope].edges.push(call.edge);
+            }
+        }
+    }
+
+    fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
+        let invocation = match value {
+            Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
+            Value::Sequence(values) | Value::Mapping(values) => {
+                for value in values {
+                    self.expose(scope, value, kind, at);
+                }
+                return;
+            }
+            _ => return,
+        };
+        self.invoke(scope, invocation, kind, "possible", at);
+        self.uncertain(
+            scope,
+            at,
+            "a known target may be invoked through an external or asynchronous consumer",
+        );
+    }
+
+    fn constructor(
+        &mut self,
+        scope: ScopeId,
+        class: SymbolId,
+        kind: &'static str,
+        certainty: &'static str,
+        at: Location,
+    ) {
+        if let Some(allocator) = self.class_member(class, "__new__", 0) {
+            if let Value::Callable(invocation) = allocator {
+                // An allocator receives the class itself. Its result determines
+                // whether an instance initializer runs and which one is selected.
+                self.invoke(
+                    scope,
+                    invocation.bind_receiver(Receiver::Explicit(None)),
+                    kind,
+                    certainty,
+                    at,
+                );
+            }
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_constructor",
+                "allocation result is outside the bounded class model",
+            );
+            return;
+        }
+
+        match self.class_member(class, "__init__", 0) {
+            None => {}
+            Some(Value::Callable(invocation)) => self.invoke(
+                scope,
+                invocation.bind_receiver(Receiver::Bound(class)),
+                kind,
+                certainty,
+                at,
+            ),
+            _ => self.scope_issue(
+                scope,
+                at,
+                "unresolved_constructor",
+                "constructor dispatch is outside the bounded class hierarchy",
+            ),
+        }
+    }
+
+    fn walk(&mut self, scope: ScopeId, expr: &Expression, before: Location) {
+        match &expr.kind {
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } => {
+                self.walk(scope, function, before);
+                for expr in arguments
+                    .iter()
+                    .chain(keywords.iter().map(|(_, value)| value))
+                {
+                    self.walk(scope, expr, before);
+                }
+                let callee = self.identity(scope, function, before, 0);
+                match callee {
+                    Value::Callable(invocation) => {
+                        let id = invocation.target;
+                        self.direct.insert(id);
+                        self.record_direct_arguments(
+                            scope, id, before, expr.at, arguments, keywords,
+                        );
+                        if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
+                        {
+                            let invocation = self.with_explicit_receiver(
+                                invocation,
+                                arguments,
+                                keywords,
+                                |graph, value| graph.identity(scope, value, before, 0),
+                            );
+                            self.invoke(scope, invocation, "direct_call", "certain", expr.at);
+                        }
+                        if self.is_class(id) {
+                            self.constructor(scope, id, "constructor", "certain", expr.at);
+                        }
+                        // Callback parameter substitution is bounded by retaining the
+                        // finite supplied values even if the callee dispatches dynamically.
+                        for argument in arguments
+                            .iter()
+                            .chain(keywords.iter().map(|(_, value)| value))
+                        {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.expose(scope, value, "passed_callable", argument.at);
+                        }
+                    }
+                    Value::Provider(name) if name == "asyncio.create_task" => {
+                        self.activate_argument(
+                            scope,
+                            arguments.first(),
+                            before,
+                            "scheduled_coroutine",
+                            expr.at,
+                        );
+                    }
+                    Value::Submit => self.activate_argument(
+                        scope,
+                        arguments.first(),
+                        before,
+                        "executor_submission",
+                        expr.at,
+                    ),
+                    Value::Start(value) => match *value {
+                        Value::Callable(_) => {
+                            self.activate_callback(scope, *value, "process_target", expr.at);
+                        }
+                        _ => self.scope_issue(
+                            scope,
+                            expr.at,
+                            "unresolved_callback",
+                            "process target could not be bounded",
+                        ),
+                    },
+                    Value::Method(parent, method) if method == "include_router" => {
+                        let target = arguments.first().or_else(|| {
+                            keywords
+                                .iter()
+                                .find(|(name, _)| name == "router")
+                                .map(|(_, value)| value)
+                        });
+                        if let Some(target) = target
+                            && let Value::Object(child, ObjectKind::Router) =
+                                self.identity(scope, target, before, 0)
+                        {
+                            self.scopes[scope].mounts.push((parent, child));
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_registration",
+                                "router identity could not be resolved",
+                            );
+                        }
+                    }
+                    Value::Provider(name) if is_known_call(&name) => {
+                        if let Value::Object(object, ObjectKind::App) =
+                            self.identity(scope, expr, before, 0)
+                        {
+                            self.scopes[scope].activated_apps.push(object);
+                        }
+                    }
+                    _ => {
+                        let parameter = match &function.kind {
+                            ExpressionKind::Name(name) => self.lexical(scope, name, before),
+                            _ => None,
+                        }
+                        .filter(|&id| matches!(self.symbols[id].binding, Binding::Parameter));
+                        if let Some(parameter) = parameter {
+                            self.parameter_calls.push(ParameterCall {
+                                scope,
+                                parameter,
+                                at: expr.at,
+                            });
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "call target is outside the bounded model",
+                            );
+                        }
+                    }
+                }
+            }
+            ExpressionKind::Await(value) => {
+                self.walk(scope, value, before);
+                let target = self.identity(scope, value, before, 0);
+                if !matches!(target, Value::ScheduledTask) {
+                    self.activate_callback(scope, target, "awaited_coroutine", expr.at);
+                }
+            }
+            ExpressionKind::Member(base, name) => {
+                self.walk(scope, base, before);
+                let base = self.identity(scope, base, before, 1);
+                let value = if let Value::Module(file) = base
+                    && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
+                        file,
+                        name,
+                        END,
+                        (scope, before),
+                        ModuleMemberAccess::Attribute,
+                    ) {
+                    self.read.insert(hook);
+                    self.execute_lazy_branch(scope, &branch)
+                } else {
+                    self.member(base, name, (scope, before), 1)
+                };
+                self.record_class_reference(scope, &value);
+            }
+            ExpressionKind::Not(base) => self.walk(scope, base, before),
+            ExpressionKind::Compare {
+                left,
+                right,
+                equal,
+                identity,
+            } => {
+                self.walk(scope, left, before);
+                self.walk(scope, right, before);
+                if !identity {
+                    let left = self.identity(scope, left, before, 0);
+                    let right = self.identity(scope, right, before, 0);
+                    if self.comparison_may_call_method(&left, &right, *equal) {
+                        self.scope_issue(
+                            scope,
+                            expr.at,
+                            "unresolved_comparison",
+                            "comparison method dispatch is outside the bounded model",
+                        );
+                    }
+                }
+            }
+            ExpressionKind::Sequence(values)
+            | ExpressionKind::Dictionary(values)
+            | ExpressionKind::Operands(values) => {
+                for item in values {
+                    self.walk(scope, item, before);
+                }
+            }
+            ExpressionKind::Boolean { and, values } => {
+                for value in values {
+                    self.walk(scope, value, before);
+                    if matches!(self.identity(scope, value, before, 0), Value::Bool(result) if result != *and)
+                    {
+                        break;
+                    }
+                }
+            }
+            ExpressionKind::Name(_) => {
+                let value = self.identity(scope, expr, before, 0);
+                self.record_class_reference(scope, &value);
+            }
+            _ => {}
+        }
+    }
+
+    fn record_direct_arguments(
+        &mut self,
+        caller: ScopeId,
+        callee: SymbolId,
+        before: Location,
+        at: Location,
+        args: &[Expression],
+        keywords: &[(String, Expression)],
+    ) {
+        let Binding::Definition(definition, _) = self.symbols[callee].binding else {
+            return;
+        };
+        if definition.kind != DefinitionKind::Function
+            || !definition.simple_positional_parameters
+            || self.scopes[self.symbols[callee].scope]
+                .owner
+                .is_some_and(|owner| self.is_class(owner))
+        {
+            return;
+        }
+        let mut bounded_callbacks = BTreeMap::new();
+        for (parameter, argument) in definition.parameters.iter().zip(args) {
+            if let Value::Callable(target) = self.identity(caller, argument, before, 0) {
+                bounded_callbacks.insert(parameter.text.clone(), target);
+            }
+        }
+        for (parameter, argument) in keywords {
+            if let Value::Callable(target) = self.identity(caller, argument, before, 0) {
+                bounded_callbacks.insert(parameter.clone(), target);
+            }
+        }
+        self.direct_arguments
+            .entry(callee)
+            .or_default()
+            .push(DirectArguments {
+                caller,
+                at,
+                bounded_callbacks,
+            });
+    }
+
+    fn activate_argument(
+        &mut self,
+        scope: ScopeId,
+        arg: Option<&Expression>,
+        before: Location,
+        kind: &'static str,
+        at: Location,
+    ) {
+        let target = arg.map_or(Value::Unknown, |expr| self.identity(scope, expr, before, 0));
+        self.activate_callback(scope, target, kind, at);
+    }
+
+    fn activate_callback(
+        &mut self,
+        scope: ScopeId,
+        target: Value,
+        kind: &'static str,
+        at: Location,
+    ) {
+        if matches!(target, Value::Callable(_) | Value::Coroutine(_)) {
+            if matches!(kind, "executor_submission" | "process_target")
+                && let Value::Callable(invocation) = &target
+                && self.is_class(invocation.target)
+            {
+                self.constructor(
+                    scope,
+                    invocation.target,
+                    "callback_constructor",
+                    "possible",
+                    at,
+                );
+            }
+            self.expose(scope, target, kind, at);
+        } else {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_callback",
+                "callback target could not be bounded",
+            );
+        }
+    }
+
+    fn receiver_parameter(&self, target: SymbolId) -> Option<SymbolId> {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, body) = symbol.binding else {
+            return None;
+        };
+        if !definition.has_positional_parameter
+            || matches!(
+                definition.name.text.as_str(),
+                "__new__" | "__init_subclass__" | "__class_getitem__"
+            )
+            || !self.scopes[symbol.scope]
+                .owner
+                .is_some_and(|owner| self.is_class(owner))
+        {
+            return None;
+        }
+        let parameter = definition
+            .parameters
+            .first()
+            .filter(|param| param.text == "self")?;
+        Some(self.by_location[&(body, parameter.at.line, parameter.at.column)])
+    }
+
+    fn with_explicit_receiver<'expr>(
+        &mut self,
+        mut invocation: Invocation,
+        arguments: &'expr [Expression],
+        keywords: &'expr [(String, Expression)],
+        mut evaluate: impl FnMut(&mut Self, &'expr Expression) -> Value,
+    ) -> Invocation {
+        if matches!(invocation.receiver, Receiver::Explicit(_)) {
+            let argument = arguments.first().or_else(|| {
+                // The simple signature model proves that `self` accepts a keyword.
+                if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.simple_positional_parameters) {
+                    keywords.iter().find(|(name, _)| name == "self").map(|(_, value)| value)
+                } else {
+                    None
+                }
+            });
+            let class = match argument.map(|argument| evaluate(self, argument)) {
+                Some(Value::Instance(class)) => Some(class),
+                _ => None,
+            };
+            invocation.receiver = Receiver::Explicit(class);
+        }
+        invocation
+    }
+
+    fn annotation(&mut self, scope: ScopeId, expr: &Expression, before: Location, evaluated: bool) {
+        let evaluated = evaluated
+            && !self.files[self.scopes[scope].file]
+                .facts
+                .postponed_annotations;
+        match &expr.kind {
+            ExpressionKind::Operands(values) | ExpressionKind::Sequence(values) => {
+                for reference in values {
+                    self.annotation(scope, reference, before, evaluated);
+                }
+            }
+            ExpressionKind::Call { .. } if evaluated => {
+                self.walk(scope, expr, before);
+            }
+            _ => {
+                let value = if evaluated {
+                    self.walk(scope, expr, before);
+                    self.identity(scope, expr, before, 0)
+                } else {
+                    self.probe_identity(scope, expr, before)
+                };
+                if let Value::Callable(Invocation { target: id, .. }) = value {
+                    self.edge(scope, id, "type_reference", "possible");
+                }
+            }
+        }
+    }
+
+    fn suite(&mut self, scope: ScopeId, body: &[Statement]) -> bool {
+        for statement in body {
+            let at = statement.at;
+            match &statement.kind {
+                StatementKind::Define(definition) => {
+                    if matches!(
+                        definition.name.text.as_str(),
+                        "__getattribute__" | "__getattr__"
+                    ) && self.scopes[scope].owner.is_some_and(|id| self.is_class(id))
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_descriptor",
+                            "dynamic instance attribute resolution is outside the bounded model",
+                        );
+                    }
+                    let target = self.by_location
+                        [&(scope, definition.name.at.line, definition.name.at.column)];
+                    let Binding::Definition(_, definition_scope) = self.symbols[target].binding
+                    else {
+                        unreachable!()
+                    };
+                    if definition.kind == DefinitionKind::Class {
+                        self.scopes[scope].class_bodies.push(definition_scope);
+                    }
+                    for annotation in &definition.annotations {
+                        self.annotation(scope, annotation, at, true);
+                    }
+                    for expression in &definition.defaults {
+                        self.walk(scope, expression, at);
+                    }
+                    for base in &definition.bases {
+                        self.walk(scope, base, at);
+                        let value = self.identity(scope, base, at, 0);
+                        if let Value::Callable(Invocation { target: id, .. }) = value {
+                            self.edge(scope, id, "base_class", "certain");
+                        }
+                        self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                    }
+                    let mut preserves_receiver = true;
+                    for decorator in &definition.decorators {
+                        preserves_receiver &= self.decorator(scope, decorator, target, at);
+                    }
+                    if preserves_receiver
+                        && let Some(receiver) = self.receiver_parameter(target)
+                        && let Some(class) = self.scopes[scope].owner
+                    {
+                        self.instance_receivers.insert(receiver, class);
+                    }
+                }
+                StatementKind::Assign {
+                    value, annotation, ..
+                } => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                    }
+                    if let Some(annotation) = annotation {
+                        let evaluated = self.scopes[scope]
+                            .owner
+                            .is_none_or(|owner| self.is_class(owner));
+                        self.annotation(scope, annotation, at, evaluated);
+                    }
+                }
+                StatementKind::Return(value) => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                        let result = self.identity(scope, value, at, 0);
+                        self.expose(scope, result, "returned_callable", value.at);
+                    }
+                    return true;
+                }
+                StatementKind::Raise(value) => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                    }
+                    return true;
+                }
+                StatementKind::Assert(test) => {
+                    self.walk(scope, test, at);
+                    if matches!(self.identity(scope, test, at, 0), Value::Bool(false)) {
+                        return true;
+                    }
+                }
+                StatementKind::Evaluate(value) => self.walk(scope, value, at),
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } => {
+                    self.walk(scope, test, at);
+                    let test = self.identity(scope, test, at, 0);
+                    let stop = match test {
+                        Value::Bool(true) => self.suite(scope, body),
+                        Value::Bool(false) => self.suite(scope, otherwise),
+                        _ => self.suite(scope, body) & self.suite(scope, otherwise),
+                    };
+                    if stop {
+                        return true;
+                    }
+                }
+                StatementKind::With { items, body } => {
+                    for (expression, _) in items {
+                        self.walk(scope, expression, at);
+                        if !matches!(self.identity(scope, expression, at, 0), Value::Executor) {
+                            self.scope_issue(
+                                scope,
+                                expression.at,
+                                "unresolved_context_manager",
+                                "context manager is outside the bounded model",
+                            );
+                        }
+                    }
+                    if self.suite(scope, body) {
+                        return true;
+                    }
+                }
+                StatementKind::Import(import) => {
+                    let module = self.relative_module(self.scopes[scope].file, import);
+                    if let Some(branch) =
+                        self.record_import(scope, scope, module.as_deref(), import)
+                    {
+                        self.execute_lazy_branch(scope, &branch);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Returns whether the decorator preserves the function's instance binding.
+    fn decorator(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+    ) -> bool {
+        let (function, args, keywords) = match &decorator.kind {
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } => (function.as_ref(), arguments.as_slice(), keywords.as_slice()),
+            _ => (decorator, [].as_slice(), [].as_slice()),
+        };
+        self.walk(scope, function, before);
+        for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
+            self.walk(scope, value, before);
+        }
+        match self.identity(scope, function, before, 0) {
+            Value::Method(object, name) if is_route(&name) => {
+                self.scopes[scope].routes.push((object, target))
+            }
+            Value::Provider(name) if name == "pytest.fixture" => {
+                let registered_name = if let Some((_, expression)) =
+                    keywords.iter().find(|(name, _)| name == "name")
+                {
+                    if let Value::Text(name) = self.identity(scope, expression, before, 0) {
+                        Some(name)
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unresolved_fixture_name",
+                            "pytest fixture name could not be resolved",
+                        );
+                        return false;
+                    }
+                } else {
+                    None
+                };
+                let mut autouse = false;
+                if let Some((_, expression)) = keywords.iter().find(|(name, _)| name == "autouse") {
+                    match self.identity(scope, expression, before, 0) {
+                        Value::Bool(value) => autouse = value,
+                        _ => self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unresolved_fixture_autouse",
+                            "pytest fixture autouse could not be resolved",
+                        ),
+                    }
+                }
+                self.fixtures.insert(
+                    target,
+                    PytestFixture {
+                        name: registered_name,
+                        autouse,
+                    },
+                );
+            }
+            Value::Callable(invocation) => {
+                self.invoke(scope, invocation, "decorator", "certain", decorator.at);
+                let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+                else {
+                    unreachable!()
+                };
+                if is_identity_decorator(definition) {
+                    return definition.kind == DefinitionKind::Function
+                        && definition.has_positional_parameter
+                        && definition.decorators.is_empty()
+                        && !matches!(decorator.kind, ExpressionKind::Call { .. });
+                } else {
+                    self.scope_issue(
+                        scope,
+                        decorator.at,
+                        "unresolved_decorator",
+                        "local decorator may replace or invoke the decorated definition",
+                    );
+                }
+            }
+            Value::Provider(name)
+                if matches!(
+                    name.as_str(),
+                    "builtins.staticmethod" | "builtins.classmethod"
+                ) => {}
+            _ => self.scope_issue(
+                scope,
+                decorator.at,
+                "unresolved_decorator",
+                "decorator identity is outside the bounded model",
+            ),
+        };
+        false
+    }
+
+    fn class_lineage(&mut self, class: SymbolId) -> (Vec<ScopeId>, bool) {
+        let mut lineage = Vec::new();
+        let mut current = class;
+        let mut resolved = false;
+        for _ in 0..MAX_BINDING_CHAIN {
+            let symbol = &self.symbols[current];
+            let Binding::Definition(definition, scope) = symbol.binding else {
+                unreachable!()
+            };
+            lineage.push(scope);
+            let base = match definition.bases.as_slice() {
+                [] => {
+                    resolved = true;
+                    break;
+                }
+                [base] => base,
+                _ => break,
+            };
+            match self.identity(symbol.scope, base, definition.name.at, 0) {
+                Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
+                    current = parent
+                }
+                Value::Provider(name) if name == "builtins.object" => {
+                    resolved = true;
+                    break;
+                }
+                _ => break,
+            }
+        }
+        (lineage, resolved)
+    }
+
+    fn pytest_class_names(&mut self, class: SymbolId) -> Option<(PytestNames<'a>, bool)> {
+        let symbol = &self.symbols[class];
+        if symbol.scope != self.scopes[symbol.scope].file || !self.is_class(class) {
+            return None;
+        }
+        let (lineage, resolved) = self.class_lineage(class);
+        // Pytest sees the effective attributes of the collected class, so a
+        // subclass can shadow both a test method and a fixture of its base.
+        let mut names = PytestNames::new();
+        for scope in lineage.into_iter().rev() {
+            for (&name, bindings) in &self.scopes[scope].names {
+                names.entry(name).or_default().extend(bindings);
+            }
+        }
+        let mut certain = true;
+        for name in ["__init__", "__new__", "__test__"] {
+            let Some(bindings) = names.get(name) else {
+                continue;
+            };
+            let candidates = self.pytest_candidates(bindings);
+            let disables_collection = |id: SymbolId| {
+                name != "__test__"
+                    || matches!(self.symbols[id].binding, Binding::Variable(Some(value), _) if static_bool(value) == Some(false))
+            };
+            if candidates.len() == 1
+                && !self.conditional.contains_key(&candidates[0])
+                && disables_collection(candidates[0])
+            {
+                return None;
+            }
+            certain &= !candidates.iter().copied().any(disables_collection);
+        }
+        if !resolved {
+            // Unresolved bases can supply tests and fixtures even when the
+            // collected class declares none of its own.
+            let symbol = &self.symbols[class];
+            self.scope_issue(
+                symbol.scope,
+                symbol.name.at,
+                "unresolved_pytest_class",
+                "pytest test collection through this class hierarchy could not be resolved",
+            );
+            return None;
+        }
+        Some((names, certain))
+    }
+
+    fn is_pytest_function(&self, id: SymbolId) -> bool {
+        matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind != DefinitionKind::Class)
+            && !self.fixtures.contains_key(&id)
+    }
+
+    fn is_pytest_file(&self, file: usize) -> bool {
+        let filename = self.files[file].path.rsplit('/').next().unwrap_or_default();
+        filename.starts_with("test_") || filename.ends_with("_test.py")
+    }
+
+    fn pytest_candidates<'b>(&self, bindings: &'b [SymbolId]) -> &'b [SymbolId] {
+        // Conditional attributes may leave a previous binding in place.
+        let first = bindings
+            .iter()
+            .rposition(|id| !self.conditional.contains_key(id))
+            .unwrap_or(0);
+        &bindings[first..]
+    }
+
+    fn pytest_target(&self, id: SymbolId) -> Option<PytestRegistration> {
+        let mut bindings = Vec::new();
+        let Value::Callable(Invocation { target, .. }) =
+            self.pytest_binding(id, None, &mut bindings, 0)?
+        else {
+            return None;
+        };
+        Some(PytestRegistration { target, bindings })
+    }
+
+    // Collect identity evidence without marking unrelated namespace entries
+    // as used. Only a test or fixture that is retained consumes this evidence.
+    fn pytest_binding(
+        &self,
+        id: SymbolId,
+        before: Option<Location>,
+        bindings: &mut Vec<SymbolId>,
+        depth: usize,
+    ) -> Option<Value> {
+        if depth >= MAX_BINDING_CHAIN
+            || before.is_some_and(|at| self.binding_depends_on_branch(id, at))
+        {
+            return None;
+        }
+        let symbol = &self.symbols[id];
+        match symbol.binding {
+            Binding::Definition(_, _) => Some(Value::Callable(Invocation::ordinary(id))),
+            Binding::Variable(Some(value), at) => {
+                bindings.push(id);
+                self.pytest_expression(symbol.scope, value, at, bindings, depth + 1)
+            }
+            Binding::Import(import) => {
+                bindings.push(id);
+                let source = self.scopes[symbol.scope].file;
+                let module = self.relative_module(source, import)?;
+                if let Some(member) = &import.member {
+                    let file = *self.modules.get(module.as_str())?;
+                    let before = self
+                        .import_member_position(symbol.scope, &module, import)
+                        .unwrap_or(END);
+                    let selected = self.selected_module_member(
+                        file,
+                        member,
+                        before,
+                        (symbol.scope, import.local.at),
+                        ModuleMemberAccess::FromImport,
+                    );
+                    self.pytest_member(selected, before, bindings, depth + 1)
+                } else {
+                    let visible = if import.exposes_top_level {
+                        module.split('.').next().unwrap_or(&module)
+                    } else {
+                        &module
+                    };
+                    self.modules.get(visible).copied().map(Value::Module)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn pytest_expression(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        bindings: &mut Vec<SymbolId>,
+        depth: usize,
+    ) -> Option<Value> {
+        if depth >= MAX_BINDING_CHAIN {
+            return None;
+        }
+        match &expression.kind {
+            ExpressionKind::Name(name) => {
+                let id = self.lexical(scope, name, before)?;
+                let before = if self.symbols[id].scope == scope {
+                    before
+                } else {
+                    END
+                };
+                self.pytest_binding(id, Some(before), bindings, depth)
+            }
+            ExpressionKind::Member(base, member) => {
+                let Value::Module(file) =
+                    self.pytest_expression(scope, base, before, bindings, depth + 1)?
+                else {
+                    return None;
+                };
+                let selected = self.selected_module_member(
+                    file,
+                    member,
+                    END,
+                    (scope, before),
+                    ModuleMemberAccess::Attribute,
+                );
+                self.pytest_member(selected, END, bindings, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    fn pytest_member(
+        &self,
+        member: ModuleMember<'a>,
+        before: Location,
+        bindings: &mut Vec<SymbolId>,
+        depth: usize,
+    ) -> Option<Value> {
+        match member {
+            ModuleMember::Binding(id, import) => {
+                bindings.extend(import);
+                self.pytest_binding(id, Some(before), bindings, depth)
+            }
+            ModuleMember::Submodule(file, imports) => {
+                bindings.extend(imports);
+                Some(Value::Module(file))
+            }
+            ModuleMember::Lazy(hook, branch) => {
+                bindings.push(hook);
+                self.pytest_expression(branch.scope, branch.value, branch.at, bindings, depth)
+            }
+            _ => None,
+        }
+    }
+
+    fn pytest_registrations(
+        &self,
+        names: &PytestNames<'a>,
+        prefix: &str,
+    ) -> Vec<(PytestRegistration, bool)> {
+        names
+            .iter()
+            .filter(|(name, _)| name.starts_with(prefix))
+            .flat_map(|(_, bindings)| {
+                let candidates = self.pytest_candidates(bindings);
+                candidates.iter().filter_map(move |id| {
+                    let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
+                    self.pytest_target(*id).map(|target| (target, certain))
+                })
+            })
+            .collect()
+    }
+
+    fn test_edges(&mut self) -> Vec<Edge> {
+        let mut roots = BTreeMap::new();
+        let conftests: BTreeMap<_, _> = self
+            .files
+            .iter()
+            .enumerate()
+            .filter_map(|(file, source)| {
+                pytest_conftest_prefix(&source.path).map(|prefix| (prefix, file))
+            })
+            .collect();
+        for file in 0..self.files.len() {
+            if !self.is_pytest_file(file) {
+                continue;
+            }
+            let path = &self.files[file].path;
+            let prefixes =
+                std::iter::once("").chain(path.match_indices('/').map(|(end, _)| &path[..=end]));
+            let ancestors = prefixes.filter_map(|prefix| conftests.get(prefix).copied());
+            let namespaces: Vec<_> = ancestors.chain(std::iter::once(file)).collect();
+            let module_tests = self.pytest_registrations(&self.scopes[file].names, "test_");
+            self.record_pytest_tests(file, &namespaces, None, module_tests, &mut roots);
+            for (class, collected) in self.pytest_registrations(&self.scopes[file].names, "Test") {
+                let Some((names, eligible)) = self.pytest_class_names(class.target) else {
+                    continue;
+                };
+                let tests: Vec<_> = self
+                    .pytest_registrations(&names, "test_")
+                    .into_iter()
+                    .filter(|(method, _)| self.is_pytest_function(method.target))
+                    .map(|(method, certain)| (method, certain && collected && eligible))
+                    .collect();
+                if !tests.is_empty() {
+                    *roots.entry(class.target).or_default() |=
+                        tests.iter().any(|(_, certain)| *certain);
+                    self.read.extend(class.bindings);
+                    self.record_pytest_tests(file, &namespaces, Some(&names), tests, &mut roots);
+                }
+            }
+        }
+        roots
+            .into_iter()
+            .map(|(target, certain)| Edge {
+                target,
+                kind: "pytest_root",
+                certainty: if certain { "certain" } else { "possible" },
+            })
+            .collect()
+    }
+
+    fn record_pytest_tests(
+        &mut self,
+        file: usize,
+        namespaces: &[ScopeId],
+        class: Option<&PytestNames<'a>>,
+        tests: Vec<(PytestRegistration, bool)>,
+        roots: &mut BTreeMap<SymbolId, bool>,
+    ) {
+        let tests: Vec<_> = tests
+            .into_iter()
+            .filter_map(|(test, certain)| {
+                self.is_pytest_function(test.target)
+                    .then_some((test, certain))
+            })
+            .collect();
+        if tests.is_empty() {
+            return;
+        }
+        for (test, certain) in &tests {
+            *roots.entry(test.target).or_default() |= *certain;
+            self.read.extend(&test.bindings);
+        }
+        if !self.fixtures.is_empty() {
+            self.collect_pytest_fixtures(file, namespaces, class, &tests, roots);
+        }
+    }
+
+    fn collect_pytest_fixtures(
+        &mut self,
+        file: usize,
+        namespaces: &[ScopeId],
+        class: Option<&PytestNames<'a>>,
+        tests: &[(PytestRegistration, bool)],
+        roots: &mut BTreeMap<SymbolId, bool>,
+    ) {
+        // Register from outermost to innermost. Pytest requests an autouse
+        // fixture by name, so a closer override can satisfy that request too.
+        let mut registrations = BTreeMap::<String, Vec<PytestFixtureChoices>>::new();
+        for names in namespaces
+            .iter()
+            .map(|&scope| &self.scopes[scope].names)
+            .chain(class)
+        {
+            for (&alias, bindings) in names {
+                // Keep possible conditional bindings at the same precedence.
+                let mut alternatives = BTreeMap::<&str, Vec<_>>::new();
+                let candidates = self.pytest_candidates(bindings);
+                let has_unconditional_binding = !self.conditional.contains_key(&candidates[0]);
+                for &binding in candidates.iter().rev() {
+                    if let Some(resolved) = self.pytest_target(binding)
+                        && let Some(fixture) = self.fixtures.get(&resolved.target)
+                    {
+                        let name = fixture.name.as_deref().unwrap_or(alias);
+                        alternatives.entry(name).or_default().push(resolved);
+                    }
+                }
+                for (name, alternatives) in alternatives {
+                    let may_be_absent =
+                        !has_unconditional_binding || alternatives.len() != candidates.len();
+                    registrations
+                        .entry(name.into())
+                        .or_default()
+                        .push(PytestFixtureChoices {
+                            alternatives,
+                            may_be_absent,
+                        });
+                }
+            }
+        }
+
+        let mut pending = Vec::new();
+        for (name, choices) in &registrations {
+            let autouse = choices
+                .iter()
+                .flat_map(|choice| &choice.alternatives)
+                .any(|registration| self.fixtures[&registration.target].autouse);
+            if autouse {
+                let certain = choices.iter().any(|choice| {
+                    !choice.may_be_absent
+                        && choice
+                            .alternatives
+                            .iter()
+                            .all(|registration| self.fixtures[&registration.target].autouse)
+                });
+                pending.push((
+                    name.as_str(),
+                    BTreeMap::new(),
+                    certain && tests.iter().any(|(_, certain)| *certain),
+                ));
+            }
+        }
+        for (test, certain) in tests {
+            let Binding::Definition(definition, _) = self.symbols[test.target].binding else {
+                continue;
+            };
+            for parameter in &definition.parameters {
+                if let Some((name, _)) = registrations.get_key_value(&parameter.text) {
+                    pending.push((name.as_str(), BTreeMap::new(), *certain));
+                }
+            }
+        }
+        let mut visited = BTreeSet::new();
+        while let Some((name, active, mut certain)) = pending.pop() {
+            if !visited.insert((name, active.clone(), certain)) {
+                continue;
+            }
+            if visited.len() > MAX_PYTEST_REQUEST_STATES || active.len() > MAX_BINDING_CHAIN {
+                self.issue(
+                    file,
+                    Location { line: 1, column: 1 },
+                    "analysis_limit",
+                    "pytest fixture request limit exceeded",
+                );
+                break;
+            }
+            let choices = &registrations[name];
+            let upper_bound = active.get(name).copied().unwrap_or(choices.len());
+            for (index, choice) in choices[..upper_bound].iter().enumerate().rev() {
+                // The request chain can already include this fixture name,
+                // even when the immediate requester has a different name.
+                let mut nested = active.clone();
+                if choices.len() > 1 {
+                    nested.insert(name, index);
+                }
+                let selected_certain =
+                    certain && !choice.may_be_absent && choice.alternatives.len() == 1;
+                for registration in &choice.alternatives {
+                    *roots.entry(registration.target).or_default() |= selected_certain;
+                    self.read.extend(&registration.bindings);
+                    let Binding::Definition(definition, _) =
+                        self.symbols[registration.target].binding
+                    else {
+                        continue;
+                    };
+                    for parameter in &definition.parameters {
+                        if let Some((name, _)) = registrations.get_key_value(&parameter.text) {
+                            pending.push((name.as_str(), nested.clone(), selected_certain));
+                        }
+                    }
+                }
+                if !choice.may_be_absent {
+                    break;
+                }
+                certain = false;
+            }
+        }
+    }
+
+    fn retain_exports(&mut self, exports: Vec<Export>, initialization_edges: &[Vec<ScopeId>]) {
+        let mut pending: VecDeque<_> = exports
+            .into_iter()
+            .map(|export| (export, "certain"))
+            .collect();
+        let mut modules = BTreeSet::new();
+        let mut exported_constructors = BTreeSet::new();
+        let mut visited_instances = BTreeSet::new();
+        while let Some((
+            Export {
+                scope,
+                at,
+                kind,
+                value,
+            },
+            certainty,
+        )) = pending.pop_front()
+        {
+            let members = match value {
+                Value::Callable(invocation) => {
+                    self.invoke(scope, invocation, kind, certainty, at);
+                    let class = invocation.target;
+                    if self.is_class(class) && exported_constructors.insert(class) {
+                        self.constructor(scope, class, "constructor", "possible", at);
+                        vec![Value::Instance(class)]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Value::Instance(class) if visited_instances.insert(class) => {
+                    self.exported_class_members(class, scope, at)
+                }
+                Value::Module(file) if modules.insert(file) => {
+                    self.exported_module_members(file, initialization_edges)
+                }
+                Value::Sequence(items) | Value::Mapping(items) => items,
+                Value::Unknown => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_export",
+                        "a public member could not be resolved",
+                    );
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
+            pending.extend(members.into_iter().map(|value| {
+                (
+                    Export {
+                        scope,
+                        at,
+                        kind,
+                        value,
+                    },
+                    "possible",
+                )
+            }));
+        }
+    }
+
+    fn exported_class_members(
+        &mut self,
+        class: SymbolId,
+        scope: ScopeId,
+        at: Location,
+    ) -> Vec<Value> {
+        let (lineage, resolved) = self.class_lineage(class);
+        if !resolved {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_export",
+                "public methods of the exported class could not be bounded",
+            );
+        }
+        let names: BTreeSet<_> = lineage
+            .into_iter()
+            .flat_map(|scope| self.scopes[scope].names.keys().copied())
+            .filter(|name| !name.starts_with('_'))
+            .collect();
+        names
+            .into_iter()
+            .map(|name| self.member(Value::Instance(class), name, (scope, at), 0))
+            .collect()
+    }
+
+    fn exported_module_members(
+        &mut self,
+        file: usize,
+        initialization_edges: &[Vec<ScopeId>],
+    ) -> Vec<Value> {
+        let hook = self.local(file, "__getattr__", END);
+        let mut lazy_members = BTreeMap::new();
+        if let Some(hook) = hook {
+            let fallback = self.lazy_dispatch(hook, END, |name, scope, body| {
+                if !name.starts_with('_') && self.local(file, name, END).is_none() {
+                    lazy_members
+                        .entry(name)
+                        .or_insert_with(|| Self::lazy_branch(scope, body));
+                }
+                None
+            });
+            if !matches!(fallback, LazyMember::Missing) {
+                self.scope_issue(
+                    file,
+                    self.symbols[hook].name.at,
+                    "unresolved_lazy_export",
+                    "public lazy module members could not be bounded",
+                );
+            }
+        }
+        let names: Vec<_> = self.scopes[file]
+            .names
+            .iter()
+            .filter(|(name, _)| !name.starts_with('_'))
+            .filter_map(|(&name, bindings)| {
+                bindings.last().map(|&id| (name, self.symbols[id].name.at))
+            })
+            .collect();
+        let initialization_imports = OnceCell::new();
+        let mut members: Vec<_> = names
+            .into_iter()
+            .map(|(name, at)| {
+                self.module_member_at(
+                    &self.files[file].module,
+                    name,
+                    END,
+                    (file, END),
+                    ModuleMemberAccess::Export {
+                        at,
+                        initialization_edges,
+                        initialization_imports: &initialization_imports,
+                    },
+                    0,
+                )
+            })
+            .collect();
+        if self.files[file].is_package {
+            // Dotted imports can attach public children without a lexical
+            // binding in the package. A child found only on disk is absent.
+            let prefix = format!("{}.", self.files[file].module);
+            let children: Vec<_> = self
+                .modules
+                .range(prefix.as_str()..)
+                .map_while(|(&module, &child)| Some((module.strip_prefix(&prefix)?, child)))
+                .filter(|(name, _)| {
+                    !name.contains('.')
+                        && !name.starts_with('_')
+                        && self.local(file, name, END).is_none()
+                })
+                .collect();
+            let at = Location { line: 1, column: 1 };
+            let mode = ModuleMemberAccess::Export {
+                at,
+                initialization_edges,
+                initialization_imports: &initialization_imports,
+            };
+            for (name, child) in children {
+                match self.submodule_attachment(file, child, None, (file, END), mode) {
+                    SubmoduleAttachment::Attached(import) => {
+                        self.read.insert(import);
+                        members.push(Value::Module(child));
+                        lazy_members.remove(name);
+                    }
+                    SubmoduleAttachment::Ambiguous => {
+                        self.scope_issue(
+                            file,
+                            at,
+                            "ambiguous_binding",
+                            format!(
+                                "cannot establish whether public submodule {name} was attached"
+                            ),
+                        );
+                        lazy_members.remove(name);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(hook) = hook {
+            for (name, member) in lazy_members {
+                if let LazyMember::Branch(branch) = member {
+                    self.read.insert(hook);
+                    let value = self.execute_lazy_branch(file, &branch);
+                    if !matches!(value, Value::Unknown) {
+                        members.push(value);
+                    }
+                } else {
+                    self.scope_issue(
+                        file,
+                        self.symbols[hook].name.at,
+                        "unresolved_lazy_export",
+                        format!("public lazy module member {name:?} could not be bounded"),
+                    );
+                }
+            }
+        }
+        members
+    }
+
+    fn external_roots(
+        &mut self,
+        entrypoints: &[Entrypoint],
+        initialization_edges: &[Vec<ScopeId>],
+    ) -> Vec<Edge> {
+        let mut exports = Vec::new();
+        for file in 0..self.files.len() {
+            let initialization_imports = OnceCell::new();
+            if let Some(all) = self.local(file, "__all__", END) {
+                let value = self.binding(all, END, 0);
+                if let Value::Sequence(export_names) = value {
+                    for export in export_names {
+                        let Value::Text(export) = export else {
+                            self.issue(
+                                file,
+                                self.symbols[all].name.at,
+                                "opaque_exports",
+                                "public exports must be literal names",
+                            );
+                            continue;
+                        };
+                        let access = (file, END);
+                        let mode = ModuleMemberAccess::Export {
+                            at: self.symbols[all].name.at,
+                            initialization_edges,
+                            initialization_imports: &initialization_imports,
+                        };
+                        let value = if let ModuleMember::Lazy(hook, branch) =
+                            self.selected_module_member(file, &export, END, access, mode)
+                        {
+                            self.read.insert(hook);
+                            self.execute_lazy_branch(file, &branch)
+                        } else {
+                            self.module_member_at(
+                                &self.files[file].module,
+                                &export,
+                                END,
+                                access,
+                                mode,
+                                0,
+                            )
+                        };
+                        match value {
+                            Value::Unknown => self.issue(
+                                file,
+                                self.symbols[all].name.at,
+                                "unresolved_export",
+                                format!("public export {export} could not be resolved"),
+                            ),
+                            value => exports.push(Export {
+                                scope: file,
+                                at: self.symbols[all].name.at,
+                                kind: "public_export",
+                                value,
+                            }),
+                        }
+                    }
+                } else {
+                    self.issue(
+                        file,
+                        self.symbols[all].name.at,
+                        "opaque_exports",
+                        "public exports must be a literal sequence",
+                    );
+                }
+            }
+            let aliases: Vec<_> = self.scopes[file]
+                .names
+                .values()
+                .filter_map(|bindings| {
+                    let &latest = bindings.last()?;
+                    // The explicit import names the public member. Later
+                    // assignments can change the value behind that name.
+                    bindings.iter().any(|&id| {
+                        matches!(self.symbols[id].binding, Binding::Import(import) if import.declares_export)
+                    }).then_some(latest)
+                })
+                .collect();
+            for alias in aliases {
+                let name = self.symbols[alias].name;
+                let at = name.at;
+                let previous_issues = self.scope_issues.len();
+                let value = if self.files[file].is_package {
+                    self.module_member_at(
+                        &self.files[file].module,
+                        &name.text,
+                        END,
+                        (file, END),
+                        ModuleMemberAccess::Export {
+                            at,
+                            initialization_edges,
+                            initialization_imports: &initialization_imports,
+                        },
+                        0,
+                    )
+                } else {
+                    self.binding(alias, END, 0)
+                };
+                match value {
+                    Value::Unknown if self.scope_issues.len() == previous_issues => self
+                        .scope_issue(
+                            file,
+                            at,
+                            "unresolved_export",
+                            "explicit re-export could not be resolved after initialization",
+                        ),
+                    Value::Unknown => {}
+                    value => exports.push(Export {
+                        scope: file,
+                        at,
+                        kind: "explicit_re_export",
+                        value,
+                    }),
+                }
+            }
+        }
+        self.retain_exports(exports, initialization_edges);
+
+        let mut roots = Vec::new();
+        for id in 0..self.symbols.len() {
+            let symbol = &self.symbols[id];
+            let Binding::Definition(definition, _) = symbol.binding else {
+                continue;
+            };
+            if entrypoints.is_empty() {
+                continue;
+            }
+            let scope = symbol.scope;
+            let file = &self.files[self.scopes[scope].file];
+            let full_name = self.full_name(id);
+            let mut qualifiers = vec![(
+                "type".into(),
+                if self.is_class(id) {
+                    "class"
+                } else {
+                    "function"
+                }
+                .into(),
+            )];
+            if let Some(parent) = self.scopes[scope].owner {
+                qualifiers.push(("parent_name".into(), self.symbols[parent].name.text.clone()));
+                qualifiers.push(("parent_full_name".into(), self.full_name(parent)));
+                qualifiers.push(("parent_module".into(), file.module.clone()));
+                qualifiers.push(("parent_path".into(), file.path.clone()));
+                if let Binding::Definition(parent_definition, _) = self.symbols[parent].binding {
+                    for base in &parent_definition.bases {
+                        match self.probe_identity(
+                            self.symbols[parent].scope,
+                            base,
+                            parent_definition.name.at,
+                        ) {
+                            Value::Provider(name) => {
+                                qualifiers.push(("parent_base_class".into(), name))
+                            }
+                            Value::Callable(Invocation { target: id, .. }) => {
+                                qualifiers.push(("parent_base_class".into(), self.full_name(id)))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            for (key, values) in [
+                ("decorator", &definition.decorators),
+                ("base_class", &definition.bases),
+            ] {
+                for expression in values {
+                    let identity = match &expression.kind {
+                        ExpressionKind::Call { function, .. } => function,
+                        _ => expression,
+                    };
+                    match self.probe_identity(scope, identity, definition.name.at) {
+                        Value::Provider(name) => qualifiers.push((key.into(), name)),
+                        Value::Callable(Invocation { target: id, .. }) => {
+                            qualifiers.push((key.into(), self.full_name(id)))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if entrypoints.iter().any(|selector| {
+                selector.matches(
+                    &file.path,
+                    &file.module,
+                    &definition.name.text,
+                    &full_name,
+                    &qualifiers,
+                )
+            }) {
+                roots.push(Edge {
+                    target: id,
+                    kind: "configured_entrypoint",
+                    certainty: "certain",
+                });
+                if self.is_class(id) {
+                    self.constructor(
+                        self.scopes[scope].file,
+                        id,
+                        "constructor",
+                        "possible",
+                        definition.name.at,
+                    );
+                }
+            }
+        }
+        roots
+    }
+
+    fn finish(mut self, roots: Vec<Edge>) -> Analysis {
+        self.resolve_class_invocations();
+        let mut reachable_scopes: BTreeSet<_> = (0..self.files.len()).collect();
+        let mut reachable_symbols = BTreeSet::new();
+        let mut active_objects = BTreeSet::new();
+        let mut evidence = BTreeSet::new();
+        let mut pending = VecDeque::from(roots);
+        // Only visited class declarations execute when their parent is reached.
+        // An indexed class inside a dormant branch can still be reported unused.
+        let class_bodies: BTreeSet<_> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.class_bodies.iter().copied())
+            .collect();
+        for &scope in &class_bodies {
+            if self.scopes[scope]
+                .parent
+                .is_some_and(|parent| reachable_scopes.contains(&parent))
+            {
+                reachable_scopes.insert(scope);
+            }
+        }
+        for &scope in &reachable_scopes {
+            pending.extend(&self.scopes[scope].edges);
+        }
+        let mut converged = false;
+        for _ in 0..MAX_FRAMEWORK_PASSES {
+            let before = (
+                reachable_scopes.len(),
+                active_objects.len(),
+                reachable_symbols.len(),
+            );
+            while let Some(edge) = pending.pop_front() {
+                evidence.insert((edge.target, edge.kind, edge.certainty));
+                reachable_symbols.insert(edge.target);
+                if edge.kind == "type_reference" {
+                    continue;
+                }
+                let Binding::Definition(_, scope) = self.symbols[edge.target].binding else {
+                    continue;
+                };
+                if reachable_scopes.insert(scope) {
+                    pending.extend(&self.scopes[scope].edges);
+                }
+            }
+            for &scope in &class_bodies {
+                if self.scopes[scope]
+                    .parent
+                    .is_some_and(|parent| reachable_scopes.contains(&parent))
+                    && reachable_scopes.insert(scope)
+                {
+                    pending.extend(&self.scopes[scope].edges);
+                }
+            }
+            for &scope in &reachable_scopes {
+                let scope = &self.scopes[scope];
+                active_objects.extend(&scope.activated_apps);
+                for &(parent, child) in &scope.mounts {
+                    if active_objects.contains(&parent) {
+                        active_objects.insert(child);
+                    }
+                }
+                for &(object, target) in &scope.routes {
+                    if active_objects.contains(&object) && !reachable_symbols.contains(&target) {
+                        pending.push_back(Edge {
+                            target,
+                            kind: "fastapi_registration",
+                            certainty: "certain",
+                        });
+                    }
+                }
+            }
+            if pending.is_empty()
+                && before
+                    == (
+                        reachable_scopes.len(),
+                        active_objects.len(),
+                        reachable_symbols.len(),
+                    )
+            {
+                converged = true;
+                break;
+            }
+        }
+        if !converged {
+            self.issues.push(Issue::new(
+                "analysis_limit",
+                ".",
+                "framework activation limit exceeded",
+            ));
+        }
+        let independently_retained: BTreeSet<_> = evidence
+            .iter()
+            .filter_map(|&(target, kind, _)| {
+                (kind != "direct_call" && kind != "type_reference").then_some(target)
+            })
+            .collect();
+        for call in self
+            .parameter_calls
+            .iter()
+            .filter(|call| reachable_scopes.contains(&call.scope))
+        {
+            let parameter = &self.symbols[call.parameter];
+            let owner = self.scopes[parameter.scope]
+                .owner
+                .expect("parameters belong to a definition");
+            let mut callers = self
+                .direct_arguments
+                .get(&owner)
+                .into_iter()
+                .flatten()
+                .filter(|callsite| reachable_scopes.contains(&callsite.caller))
+                .peekable();
+            let finite = !independently_retained.contains(&owner)
+                && callers.peek().is_some()
+                && callers.all(|callsite| {
+                    callsite
+                        .bounded_callbacks
+                        .contains_key(&parameter.name.text)
+                });
+            if !finite {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_call",
+                        &self.files[self.scopes[call.scope].file].path,
+                        "callable parameter is outside the bounded model",
+                    )
+                    .at(call.at),
+                );
+            }
+        }
+
+        let mut findings = Vec::new();
+        let mut retained = Vec::new();
+        for (id, kind, certainty) in evidence {
+            let symbol = &self.symbols[id];
+            retained.push(Evidence {
+                file: self.files[self.scopes[symbol.scope].file].path.clone(),
+                line: symbol.name.at.line,
+                full_name: self.full_name(id),
+                kind,
+                certainty,
+            });
+        }
+        for (id, symbol) in self.symbols.iter().enumerate() {
+            let scope = &self.scopes[symbol.scope];
+            let name = &symbol.name.text;
+            if name == "_" || (name.starts_with("__") && name.ends_with("__")) {
+                continue;
+            }
+            let public = !name.starts_with('_');
+            let (category, rule_id, confidence, reason) = match symbol.binding {
+                Binding::Definition(def, _)
+                    if !reachable_symbols.contains(&id) && def.kind == DefinitionKind::Class =>
+                {
+                    (Category::Class, "SKY-U004", 90, "unreachable_class")
+                }
+                Binding::Definition(def, _)
+                    if !reachable_symbols.contains(&id) && def.kind != DefinitionKind::Class =>
+                {
+                    (
+                        Category::Function,
+                        "SKY-U001",
+                        if public && scope.owner.is_some_and(|id| self.is_class(id)) {
+                            80
+                        } else {
+                            90
+                        },
+                        "no_call_path_from_root",
+                    )
+                }
+                Binding::Import(_) if !self.read.contains(&id) => {
+                    (Category::Import, "SKY-U002", 100, "binding_is_unread")
+                }
+                Binding::Variable(_, _) if !self.read.contains(&id) => {
+                    let confidence = match scope.owner {
+                        Some(owner) if self.is_class(owner) => 80,
+                        None => 90,
+                        _ if !public => 90,
+                        _ => 100,
+                    };
+                    (
+                        Category::Variable,
+                        "SKY-U003",
+                        confidence,
+                        "binding_is_unread",
+                    )
+                }
+                Binding::Parameter
+                    if !self.read.contains(&id)
+                        && !name.starts_with('_')
+                        && !matches!(name.as_str(), "self" | "cls")
+                        && !scope.owner.is_some_and(|owner| {
+                            self.fixtures.contains_key(&owner)
+                                || reachable_symbols.contains(&owner)
+                                    && !self.direct.contains(&owner)
+                        }) =>
+                {
+                    (
+                        Category::Parameter,
+                        "SKY-U006",
+                        if scope.owner.is_some_and(|owner| {
+                            self.symbols[owner].name.text.starts_with('_')
+                                && self.direct.contains(&owner)
+                        }) {
+                            100
+                        } else {
+                            50
+                        },
+                        "parameter_is_unread",
+                    )
+                }
+                _ => continue,
+            };
+            let (name, full_name) = if let Binding::Import(import) = &symbol.binding {
+                let module = self
+                    .relative_module(scope.file, import)
+                    .unwrap_or_else(|| import.module.clone());
+                let full_name = import
+                    .member
+                    .as_ref()
+                    .map_or_else(|| module.clone(), |member| format!("{module}.{member}"));
+                let name = full_name.rsplit('.').next().unwrap_or(name).to_owned();
+                (name, full_name)
+            } else {
+                (name.clone(), self.full_name(id))
+            };
+            findings.push(Finding {
+                category,
+                name,
+                full_name,
+                file: self.files[scope.file].path.clone(),
+                line: symbol.name.at.line,
+                column: symbol.name.at.column,
+                confidence,
+                rule_id,
+                reason,
+            });
+        }
+        for file in self.files.iter().filter(|file| file.facts.empty) {
+            if !matches!(
+                file.path.rsplit('/').next(),
+                Some("__init__.py" | "__main__.py" | "main.py")
+            ) {
+                findings.push(Finding {
+                    category: Category::File,
+                    name: file.path.clone(),
+                    full_name: file.path.clone(),
+                    file: file.path.clone(),
+                    line: 1,
+                    column: 1,
+                    confidence: 100,
+                    rule_id: "SKY-E002",
+                    reason: "empty_or_docstring_only",
+                });
+            }
+        }
+        self.issues.extend(
+            self.scope_issues
+                .into_iter()
+                .filter_map(|(scope, issue)| reachable_scopes.contains(&scope).then_some(issue)),
+        );
+        self.issues.sort();
+        self.issues.dedup();
+        self.uncertainties.sort();
+        self.uncertainties.dedup();
+        Analysis {
+            findings,
+            evidence: retained,
+            issues: self.issues,
+            uncertainties: self.uncertainties,
+        }
+    }
+}
+
+fn position(at: Location) -> [usize; 2] {
+    [at.line, at.column]
+}
+
+fn suite_end(body: &[Statement]) -> [usize; 2] {
+    let Some(last) = body.last() else {
+        return [0, 0];
+    };
+    let mut end = position(last.at);
+    match &last.kind {
+        StatementKind::If {
+            body, otherwise, ..
+        } => {
+            end = end.max(suite_end(body)).max(suite_end(otherwise));
+        }
+        StatementKind::With { body, .. } => {
+            end = end.max(suite_end(body));
+        }
+        StatementKind::Define(definition) => {
+            end = end.max(suite_end(&definition.body));
+        }
+        _ => {}
+    }
+    end
+}
+
+fn within_package(module: &str, package: &str) -> bool {
+    module
+        .strip_prefix(package)
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+}
+
+fn pytest_conftest_prefix(path: &str) -> Option<&str> {
+    path.strip_suffix("conftest.py")
+        .filter(|prefix| prefix.is_empty() || prefix.ends_with('/'))
+}
+
+fn has_implicit_module_member(name: &str, is_package: bool) -> bool {
+    // Source modules inherit attributes from ModuleType and its base object.
+    matches!(
+        name,
+        "__name__"
+            | "__doc__"
+            | "__package__"
+            | "__loader__"
+            | "__spec__"
+            | "__file__"
+            | "__cached__"
+            | "__builtins__"
+            | "__annotations__"
+            | "__class__"
+            | "__delattr__"
+            | "__dict__"
+            | "__dir__"
+            | "__eq__"
+            | "__format__"
+            | "__ge__"
+            | "__getattribute__"
+            | "__getstate__"
+            | "__gt__"
+            | "__hash__"
+            | "__init__"
+            | "__init_subclass__"
+            | "__le__"
+            | "__lt__"
+            | "__ne__"
+            | "__new__"
+            | "__reduce__"
+            | "__reduce_ex__"
+            | "__repr__"
+            | "__setattr__"
+            | "__sizeof__"
+            | "__str__"
+            | "__subclasshook__"
+    ) || (is_package && name == "__path__")
+}
+
+fn static_bool(expression: &Expression) -> Option<bool> {
+    match &expression.kind {
+        ExpressionKind::Bool(value) => Some(*value),
+        ExpressionKind::Not(value) => static_bool(value).map(|it| !it),
+        _ => None,
+    }
+}
+
+fn is_identity_decorator(definition: &Definition) -> bool {
+    let [parameter] = definition.parameters.as_slice() else {
+        return false;
+    };
+    matches!(definition.body.as_slice(), [Statement { kind: StatementKind::Return(Some(Expression {
+        kind: ExpressionKind::Name(name), ..
+    })), .. }] if name == &parameter.text)
+}
+
+fn is_route(name: &str) -> bool {
+    matches!(
+        name,
+        "get"
+            | "post"
+            | "put"
+            | "delete"
+            | "patch"
+            | "head"
+            | "options"
+            | "trace"
+            | "api_route"
+            | "route"
+            | "websocket"
+            | "websocket_route"
+    )
+}
+
+fn is_known_call(name: &str) -> bool {
+    name.starts_with("builtins.")
+        || matches!(
+            name,
+            "fastapi.FastAPI"
+                | "fastapi.applications.FastAPI"
+                | "fastapi.APIRouter"
+                | "fastapi.routing.APIRouter"
+                | "concurrent.futures.ThreadPoolExecutor"
+                | "concurrent.futures.ProcessPoolExecutor"
+                | "multiprocessing.Process"
+        )
+}
+
+fn builtin_noop_subclass_hook(name: &str) -> bool {
+    // These subclassable built-ins inherit object's no-op hook.
+    matches!(
+        name,
+        "builtins.object"
+            | "builtins.str"
+            | "builtins.int"
+            | "builtins.list"
+            | "builtins.dict"
+            | "builtins.tuple"
+            | "builtins.set"
+            | "builtins.float"
+            | "builtins.bytes"
+            | "builtins.ValueError"
+            | "builtins.RuntimeError"
+            | "builtins.AttributeError"
+            | "builtins.TypeError"
+            | "builtins.Exception"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skarmory_python::phase02::extract;
+
+    fn module(path: &str, name: &str, text: &str) -> AnalyzedFile {
+        AnalyzedFile {
+            path: path.into(),
+            module: name.into(),
+            is_package: path.ends_with("__init__.py"),
+            facts: extract(text).unwrap(),
+        }
+    }
+
+    fn names(result: &Analysis, category: Category) -> Vec<&str> {
+        let mut names: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.category == category)
+            .map(|finding| finding.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    #[test]
+    fn reports_required_categories_and_retains_rooted_definitions() {
+        let files = [
+            module(
+                "main.py",
+                "main",
+                "import os\nfrom helper import work as run\n\nclass Unused:\n    pass\nclass Used:\n    pass\n\ndef _entry(unread):\n    quiet = 1\n    value = 2\n    print(value)\n    run()\n    Used()\n\ndef dormant():\n    dormant()\n\n_entry(0)\n",
+            ),
+            module("helper.py", "helper", "def work():\n    return 3\n"),
+            module("empty.py", "empty", "# deliberately empty\n"),
+        ];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["dormant"]);
+        assert_eq!(names(&result, Category::Class), ["Unused"]);
+        assert_eq!(names(&result, Category::Import), ["os"]);
+        assert_eq!(names(&result, Category::Variable), ["quiet"]);
+        assert_eq!(names(&result, Category::Parameter), ["unread"]);
+        assert_eq!(names(&result, Category::File), ["empty.py"]);
+    }
+
+    #[test]
+    fn models_mounted_routes_scheduling_and_process_start() {
+        let files = [module(
+            "app.py",
+            "app",
+            "from fastapi import FastAPI, APIRouter\nfrom asyncio import create_task\nfrom concurrent.futures import ThreadPoolExecutor\nfrom multiprocessing import Process\n\napp = FastAPI()\nactive = APIRouter()\ndormant = APIRouter()\napp.include_router(active)\n\n@active.get('/')\ndef mounted():\n    return {'ready': True}\n@dormant.get('/')\ndef unmounted():\n    return False\n\nasync def scheduled():\n    return 1\nasync def unopened():\n    return 2\n\ndef submit_target():\n    return 3\ndef launched():\n    return 4\ndef parked():\n    return 5\n\ncreate_task(scheduled())\nunopened()\nwith ThreadPoolExecutor() as pool:\n    pool.submit(submit_target)\nready = Process(target=launched)\nunused = Process(target=parked)\nready.start()\n",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["parked", "unmounted", "unopened"]
+        );
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|evidence| evidence.full_name == "app.mounted"
+                    && evidence.kind == "fastapi_registration")
+        );
+        assert!(result.evidence.iter().any(
+            |evidence| evidence.full_name == "app.launched" && evidence.certainty == "possible"
+        ));
+    }
+
+    #[test]
+    fn exports_lazy_target_and_keeps_other_scoped_names_separate() {
+        let files = [
+            module(
+                "pkg/__init__.py",
+                "pkg",
+                "__all__ = ['work']\n\ndef __getattr__(name):\n    if name == 'work':\n        from .worker import work\n        return work\n    raise AttributeError(name)\n",
+            ),
+            module("pkg/worker.py", "pkg.worker", "def work():\n    return 1\n"),
+            module("other.py", "other", "def work():\n    return 2\n"),
+        ];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["work"]);
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|evidence| evidence.full_name == "pkg.worker.work"
+                    && evidence.kind == "public_export")
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|found| found.full_name == "other.work")
+        );
+    }
+
+    #[test]
+    fn unknown_dispatch_blocks_reachable_but_not_dormant_code() {
+        let source = "def go(callback):\n    callback()\n";
+        let dormant = analyze(&[module("main.py", "main", source)], &[]);
+        assert!(dormant.issues.is_empty(), "{:?}", dormant.issues);
+        let active = analyze(
+            &[module("main.py", "main", &format!("{source}\ngo(1)\n"))],
+            &[],
+        );
+        assert!(
+            active
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call" && issue.line == Some(2))
+        );
+    }
+
+    #[test]
+    fn direct_callback_calls_can_resolve_finite_parameter_targets() {
+        let source =
+            "def go(callback):\n    callback()\n\ndef local():\n    return 1\n\ngo(local)\n";
+        let active = analyze(&[module("main.py", "main", source)], &[]);
+        assert!(active.issues.is_empty(), "{:?}", active.issues);
+        assert!(
+            active
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name == "main.local" && edge.kind == "passed_callable")
+        );
+
+        let mixed = analyze(
+            &[module("main.py", "main", &format!("{source}\ngo(42)\n"))],
+            &[],
+        );
+        assert!(
+            mixed
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call" && issue.line == Some(2))
+        );
+    }
+
+    #[test]
+    fn conditional_shadowing_cannot_prove_the_previous_target_unused() {
+        let source = "def old():\n    pass\ndef new():\n    pass\nhandler = old\nif flag:\n    handler = new\nhandler()\n";
+        let result = analyze(&[module("main.py", "main", source)], &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "ambiguous_binding")
+        );
+    }
+
+    #[test]
+    fn a_later_parent_rebinding_cannot_prove_the_earlier_target_unused() {
+        let project = tempfile::tempdir().unwrap();
+        let config = project.path().join(".skylos.toml");
+        let source = project.path().join("main.py");
+        std::fs::write(&config, "root = true\n").unwrap();
+        let options = super::super::Options {
+            config_file: Some(config),
+            ..super::super::Options::default()
+        };
+        for (program, call_line) in [
+            (
+                "def helper():\n    return 1\ndef caller():\n    helper()\ncaller()\ndef helper():\n    return 2\n",
+                4,
+            ),
+            (
+                "def outer():\n    def early():\n        return 1\n    def late():\n        return 2\n    target = early\n    def caller():\n        target()\n    caller()\n    target = late\nouter()\n",
+                8,
+            ),
+        ] {
+            std::fs::write(&source, program).unwrap();
+            let report = super::super::scan(project.path(), &options).unwrap();
+            let output: serde_json::Value =
+                serde_json::from_str(&report.to_json().unwrap()).unwrap();
+            assert!(!report.is_complete(), "{output}");
+            assert_eq!(output["unused_functions"], serde_json::json!([]));
+            assert!(output["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding" && issue["line"] == call_line));
+        }
+    }
+
+    #[test]
+    fn subclass_hooks_follow_executed_class_definitions() {
+        let base = "def helper():\n    pass\nclass Base:\n    def __init_subclass__(cls):\n        helper()\n";
+        for (child, active) in [
+            ("class Child(Base):\n    pass\n", true),
+            (
+                "ENABLED = False\nif ENABLED:\n    class Outer:\n        class Child(Base):\n            pass\n",
+                false,
+            ),
+        ] {
+            let result = analyze(&[module("main.py", "main", &format!("{base}{child}"))], &[]);
+            assert!(result.issues.is_empty(), "{child}\n{:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|edge| {
+                    edge.full_name == "main.Base.__init_subclass__"
+                        && edge.kind == "subclass_hook"
+                        && edge.certainty == "certain"
+                }),
+                active,
+                "{child}"
+            );
+            let unused = names(&result, Category::Function);
+            assert_eq!(unused.contains(&"helper"), !active, "{child}\n{unused:?}");
+        }
+    }
+
+    #[test]
+    fn unresolved_subclass_hooks_make_class_creation_incomplete() {
+        for source in [
+            "from foreign import Base\nclass Child(Base):\n    pass\n",
+            "class First:\n    def __init_subclass__(cls):\n        pass\nclass Second:\n    pass\nclass Child(First, Second):\n    pass\n",
+        ] {
+            let result = analyze(&[module("main.py", "main", source)], &[]);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_subclass_hook"),
+                "{source}\n{:?}",
+                result.issues
+            );
+        }
+    }
+
+    #[test]
+    fn instantiating_a_subclass_executes_the_resolved_inherited_constructor() {
+        let files = [module(
+            "main.py",
+            "main",
+            "def helper():\n    return 1\ndef runner():\n    return 2\nclass Base:\n    def __init__(self):\n        helper()\n    def run(self):\n        runner()\nclass Middle(Base):\n    pass\nclass Child(Middle):\n    pass\nChild().run()\n",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(names(&result, Category::Function).is_empty());
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|evidence| evidence.full_name == "main.Base.__init__"
+                    && evidence.kind == "constructor")
+        );
+        assert!(result.evidence.iter().any(
+            |evidence| evidence.full_name == "main.Base.run" && evidence.kind == "direct_call"
+        ));
+    }
+
+    #[test]
+    fn active_unknown_mro_and_descriptor_dispatch_are_incomplete() {
+        for (source, expected_issue) in [
+            (
+                "from external import Foreign\nclass Child(Foreign):\n    pass\nChild()\n",
+                "unresolved_constructor",
+            ),
+            (
+                "class Base:\n    def __init__(self):\n        self.hook()\n    def hook(self):\n        pass\nclass Child(Base):\n    def hook(self):\n        pass\nChild()\n",
+                "unresolved_call",
+            ),
+            (
+                "def getter():\n    return 1\nclass Base:\n    @property\n    def value(self):\n        return getter()\nclass Child(Base):\n    pass\nprint(Child().value)\n",
+                "unresolved_decorator",
+            ),
+        ] {
+            let result = analyze(&[module("main.py", "main", source)], &[]);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == expected_issue),
+                "{source}\n{:?}",
+                result.issues
+            );
+        }
+    }
+
+    #[test]
+    fn pytest_assertion_retains_its_fixture() {
+        let files = [module(
+            "test_app.py",
+            "test_app",
+            "from pytest import fixture\n@fixture\ndef resource():\n    return 1\n\ndef test_app(resource):\n    assert resource\n",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(names(&result, Category::Function).is_empty());
+        assert!(names(&result, Category::Parameter).is_empty());
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|evidence| evidence.full_name == "test_app.resource"
+                    && evidence.kind == "pytest_root")
+        );
+    }
+}

@@ -1,10 +1,23 @@
+use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use clap::{CommandFactory, Parser, ValueEnum};
-use skarmory_core::{ScanOptions, ScanPolicy, Timings};
+use clap::{Args, CommandFactory, Parser, ValueEnum};
+use skarmory_core::phase02;
+use skarmory_core::{CacheStats, ScanOptions, ScanPolicy, Timings};
+
+#[derive(Clone, ValueEnum)]
+enum Profile {
+    Native,
+    Skylos,
+}
+
+#[derive(Clone, ValueEnum)]
+enum Format {
+    Json,
+}
 
 #[derive(Clone, ValueEnum)]
 enum Policy {
@@ -14,20 +27,53 @@ enum Policy {
 
 #[derive(Parser)]
 #[command(name = "skarmory", version = skarmory_core::VERSION)]
-#[command(about = "Find unreachable functions in a closed set of Python 3.11 sources.")]
-#[command(after_help = "Reports are written to stdout as JSON. Incomplete analysis exits with 2.")]
+#[command(about = "Analyze Python 3.11 source code for dead code.")]
+#[command(after_help = "JSON goes to stdout by default. Incomplete analysis exits with 2.")]
 struct Cli {
     /// Python source file or project directory.
     #[arg(value_name = "PATH")]
     path: PathBuf,
 
+    /// Choose the native preview or the declared Skylos compatibility profile.
+    #[arg(long, value_enum)]
+    profile: Option<Profile>,
+
+    #[command(flatten, next_help_heading = "Native preview options")]
+    preview: Option<PreviewArgs>,
+
+    #[command(flatten, next_help_heading = "Skylos compatibility options")]
+    skylos: Option<SkylosArgs>,
+
+    /// Maximum number of workers for file processing.
+    #[arg(long, default_value_t = 1)]
+    workers: usize,
+
+    /// Reuse validated file-local facts from this directory.
+    #[arg(long, value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
+
+    /// Write native phase timings and optional cache metrics as JSON to stderr.
+    #[arg(long)]
+    timings: bool,
+
+    /// Scan with the released Phase 0 flat-project contract.
+    #[arg(
+        long,
+        conflicts_with_all = ["preview_options", "skylos_options", "workers", "cache_dir", "profile"],
+    )]
+    phase0: bool,
+}
+
+#[derive(Args, Default)]
+#[group(id = "preview_options")]
+struct PreviewArgs {
     /// Declare a source root. Repeat to set the import search order.
     #[arg(long = "source-root", value_name = "DIR")]
     source_roots: Vec<PathBuf>,
 
     /// Select application entries or a library's public API as analysis roots.
-    #[arg(long, value_enum, default_value = "application")]
-    policy: Policy,
+    #[arg(long, value_enum)]
+    policy: Option<Policy>,
 
     /// Declare a directly executed file.
     #[arg(long, value_name = "PATH")]
@@ -48,24 +94,66 @@ struct Cli {
     /// Declare a library callable exposed to callers. Repeat as needed.
     #[arg(long = "public-callable", value_name = "MODULE:FUNCTION")]
     public_callables: Vec<String>,
+}
 
-    /// Maximum number of workers for file processing.
-    #[arg(long, default_value_t = 1)]
-    workers: usize,
+#[derive(Args, Default)]
+#[group(id = "skylos_options")]
+struct SkylosArgs {
+    /// Replace discovered Skylos settings with this TOML file.
+    #[arg(long, value_name = "PATH")]
+    config_file: Option<PathBuf>,
 
-    /// Write phase timings as JSON to stderr.
+    /// Exclude a source folder or pattern. Repeat as needed.
+    #[arg(long = "exclude", alias = "exclude-folder", value_name = "PATTERN")]
+    excludes: Vec<String>,
+
+    /// Include an otherwise excluded folder. Repeat as needed.
+    #[arg(long = "include-folder", value_name = "PATTERN")]
+    includes: Vec<String>,
+
+    /// Turn off the default source exclusions.
     #[arg(long)]
-    timings: bool,
+    no_default_excludes: bool,
 
-    /// Scan with the released Phase 0 flat-project contract.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "source_roots", "policy", "entry_file", "entry_modules", "entry_callables",
-            "public_modules", "public_callables", "workers"
-        ],
-    )]
-    phase0: bool,
+    /// Also scan generated source files.
+    #[arg(long)]
+    include_generated: bool,
+
+    /// Minimum finding confidence from 0 through 100.
+    #[arg(short = 'c', long, value_parser = clap::value_parser!(u8).range(0..=100))]
+    confidence: Option<u8>,
+
+    /// Select the declared dead_code category.
+    #[arg(long, value_name = "CATEGORY")]
+    category: Option<String>,
+
+    /// Include optional advice in the compatibility result.
+    #[arg(long)]
+    all_advice: bool,
+
+    /// Explicitly select the offline scan with grep verification disabled.
+    #[arg(long = "no-grep-verify")]
+    _no_grep_verify: bool,
+
+    /// Write the legacy JSON report (the compatibility default).
+    #[arg(long = "json")]
+    _json: bool,
+
+    /// Select the legacy machine-readable format.
+    #[arg(long = "format", value_enum)]
+    _format: Option<Format>,
+
+    /// Exit with 1 when complete analysis reports findings.
+    #[arg(long)]
+    strict: bool,
+
+    /// Write JSON to this file instead of stdout.
+    #[arg(short = 'o', long, value_name = "PATH")]
+    output: Option<PathBuf>,
+
+    /// Also write a SARIF 2.1.0 report. Defaults to skylos.sarif.json.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "skylos.sarif.json")]
+    sarif: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -93,34 +181,177 @@ fn main() -> ExitCode {
     };
     if cli.phase0 {
         let (report, timings) = skarmory_core::analyze_with_timings(&cli.path);
-        return write_report(report.is_complete(), timings, cli.timings, || {
+        return write_report(report.is_complete(), timings, cli.timings, None, || {
             report.to_json()
         });
     }
+    if matches!(cli.profile, Some(Profile::Skylos)) {
+        if cli.preview.is_some() || cli.timings {
+            return fail("native preview options and --timings require the native profile");
+        }
+        return write_skylos_report(
+            &cli.path,
+            cli.skylos.unwrap_or_default(),
+            cli.workers,
+            cli.cache_dir,
+        );
+    }
+    if cli.skylos.is_some() {
+        return fail("Skylos compatibility options require --profile skylos");
+    }
 
+    let preview = cli.preview.unwrap_or_default();
     let options = ScanOptions {
-        source_roots: cli.source_roots,
-        policy: match cli.policy {
-            Policy::Application => ScanPolicy::Application,
-            Policy::Library => ScanPolicy::Library,
+        source_roots: preview.source_roots,
+        policy: match preview.policy {
+            Some(Policy::Library) => ScanPolicy::Library,
+            _ => ScanPolicy::Application,
         },
-        entry_file: cli.entry_file,
-        entry_modules: cli.entry_modules,
-        entry_callables: cli.entry_callables,
-        public_modules: cli.public_modules,
-        public_callables: cli.public_callables,
+        entry_file: preview.entry_file,
+        entry_modules: preview.entry_modules,
+        entry_callables: preview.entry_callables,
+        public_modules: preview.public_modules,
+        public_callables: preview.public_callables,
         workers: cli.workers,
     };
-    let (report, timings) = skarmory_core::scan(&cli.path, &options);
-    write_report(report.is_complete(), timings, cli.timings, || {
+    let (report, timings, cache) = if let Some(directory) = cli.cache_dir {
+        let (report, timings, stats) = skarmory_core::scan_cached(&cli.path, &options, &directory);
+        (report, timings, Some(stats))
+    } else {
+        let (report, timings) = skarmory_core::scan(&cli.path, &options);
+        (report, timings, None)
+    };
+    write_report(report.is_complete(), timings, cli.timings, cache, || {
         report.to_json()
     })
+}
+
+fn write_skylos_report(
+    path: &Path,
+    args: SkylosArgs,
+    workers: usize,
+    cache_dir: Option<PathBuf>,
+) -> ExitCode {
+    if let (Some(json), Some(sarif)) = (&args.output, &args.sarif)
+        && output_identity(json) == output_identity(sarif)
+    {
+        return fail("JSON and SARIF require different output paths");
+    }
+    let options = phase02::Options {
+        config_file: args.config_file,
+        excludes: args.excludes,
+        generated_keep_paths: args.includes.clone(),
+        includes: args.includes,
+        no_default_excludes: args.no_default_excludes,
+        include_generated: (args.include_generated || args.no_default_excludes).then_some(true),
+        confidence: args.confidence,
+        category: args.category,
+        all_advice: args.all_advice,
+        workers,
+        cache_dir,
+    };
+    let report = match phase02::scan(path, &options) {
+        Ok(report) => report,
+        Err(error) => return fail(error),
+    };
+    let result = (|| {
+        let json = if args.strict {
+            report.to_json_strict()?
+        } else {
+            report.to_json()?
+        };
+        if let Some(sarif) = args.sarif {
+            write_output(&sarif, &report.to_sarif()?)?;
+        }
+        if let Some(path) = args.output {
+            write_output(&path, &json)?;
+            if args.strict {
+                write_strict_verdict(&json)?;
+            }
+        } else {
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "{json}")?;
+            stdout.flush()?;
+        }
+        Ok::<_, io::Error>(())
+    })();
+    if let Err(error) = result {
+        return fail(format_args!("failed to write report: {error}"));
+    }
+    if !report.is_complete() {
+        ExitCode::from(2)
+    } else if args.strict && report.has_findings() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn write_strict_verdict(report: &str) -> io::Result<()> {
+    let report: serde_json::Value = serde_json::from_str(report)?;
+    let gate = &report["gate"];
+    let mut stderr = io::stderr().lock();
+    if let Some(headline) = gate["headline"].as_str() {
+        writeln!(stderr, "{headline}")?;
+    }
+    if let Some(reasons) = gate["reason_details"].as_array() {
+        for reason in reasons {
+            if let Some(message) = reason["message"].as_str() {
+                writeln!(stderr, "   • {message}")?;
+            }
+            if let Some(details) = reason["details"].as_array() {
+                for detail in details.iter().filter_map(serde_json::Value::as_str) {
+                    writeln!(stderr, "       {detail}")?;
+                }
+            }
+            if let Some(hint) = reason["hint"].as_str() {
+                writeln!(stderr, "       {hint}")?;
+            }
+        }
+    }
+    if let Some(hint) = gate["hint"].as_str() {
+        writeln!(stderr, "   {hint}")?;
+    }
+    stderr.flush()
+}
+
+fn output_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+fn output_identity(path: &Path) -> PathBuf {
+    fs::canonicalize(output_parent(path))
+        .ok()
+        .zip(path.file_name())
+        .map_or_else(|| path.to_owned(), |(parent, name)| parent.join(name))
+}
+
+fn write_output(path: &Path, contents: &str) -> io::Result<()> {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is a symbolic link", path.display()),
+        ));
+    }
+    let mut file = tempfile::NamedTempFile::new_in(output_parent(path))?;
+    file.write_all(contents.as_bytes())?;
+    file.flush()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn fail(error: impl std::fmt::Display) -> ExitCode {
+    let _ = writeln!(io::stderr().lock(), "skarmory: {error}");
+    ExitCode::from(2)
 }
 
 fn write_report(
     complete: bool,
     timings: Timings,
     print_timings: bool,
+    cache: Option<CacheStats>,
     serialize: impl FnOnce() -> serde_json::Result<String>,
 ) -> ExitCode {
     let start = Instant::now();
@@ -137,15 +368,15 @@ fn write_report(
         );
         return ExitCode::from(2);
     }
-    if print_timings
-        && writeln!(
-            io::stderr().lock(),
-            "{}",
-            serde_json::json!({ "analysis": timings, "output_ns": start.elapsed().as_nanos() })
-        )
-        .is_err()
-    {
-        return ExitCode::from(2);
+    if print_timings {
+        let mut measurements =
+            serde_json::json!({ "analysis": timings, "output_ns": start.elapsed().as_nanos() });
+        if let Some(cache) = cache {
+            measurements["cache"] = serde_json::json!(cache);
+        }
+        if writeln!(io::stderr().lock(), "{measurements}").is_err() {
+            return ExitCode::from(2);
+        }
     }
     if complete {
         ExitCode::SUCCESS

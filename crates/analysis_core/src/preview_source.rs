@@ -10,6 +10,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+use crate::phase02::config::Selection;
 use crate::{Issue, source};
 
 const MAX_SELECTED_FILES: usize = 16_384;
@@ -24,8 +25,8 @@ pub(super) enum FileEntry<'a> {
 
 #[derive(Debug, Serialize)]
 pub(super) struct Exclusion {
-    path: String,
-    reason: &'static str,
+    pub(super) path: String,
+    pub(super) reason: &'static str,
 }
 
 pub(super) struct Project {
@@ -110,6 +111,15 @@ impl Stamp {
 }
 
 pub(super) fn discover(path: &Path, roots: &[PathBuf], entry: FileEntry<'_>) -> Project {
+    discover_filtered(path, roots, entry, None)
+}
+
+pub(super) fn discover_filtered(
+    path: &Path,
+    roots: &[PathBuf],
+    entry: FileEntry<'_>,
+    selection: Option<&Selection>,
+) -> Project {
     let mut project = Project {
         files: Vec::new(),
         roots: Vec::new(),
@@ -189,11 +199,20 @@ pub(super) fn discover(path: &Path, roots: &[PathBuf], entry: FileEntry<'_>) -> 
 
     let mut selected = BTreeMap::new();
     if input_file {
-        selected.insert(input, Some(Stamp::new(&metadata)));
+        if let Some(reason) =
+            selection.and_then(|selection| selection.exclusion(&project.label(&input)))
+        {
+            project.exclusions.push(Exclusion {
+                path: project.label(&input),
+                reason,
+            });
+        } else {
+            selected.insert(input, Some(Stamp::new(&metadata)));
+        }
     }
     if !input_file || !roots.is_empty() {
         for root in &selected_roots {
-            project.walk(root, &mut selected);
+            project.walk(root, &mut selected, selection);
             if selected.len() > MAX_SELECTED_FILES {
                 break;
             }
@@ -219,7 +238,7 @@ pub(super) fn discover(path: &Path, roots: &[PathBuf], entry: FileEntry<'_>) -> 
             discovered,
         });
     }
-    project.identify_files(&selected_roots, entry_path.as_deref());
+    project.identify_files(&selected_roots, entry_path.as_deref(), selection.is_some());
     if let Some(path) = entry_path {
         project.script = project.files_by_path.get(&path).copied();
         if project.script.is_none() {
@@ -267,7 +286,12 @@ impl Project {
         }
     }
 
-    fn walk(&mut self, root: &Path, selected: &mut BTreeMap<PathBuf, Option<Stamp>>) {
+    fn walk(
+        &mut self,
+        root: &Path,
+        selected: &mut BTreeMap<PathBuf, Option<Stamp>>,
+        selection: Option<&Selection>,
+    ) {
         let mut walk = WalkDir::new(root)
             .follow_links(false)
             .follow_root_links(false)
@@ -299,6 +323,22 @@ impl Project {
             {
                 parent.insert((entry.file_name().to_owned(), seen));
             }
+            if entry.depth() > 0
+                && let Some(selection) = selection
+                && let label = self.label(path)
+                && let Some(reason) = selection.exclusion(&label)
+                && (kind.is_dir() || source::is_python(entry.file_name()))
+                && (!kind.is_dir() || !selection.may_include_children(&label))
+            {
+                self.exclusions.push(Exclusion {
+                    path: label,
+                    reason,
+                });
+                if kind.is_dir() {
+                    walk.skip_current_dir();
+                }
+                continue;
+            }
             if kind.is_symlink() {
                 if entry.depth() == 0 {
                     self.issues.push(Issue::new(
@@ -320,7 +360,8 @@ impl Project {
                 continue;
             }
             if kind.is_dir() {
-                if entry.depth() > 0
+                if selection.is_none()
+                    && entry.depth() > 0
                     && [".git", ".venv", "__pycache__"]
                         .iter()
                         .any(|name| entry.file_name() == *name)
@@ -347,7 +388,7 @@ impl Project {
         }
     }
 
-    fn identify_files(&mut self, roots: &[PathBuf], script: Option<&Path>) {
+    fn identify_files(&mut self, roots: &[PathBuf], script: Option<&Path>, loose_files: bool) {
         // Prefer declared source identities. A direct script also makes the files
         // in its directory importable as top-level modules.
         let lookup_roots = roots
@@ -379,6 +420,15 @@ impl Project {
             }
             match name {
                 Some(name) => self.files[index].name = name,
+                None if loose_files => {
+                    // A standalone source under a test or script directory
+                    // still needs a stable identity without declaring a package.
+                    self.files[index].name = file
+                        .label
+                        .strip_suffix(".py")
+                        .unwrap_or(&file.label)
+                        .replace('/', ".");
+                }
                 None => self.issues.push(if namespace {
                     Issue::new(
                         "unsupported_namespace_package",
@@ -460,6 +510,14 @@ impl Project {
         &self,
         workers: usize,
         extract: impl Fn(&str) -> T + Sync,
+    ) -> Result<Vec<FileWork<T>>, Issue> {
+        self.map_file_sources(workers, |_, source| extract(source))
+    }
+
+    pub(super) fn map_file_sources<T: Send>(
+        &self,
+        workers: usize,
+        extract: impl Fn(&SourceFile, &str) -> T + Sync,
     ) -> Result<Vec<FileWork<T>>, Issue> {
         if workers == 0 {
             return Err(Issue::new("worker_budget", ".", "workers must be positive"));
@@ -617,14 +675,18 @@ impl Drop for WorkerReservation<'_> {
 }
 
 impl SourceFile {
-    fn work<T>(&self, extract: &impl Fn(&str) -> T) -> FileWork<T> {
+    pub(super) fn directory(&self) -> &Path {
+        self.path.parent().expect("absolute Python source path")
+    }
+
+    fn work<T>(&self, extract: &impl Fn(&SourceFile, &str) -> T) -> FileWork<T> {
         let start = Instant::now();
         match self.read() {
             Ok((bytes, stamp)) => {
                 let result = source::decode(bytes, &self.label);
                 let read_ns = start.elapsed().as_nanos();
                 let start = Instant::now();
-                let result = result.map(|source| extract(&source));
+                let result = result.map(|source| extract(self, &source));
                 FileWork {
                     result,
                     read_ns,

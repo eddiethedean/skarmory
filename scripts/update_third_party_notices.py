@@ -26,6 +26,8 @@ def crate_notices(crate):
         path = root / crate["license_file"]
         if path not in paths:
             paths.append(path)
+    if crate["name"] == "r-efi" and crate["version"] == "6.0.0":
+        paths.append(root / "AUTHORS")
     if paths:
         return [(path.relative_to(root).as_posix(), path) for path in paths]
 

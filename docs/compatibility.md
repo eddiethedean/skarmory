@@ -2,6 +2,11 @@
 
 Status: specification. See the [Phase 0 inventory](skylos-5.7.0-contract.md) and
 [prototype comparisons](../benchmarks/phase0.md) for recorded evidence.
+The [Phase 0.2 plan](phase-02.md) defines the initial proposed subset,
+compatibility entry points, and release evidence. The [Phase 0.3 plan](phase-03.md)
+extends dead-code coverage and adds verification and reporting workflows.
+Passing the [full pinned dead-code test suite](phase-03.md#required-upstream-test-gate)
+against Skarmory is mandatory for that release.
 
 ## Frozen reference
 
@@ -12,7 +17,7 @@ Status: specification. See the [Phase 0 inventory](skylos-5.7.0-contract.md) and
 | Source revision | `87978e69adf91b3811e97b00c40aa39d7937cd94` |
 | Release date | November 19, 2026 |
 | Initial scope | Explicitly inventoried local static Python dead-code behavior |
-| Later scope | Declared quality, secrets, security, and workflow contracts |
+| Later scope | Expanded dead-code analysis, then declared quality, secrets, security, and general workflow contracts |
 
 The source revision is the reference for reproducible tests. Website documentation
 can describe newer or unreleased features; disagreements must be resolved through
@@ -36,19 +41,22 @@ The conformance matrix must include the following surfaces:
 | Surface | Contract to capture | Planned milestone |
 | --- | --- | --- |
 | Source discovery | Paths, exclusions, generated files, package roots, encoding and failure behavior | Phase 0 / 0.2 |
-| Dead-code findings | Categories, resolved symbol identity, locations, dispositions, evidence | 0.2 |
+| Python dead-code findings | Categories, resolved symbol identity, locations, dispositions, evidence | 0.2 for the initial subset and 0.3 for expanded resolution and unused dependencies |
+| JavaScript and TypeScript dead code | Declared module resolution, entry points, unused files, unnecessary exports, and coverage | 0.3 |
+| Other upstream-tested frontends | Dead-code behavior asserted by the pinned suite, including mixed-language cases and required backends | 0.3 |
 | Confidence | Scoring order, caps, thresholds, category-specific visibility | 0.2 |
-| Framework use | Identity, registration, activation, lifecycle and callback contracts | 0.2 |
+| Framework use | Identity, registration, activation, lifecycle and callback contracts | 0.2 for initial pytest and FastAPI models and 0.3 for expanded framework coverage |
 | Configuration | Discovery, inheritance, explicit configuration, environment inputs, precedence | 0.2 |
 | Suppressions | Rule ignores, inline directives, whitelists, path overrides, custom entry points | 0.2 |
 | Python API | Supported arguments, return type, validation, errors, callbacks | 0.2, with explicit gaps |
 | Machine output | JSON field semantics, SARIF, absence/null distinctions, escaping and locations | 0.2 |
 | CLI | Supported invocations, stdout/stderr separation, command-specific exit behavior | 0.2 |
-| Quality and secrets | Declared rules, file universe, severity and evidence | 0.3 |
-| Security | Declared rules, source/sink/sanitizer models, propagation and limits | 0.4 |
-| Diff and CI gates | Reporting scope, baseline policy, gate outcome and operational errors | 0.5 |
-| Runtime evidence and cleanup | Trace import, optional execution, edit applicability and failure reporting | 0.5 |
-| Other languages and external services | Separate feature and environment contracts | Future scope |
+| Dead-code verification | Opt-in grep evidence, trace and coverage import, explicitly requested trace collection, and artifact freshness | 0.3 |
+| Diff, baselines, and gates | Reporting scope, finding identity, baseline policy, gate outcome and operational errors | 0.3 for dead code and 0.6 for general integrations |
+| Cleanup | Review queue, patch eligibility, source fingerprints, edit applicability, and rollback | 0.3 for pinned dead-code cases and 0.6 for broader transformations |
+| Quality and secrets | Declared rules, file universe, severity and evidence | 0.4 |
+| Security | Declared rules, source/sink/sanitizer models, propagation and limits | 0.5 |
+| Additional languages and external services | Separate feature and environment contracts | Future scope |
 
 Until a row has an implementation and evidence, its state is **planned**. A
 feature matrix in a release must distinguish supported, experimental,
@@ -87,8 +95,9 @@ Required adapter rules:
 - Keep user-facing package and command names `skarmory`; importing or installing
   Skarmory does not replace the `skylos` package or its executable.
 
-Phase 0 exposes a single native profile. Selection syntax for a legacy profile
-is deferred until it has an implemented contract.
+The shipped preview exposes the native interfaces. The
+[Phase 0.2 selectors](phase-02.md#profiles-and-interfaces) make the
+Skylos profile explicit.
 
 ## Configuration is observable behavior
 
@@ -206,6 +215,10 @@ For each declared surface:
    and completion status.
 5. Benchmarks use matched supported work and report any incomplete run separately.
 6. User documentation names the unsupported and experimental cases.
+
+Phase 0.3 adds the [full upstream dead-code test gate](phase-03.md#required-upstream-test-gate)
+to these requirements. A recorded difference cannot waive a failed upstream
+dead-code assertion for that release.
 
 See [conformance methodology](../tests/conformance/README.md),
 [benchmark methodology](../benchmarks/README.md), and the [roadmap](roadmap.md).

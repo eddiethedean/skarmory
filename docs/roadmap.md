@@ -42,10 +42,11 @@ Compatibility is versioned and limited to explicitly declared features. The
 | --- | --- | --- | --- |
 | Phase 0 | Compatibility contract, benchmark baseline, native vertical slice | Initial scaffold | Reproducible baseline and measured native prototype |
 | 0.1 | Native unreachable-function preview for packaged Python 3.11 projects | Phase 0 | Reviewed reachability, coverage, and worker-equivalence checks pass |
-| 0.2 | Declared Python dead-code compatibility | 0.1 | No unexplained conformance differences |
-| 0.3 | Quality and secrets | 0.2 | Rule-level conformance and independent controls |
-| 0.4 | Security and data flow | 0.3 and semantic infrastructure | Accuracy, completeness, and resource budgets verified |
-| 0.5 | Developer workflows | Relevant stable rule families | Integration and narrow edit contracts verified |
+| 0.2 | [Declared Python dead-code compatibility and persistent module facts](phase-02.md) | 0.1 | Reviewed reference differences, independent controls, and cached/clean equivalence |
+| 0.3 | [Expanded dead-code coverage and workflows](phase-03.md) | 0.2 | Every pinned Skylos dead-code test passes against Skarmory |
+| 0.4 | Quality and secrets | 0.3 | Rule-level conformance and independent controls |
+| 0.5 | Security and data flow | 0.4 and semantic infrastructure | Accuracy, completeness, and resource budgets verified |
+| 0.6 | Developer workflows | Phase 0.3 workflow contracts and relevant stable rule families | Integration and narrow edit contracts verified |
 | 1.0 | Stable declared Python analysis contract | Earlier gates | Published feature matrix, APIs, wheels, and evidence |
 
 ## Planned Rust dependencies
@@ -60,9 +61,10 @@ workflow in [CONTRIBUTING.md](../CONTRIBUTING.md#dependencies-and-packaging).
 | --- | --- | --- |
 | 0.1 | [walkdir](https://docs.rs/walkdir/latest/walkdir/), [Rayon](https://docs.rs/rayon/latest/rayon/), [clap](https://docs.rs/clap/latest/clap/) | Use walkdir for recursive discovery with explicit root and nested symlink behavior, sorted paths, and coverage diagnostics for traversal errors. Add bounded Rayon workers after the serial fixtures pass. Use clap for the preview flags while preserving native CLI output and exit behavior. |
 | 0.2 | [toml](https://docs.rs/toml/latest/toml/), [globset](https://docs.rs/globset/latest/globset/), [ignore](https://docs.rs/ignore/latest/ignore/), [BLAKE3](https://docs.rs/blake3/latest/blake3/), [tempfile](https://docs.rs/tempfile/latest/tempfile/), [serde-sarif](https://docs.rs/serde-sarif/latest/serde_sarif/) | Match TOML syntax, path rules, and config precedence against pinned Skylos fixtures. Evaluate ignore for declared Git-style filtering. Use BLAKE3 content fingerprints and versioned Serde records, with tempfile for atomic cache writes from the same directory. Evaluate serde-sarif for the declared report format and verify exported reports against the compatibility fixtures. |
-| 0.3 | [regex](https://docs.rs/regex/latest/regex/), [aho-corasick](https://docs.rs/aho-corasick/latest/aho_corasick/) | Use regex for reviewed text and byte patterns. Check Python lookaround and backreferences when porting rules. Evaluate the already transitive aho-corasick crate for a shared literal search pass. Preserve reference clone scores when optimizing candidate selection. |
-| 0.4 | [petgraph](https://docs.rs/petgraph/latest/petgraph/), [fixedbitset](https://docs.rs/fixedbitset/latest/fixedbitset/) | Evaluate iterative strongly connected component analysis for recursive call groups and dense bitsets for flow facts. Keep propagation, budgets, and evidence paths in the analysis engine. |
-| 0.5 | [notify](https://docs.rs/notify/latest/notify/), [lsp-server](https://docs.rs/lsp-server/latest/lsp_server/), [lsp-types](https://docs.rs/lsp-types/latest/lsp_types/), [similar](https://docs.rs/similar/latest/similar/) | Use notify for watch events and rescan when events may have been lost. Use the LSP pair for editor transport and messages, with position conversion at the adapter boundary. Use similar for cleanup previews with source fingerprints revalidated before any edit. |
+| 0.3 | Oxc and Tree-sitter frontends, requirement parsing, evidence search, Git integration, and patch previews. See the [Phase 0.3 crate shortlist](phase-03.md#rust-crate-candidates). | Qualify candidates against the pinned test inventory, supported build targets, and packaging requirements. Preserve interpreter-independent static CLI operation. |
+| 0.4 | [regex](https://docs.rs/regex/latest/regex/), [aho-corasick](https://docs.rs/aho-corasick/latest/aho_corasick/) | Use regex for reviewed text and byte patterns. Check Python lookaround and backreferences when porting rules. Evaluate the already transitive aho-corasick crate for a shared literal search pass. Preserve reference clone scores when optimizing candidate selection. |
+| 0.5 | [petgraph](https://docs.rs/petgraph/latest/petgraph/), [fixedbitset](https://docs.rs/fixedbitset/latest/fixedbitset/) | Evaluate iterative strongly connected component analysis for recursive call groups and dense bitsets for flow facts. Keep propagation, budgets, and evidence paths in the analysis engine. |
+| 0.6 | [notify](https://docs.rs/notify/latest/notify/), [lsp-server](https://docs.rs/lsp-server/latest/lsp_server/), [lsp-types](https://docs.rs/lsp-types/latest/lsp_types/) | Use notify for watch events and rescan when events may have been lost. Use the LSP pair for editor transport and messages, with position conversion at the adapter boundary. |
 | Through 1.0 | [proptest](https://proptest-rs.github.io/proptest/proptest/getting-started.html), [cargo-deny](https://embarkstudios.github.io/cargo-deny/checks/index.html) | Use proptest in development for worker-order, cache-edit, and Unicode-position invariants. Evaluate cargo-deny in CI for advisories, licenses, and dependency sources. |
 
 In the cache dependency trial, tempfile brought in `r-efi` 6.0.0. Its
@@ -225,31 +227,39 @@ explicit coverage. Compatibility and speed claims require separate evidence.
 
 ## 0.2: declared Python dead-code compatibility
 
-Goal: satisfy the frozen Python dead-code contract and make repeated scans fast.
+The [Phase 0.2 plan](phase-02.md) defines a Python 3.11 subset of the pinned
+Skylos 5.7.0 dead-code contract alongside the native interfaces.
 
-- [ ] Port declared confidence thresholds, scoring order, evidence, and
-  category-specific filtering behavior.
-- [ ] Match configuration discovery and precedence, exclusions, ignores,
-  whitelists, path overrides, and custom entry-point selectors.
-- [ ] Resolve public API exposure, re-export chains, and supported lazy exports.
-- [ ] Model the declared frameworks, including registration activation and
-  imported identity rather than names alone.
-- [ ] Cover callbacks, closures, async scheduling, executor submissions, and
-  multiprocessing targets within the supported semantic model.
-- [ ] Add the legacy JSON/API adapter alongside the new typed Python interface.
-- [ ] Match the promised output formats and command-specific exit contracts.
-- [ ] Cache module facts using content and semantic-version fingerprints; rebuild
-  graph reachability conservatively before pursuing partial graph updates.
-- [ ] Test edits to callers, exports, roots, configuration, and the file universe
-  against clean rebuilds.
-- [ ] Review every mismatch and publish any intentional differences.
+- [ ] Freeze the supported configuration, semantic, and output fixtures
+  against the pinned reference and independently reviewed expectations.
+- [ ] Implement the declared finding categories, export and callback cases,
+  and bounded pytest and FastAPI models in the native engine.
+- [ ] Deliver an explicit Skylos profile for the supported CLI and SDK
+  invocations, including confidence, suppressions, JSON, and SARIF.
+- [ ] Cache per-file facts and rebuild the graph from current inputs on every
+  scan. Validate clean, cached, edited, serial, and parallel equivalence.
+- [ ] Publish the compatibility matrix, reviewed discrepancies, and matched
+  cold, warm, and edited benchmark receipts.
 
-Exit evidence: no unexplained differences for the declared contract, no regression
-on the independently reviewed retain/detect controls, and matched cold/warm/edit
-benchmarks. Arbitrary Python AST visitors remain an explicitly unsupported or
-separately adapted interface until their contract is implemented.
+## 0.3: expanded dead-code coverage and workflows
 
-## 0.3: quality and secrets
+Phase 0.3 requires the full pinned Skylos dead-code test suite to pass before
+starting new rule families. The [Phase 0.3 plan](phase-03.md) defines the
+implementation order and [required test gate](phase-03.md#required-upstream-test-gate).
+
+- [ ] Freeze a reviewed inventory of every upstream dead-code test and run
+  each case against Skarmory with the upstream expectations intact.
+- [ ] Expand Python reachability, Django and Flask registration models, and
+  unused declared dependency checks.
+- [ ] Add JavaScript and TypeScript unused-file and export analysis and the
+  coverage required by tests of other upstream frontends.
+- [ ] Add opt-in grep verification and positive runtime use evidence.
+- [ ] Add dead-code diff reports, baselines, gates, and cleanup behaviors
+  exercised by the pinned suite.
+- [ ] Verify reference conformance, independent correctness controls, and
+  CLI/SDK and cached/uncached equivalence before publishing support claims.
+
+## 0.4: quality and secrets
 
 Goal: reuse the native front end for declared local rule families.
 
@@ -265,7 +275,7 @@ Goal: reuse the native front end for declared local rule families.
 Exit evidence: reviewed positive and negative controls for each advertised rule,
 conformance results, and no silent reduction in the analyzed file set.
 
-## 0.4: security and data flow
+## 0.5: security and data flow
 
 Goal: deliver a declared, bounded security-analysis contract.
 
@@ -285,21 +295,21 @@ Exit evidence: rule and flow coverage matrices, independent reviewed cases, and
 documented limits. Dependency advisories, registry queries, and LLM review have
 separate integration and timing contracts.
 
-## 0.5: developer workflows
+## 0.6: developer workflows
 
 Goal: use the engine reliably in CI and frequent edit loops.
 
-- [ ] Add baseline/gate policy and versioned diagnostics for CI consumers.
-- [ ] Analyze sufficient project context before applying diff-report filters.
-- [ ] Keep changed-line reporting distinct from reporting affected unchanged code.
+- [ ] Extend the Phase 0.3 dead-code diff, baseline, and gate contracts to
+  qualified rule families and CI integrations with versioned diagnostics.
+- [ ] Preserve full project context and the separate changed-line and impact
+  modes when integrating diff reports into CI and editor workflows.
 - [ ] Add watch or resident sessions with consistent source generations and
   cancellation of superseded requests.
-- [ ] Import positive trace/coverage evidence with provenance and freshness checks.
-  Unobserved execution is not proof that code is unused.
-- [ ] Add explicitly requested runtime tracing as a separate Python integration.
+- [ ] Reuse the Phase 0.3 trace provenance and freshness checks in workflows
+  that accept recorded runtime evidence.
 - [ ] Add editor integration using the supported position-encoding contract.
-- [ ] Introduce narrowly reviewed cleanup transformations with dry-run output,
-  source-fingerprint revalidation, and explicit applicability.
+- [ ] Extend the tested cleanup apply and rollback contract to additional
+  transformations with source-fingerprint revalidation and applicability checks.
 - [ ] Define any Python custom-visitor adapter and measure it separately from the
   native default path.
 
@@ -319,9 +329,9 @@ and transformation-specific safety controls.
 - [ ] Document parser/model upgrades, cache invalidation, schema evolution, and
   policy changes.
 
-Other language backends, external services, and cloud/LLM workflows require their
-own compatibility milestones. A stable Python release does not establish parity
-with every feature of the broader Skylos product.
+The other language frontends exercised in Phase 0.3 have their own
+compatibility scope. Language backends beyond that gate, external services,
+and cloud/LLM workflows require their own milestones.
 
 ## Performance goals
 

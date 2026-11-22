@@ -10,3 +10,6 @@ generator uses these files when an archive omits its license text.
   `quote-use-macros` 0.8.4. Their crate manifests identify the ModProg project,
   and their pinned source omits a separate copyright notice and license file.
   [Pinned quote-use manifest](https://github.com/ModProg/quote-use/blob/05096f346f8b17fba8a57a235b958917ad9d99e0/Cargo.toml)
+- The `r-efi` 6.0.0 crate supplies its copyright and license in the
+  registry archive's `AUTHORS` file. The generator reads it directly from
+  the locked crate.
