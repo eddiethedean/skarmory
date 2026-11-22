@@ -3571,11 +3571,34 @@ impl<'a> Graph<'a> {
         let names: BTreeSet<_> = lineage
             .into_iter()
             .flat_map(|scope| self.scopes[scope].names.keys().copied())
-            .filter(|name| !name.starts_with('_'))
+            .filter(|name| *name == "__call__" || !name.starts_with('_'))
             .collect();
         names
             .into_iter()
-            .map(|name| self.member(Value::Instance(class), name, (scope, at), 0))
+            .filter_map(|name| {
+                let value = self.member(Value::Instance(class), name, (scope, at), 0);
+                if name != "__call__" {
+                    return Some(value);
+                }
+                // Calling the instance invokes its effective __call__ member.
+                // A noncallable override does not expose the members of its value.
+                match value {
+                    Value::Callable(invocation)
+                        if !invocation.verified
+                            && !self.is_class(invocation.target)
+                            && !self.fixtures.contains_key(&invocation.target) =>
+                    {
+                        Some(value)
+                    }
+                    Value::Sequence(_)
+                    | Value::Mapping(_)
+                    | Value::Module(_)
+                    | Value::Coroutine(_)
+                    | Value::ScheduledTask => None,
+                    value if value.is_builtin_scalar_or_iterable() => None,
+                    _ => Some(Value::Unknown),
+                }
+            })
             .collect()
     }
 
