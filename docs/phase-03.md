@@ -16,6 +16,11 @@ must be isolated from the Python release gate and default Python scan scope.
 
 Track release conformance in issue [#41](https://github.com/eddiethedean/skarmory/issues/41).
 
+The [release gate implementation](phase-03-gate.md) checks a candidate against
+the [initial inventory](../tests/conformance/phase03-inventory.toml). The
+inventory remains incomplete while the case audit and ports are in progress.
+The gate blocks publication until the inventory and required evidence pass.
+
 ### Discover and review cases
 
 Audit the entire pinned checkout. Classify at the case level by what the
