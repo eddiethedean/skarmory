@@ -1482,6 +1482,38 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn comparison_may_call_method(&mut self, left: &Value, right: &Value, equal: bool) -> bool {
+        // Sequence equality tests corresponding elements, and unequal
+        // lengths short-circuit even when the outer operation is !=.
+        if let (Value::Sequence(left), Value::Sequence(right)) = (left, right) {
+            return left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .any(|(left, right)| self.comparison_may_call_method(left, right, true));
+        }
+
+        [(left, right), (right, left)]
+            .into_iter()
+            .any(|(value, other)| match value {
+                Value::Instance(class) => {
+                    self.class_member(*class, "__eq__", 0).is_some()
+                        || !equal && self.class_member(*class, "__ne__", 0).is_some()
+                }
+                // A mapping can compare keys and values independent of the
+                // order in which the literals list their entries.
+                Value::Mapping(items) if matches!(other, Value::Mapping(_) | Value::Unknown) => {
+                    items
+                        .iter()
+                        .any(|item| self.comparison_may_call_method(item, &Value::Unknown, true))
+                }
+                Value::Sequence(items) if matches!(other, Value::Unknown) => items
+                    .iter()
+                    .any(|item| self.comparison_may_call_method(item, &Value::Unknown, true)),
+                _ => false,
+            })
+    }
+
     /// None means the attribute is absent in a fully resolved base chain.
     fn class_member(&mut self, id: SymbolId, name: &str, depth: usize) -> Option<Value> {
         if depth >= MAX_BINDING_CHAIN {
@@ -1612,7 +1644,11 @@ impl<'a> Graph<'a> {
                         }
                         END
                     };
-                    return self.binding(id, before, depth + 1);
+                    let value = self.binding(id, before, depth + 1);
+                    if let ValueEvaluation::LazyExecution(caller) = evaluation {
+                        self.record_class_reference(caller, &value);
+                    }
+                    return value;
                 }
                 if name == "__name__" {
                     return Value::Unknown;
@@ -1649,7 +1685,6 @@ impl<'a> Graph<'a> {
             ExpressionKind::Member(base, name) => {
                 let base = recurse(self, base);
                 if let ValueEvaluation::LazyExecution(caller) = evaluation {
-                    self.record_class_reference(caller, &base);
                     if let Value::Module(file) = base
                         && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
                             file,
@@ -1664,6 +1699,9 @@ impl<'a> Graph<'a> {
                             .push((branch.scope, branch.imports));
                         return self.lazy_value(scope, &branch, depth + 3, evaluation);
                     }
+                    let value = self.member(base, name, (scope, before), depth + 1);
+                    self.record_class_reference(caller, &value);
+                    return value;
                 }
                 self.member(base, name, (scope, before), depth + 1)
             }
@@ -2042,21 +2080,20 @@ impl<'a> Graph<'a> {
             ExpressionKind::Member(base, name) => {
                 self.walk(scope, base, before);
                 let base = self.identity(scope, base, before, 1);
-                self.record_class_reference(scope, &base);
-                if let Value::Module(file) = base
+                let value = if let Value::Module(file) = base
                     && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
                         file,
                         name,
                         END,
                         (scope, before),
                         ModuleMemberAccess::Attribute,
-                    )
-                {
+                    ) {
                     self.read.insert(hook);
-                    self.execute_lazy_branch(scope, &branch);
+                    self.execute_lazy_branch(scope, &branch)
                 } else {
-                    self.member(base, name, (scope, before), 1);
-                }
+                    self.member(base, name, (scope, before), 1)
+                };
+                self.record_class_reference(scope, &value);
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
             ExpressionKind::Compare {
@@ -2067,19 +2104,17 @@ impl<'a> Graph<'a> {
             } => {
                 self.walk(scope, left, before);
                 self.walk(scope, right, before);
-                if !identity
-                    && [left, right].into_iter().any(|operand| {
-                        matches!(self.identity(scope, operand, before, 0), Value::Instance(class)
-                            if self.class_member(class, "__eq__", 0).is_some()
-                                || !equal && self.class_member(class, "__ne__", 0).is_some())
-                    })
-                {
-                    self.scope_issue(
-                        scope,
-                        expr.at,
-                        "unresolved_comparison",
-                        "comparison method dispatch is outside the bounded model",
-                    );
+                if !identity {
+                    let left = self.identity(scope, left, before, 0);
+                    let right = self.identity(scope, right, before, 0);
+                    if self.comparison_may_call_method(&left, &right, *equal) {
+                        self.scope_issue(
+                            scope,
+                            expr.at,
+                            "unresolved_comparison",
+                            "comparison method dispatch is outside the bounded model",
+                        );
+                    }
                 }
             }
             ExpressionKind::Sequence(values)
@@ -2099,7 +2134,8 @@ impl<'a> Graph<'a> {
                 }
             }
             ExpressionKind::Name(_) => {
-                self.identity(scope, expr, before, 0);
+                let value = self.identity(scope, expr, before, 0);
+                self.record_class_reference(scope, &value);
             }
             _ => {}
         }
@@ -2983,29 +3019,28 @@ impl<'a> Graph<'a> {
                 .values()
                 .filter_map(|bindings| {
                     let &latest = bindings.last()?;
-                    // An unconditional assignment replaces older exports.
-                    // A conditional assignment may leave an older export in place.
-                    for &id in bindings.iter().rev() {
-                        if matches!(self.symbols[id].binding, Binding::Import(import) if import.declares_export)
-                        {
-                            return Some(latest);
-                        }
-                        if !self.binding_depends_on_branch(id, END) {
-                            break;
-                        }
-                    }
-                    None
+                    // The explicit import names the public member. Later
+                    // assignments can change the value behind that name.
+                    bindings.iter().any(|&id| {
+                        matches!(self.symbols[id].binding, Binding::Import(import) if import.declares_export)
+                    }).then_some(latest)
                 })
                 .collect();
             for alias in aliases {
-                if let Value::Callable(invocation) = self.binding(alias, END, 0) {
-                    self.invoke(
-                        file,
-                        invocation,
-                        "explicit_re_export",
-                        "certain",
-                        self.symbols[alias].name.at,
-                    );
+                let at = self.symbols[alias].name.at;
+                let previous_issues = self.scope_issues.len();
+                match self.binding(alias, END, 0) {
+                    Value::Callable(invocation) => {
+                        self.invoke(file, invocation, "explicit_re_export", "certain", at)
+                    }
+                    Value::Unknown if self.scope_issues.len() == previous_issues => self
+                        .scope_issue(
+                            file,
+                            at,
+                            "unresolved_export",
+                            "explicit re-export could not be resolved after initialization",
+                        ),
+                    _ => {}
                 }
             }
         }

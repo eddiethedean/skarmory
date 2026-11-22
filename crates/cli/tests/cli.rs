@@ -1298,6 +1298,60 @@ def __getattr__(name):
 }
 
 #[test]
+fn skylos_retains_classes_read_as_values() {
+    let project = skylos_fixture();
+    fs::write(
+        project.path().join("main.py"),
+        r#"import support
+from support import Imported
+
+class Model:
+    pass
+
+class Dormant:
+    pass
+
+class Replaced:
+    pass
+
+Replaced = None
+
+def unused():
+    print(Dormant)
+
+alias = Model
+print(alias, Imported, support.Qualified, Replaced)
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("support.py"),
+        "class Imported:\n    pass\n\nclass Qualified:\n    pass\n",
+    )
+    .unwrap();
+    let output = skylos(project.path(), &["--json", "--strict"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    let classes: Vec<_> = report["unused_classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["full_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(classes, ["main.Dormant", "main.Replaced"], "{report}");
+    let evidence = report["dead_code_evidence"].as_array().unwrap();
+    for class in ["main.Model", "support.Imported", "support.Qualified"] {
+        assert!(
+            evidence
+                .iter()
+                .any(|item| item["full_name"] == class && item["kind"] == "class_reference"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
 fn skylos_skips_enclosing_class_names_in_nested_class_scopes() {
     let project = skylos_fixture();
     fs::write(
@@ -1357,8 +1411,14 @@ value = Value()
 "#;
     for (comparison, exit) in [
         ("Value() == Value()", 2),
+        ("[Value()] == [Value()]", 2),
+        ("{\"key\": Value()} == {\"key\": Value()}", 2),
+        ("([[value]],) != ([[Value()]],)", 2),
         ("0 != value", 2),
         ("value is Value()", 1),
+        ("[value] is [Value()]", 1),
+        ("[value] == []", 1),
+        ("[value] == 0", 1),
         ("if False:\n    value == Value()", 1),
         ("class Plain:\n    pass\n\nPlain() == Plain()", 1),
     ] {
@@ -1395,6 +1455,9 @@ fn skylos_roots_only_effective_explicit_reexports() {
     for (rebind, exit) in [
         ("old = None\n", 1),
         ("", 0),
+        ("old = old\n", 0),
+        ("alias = old\nold = alias\n", 0),
+        ("def replacement():\n    pass\nold = replacement\n", 1),
         ("if int('0'):\n    old = None\n", 2),
     ] {
         fs::write(
@@ -1407,7 +1470,9 @@ fn skylos_roots_only_effective_explicit_reexports() {
         assert_eq!(output.status.code(), Some(exit), "{rebind}\n{report}");
         if exit == 1 {
             assert_eq!(report["coverage"]["status"], "complete");
-            assert_eq!(report["unused_functions"][0]["full_name"], "pkg.impl.old");
+            let findings = report["unused_functions"].as_array().unwrap();
+            assert_eq!(findings.len(), 1, "{report}");
+            assert_eq!(findings[0]["full_name"], "pkg.impl.old");
         } else if exit == 0 {
             assert_eq!(report["coverage"]["status"], "complete");
             assert!(
