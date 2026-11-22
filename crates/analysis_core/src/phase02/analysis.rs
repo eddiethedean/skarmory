@@ -45,6 +45,8 @@ enum Value {
     Bool(bool),
     Sequence(Vec<Value>),
     Mapping(Vec<Value>),
+    /// An exact built-in container with scalar elements and untracked length and order.
+    BuiltinIterable,
     Scalar,
     OperatorResult,
     Unknown,
@@ -53,6 +55,10 @@ enum Value {
 impl Value {
     fn is_builtin_scalar(&self) -> bool {
         matches!(self, Self::Scalar | Self::Bool(_) | Self::Text(_))
+    }
+
+    fn is_builtin_scalar_or_iterable(&self) -> bool {
+        self.is_builtin_scalar() || matches!(self, Self::BuiltinIterable)
     }
 }
 
@@ -1647,14 +1653,23 @@ impl<'a> Graph<'a> {
                 }
                 // A mapping can compare keys and values independent of the
                 // order in which the literals list their entries.
-                Value::Mapping(items) if matches!(other, Value::Mapping(_) | Value::Unknown) => {
+                Value::Mapping(items)
+                    if matches!(
+                        other,
+                        Value::Mapping(_) | Value::BuiltinIterable | Value::Unknown
+                    ) =>
+                {
                     items
                         .iter()
                         .any(|item| self.comparison_may_call_method(item, &Value::Unknown, true))
                 }
-                Value::Sequence(items) if matches!(other, Value::Unknown) => items
-                    .iter()
-                    .any(|item| self.comparison_may_call_method(item, &Value::Unknown, true)),
+                Value::Sequence(items)
+                    if matches!(other, Value::BuiltinIterable | Value::Unknown) =>
+                {
+                    items
+                        .iter()
+                        .any(|item| self.comparison_may_call_method(item, &Value::Unknown, true))
+                }
                 _ => false,
             })
     }
@@ -1666,7 +1681,7 @@ impl<'a> Graph<'a> {
             || (self.has_equality_hooks && !operands.into_iter().any(Value::is_builtin_scalar));
         operands.into_iter().any(|operand| match operand {
             Value::Unknown | Value::OperatorResult => unknown_may_dispatch,
-            _ => !operand.is_builtin_scalar(),
+            _ => !operand.is_builtin_scalar_or_iterable(),
         })
     }
 
@@ -1898,7 +1913,7 @@ impl<'a> Graph<'a> {
                         [argument] => {
                             let value = recurse(self, argument);
                             // A scalar result alone cannot account for a custom truth test.
-                            if value.is_builtin_scalar()
+                            if value.is_builtin_scalar_or_iterable()
                                 || matches!(value, Value::Sequence(_) | Value::Mapping(_))
                             {
                                 Value::Scalar
@@ -1909,16 +1924,21 @@ impl<'a> Graph<'a> {
                         _ => Value::Unknown,
                     }
                 }
-                Value::Provider(name) if name == "builtins.dict" && keywords.is_empty() => {
-                    match arguments.as_slice() {
-                        [] => Value::Mapping(Vec::new()),
-                        [argument] => match recurse(self, argument) {
-                            value @ Value::Mapping(_) => value,
-                            _ => Value::Unknown,
-                        },
+                Value::Provider(name) if name == "builtins.dict" => match arguments.as_slice() {
+                    [] => Value::Mapping(
+                        keywords
+                            .iter()
+                            .flat_map(|(name, value)| {
+                                [Value::Text(name.clone()), recurse(self, value)]
+                            })
+                            .collect(),
+                    ),
+                    [argument] if keywords.is_empty() => match recurse(self, argument) {
+                        value @ Value::Mapping(_) => value,
                         _ => Value::Unknown,
-                    }
-                }
+                    },
+                    _ => Value::Unknown,
+                },
                 Value::Provider(name)
                     if keywords.is_empty()
                         && matches!(name.as_str(), "builtins.list" | "builtins.tuple") =>
@@ -1926,26 +1946,51 @@ impl<'a> Graph<'a> {
                     match arguments.as_slice() {
                         [] => Value::Sequence(Vec::new()),
                         [argument] => match recurse(self, argument) {
-                            value @ Value::Sequence(_) => value,
+                            value @ (Value::Sequence(_) | Value::BuiltinIterable) => value,
+                            Value::Text(_) => Value::BuiltinIterable,
+                            _ => Value::Unknown,
+                        },
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name) if name == "builtins.set" && keywords.is_empty() => {
+                    match arguments.as_slice() {
+                        [] => Value::BuiltinIterable,
+                        [argument] => match recurse(self, argument) {
+                            Value::BuiltinIterable | Value::Text(_) => Value::BuiltinIterable,
+                            // Constructing the set may hash or compare its elements.
+                            Value::Sequence(items)
+                                if items.iter().all(Value::is_builtin_scalar) =>
+                            {
+                                Value::BuiltinIterable
+                            }
                             _ => Value::Unknown,
                         },
                         _ => Value::Unknown,
                     }
                 }
                 Value::Provider(name)
+                    if name == "builtins.range"
+                        && keywords.is_empty()
+                        && arguments
+                            .iter()
+                            .all(|argument| recurse(self, argument).is_builtin_scalar()) =>
+                {
+                    Value::BuiltinIterable
+                }
+                Value::Provider(name)
                     if keywords.is_empty()
                         && matches!(
                             name.as_str(),
-                            "builtins.range"
-                                | "builtins.int"
+                            "builtins.int"
                                 | "builtins.float"
                                 | "builtins.str"
                                 | "builtins.bytes"
                                 | "builtins.print"
                         )
-                        && arguments
-                            .iter()
-                            .all(|argument| recurse(self, argument).is_builtin_scalar()) =>
+                        && arguments.iter().all(|argument| {
+                            recurse(self, argument).is_builtin_scalar_or_iterable()
+                        }) =>
                 {
                     Value::Scalar
                 }
@@ -2018,7 +2063,10 @@ impl<'a> Graph<'a> {
                 let same = match (&left, &right) {
                     (Value::Text(left), Value::Text(right)) if !identity => left == right,
                     (Value::Bool(left), Value::Bool(right)) => left == right,
-                    _ if *identity || (left.is_builtin_scalar() && right.is_builtin_scalar()) => {
+                    _ if *identity
+                        || (left.is_builtin_scalar_or_iterable()
+                            && right.is_builtin_scalar_or_iterable()) =>
+                    {
                         return Value::Scalar;
                     }
                     _ => return Value::Unknown,
