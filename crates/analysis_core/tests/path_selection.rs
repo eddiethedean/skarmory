@@ -96,6 +96,69 @@ fn absolute_exclusion_is_anchored_to_the_target_path() {
     assert_eq!(selected_paths(&excluded, &options), json!([]));
 }
 
+#[cfg(unix)]
+#[test]
+fn absolute_exclusion_globs_resolve_aliased_directory_prefixes() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().canonicalize().unwrap();
+    let physical = root.join("physical");
+    let alias = root.join("alias");
+    let real_project = physical.join("project");
+    let aliased_project = alias.join("project");
+    for directory in ["generated/batch-a", "other/generated/batch-a"] {
+        fs::create_dir_all(real_project.join(directory)).unwrap();
+    }
+    std::os::unix::fs::symlink(&physical, &alias).unwrap();
+    for path in [
+        "generated/batch-a/old_generated.py",
+        "generated/batch-a/keep.py",
+        "other/generated/batch-a/old_generated.py",
+    ] {
+        fs::write(real_project.join(path), "pass\n").unwrap();
+    }
+
+    for prefix in [&real_project, &aliased_project] {
+        for suffix in ["generated/batch-a/old_*.py", "generated/batch-*/old_*.py"] {
+            let options = Options {
+                excludes: vec![prefix.join(suffix).to_string_lossy().into_owned()],
+                ..Options::default()
+            };
+            assert_eq!(
+                selected_paths(&real_project, &options),
+                json!([
+                    "generated/batch-a/keep.py",
+                    "other/generated/batch-a/old_generated.py"
+                ]),
+                "pattern {}",
+                options.excludes[0]
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn absolute_exclusion_globs_keep_resolved_directory_names_literal() {
+    let fixture = tempfile::tempdir().unwrap();
+    let project = fixture.path().join("project");
+    let aliased = project.join("generated/[1]");
+    let other = project.join("generated/1");
+    let alias = fixture.path().join("alias");
+    for directory in [&aliased, &other] {
+        fs::create_dir_all(directory).unwrap();
+        fs::write(directory.join("old_generated.py"), "pass\n").unwrap();
+    }
+    std::os::unix::fs::symlink(&aliased, &alias).unwrap();
+    let options = Options {
+        excludes: vec![alias.join("old_*.py").to_string_lossy().into_owned()],
+        ..Options::default()
+    };
+    assert_eq!(
+        selected_paths(&project, &options),
+        json!(["generated/1/old_generated.py"])
+    );
+}
+
 #[test]
 fn inherited_exclusion_uses_the_scan_subdirectory_as_an_alternate_base() {
     let project = tempfile::tempdir().unwrap();

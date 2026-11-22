@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use globset::{GlobBuilder, GlobMatcher};
@@ -12,6 +12,7 @@ use super::{ConfigError, Finding, Options};
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_CONFIG_LAYERS: usize = 64;
+const GLOB_METACHARACTERS: [char; 3] = ['*', '?', '['];
 const DEFAULT_EXCLUDES: &[&str] = &[
     ".git",
     ".hg",
@@ -116,16 +117,12 @@ impl Pattern {
             } else {
                 &root
             };
-            let absolute = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-            if let Ok(relative) = absolute.strip_prefix(root)
-                && !relative.as_os_str().is_empty()
-            {
-                text = relative.to_string_lossy().into_owned();
+            if let Some(relative) = rebase_absolute_pattern(path, root) {
+                text = relative;
             }
         }
         let mut pattern = Self::new_selection(&text)?;
-        // A literal absolute path must not also match its relative suffix in
-        // a different directory under the project.
+        // Absolute patterns match only their rebased location in the project.
         pattern.anchored = true;
         Ok(pattern)
     }
@@ -169,8 +166,42 @@ impl Pattern {
     }
 
     fn has_glob(&self) -> bool {
-        self.text.contains(['*', '?', '['])
+        self.text.contains(GLOB_METACHARACTERS)
     }
+}
+
+fn rebase_absolute_pattern(path: &Path, root: &Path) -> Option<String> {
+    let literal_prefix: PathBuf = path
+        .components()
+        .take_while(|component| {
+            !matches!(component, Component::Normal(name) if name.to_string_lossy().contains(GLOB_METACHARACTERS))
+        })
+        .collect();
+    let suffix = path.strip_prefix(&literal_prefix).ok()?;
+    if suffix.as_os_str().is_empty() {
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        let relative = resolved.strip_prefix(root).ok()?;
+        return (!relative.as_os_str().is_empty()).then(|| relative.to_string_lossy().into_owned());
+    }
+
+    let resolved = literal_prefix.canonicalize().unwrap_or(literal_prefix);
+    let relative = resolved.strip_prefix(root).ok()?;
+    // Keep metacharacters in filesystem names literal after resolving aliases.
+    let mut pattern = String::new();
+    for character in relative.to_string_lossy().chars() {
+        if matches!(character, '*' | '?' | '[' | ']') {
+            pattern.push('[');
+            pattern.push(character);
+            pattern.push(']');
+        } else {
+            pattern.push(character);
+        }
+    }
+    if !pattern.is_empty() {
+        pattern.push('/');
+    }
+    pattern.push_str(&suffix.to_string_lossy());
+    Some(pattern)
 }
 
 fn translate_glob(pattern: &str) -> String {
