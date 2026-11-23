@@ -255,6 +255,98 @@ fn reachable_builtin_evaluation_reports_incomplete_coverage() {
 }
 
 #[test]
+fn pytest_lazy_exports_require_a_positional_lookup_parameter() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("test_example.py"),
+        "from support import example as test_case\n",
+    )
+    .unwrap();
+    let support = project.path().join("support.py");
+
+    for profile in [Profile::SkylosPhase02, Profile::SkylosPhase03] {
+        let cache = tempfile::tempdir().unwrap();
+        let serial = Options {
+            profile,
+            ..Options::default()
+        };
+        let parallel = Options {
+            cache_dir: Some(cache.path().to_owned()),
+            workers: 4,
+            ..serial.clone()
+        };
+        let run = |options: &Options| -> Value {
+            serde_json::from_str(&scan(project.path(), options).unwrap().to_json().unwrap())
+                .unwrap()
+        };
+
+        for (edit, (signature, valid)) in [
+            ("*, name", false),
+            ("**name", false),
+            ("*name", false),
+            ("name", true),
+            ("name, /", true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fs::write(
+                &support,
+                format!(
+                    r#"def sample():
+    pass
+
+def __getattr__({signature}):
+    if name == "example":
+        return sample
+    raise AttributeError(name)
+"#
+                ),
+            )
+            .unwrap();
+
+            let clean = run(&serial);
+            let status = if valid { "complete" } else { "incomplete" };
+            assert_eq!(clean["coverage"]["status"], status, "{signature}: {clean}");
+            let issues = clean["coverage"]["issues"].as_array().unwrap();
+            if !valid {
+                assert!(
+                    issues
+                        .iter()
+                        .any(|issue| issue["kind"] == "unresolved_lazy_export"
+                            && issue["path"] == "test_example.py"),
+                    "{signature}: {clean}"
+                );
+            }
+            let evidence = &clean["dead_code_evidence"];
+            let pytest_root = match profile {
+                Profile::SkylosPhase02 => evidence.as_array().unwrap().iter().any(|entry| {
+                    entry["full_name"] == "support.sample" && entry["kind"] == "pytest_root"
+                }),
+                Profile::SkylosPhase03 => {
+                    evidence["symbols"].as_array().unwrap().iter().any(|entry| {
+                        entry["qualified_name"] == "support.sample"
+                            && entry["evidence"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .any(|event| event["kind"] == "pytest_root")
+                    })
+                }
+            };
+            assert_eq!(pytest_root, valid, "{signature}: {clean}");
+
+            for hits in [usize::from(edit > 0), 2] {
+                let mut cached = run(&parallel);
+                let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+                assert_eq!(stats["hits"], hits);
+                assert_eq!(cached, clean);
+            }
+        }
+    }
+}
+
+#[test]
 fn lazy_exports_report_unresolved_values_inside_containers() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
