@@ -255,6 +255,78 @@ fn reachable_builtin_evaluation_reports_incomplete_coverage() {
 }
 
 #[test]
+fn lazy_exports_report_unresolved_values_inside_containers() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("main.py"),
+        "from support import example\nprint(example)\n",
+    )
+    .unwrap();
+    let support = project.path().join("support.py");
+
+    for profile in [Profile::SkylosPhase02, Profile::SkylosPhase03] {
+        let cache = tempfile::tempdir().unwrap();
+        let serial = Options {
+            profile,
+            ..Options::default()
+        };
+        let parallel = Options {
+            cache_dir: Some(cache.path().to_owned()),
+            workers: 4,
+            ..serial.clone()
+        };
+        let run = |options: &Options| -> Value {
+            serde_json::from_str(&scan(project.path(), options).unwrap().to_json().unwrap())
+                .unwrap()
+        };
+
+        for (edit, (expr, incomplete)) in [
+            ("(missing,)", true),
+            ("[{\"key\": (missing,)}]", true),
+            ("{missing: 1}", true),
+            ("missing", true),
+            ("(load(),)", true),
+            ("[{\"key\": (1,)}]", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fs::write(
+                &support,
+                format!(
+                    r#"def __getattr__(name):
+    if name == "example":
+        return {expr}
+    if name == "unselected":
+        return [other_missing]
+    raise AttributeError(name)
+"#
+                ),
+            )
+            .unwrap();
+
+            let clean = run(&serial);
+            let status = if incomplete { "incomplete" } else { "complete" };
+            assert_eq!(clean["coverage"]["status"], status, "{expr}: {clean}");
+            let issues = clean["coverage"]["issues"].as_array().unwrap();
+            assert_eq!(issues.len(), usize::from(incomplete), "{expr}: {clean}");
+            if let Some(issue) = issues.first() {
+                assert_eq!(issue["kind"], "unresolved_lazy_export");
+                assert_eq!(issue["path"], "support.py");
+                assert_eq!(issue["line"], 3);
+            }
+
+            for hits in [usize::from(edit > 0), 2] {
+                let mut cached = run(&parallel);
+                let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+                assert_eq!(stats["hits"], hits);
+                assert_eq!(cached, clean);
+            }
+        }
+    }
+}
+
+#[test]
 fn exported_callable_instances_retain_effective_call_methods() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
