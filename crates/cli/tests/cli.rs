@@ -1334,10 +1334,10 @@ fn skylos_resolves_base_calls_when_a_subclass_definition_is_dormant() {
     let subclass =
         "if ENABLED:\n    class Extension(Base):\n        def setup(self):\n            pass\n";
     let nested_subclass = "if ENABLED:\n    class Container:\n        class Extension(Base):\n            def setup(self):\n                pass\n";
-    for (flag, classes, complete) in [
-        ("False", subclass, true),
-        ("False", nested_subclass, true),
-        ("True", subclass, false),
+    for (flag, classes) in [
+        ("False", subclass),
+        ("False", nested_subclass),
+        ("True", subclass),
     ] {
         fs::write(
             project.path().join("main.py"),
@@ -1346,38 +1346,26 @@ fn skylos_resolves_base_calls_when_a_subclass_definition_is_dormant() {
         .unwrap();
         let output = skylos(project.path(), &["--json", "--strict"]);
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        if complete {
-            assert_eq!(output.status.code(), Some(1), "{report}");
-            assert_eq!(report["coverage"]["status"], "complete");
-            assert_eq!(report["analysis_errors"], serde_json::json!([]));
-            assert!(
-                report["unused_functions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|finding| finding["full_name"] != "main.observed")
-            );
-            assert!(
-                report["unused_classes"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|finding| finding["name"] == "Extension")
-            );
-            assert!(report["dead_code_evidence"].as_array().unwrap().iter().any(
-                |edge| edge["full_name"] == "main.Base.setup" && edge["kind"] == "direct_call"
-            ));
-        } else {
-            assert_eq!(output.status.code(), Some(2), "{report}");
-            assert_eq!(report["coverage"]["status"], "incomplete");
-            assert!(
-                report["analysis_errors"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|issue| issue["kind"] == "unresolved_call")
-            );
-        }
+        assert_eq!(output.status.code(), Some(1), "{report}");
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(report["analysis_errors"], serde_json::json!([]));
+        assert!(
+            report["unused_functions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|finding| finding["full_name"] != "main.observed")
+        );
+        assert!(
+            report["unused_classes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["name"] == "Extension")
+        );
+        assert!(report["dead_code_evidence"].as_array().unwrap().iter().any(
+            |edge| edge["full_name"] == "main.Base.setup" && edge["kind"] == "direct_call"
+        ));
     }
 }
 
@@ -2438,7 +2426,7 @@ __all__ = ["entry"]
 }
 
 #[test]
-fn skylos_constructor_does_not_assume_the_result_of_custom_allocation() {
+fn skylos_resolves_bounded_custom_allocation_and_abstains_on_opaque_results() {
     let project = skylos_fixture();
     let source = r#"def observed():
     print("receiver method ran")
@@ -2447,34 +2435,39 @@ class Receiver:
     def run(self):
         observed()
 
+def allocate():
+    return Receiver()
+
 class Facade:
     def __init__(self):
         pass
-
-    def dispatch(self):
-        self.run()
 
     def run(self):
         pass
 
 "#;
-    let custom = "    def __new__(cls):\n        return Receiver()\n\n";
-    for (allocator, expected_exit) in [(custom, 2), ("", 1)] {
+    let bounded = "    def __new__(cls):\n        return Receiver()\n\n";
+    let opaque = "    def __new__(cls):\n        return allocate()\n\n";
+    for (allocator, incomplete) in [(bounded, false), (opaque, true), ("", false)] {
         fs::write(
             project.path().join("main.py"),
-            format!("{source}{allocator}Facade.dispatch(Facade())\n"),
+            format!("{source}{allocator}Facade().run()\n"),
         )
         .unwrap();
         let output = skylos(project.path(), &["--json", "--strict"]);
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(output.status.code(), Some(expected_exit), "{report}");
+        assert_eq!(
+            output.status.code(),
+            Some(if incomplete { 2 } else { 1 }),
+            "{report}"
+        );
         let evidence = report["dead_code_evidence"].as_array().unwrap();
         let has_edge = |target: &str, kind: &str| {
             evidence
                 .iter()
                 .any(|edge| edge["full_name"] == target && edge["kind"] == kind)
         };
-        if expected_exit == 2 {
+        if incomplete {
             assert_eq!(report["coverage"]["status"], "incomplete");
             assert_eq!(report["unused_functions"], serde_json::json!([]));
             assert!(
@@ -2489,8 +2482,14 @@ class Facade:
             assert!(!has_edge("main.Facade.run", "direct_call"));
         } else {
             assert_eq!(report["coverage"]["status"], "complete");
-            assert!(has_edge("main.Facade.__init__", "constructor"));
-            assert!(has_edge("main.Facade.run", "direct_call"));
+            if allocator == bounded {
+                assert!(!has_edge("main.Facade.__init__", "constructor"));
+                assert!(has_edge("main.Receiver.run", "direct_call"));
+                assert!(!has_edge("main.Facade.run", "direct_call"));
+            } else {
+                assert!(has_edge("main.Facade.__init__", "constructor"));
+                assert!(has_edge("main.Facade.run", "direct_call"));
+            }
         }
     }
 }

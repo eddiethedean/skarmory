@@ -272,12 +272,25 @@ struct Summary {
     languages: BTreeMap<&'static str, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     grep_verify: Option<VerificationSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dead_code_liveness: Option<LivenessSummary>,
 }
 
 #[derive(Debug, Serialize)]
 struct VerificationSummary {
     enabled: bool,
     rescued_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct LivenessSummary {
+    rescued: Vec<LivenessRescue>,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct LivenessRescue {
+    full_name: String,
+    reason: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -573,7 +586,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v9/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v10/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -859,6 +872,19 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    let dead_code_liveness = phase03.then(|| LivenessSummary {
+        rescued: analysis
+            .evidence
+            .iter()
+            .filter(|event| event.kind == "package_entrypoint")
+            .map(|event| LivenessRescue {
+                full_name: event.full_name.clone(),
+                reason: event.kind,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    });
     Ok(Report {
         schema_version: if phase03 { 2 } else { 1 },
         profile: if phase03 {
@@ -875,6 +901,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 enabled: grep_verify,
                 rescued_count: analysis.rescued_count,
             }),
+            dead_code_liveness,
         },
         coverage: Coverage {
             status,

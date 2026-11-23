@@ -308,6 +308,25 @@ impl Snapshot {
                         declared_entries.push((setup_value(value, &bindings), statement.at.line));
                     }
                 }
+                StatementKind::Evaluate(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }) if arguments.is_empty()
+                    && keywords.is_empty()
+                    && matches!(&function.kind,
+                        ExpressionKind::Member(open, name)
+                            if name == "close"
+                                && matches!(&open.kind,
+                                    ExpressionKind::Call { function, .. }
+                                        if matches!(&function.kind,
+                                            ExpressionKind::Name(name)
+                                                if name == "open" && !bindings.contains_key("open")))) =>
+                    {}
                 StatementKind::Evaluate(value) if setup_expression_is_static(value, &bindings) => {}
                 _ => {
                     unmodeled_effect.get_or_insert(statement.at.line);
@@ -722,16 +741,28 @@ mod tests {
             class Checker:\n    pass\n",
         );
         let selected_setup = scan(root, &options()).unwrap();
-        assert!(!selected_setup.is_complete());
         assert!(
-            selected_setup
-                .coverage
-                .issues
-                .iter()
-                .any(|issue| issue.path == "setup.py" && issue.kind == "unresolved_call"),
+            selected_setup.is_complete(),
             "{}",
             selected_setup.to_json().unwrap()
         );
+        let selected_diagnostics = diagnostic_names(&selected_setup);
+        for name in ["tool.cli.run_a", "tool.cli.run_b", "tool.cli.Checker"] {
+            assert!(!selected_diagnostics.contains(name));
+        }
+        assert!(selected_diagnostics.contains("tool.cli.retired"));
+        let selected_json: serde_json::Value =
+            serde_json::from_str(&selected_setup.to_json().unwrap()).unwrap();
+        assert!(
+            selected_json["analysis_summary"]["dead_code_liveness"]["rescued"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["full_name"] == "tool.cli.run_a" && row["reason"] == "package_entrypoint"
+                })
+        );
+        assert!(!marker.exists());
         let runtime_sources = Options {
             excludes: vec!["setup.py".into()],
             ..options()

@@ -119,6 +119,20 @@ pub enum ExpressionKind {
     Scalar,
     Sequence(Vec<Expression>),
     Dictionary(Vec<Expression>),
+    Subscript {
+        value: Box<Expression>,
+        index: Box<Expression>,
+    },
+    Conditional {
+        test: Box<Expression>,
+        body: Box<Expression>,
+        otherwise: Box<Expression>,
+    },
+    Membership {
+        element: Box<Expression>,
+        container: Box<Expression>,
+        contains: bool,
+    },
     Compare {
         left: Box<Expression>,
         right: Box<Expression>,
@@ -691,6 +705,24 @@ impl Lowering<'_> {
                     .iter()
                     .flat_map(|item| item.key.iter().chain(std::iter::once(&item.value)));
                 ExpressionKind::Dictionary(values.map(lower).collect::<Result<_, _>>()?)
+            }
+            Expr::Subscript(node) => ExpressionKind::Subscript {
+                value: Box::new(lower(&node.value)?),
+                index: Box::new(lower(&node.slice)?),
+            },
+            Expr::If(node) => ExpressionKind::Conditional {
+                test: Box::new(lower(&node.test)?),
+                body: Box::new(lower(&node.body)?),
+                otherwise: Box::new(lower(&node.orelse)?),
+            },
+            Expr::Compare(node)
+                if node.ops.len() == 1 && matches!(node.ops[0], CmpOp::In | CmpOp::NotIn) =>
+            {
+                ExpressionKind::Membership {
+                    element: Box::new(lower(&node.left)?),
+                    container: Box::new(lower(&node.comparators[0])?),
+                    contains: node.ops[0] == CmpOp::In,
+                }
             }
             Expr::Compare(node)
                 if node.ops.len() == 1
