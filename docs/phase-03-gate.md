@@ -56,8 +56,9 @@ the original upstream pytest cases with their markers in the frozen Skylos
 environment. For the candidate run it selects `skylos-0.3` in the installed
 Skarmory SDK, forwards the upstream scan options, and disables upstream
 expected-failure markers. It checks that the wheel's files match the installed
-package and that the original assertion lines execute. The seed SDK runner
-currently covers cases that explicitly disable tracing.
+package and that the original assertion lines execute. Runtime-evidence cases
+also require receipts proving that an observation was imported, explicit
+disablement took effect, or an unsafe artifact was rejected, as applicable.
 
 Run the checker regression tests with the following command.
 

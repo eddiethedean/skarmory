@@ -39,13 +39,33 @@ class AssertionTraceTests(unittest.TestCase):
 
 
 class CandidateScanTests(unittest.TestCase):
-    def test_selects_phase03_and_preserves_explicit_and_omitted_grep_options(self):
-        for grep in ({}, {"grep_verify": False}, {"grep_verify": True}):
-            options = {"trace_file": False, **grep}
-            with self.subTest(options=options), patch("run_phase03_seed.subprocess.run") as run:
+    def test_selects_phase03_and_preserves_runtime_and_grep_options(self):
+        for options, expected in (
+            ({}, {}),
+            (
+                {"grep_verify": False, "trace_file": False},
+                {
+                    "grep_verify": False,
+                    "trace_file": False,
+                },
+            ),
+            (
+                {"grep_verify": True, "trace_file": Path("trace.json")},
+                {
+                    "grep_verify": True,
+                    "trace_file": "trace.json",
+                },
+            ),
+        ):
+            with (
+                self.subTest(options=options),
+                patch("run_phase03_seed.subprocess.run") as run,
+            ):
                 scan_candidate(Path("sdk/bin/python"), "fixture", options)
                 payload = json.loads(run.call_args.kwargs["input"])
-                self.assertEqual(payload, ["fixture", {"profile": "skylos-0.3", **options}])
+                self.assertEqual(
+                    payload, ["fixture", {"profile": "skylos-0.3", **expected}]
+                )
 
 
 if __name__ == "__main__":

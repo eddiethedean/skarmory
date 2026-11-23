@@ -59,9 +59,18 @@ def environment():
 
 
 def scan_candidate(sdk_python, path, options):
+    def json_value(value):
+        if isinstance(value, os.PathLike):
+            return os.fspath(value)
+        if isinstance(value, dict):
+            return {key: json_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [json_value(item) for item in value]
+        return value
+
     return subprocess.run(
         [str(sdk_python), "-I", "-c", SCAN],
-        input=json.dumps([path, {**options, "profile": "skylos-0.3"}]),
+        input=json.dumps(json_value([path, {**options, "profile": "skylos-0.3"}])),
         cwd=path, env=environment(), text=True, capture_output=True, timeout=60,
         check=True,
     ).stdout
@@ -129,7 +138,9 @@ def pytest_worker(args):
             self.failed_assertions = {}
             self.scans = set()
             self.grep_scans = set()
-            self.unsupported_trace = set()
+            self.trace_imports = set()
+            self.trace_disables = set()
+            self.trace_rejections = set()
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
@@ -140,9 +151,6 @@ def pytest_worker(args):
             original = item.module.analyze
 
             def analyze(path, **options):
-                if options.get("trace_file") is not False:
-                    self.unsupported_trace.add(key)
-                    pytest.skip("Phase 0.3 SDK currently requires explicit trace disablement")
                 scanned = scan_candidate(args.sdk_python, path, options)
                 report = json.loads(scanned)
                 if report["coverage"]["status"] != "complete":
@@ -150,6 +158,22 @@ def pytest_worker(args):
                 self.scans.add(key)
                 if report["analysis_summary"]["grep_verify"]["enabled"] is True:
                     self.grep_scans.add(key)
+                if any(
+                    evidence["kind"] == "runtime_trace"
+                    for evidence in report.get("runtime_evidence", [])
+                ):
+                    self.trace_imports.add(key)
+                if (
+                    options.get("trace_file") is False
+                    and not report.get("runtime_evidence")
+                    and not report.get("runtime_evidence_issues")
+                ):
+                    self.trace_disables.add(key)
+                if any(
+                    issue["kind"] == "runtime_evidence_rejected"
+                    for issue in report.get("runtime_evidence_issues", [])
+                ):
+                    self.trace_rejections.add(key)
                 return scanned
 
             if args.mode == "candidate":
@@ -206,11 +230,15 @@ def pytest_worker(args):
                 proven = args.mode == "candidate"
             elif required == "grep-verification":
                 proven = key in capture.grep_scans
+            elif required == "runtime-trace-import":
+                proven = key in capture.trace_imports
+            elif required == "runtime-trace-disabled":
+                proven = key in capture.trace_disables
+            elif required == "runtime-trace-rejected":
+                proven = key in capture.trace_rejections
             prerequisites[required] = "passed" if proven else "blocked"
         reached = [assertion for assertion in case["assertions"] if assertion in lines]
         outcome = capture.outcomes.get(key, "error")
-        if key in capture.unsupported_trace and outcome == "skipped":
-            outcome = "blocked"
         proved = (
             key in capture.scans
             and all(value == "passed" for value in prerequisites.values())
