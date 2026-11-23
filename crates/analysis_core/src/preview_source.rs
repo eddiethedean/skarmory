@@ -91,6 +91,10 @@ enum SeenEntry {
 }
 
 impl Stamp {
+    pub(super) fn modified(&self) -> Option<SystemTime> {
+        self.modified
+    }
+
     pub(super) fn new(metadata: &Metadata) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
@@ -594,6 +598,10 @@ impl Project {
 
     pub(super) fn verification_directories(&self) -> impl Iterator<Item = &PathBuf> {
         self.directories.keys()
+    }
+
+    pub(super) fn base(&self) -> &Path {
+        &self.base
     }
 
     pub(super) fn label(&self, path: &Path) -> String {

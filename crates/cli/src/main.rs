@@ -141,6 +141,22 @@ struct SkylosArgs {
     #[arg(long = "no-grep-verify")]
     no_grep_verify: bool,
 
+    /// Read a runtime trace in the Phase 0.3 profile. Defaults to .skylos_trace.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_trace")]
+    trace_file: Option<PathBuf>,
+
+    /// Disable implicit trace discovery in the Phase 0.3 profile.
+    #[arg(long)]
+    no_trace: bool,
+
+    /// Read runtime line coverage in the Phase 0.3 profile. Defaults to .coverage.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_coverage")]
+    coverage_file: Option<PathBuf>,
+
+    /// Disable implicit runtime coverage discovery in the Phase 0.3 profile.
+    #[arg(long)]
+    no_coverage: bool,
+
     /// Write the legacy JSON report (the compatibility default).
     #[arg(long = "json")]
     _json: bool,
@@ -267,6 +283,22 @@ fn write_skylos_report(
         workers,
         cache_dir,
         grep_verify: args.no_grep_verify.then_some(false),
+        trace_file: if args.no_trace {
+            phase02::EvidenceInput::Disabled
+        } else {
+            args.trace_file.map_or(
+                phase02::EvidenceInput::Default,
+                phase02::EvidenceInput::Path,
+            )
+        },
+        coverage_file: if args.no_coverage {
+            phase02::EvidenceInput::Disabled
+        } else {
+            args.coverage_file.map_or(
+                phase02::EvidenceInput::Default,
+                phase02::EvidenceInput::Path,
+            )
+        },
     };
     let report = match phase02::scan(path, &options) {
         Ok(report) => report,

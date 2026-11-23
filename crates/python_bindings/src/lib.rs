@@ -35,6 +35,10 @@ struct SkylosOptions {
     workers: usize,
     cache_dir: Option<PathBuf>,
     grep_verify: Option<bool>,
+    trace_file: Option<PathBuf>,
+    trace_disabled: bool,
+    coverage_file: Option<PathBuf>,
+    coverage_disabled: bool,
 }
 
 #[pyfunction]
@@ -77,6 +81,17 @@ fn scan(py: Python<'_>, path: PathBuf, options: Options) -> PyResult<String> {
     .map_err(|error| PyRuntimeError::new_err(error.to_string()))
 }
 
+fn evidence_input(path: Option<PathBuf>, disabled: bool) -> phase02::EvidenceInput {
+    if disabled {
+        phase02::EvidenceInput::Disabled
+    } else {
+        path.map_or(
+            phase02::EvidenceInput::Default,
+            phase02::EvidenceInput::Path,
+        )
+    }
+}
+
 #[pyfunction]
 fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResult<String> {
     let options = phase02::Options {
@@ -94,6 +109,8 @@ fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResul
         workers: options.workers,
         cache_dir: options.cache_dir,
         grep_verify: options.grep_verify,
+        trace_file: evidence_input(options.trace_file, options.trace_disabled),
+        coverage_file: evidence_input(options.coverage_file, options.coverage_disabled),
         ..phase02::Options::default()
     };
     py.detach(move || {
