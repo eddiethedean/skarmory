@@ -1405,6 +1405,12 @@ fn finite_receivers_and_lazy_tables_follow_edits_with_cached_workers() {
             "right_only",
             &["main.First.run", "main.Second.run", "main.Third.run"][..],
         ),
+        (
+            "right",
+            "Factory = First if choose else Second\nreceiver = Factory()\n",
+            "left_only",
+            &["main.First.run", "main.Second.run"][..],
+        ),
     ] {
         fs::write(
             &initializer,

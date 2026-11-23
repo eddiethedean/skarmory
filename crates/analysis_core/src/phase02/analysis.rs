@@ -2449,6 +2449,22 @@ impl<'a> Graph<'a> {
                 Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => self
                     .allocation_class(id, depth + 1)
                     .map_or(Value::Unknown, Value::Instance),
+                Value::Alternatives(values) => {
+                    let mut instances = Vec::new();
+                    for value in values {
+                        let Value::Callable(Invocation { target: id, .. }) = value else {
+                            return Value::Unknown;
+                        };
+                        if !self.is_class(id) {
+                            return Value::Unknown;
+                        }
+                        let Some(class) = self.allocation_class(id, depth + 1) else {
+                            return Value::Unknown;
+                        };
+                        instances.push(Value::Instance(class));
+                    }
+                    Value::alternatives(instances)
+                }
                 Value::Callable(invocation) if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine) => {
                     Value::Coroutine(
                         self.with_explicit_receiver(invocation, arguments, keywords, recurse),
@@ -7414,6 +7430,27 @@ _unbound()
         assert!(known.evidence.iter().any(|evidence| {
             evidence.full_name == "main.First.run" && evidence.kind == "direct_call"
         }));
+    }
+
+    #[test]
+    fn finite_constructor_alias_retains_each_selected_method() {
+        let result = analyze(
+            &[module(
+                "main.py",
+                "main",
+                "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\ndef unused():\n    return 3\nFactory = First if choose else Second\nreceiver = Factory()\nreceiver.run()\n",
+            )],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        for target in ["main.First.run", "main.Second.run"] {
+            assert!(result.evidence.iter().any(|evidence| {
+                evidence.full_name == target
+                    && evidence.kind == "direct_call"
+                    && evidence.certainty == "possible"
+            }));
+        }
     }
 
     #[test]
