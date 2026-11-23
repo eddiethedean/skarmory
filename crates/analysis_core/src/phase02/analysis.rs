@@ -11,8 +11,8 @@ use skarmory_python::phase02::{
 };
 
 use super::config::Entrypoint;
-use super::package_entrypoints;
 use super::{Analysis, AnalyzedFile, Category, Evidence, Finding};
+use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
@@ -297,7 +297,7 @@ enum SubmoduleAttachment {
 
 #[cfg(test)]
 fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None)
+    analyze_with_verification(files, entrypoints, None, None, None)
 }
 
 pub(super) fn analyze_with_verification(
@@ -305,6 +305,7 @@ pub(super) fn analyze_with_verification(
     entrypoints: &[Entrypoint],
     verification: Option<&grep_verification::Snapshot>,
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
+    runtime: Option<&runtime_evidence::Snapshot>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
@@ -396,7 +397,16 @@ pub(super) fn analyze_with_verification(
     for exports in std::mem::take(&mut graph.namespace_exports).into_values() {
         graph.retain_exports(exports, &initialization_edges, "possible");
     }
-    graph.finish(roots, verification)
+    let mut possible_runtime_roots = Vec::new();
+    let (observed, rejected) = runtime
+        .filter(|snapshot| !snapshot.observations.is_empty())
+        .map_or_else(Default::default, |snapshot| {
+            graph.runtime_roots(snapshot, &mut roots, &mut possible_runtime_roots)
+        });
+    let mut analysis = graph.finish(roots, possible_runtime_roots, verification);
+    analysis.runtime_evidence = observed;
+    analysis.runtime_evidence_issues = rejected;
+    analysis
 }
 
 struct Graph<'a> {
@@ -4932,12 +4942,127 @@ impl<'a> Graph<'a> {
         true
     }
 
+    fn runtime_roots(
+        &self,
+        snapshot: &runtime_evidence::Snapshot,
+        roots: &mut Vec<Edge>,
+        possible_roots: &mut Vec<Edge>,
+    ) -> (Vec<runtime_evidence::Evidence>, Vec<Issue>) {
+        type Observed<'a> = &'a runtime_evidence::Observation;
+        let mut by_location = BTreeMap::<(&str, usize), Vec<Observed<'_>>>::new();
+        for observation in &snapshot.observations {
+            by_location
+                .entry((&observation.file, observation.line))
+                .or_default()
+                .push(observation);
+        }
+        let mut matched = BTreeMap::<Observed<'_>, Option<SymbolId>>::new();
+        for (id, symbol) in self.symbols.iter().enumerate() {
+            let Binding::Definition(definition, body) = symbol.binding else {
+                continue;
+            };
+            if definition.kind == DefinitionKind::Class {
+                continue;
+            }
+            let file = self.files[self.scopes[body].file].path.as_str();
+            let mut observe = |line, function| {
+                if let Some(observations) = by_location.get(&(file, line)) {
+                    for &observation in observations {
+                        if observation.function.as_deref() == function {
+                            matched
+                                .entry(observation)
+                                .and_modify(|previous| {
+                                    if *previous != Some(id) {
+                                        *previous = None;
+                                    }
+                                })
+                                .or_insert(Some(id));
+                        }
+                    }
+                }
+            };
+            let name = Some(definition.name.text.as_str());
+            observe(definition.name.at.line, name);
+            if let Some(decorator) = definition.decorators.first() {
+                observe(decorator.at.line, name);
+            }
+            // Definition lines are also executed by the enclosing scope. Only
+            // use coverage of statements that execute inside this callable.
+            let mut pending = vec![definition.body.as_slice()];
+            while let Some(body) = pending.pop() {
+                for statement in body {
+                    if statement.at.line != definition.name.at.line {
+                        observe(statement.at.line, None);
+                    }
+                    match &statement.kind {
+                        StatementKind::If {
+                            body, otherwise, ..
+                        } => {
+                            pending.push(body);
+                            pending.push(otherwise);
+                        }
+                        StatementKind::With { body, .. } => pending.push(body),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let mut evidence = Vec::new();
+        let mut rejected = BTreeMap::<&str, usize>::new();
+        for observation in &snapshot.observations {
+            let Some(&Some(target)) = matched.get(observation) else {
+                *rejected.entry(&observation.artifact).or_default() += 1;
+                continue;
+            };
+            let (roots, certainty) = match observation.provenance {
+                runtime_evidence::Provenance::Verified => (&mut *roots, "certain"),
+                runtime_evidence::Provenance::Unverified => (&mut *possible_roots, "possible"),
+            };
+            roots.push(Edge {
+                target,
+                kind: observation.kind(),
+                certainty,
+            });
+            let mut owner = self.scopes[self.symbols[target].scope].owner;
+            while let Some(target) = owner {
+                roots.push(Edge {
+                    target,
+                    kind: "type_reference",
+                    certainty: "possible",
+                });
+                owner = self.scopes[self.symbols[target].scope].owner;
+            }
+            evidence.push(runtime_evidence::Evidence {
+                artifact: observation.artifact.clone(),
+                file: observation.file.clone(),
+                line: observation.line,
+                full_name: self.full_name(target),
+                kind: observation.kind(),
+                provenance: observation.provenance,
+            });
+        }
+        let issues = rejected
+            .into_iter()
+            .map(|(path, count)| {
+                Issue::new(
+                    "runtime_evidence_rejected",
+                    path,
+                    format!(
+                        "{count} observations did not match a unique selected callable location"
+                    ),
+                )
+            })
+            .collect();
+        (evidence, issues)
+    }
+
     fn traverse(
         &self,
         reach: &mut Reachability,
         mut pending: VecDeque<Edge>,
         class_bodies: &BTreeSet<ScopeId>,
         verification: bool,
+        possible: bool,
     ) -> bool {
         for _ in 0..MAX_FRAMEWORK_PASSES {
             let before = (
@@ -4949,11 +5074,7 @@ impl<'a> Graph<'a> {
                 if !verification && is_verification_edge(edge.kind) {
                     continue;
                 }
-                let certainty = if verification {
-                    "possible"
-                } else {
-                    edge.certainty
-                };
+                let certainty = if possible { "possible" } else { edge.certainty };
                 reach.evidence.insert((edge.target, edge.kind, certainty));
                 reach.symbols.insert(edge.target);
                 if edge.kind == "type_reference" {
@@ -5010,6 +5131,7 @@ impl<'a> Graph<'a> {
     fn finish(
         mut self,
         roots: Vec<Edge>,
+        possible_runtime_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
     ) -> Analysis {
         self.resolve_class_invocations();
@@ -5035,7 +5157,18 @@ impl<'a> Graph<'a> {
         for &scope in &reach.scopes {
             pending.extend(&self.scopes[scope].edges);
         }
-        let baseline_converged = self.traverse(&mut reach, pending, &class_bodies, false);
+        let baseline_converged = self.traverse(&mut reach, pending, &class_bodies, false, false);
+        if !possible_runtime_roots.is_empty()
+            && !self.traverse(
+                &mut reach,
+                possible_runtime_roots.into(),
+                &class_bodies,
+                false,
+                true,
+            )
+        {
+            self.issues.push(framework_limit());
+        }
         let mut verification = Verification::default();
         if let Some(snapshot) = snapshot {
             let baseline = reach.symbols.clone();
@@ -5058,7 +5191,8 @@ impl<'a> Graph<'a> {
                     .copied()
                     .filter(|edge| is_verification_edge(edge.kind))
             }));
-            if !pending.is_empty() && !self.traverse(&mut reach, pending, &class_bodies, true) {
+            if !pending.is_empty() && !self.traverse(&mut reach, pending, &class_bodies, true, true)
+            {
                 self.issues.push(framework_limit());
             }
             for &(scope, target, line, column) in &self.dynamic_references {
@@ -5282,6 +5416,7 @@ impl<'a> Graph<'a> {
             uncertainties: self.uncertainties,
             verification: verification.evidence,
             rescued_count: verification.rescued_count,
+            ..Analysis::default()
         }
     }
 }

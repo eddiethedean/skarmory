@@ -28,6 +28,10 @@ class _SkylosOptions(TypedDict):
     workers: int
     cache_dir: str | None
     grep_verify: bool | None
+    trace_file: str | None
+    trace_disabled: bool
+    coverage_file: str | None
+    coverage_disabled: bool
 
 def analyze(path: str) -> str: ...
 def scan(path: str, options: _ScanOptions) -> str: ...

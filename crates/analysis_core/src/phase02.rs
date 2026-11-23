@@ -18,6 +18,8 @@ use crate::{Coverage, Issue};
 mod analysis;
 pub(crate) mod config;
 mod package_entrypoints;
+mod runtime_evidence;
+pub use runtime_evidence::Input as EvidenceInput;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Profile {
@@ -30,6 +32,8 @@ pub enum Profile {
 pub struct Options {
     pub profile: Profile,
     pub grep_verify: Option<bool>,
+    pub trace_file: EvidenceInput,
+    pub coverage_file: EvidenceInput,
     pub config_file: Option<PathBuf>,
     pub excludes: Vec<String>,
     pub includes: Vec<String>,
@@ -48,6 +52,8 @@ impl Default for Options {
         Self {
             profile: Profile::default(),
             grep_verify: None,
+            trace_file: EvidenceInput::Default,
+            coverage_file: EvidenceInput::Default,
             config_file: None,
             excludes: Vec::new(),
             includes: Vec::new(),
@@ -133,6 +139,8 @@ struct Analysis {
     uncertainties: Vec<Issue>,
     verification: Vec<VerificationEvidence>,
     rescued_count: usize,
+    runtime_evidence: Vec<runtime_evidence::Evidence>,
+    runtime_evidence_issues: Vec<Issue>,
 }
 
 struct AnalyzedFile {
@@ -359,6 +367,10 @@ pub struct Report {
     dead_code_evidence: RetainedEvidence,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     grep_verification_evidence: Vec<VerificationEvidence>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    runtime_evidence: Vec<runtime_evidence::Evidence>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    runtime_evidence_issues: Vec<Issue>,
     dead_code_abstentions: Vec<Issue>,
     suppressed: Vec<Diagnostic>,
     whitelisted: Vec<Diagnostic>,
@@ -539,6 +551,14 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let config = config::load(path, options)?;
     let phase03 = options.profile == Profile::SkylosPhase03;
     let grep_verify = options.grep_verify.unwrap_or(phase03);
+    if !phase03
+        && (!matches!(options.trace_file, EvidenceInput::Default)
+            || !matches!(options.coverage_file, EvidenceInput::Default))
+    {
+        return Err(ConfigError::new(
+            "runtime evidence options require the skylos-0.3 profile",
+        ));
+    }
     let roots = if path.is_dir() && path.join("src").is_dir() {
         vec![PathBuf::from("src"), PathBuf::from(".")]
     } else {
@@ -641,6 +661,16 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let available_package_entrypoints = package_entrypoints
         .as_ref()
         .filter(|metadata| metadata.issues.is_empty());
+    let runtime = (phase03 && issues.is_empty()).then(|| {
+        runtime_evidence::Snapshot::read(
+            path,
+            &project,
+            &sources,
+            &stamps,
+            &options.trace_file,
+            &options.coverage_file,
+        )
+    });
     let verification = (grep_verify && issues.is_empty())
         .then(|| grep_verification::Snapshot::read(&project, Some(&config.selection)));
     let mut analysis = if issues.is_empty() {
@@ -650,6 +680,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 &config.entrypoints,
                 verification.as_ref(),
                 available_package_entrypoints,
+                runtime.as_ref(),
             )
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
@@ -673,11 +704,17 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 &entrypoints,
                 verification.as_ref(),
                 available_package_entrypoints,
+                runtime.as_ref(),
             )
         }
     } else {
         Analysis::default()
     };
+    if let Some(mut runtime) = runtime {
+        analysis.runtime_evidence_issues.append(&mut runtime.issues);
+        analysis.runtime_evidence_issues.sort();
+        analysis.runtime_evidence_issues.dedup();
+    }
     issues.append(&mut analysis.issues);
     if let Some(verification) = verification {
         issues.extend(verification.finish(&project, Some(&config.selection)));
@@ -854,6 +891,8 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             &analysis.verification,
         ),
         grep_verification_evidence: analysis.verification,
+        runtime_evidence: analysis.runtime_evidence,
+        runtime_evidence_issues: analysis.runtime_evidence_issues,
         dead_code_abstentions: analysis.uncertainties,
         suppressed,
         whitelisted,
