@@ -700,6 +700,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 verification.as_ref(),
                 available_package_entrypoints,
                 runtime.as_ref(),
+                phase03,
             )
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
@@ -724,6 +725,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 verification.as_ref(),
                 available_package_entrypoints,
                 runtime.as_ref(),
+                phase03,
             )
         }
     } else {

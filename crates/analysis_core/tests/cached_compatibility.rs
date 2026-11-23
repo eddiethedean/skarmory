@@ -30,6 +30,52 @@ fn finds(report: &Value, name: &str) -> bool {
 }
 
 #[test]
+fn flask_registration_changes_reuse_unchanged_route_facts() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("routes.py"),
+        "from flask import Blueprint\nbp = Blueprint('api', __name__)\n@bp.route('/')\ndef endpoint():\n    return 1\n",
+    ).unwrap();
+    let serial = Options {
+        profile: Profile::SkylosPhase03,
+        grep_verify: Some(false),
+        ..Options::default()
+    };
+    let parallel = Options {
+        workers: 4,
+        cache_dir: Some(cache.path().to_owned()),
+        ..serial.clone()
+    };
+    let run = |options: &Options| -> Value {
+        serde_json::from_str(&scan(root, options).unwrap().to_json().unwrap()).unwrap()
+    };
+
+    for (registration, hits, unused) in [
+        ("app.register_blueprint(bp)", 0, false),
+        ("print(bp)", 1, true),
+        ("print(bp)", 2, true),
+    ] {
+        fs::write(root.join("web.py"), format!(
+            "from flask import Flask\nfrom routes import bp\napp = Flask(__name__)\n{registration}\n",
+        )).unwrap();
+        let expected = run(&serial);
+        assert_eq!(expected["coverage"]["status"], "complete", "{expected}");
+        assert_eq!(finds(&expected, "endpoint"), unused, "{expected}");
+        let mut parallel_report = run(&parallel);
+        let cache = parallel_report
+            .as_object_mut()
+            .unwrap()
+            .remove("cache")
+            .unwrap();
+        assert_eq!(cache["hits"], hits);
+        assert_eq!(parallel_report, expected);
+    }
+}
+
+#[test]
 fn edits_rebuild_roots_and_recursive_reachability() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

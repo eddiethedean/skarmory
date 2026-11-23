@@ -16,6 +16,8 @@ use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
+mod frameworks;
+
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
 const MAX_PYTEST_REQUEST_STATES: usize = 16_384;
@@ -41,7 +43,12 @@ enum Value {
     Module(usize),
     Provider(String),
     Object(Object, ObjectKind),
-    Method(Object, String),
+    Method(Object, ObjectKind, String),
+    DjangoInclude(Object),
+    DjangoPattern(Box<Value>),
+    DjangoViewFactory(SymbolId),
+    DjangoView(SymbolId),
+    FastapiDependency(SymbolId),
     Executor,
     Submit,
     Process(Box<Value>),
@@ -169,6 +176,22 @@ impl Receiver {
 enum ObjectKind {
     App,
     Router,
+    FlaskApp,
+    FlaskBlueprint,
+    CeleryApp,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FrameworkClassRole {
+    Unittest,
+    DjangoAppConfig,
+    DjangoCommand,
+    DjangoView,
+    DjangoModel,
+    DjangoAdmin,
+    CeleryTask,
+    SqlAlchemyModel,
+    PydanticModel,
 }
 
 struct Scope<'a> {
@@ -189,7 +212,9 @@ struct Scope<'a> {
     class_bodies: Vec<ScopeId>,
     activated_apps: Vec<Object>,
     mounts: Vec<(Object, Object)>,
-    routes: Vec<(Object, SymbolId)>,
+    routes: Vec<(Object, SymbolId, &'static str)>,
+    django_settings: Option<String>,
+    starts_django: Vec<(Location, Option<String>)>,
 }
 
 struct NamespaceRead {
@@ -338,7 +363,12 @@ enum SubmoduleAttachment {
 
 #[cfg(test)]
 fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None)
+    analyze_with_verification(files, entrypoints, None, None, None, false)
+}
+
+#[cfg(test)]
+fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
+    analyze_with_verification(files, entrypoints, None, None, None, true)
 }
 
 pub(super) fn analyze_with_verification(
@@ -347,6 +377,7 @@ pub(super) fn analyze_with_verification(
     verification: Option<&grep_verification::Snapshot>,
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
     runtime: Option<&runtime_evidence::Snapshot>,
+    phase03: bool,
 ) -> Analysis {
     let mut graph = Graph {
         files,
@@ -385,6 +416,13 @@ pub(super) fn analyze_with_verification(
         has_length_hooks: false,
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
+        phase03,
+        framework_lifecycle: Vec::new(),
+        framework_roots: Vec::new(),
+        framework_fields: BTreeSet::new(),
+        django_roots: BTreeSet::new(),
+        django_registration_issues: Vec::new(),
+        unittest_classes: BTreeSet::new(),
     };
     for (file, source) in files.iter().enumerate() {
         graph.push_scope(file, None, None, &source.facts.body);
@@ -421,6 +459,9 @@ pub(super) fn analyze_with_verification(
         let body = graph.scopes[scope].body;
         graph.suite(scope, body);
     }
+    if phase03 {
+        graph.collect_phase03_frameworks();
+    }
     graph.resolve_receiver_calls(false);
     graph.resolve_class_invocations();
     let callbacks = graph.initialization_callbacks();
@@ -442,6 +483,9 @@ pub(super) fn analyze_with_verification(
         graph.retain_package_entrypoints(package_entrypoints, &initialization_edges);
     }
     roots.extend(graph.test_edges());
+    if phase03 {
+        roots.extend(graph.phase03_framework_edges());
+    }
     // A dormant consumer must not consume another scope's export traversal.
     for exports in std::mem::take(&mut graph.namespace_exports).into_values() {
         graph.retain_exports(exports, &initialization_edges, "possible");
@@ -495,6 +539,13 @@ struct Graph<'a> {
     has_length_hooks: bool,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
+    phase03: bool,
+    framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
+    framework_roots: Vec<Edge>,
+    framework_fields: BTreeSet<SymbolId>,
+    django_roots: BTreeSet<Object>,
+    django_registration_issues: Vec<(Object, Issue)>,
+    unittest_classes: BTreeSet<SymbolId>,
 }
 
 impl<'a> Graph<'a> {
@@ -525,6 +576,8 @@ impl<'a> Graph<'a> {
             activated_apps: Vec::new(),
             mounts: Vec::new(),
             routes: Vec::new(),
+            django_settings: None,
+            starts_django: Vec::new(),
         });
         index
     }
@@ -2078,6 +2131,11 @@ impl<'a> Graph<'a> {
                 let member = self
                     .class_member(class, name, depth)
                     .unwrap_or(Value::Unknown);
+                if matches!(&member, Value::Provider(provider) if provider == "django.views.View.as_view")
+                    && matches!(base, Value::Callable(_))
+                {
+                    return Value::DjangoViewFactory(class);
+                }
                 if let Value::Callable(invocation) = member
                     && self.receiver_parameter(invocation.target).is_some()
                 {
@@ -2090,7 +2148,7 @@ impl<'a> Graph<'a> {
                     member
                 }
             }
-            Value::Object(object, _) => Value::Method(object, name.into()),
+            Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
             _ => Value::Unknown,
@@ -2250,6 +2308,20 @@ impl<'a> Graph<'a> {
                 {
                     None
                 }
+                Value::Provider(base) if self.phase03 && framework_managed_base(&base) => {
+                    match (framework_class_provider(&base), name) {
+                        (_, "__init_subclass__")
+                        | (Some(FrameworkClassRole::PydanticModel), "__init__" | "__new__") => None,
+                        (
+                            Some(FrameworkClassRole::PydanticModel),
+                            "model_dump" | "model_dump_json" | "model_validate",
+                        ) => Some(Value::Provider(format!("pydantic.BaseModel.{name}"))),
+                        (Some(FrameworkClassRole::DjangoView), "as_view") => {
+                            Some(Value::Provider("django.views.View.as_view".into()))
+                        }
+                        _ => Some(Value::Unknown),
+                    }
+                }
                 _ => Some(Value::Unknown),
             },
             _ => Some(Value::Unknown),
@@ -2261,7 +2333,12 @@ impl<'a> Graph<'a> {
             Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
                 self.class_member(id, "__init_subclass__", 0)
             }
-            Value::Provider(name) if builtin_noop_subclass_hook(&name) => None,
+            Value::Provider(name)
+                if builtin_noop_subclass_hook(&name)
+                    || self.phase03 && framework_managed_base(&name) =>
+            {
+                None
+            }
             _ => Some(Value::Unknown),
         };
         match hook {
@@ -2446,6 +2523,9 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => match recurse(self, function) {
+                Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
+                    Value::DjangoView(class)
+                }
                 Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => self
                     .allocation_class(id, depth + 1)
                     .map_or(Value::Unknown, Value::Instance),
@@ -2663,6 +2743,108 @@ impl<'a> Graph<'a> {
                         ),
                         ObjectKind::Router,
                     )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(name.as_str(), "flask.Flask" | "flask.app.Flask") =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::FlaskApp,
+                    )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(
+                            name.as_str(),
+                            "flask.Blueprint" | "flask.blueprints.Blueprint"
+                        ) =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::FlaskBlueprint,
+                    )
+                }
+                Value::Provider(name) if self.phase03 && name == "celery.Celery" => Value::Object(
+                    (
+                        self.scopes[scope].file,
+                        expression.at.line,
+                        expression.at.column,
+                    ),
+                    ObjectKind::CeleryApp,
+                ),
+                Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
+                    let module = match (arguments.as_slice(), keywords.as_slice()) {
+                        ([module], []) => Some(module),
+                        ([], [(name, module)]) if name == "arg" => Some(module),
+                        _ => None,
+                    };
+                    match module.map(|value| recurse(self, value)) {
+                        Some(Value::Text(module)) => self
+                            .modules
+                            .get(module.as_str())
+                            .copied()
+                            .map(|file| Value::DjangoInclude(framework_module(file)))
+                            .unwrap_or(Value::Unknown),
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(name.as_str(), "django.urls.path" | "django.urls.re_path") =>
+                {
+                    let Some(slots) = registration_arguments(
+                        arguments,
+                        keywords,
+                        ["route", "view", "kwargs", "name"],
+                    ) else {
+                        return Value::DjangoPattern(Box::new(Value::Unknown));
+                    };
+                    let callback = match slots {
+                        [Some(route), Some(callback), kwargs, name]
+                            if matches!(recurse(self, route), Value::Text(_))
+                                && kwargs.is_none_or(|value| {
+                                    matches!(recurse(self, value), Value::Mapping(_))
+                                })
+                                && name.is_none_or(|value| {
+                                    matches!(recurse(self, value), Value::Text(_))
+                                }) =>
+                        {
+                            Some(callback)
+                        }
+                        _ => None,
+                    };
+                    Value::DjangoPattern(Box::new(
+                        callback.map_or(Value::Unknown, |value| recurse(self, value)),
+                    ))
+                }
+                Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listens_for" => {
+                    Value::Provider("sqlalchemy.event.listens_for.callback".into())
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(name.as_str(), "fastapi.Depends" | "fastapi.Security") =>
+                {
+                    let dependency = arguments.first().or_else(|| {
+                        keywords
+                            .iter()
+                            .find(|(name, _)| name == "dependency")
+                            .map(|(_, value)| value)
+                    });
+                    match dependency.map(|value| recurse(self, value)) {
+                        Some(Value::Callable(invocation)) => {
+                            Value::FastapiDependency(invocation.target)
+                        }
+                        _ => Value::Unknown,
+                    }
                 }
                 Value::Provider(name)
                     if matches!(
@@ -3528,7 +3710,9 @@ impl<'a> Graph<'a> {
                             "process target could not be bounded",
                         ),
                     },
-                    Value::Method(parent, method) if method == "include_router" => {
+                    Value::Method(parent, ObjectKind::App | ObjectKind::Router, method)
+                        if method == "include_router" =>
+                    {
                         let target = arguments.first().or_else(|| {
                             keywords
                                 .iter()
@@ -3548,6 +3732,193 @@ impl<'a> Graph<'a> {
                                 "router identity could not be resolved",
                             );
                         }
+                    }
+                    Value::Method(
+                        parent,
+                        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint,
+                        method,
+                    ) if self.phase03 && method == "register_blueprint" => {
+                        let target = arguments.first().or_else(|| {
+                            keywords
+                                .iter()
+                                .find(|(name, _)| name == "blueprint")
+                                .map(|(_, value)| value)
+                        });
+                        if let Some(target) = target
+                            && let Value::Object(child, ObjectKind::FlaskBlueprint) =
+                                self.identity(scope, target, before, 0)
+                        {
+                            self.scopes[scope].mounts.push((parent, child));
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_registration",
+                                "Flask blueprint identity could not be resolved",
+                            );
+                        }
+                    }
+                    Value::Method(parent, kind, method)
+                        if self.phase03 && is_imperative_registration(kind, &method) =>
+                    {
+                        let target = callback_argument(&method, arguments, keywords);
+                        match target.map(|target| self.identity(scope, target, before, 0)) {
+                            Some(Value::Callable(invocation)) => {
+                                self.scopes[scope].routes.push((
+                                    parent,
+                                    invocation.target,
+                                    framework_registration_kind(kind),
+                                ));
+                            }
+                            _ => self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_registration",
+                                "framework callback identity could not be resolved",
+                            ),
+                        }
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && (name == "sqlalchemy.event.listen"
+                                || name.strip_suffix(".connect").is_some_and(is_django_signal)) =>
+                    {
+                        let callback = if name == "sqlalchemy.event.listen" {
+                            arguments.get(2).or_else(|| {
+                                keywords
+                                    .iter()
+                                    .find(|(name, _)| name == "fn")
+                                    .map(|(_, value)| value)
+                            })
+                        } else {
+                            arguments.first().or_else(|| {
+                                keywords
+                                    .iter()
+                                    .find(|(name, _)| name == "receiver")
+                                    .map(|(_, value)| value)
+                            })
+                        };
+                        if name == "sqlalchemy.event.listen" {
+                            self.activate_argument(
+                                scope,
+                                callback,
+                                before,
+                                "sqlalchemy_listener",
+                                expr.at,
+                            );
+                        } else if let Some(Value::Callable(invocation)) =
+                            callback.map(|target| self.identity(scope, target, before, 0))
+                        {
+                            self.record_django_signal(scope, invocation.target);
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_registration",
+                                "Django signal callback could not be resolved",
+                            );
+                        }
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && name == "sqlalchemy.event.listens_for.callback" =>
+                    {
+                        self.activate_argument(
+                            scope,
+                            arguments.first(),
+                            before,
+                            "sqlalchemy_listener",
+                            expr.at,
+                        );
+                    }
+                    Value::Provider(name) if self.phase03 && name == "os.environ.setdefault" => {
+                        if let [key, settings] = arguments.as_slice()
+                            && keywords.is_empty()
+                            && matches!(self.identity(scope, key, before, 0),
+                                Value::Text(key) if key == "DJANGO_SETTINGS_MODULE")
+                        {
+                            let settings = match self.identity(scope, settings, before, 0) {
+                                Value::Text(settings) => Some(settings),
+                                _ => None,
+                            };
+                            self.scopes[scope].django_settings = settings;
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "environment update is outside the bounded Django startup model",
+                            );
+                        }
+                    }
+                    Value::DjangoViewFactory(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name)
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "django.setup"
+                                    | "django.core.wsgi.get_wsgi_application"
+                                    | "django.core.asgi.get_asgi_application"
+                                    | "django.core.management.execute_from_command_line"
+                            ) =>
+                    {
+                        let row = &mut self.scopes[scope];
+                        row.starts_django
+                            .push((expr.at, row.django_settings.clone()));
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "fastapi.FastAPI" | "fastapi.applications.FastAPI"
+                            ) =>
+                    {
+                        for (keyword, value) in keywords {
+                            if matches!(
+                                keyword.as_str(),
+                                "dependencies"
+                                    | "lifespan"
+                                    | "on_startup"
+                                    | "on_shutdown"
+                                    | "exception_handlers"
+                            ) {
+                                let value = self.identity(scope, value, before, 0);
+                                if !self.activate_framework_value(scope, value, "fastapi_lifecycle")
+                                {
+                                    self.scope_issue(
+                                        scope,
+                                        expr.at,
+                                        "unresolved_registration",
+                                        "FastAPI lifecycle callback could not be resolved",
+                                    );
+                                }
+                            }
+                        }
+                        let Value::Object(object, ObjectKind::App) =
+                            self.identity(scope, expr, before, 0)
+                        else {
+                            unreachable!()
+                        };
+                        self.scopes[scope].activated_apps.push(object);
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && name == "django.urls.register_converter" =>
+                    {
+                        let target = arguments.first().or_else(|| {
+                            keywords
+                                .iter()
+                                .find(|(name, _)| name == "converter")
+                                .map(|(_, value)| value)
+                        });
+                        let value = target.map_or(Value::Unknown, |target| {
+                            self.identity(scope, target, before, 0)
+                        });
+                        self.register_protocol_class(
+                            scope,
+                            value,
+                            &["to_python", "to_url"],
+                            "django_path_converter",
+                            expr.at,
+                        );
                     }
                     Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
                         match self.verification_member(scope, arguments, keywords, before, 0) {
@@ -3577,7 +3948,7 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
-                    Value::Provider(name) if is_known_call(&name) => {
+                    Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
                             && let Some((&read, _)) = row.namespace_reads.last_key_value()
@@ -3587,8 +3958,11 @@ impl<'a> Graph<'a> {
                             // including any reads that refreshed its input.
                             row.namespace_copy_cutoffs.insert(position(expr.at), read);
                         }
-                        if let Value::Object(object, ObjectKind::App) =
-                            self.identity(scope, expr, before, 0)
+                        if let Value::Object(object, kind) = self.identity(scope, expr, before, 0)
+                            && matches!(
+                                kind,
+                                ObjectKind::App | ObjectKind::FlaskApp | ObjectKind::CeleryApp
+                            )
                         {
                             self.scopes[scope].activated_apps.push(object);
                         }
@@ -3895,6 +4269,59 @@ impl<'a> Graph<'a> {
         self.activate_callback(scope, target, kind, at);
     }
 
+    fn activate_framework_value(
+        &mut self,
+        scope: ScopeId,
+        value: Value,
+        kind: &'static str,
+    ) -> bool {
+        match value {
+            Value::Callable(invocation) => {
+                self.edge(scope, invocation.target, kind, "certain");
+                true
+            }
+            Value::FastapiDependency(target) => {
+                self.edge(scope, target, "fastapi_dependency", "certain");
+                true
+            }
+            Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
+                let mut found = false;
+                for value in values {
+                    found |= self.activate_framework_value(scope, value, kind);
+                }
+                found
+            }
+            _ => false,
+        }
+    }
+
+    fn record_framework_lifecycle_values(
+        &mut self,
+        owner: SymbolId,
+        value: Value,
+        kind: &'static str,
+    ) -> bool {
+        match value {
+            Value::Callable(invocation) => {
+                self.framework_lifecycle
+                    .push((owner, invocation.target, kind));
+                true
+            }
+            Value::FastapiDependency(target) => {
+                self.framework_lifecycle.push((owner, target, kind));
+                true
+            }
+            Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
+                let mut found = false;
+                for value in values {
+                    found |= self.record_framework_lifecycle_values(owner, value, kind);
+                }
+                found
+            }
+            _ => false,
+        }
+    }
+
     fn activate_callback(
         &mut self,
         scope: ScopeId,
@@ -4041,6 +4468,16 @@ impl<'a> Graph<'a> {
                     }
                     for expression in &definition.defaults {
                         self.walk(scope, expression, at);
+                        if self.phase03
+                            && let Value::FastapiDependency(dependency) =
+                                self.identity(scope, expression, at, 0)
+                        {
+                            self.framework_lifecycle.push((
+                                target,
+                                dependency,
+                                "fastapi_dependency",
+                            ));
+                        }
                     }
                     for base in &definition.bases {
                         self.walk(scope, base, at);
@@ -4114,12 +4551,23 @@ impl<'a> Graph<'a> {
                             self.suite(scope, otherwise)
                         }
                         None => {
+                            let django_before = self.scopes[scope].django_settings.clone();
                             let body_stops = self.suite(scope, body);
+                            let django_body = std::mem::replace(
+                                &mut self.scopes[scope].django_settings,
+                                django_before,
+                            );
                             let excluded_branch = self.scopes[scope].namespace_exclusions.len();
                             self.scopes[scope]
                                 .namespace_exclusions
                                 .extend(namespace_span(body));
                             let otherwise_stops = self.suite(scope, otherwise);
+                            let django_other = &mut self.scopes[scope].django_settings;
+                            if otherwise_stops || *django_other == django_body {
+                                *django_other = django_body;
+                            } else if !body_stops {
+                                *django_other = None;
+                            }
                             if !body_stops && !body.is_empty() {
                                 self.scopes[scope]
                                     .namespace_exclusions
@@ -4187,8 +4635,87 @@ impl<'a> Graph<'a> {
             self.walk(scope, value, before);
         }
         match self.identity(scope, function, before, 0) {
-            Value::Method(object, name) if is_route(&name) => {
-                self.scopes[scope].routes.push((object, target))
+            Value::Method(object, kind, name) if is_route(kind, &name, self.phase03) => {
+                self.scopes[scope]
+                    .routes
+                    .push((object, target, framework_registration_kind(kind)));
+                if self.phase03
+                    && matches!(kind, ObjectKind::App | ObjectKind::Router)
+                    && let Some((_, dependencies)) =
+                        keywords.iter().find(|(name, _)| name == "dependencies")
+                {
+                    let value = self.identity(scope, dependencies, before, 0);
+                    if !self.record_framework_lifecycle_values(target, value, "fastapi_dependency")
+                    {
+                        self.scope_issue(
+                            scope,
+                            dependencies.at,
+                            "unresolved_registration",
+                            "FastAPI route dependencies could not be resolved",
+                        );
+                    }
+                }
+            }
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
+                        "django.dispatch.receiver"
+                            | "sqlalchemy.event.listens_for"
+                            | "celery.shared_task"
+                    ) =>
+            {
+                let kind = match name.as_str() {
+                    "django.dispatch.receiver" => "django_signal",
+                    "sqlalchemy.event.listens_for" => "sqlalchemy_listener",
+                    "celery.shared_task" => "celery_task",
+                    _ => unreachable!(),
+                };
+                if kind == "django_signal" {
+                    if let Some(signal) = args.first()
+                        && matches!(self.identity(scope, signal, before, 0),
+                            Value::Provider(provider) if is_django_signal(&provider))
+                    {
+                        self.record_django_signal(scope, target);
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            decorator.at,
+                            "unresolved_registration",
+                            "Django signal identity could not be resolved",
+                        );
+                    }
+                } else {
+                    self.edge(scope, target, kind, "certain");
+                }
+            }
+            Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
+                        "pydantic.computed_field"
+                            | "pydantic.field_validator"
+                            | "pydantic.model_validator"
+                            | "pydantic.root_validator"
+                            | "pydantic.validator"
+                            | "pydantic.field_serializer"
+                            | "pydantic.model_serializer"
+                            | "sqlalchemy.ext.hybrid.hybrid_property"
+                    ) =>
+            {
+                if let Some(owner) = self.scopes[scope].owner
+                    && self.is_class(owner)
+                    && (name == "sqlalchemy.ext.hybrid.hybrid_property"
+                        || self.framework_class_role(owner, &mut BTreeSet::new(), 0)
+                            == Some(FrameworkClassRole::PydanticModel))
+                {
+                    self.framework_lifecycle
+                        .push((owner, target, "framework_lifecycle"));
+                }
+            }
+            Value::Provider(name) if self.phase03 && name == "django.contrib.admin.register" => {
+                self.edge(scope, target, "django_admin_registration", "certain");
             }
             Value::Provider(name) if name == "pytest.fixture" => {
                 let registered_name = if let Some((_, expression)) =
@@ -4253,6 +4780,13 @@ impl<'a> Graph<'a> {
                     name.as_str(),
                     "builtins.staticmethod" | "builtins.classmethod"
                 ) => {}
+            Value::Provider(name)
+                if self.phase03
+                    && name == "builtins.property"
+                    && let Some(owner) = self.scopes[scope].owner
+                    && self.is_class(owner)
+                    && self.framework_class_role(owner, &mut BTreeSet::new(), 0)
+                        == Some(FrameworkClassRole::PydanticModel) => {}
             _ => self.scope_issue(
                 scope,
                 decorator.at,
@@ -4526,6 +5060,9 @@ impl<'a> Graph<'a> {
             let module_tests = self.pytest_registrations(&self.scopes[file].names, "test_");
             self.record_pytest_tests(file, &namespaces, None, module_tests, &mut roots);
             for (class, collected) in self.pytest_registrations(&self.scopes[file].names, "Test") {
+                if self.phase03 && self.unittest_classes.contains(&class.target) {
+                    continue;
+                }
                 let Some((names, eligible)) = self.pytest_class_names(class.target) else {
                     continue;
                 };
@@ -5606,6 +6143,9 @@ impl<'a> Graph<'a> {
                     continue;
                 }
                 let certainty = if possible { "possible" } else { edge.certainty };
+                if matches!(edge.kind, "fastapi_registration" | "fastapi_dependency") {
+                    reach.fastapi_callbacks.insert(edge.target);
+                }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
                 reach.symbols.insert(edge.target);
                 if edge.kind == "type_reference" {
@@ -5628,6 +6168,21 @@ impl<'a> Graph<'a> {
                 }
             }
             for &scope in &reach.scopes {
+                if self.phase03 {
+                    let file = self.scopes[scope].file;
+                    if reach.active_objects.contains(&framework_module(file)) {
+                        reach.active_objects.insert(django_loaded_module(file));
+                    }
+                    if reach.active_objects.contains(&django_loaded_module(file)) {
+                        reach.active_objects.extend(
+                            self.scopes[scope]
+                                .imports
+                                .iter()
+                                .copied()
+                                .map(django_loaded_module),
+                        );
+                    }
+                }
                 let scope = &self.scopes[scope];
                 reach.active_objects.extend(&scope.activated_apps);
                 for &(parent, child) in &scope.mounts {
@@ -5635,14 +6190,34 @@ impl<'a> Graph<'a> {
                         reach.active_objects.insert(child);
                     }
                 }
-                for &(object, target) in &scope.routes {
-                    if reach.active_objects.contains(&object) && !reach.symbols.contains(&target) {
+                for &(object, target, kind) in &scope.routes {
+                    if reach.active_objects.contains(&object)
+                        && if self.phase03 {
+                            !reach.has_evidence(target, kind)
+                        } else {
+                            !reach.symbols.contains(&target)
+                        }
+                    {
                         pending.push_back(Edge {
                             target,
-                            kind: "fastapi_registration",
+                            kind,
                             certainty: "certain",
                         });
                     }
+                }
+            }
+            for &(owner, target, kind) in &self.framework_lifecycle {
+                let active = if kind == "fastapi_dependency" {
+                    reach.fastapi_callbacks.contains(&owner)
+                } else {
+                    reach.symbols.contains(&owner)
+                };
+                if active && !reach.has_evidence(target, kind) {
+                    pending.push_back(Edge {
+                        target,
+                        kind,
+                        certainty: "certain",
+                    });
                 }
             }
             if pending.is_empty()
@@ -5813,6 +6388,13 @@ impl<'a> Graph<'a> {
         if !baseline_converged {
             self.issues.push(framework_limit());
         }
+        self.issues.extend(
+            self.django_registration_issues
+                .drain(..)
+                .filter_map(|(object, issue)| {
+                    reach.active_objects.contains(&object).then_some(issue)
+                }),
+        );
         let Reachability {
             scopes: reachable_scopes,
             symbols: reachable_symbols,
@@ -5930,7 +6512,13 @@ impl<'a> Graph<'a> {
                 Binding::Import(_) if !self.read.contains(&id) => {
                     (Category::Import, "SKY-U002", 100, "binding_is_unread")
                 }
-                Binding::Variable(_, _) if !self.read.contains(&id) => {
+                Binding::Variable(_, _)
+                    if !self.read.contains(&id)
+                        && !(self.framework_fields.contains(&id)
+                            && scope
+                                .owner
+                                .is_some_and(|owner| reachable_symbols.contains(&owner))) =>
+                {
                     let confidence = match scope.owner {
                         Some(owner) if self.is_class(owner) => 80,
                         None => 90,
@@ -6039,7 +6627,15 @@ struct Reachability {
     scopes: BTreeSet<ScopeId>,
     symbols: BTreeSet<SymbolId>,
     active_objects: BTreeSet<Object>,
+    fastapi_callbacks: BTreeSet<SymbolId>,
     evidence: BTreeSet<(SymbolId, &'static str, &'static str)>,
+}
+
+impl Reachability {
+    fn has_evidence(&self, target: SymbolId, kind: &'static str) -> bool {
+        self.evidence.contains(&(target, kind, "certain"))
+            || self.evidence.contains(&(target, kind, "possible"))
+    }
 }
 
 #[derive(Default)]
@@ -6298,26 +6894,86 @@ fn is_identity_decorator(definition: &Definition) -> bool {
     })), .. }] if name == &parameter.text)
 }
 
-fn is_route(name: &str) -> bool {
-    matches!(
+fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
+    let http = matches!(
         name,
-        "get"
-            | "post"
-            | "put"
-            | "delete"
-            | "patch"
-            | "head"
-            | "options"
-            | "trace"
-            | "api_route"
-            | "route"
-            | "websocket"
-            | "websocket_route"
-    )
+        "get" | "post" | "put" | "delete" | "patch" | "head" | "options" | "trace"
+    );
+    match kind {
+        ObjectKind::App | ObjectKind::Router => {
+            http || matches!(
+                name,
+                "api_route" | "route" | "websocket" | "websocket_route"
+            ) || phase03 && matches!(name, "exception_handler" | "on_event")
+        }
+        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => {
+            http || matches!(
+                name,
+                "route"
+                    | "before_request"
+                    | "after_request"
+                    | "teardown_request"
+                    | "errorhandler"
+                    | "context_processor"
+            ) || matches!(kind, ObjectKind::FlaskBlueprint)
+                && matches!(
+                    name,
+                    "before_app_request"
+                        | "after_app_request"
+                        | "teardown_app_request"
+                        | "app_context_processor"
+                        | "app_errorhandler"
+                )
+        }
+        ObjectKind::CeleryApp => name == "task",
+    }
 }
 
-fn is_known_call(name: &str) -> bool {
+fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
+    match kind {
+        ObjectKind::App | ObjectKind::Router => {
+            matches!(
+                method,
+                "add_api_route" | "add_api_websocket_route" | "add_route" | "add_websocket_route"
+            ) || matches!(kind, ObjectKind::App) && method == "add_exception_handler"
+        }
+        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => method == "add_url_rule",
+        ObjectKind::CeleryApp => false,
+    }
+}
+
+fn is_known_call(name: &str, phase03: bool) -> bool {
     name.starts_with("builtins.")
+        || phase03
+            && (name.starts_with("pydantic.BaseModel.")
+                || matches!(
+                    name,
+                    "flask.Flask"
+                        | "flask.app.Flask"
+                        | "flask.Blueprint"
+                        | "flask.blueprints.Blueprint"
+                        | "celery.Celery"
+                        | "fastapi.Depends"
+                        | "fastapi.Security"
+                        | "django.urls.path"
+                        | "django.urls.re_path"
+                        | "django.urls.include"
+                        | "django.urls.register_converter"
+                        | "django.setup"
+                        | "django.core.wsgi.get_wsgi_application"
+                        | "django.core.asgi.get_asgi_application"
+                        | "django.core.management.execute_from_command_line"
+                        | "sqlalchemy.event.listen"
+                        | "sqlalchemy.event.listens_for"
+                        | "sqlalchemy.event.listens_for.callback"
+                        | "sqlalchemy.orm.mapped_column"
+                        | "django.http.HttpResponse"
+                        | "django.http.response.HttpResponse"
+                        | "django.http.HttpResponseBadRequest"
+                        | "django.http.HttpResponseForbidden"
+                        | "django.http.HttpResponseNotFound"
+                        | "django.http.HttpResponseServerError"
+                ))
         || matches!(
             name,
             "fastapi.FastAPI"
@@ -6330,6 +6986,83 @@ fn is_known_call(name: &str) -> bool {
                 | "setuptools.setup"
                 | "distutils.core.setup"
         )
+}
+
+fn framework_module(file: usize) -> Object {
+    (file, 0, 0)
+}
+
+fn django_loaded_module(file: usize) -> Object {
+    (file, 0, 1)
+}
+
+fn is_django_signal(provider: &str) -> bool {
+    provider
+        .strip_prefix("django.db.models.signals.")
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "pre_init"
+                    | "post_init"
+                    | "pre_save"
+                    | "post_save"
+                    | "pre_delete"
+                    | "post_delete"
+                    | "m2m_changed"
+                    | "class_prepared"
+                    | "pre_migrate"
+                    | "post_migrate"
+            )
+        })
+}
+
+fn framework_registration_kind(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::App | ObjectKind::Router => "fastapi_registration",
+        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => "flask_registration",
+        ObjectKind::CeleryApp => "celery_task",
+    }
+}
+
+fn callback_argument<'a>(
+    method: &str,
+    arguments: &'a [Expression],
+    keywords: &'a [(String, Expression)],
+) -> Option<&'a Expression> {
+    let (position, names): (usize, &[&str]) = match method {
+        "add_url_rule" => (2, &["view_func"]),
+        "add_api_route" | "add_api_websocket_route" => (1, &["endpoint"]),
+        "add_route" | "add_websocket_route" => (1, &["endpoint"]),
+        "add_exception_handler" => (1, &["handler"]),
+        _ => return None,
+    };
+    arguments.get(position).or_else(|| {
+        keywords
+            .iter()
+            .find(|(name, _)| names.contains(&name.as_str()))
+            .map(|(_, value)| value)
+    })
+}
+
+fn registration_arguments<'a, const N: usize>(
+    positional: &'a [Expression],
+    keywords: &'a [(String, Expression)],
+    names: [&str; N],
+) -> Option<[Option<&'a Expression>; N]> {
+    if positional.len() > N {
+        return None;
+    }
+    let mut slots = [None; N];
+    for (slot, value) in slots.iter_mut().zip(positional) {
+        *slot = Some(value);
+    }
+    for (name, value) in keywords {
+        let index = names.iter().position(|key| key == name)?;
+        if slots[index].replace(value).is_some() {
+            return None;
+        }
+    }
+    Some(slots)
 }
 
 fn builtin_noop_subclass_hook(name: &str) -> bool {
@@ -6351,6 +7084,41 @@ fn builtin_noop_subclass_hook(name: &str) -> bool {
             | "builtins.TypeError"
             | "builtins.Exception"
     )
+}
+
+fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
+    match name {
+        "unittest.TestCase"
+        | "unittest.case.TestCase"
+        | "unittest.IsolatedAsyncioTestCase"
+        | "unittest.async_case.IsolatedAsyncioTestCase" => Some(FrameworkClassRole::Unittest),
+        "django.apps.AppConfig" | "django.apps.config.AppConfig" => {
+            Some(FrameworkClassRole::DjangoAppConfig)
+        }
+        "django.core.management.base.BaseCommand" => Some(FrameworkClassRole::DjangoCommand),
+        "django.views.View" | "django.views.generic.View" | "django.views.generic.base.View" => {
+            Some(FrameworkClassRole::DjangoView)
+        }
+        "django.db.models.Model" | "django.db.models.base.Model" => {
+            Some(FrameworkClassRole::DjangoModel)
+        }
+        "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
+            Some(FrameworkClassRole::DjangoAdmin)
+        }
+        "celery.Task" | "celery.app.task.Task" => Some(FrameworkClassRole::CeleryTask),
+        "sqlalchemy.orm.DeclarativeBase" | "sqlalchemy.orm.decl_api.DeclarativeBase" => {
+            Some(FrameworkClassRole::SqlAlchemyModel)
+        }
+        "pydantic.BaseModel"
+        | "pydantic.main.BaseModel"
+        | "pydantic_settings.BaseSettings"
+        | "pydantic_settings.main.BaseSettings" => Some(FrameworkClassRole::PydanticModel),
+        _ => None,
+    }
+}
+
+fn framework_managed_base(name: &str) -> bool {
+    framework_class_provider(name).is_some()
 }
 
 #[cfg(test)]
@@ -7634,5 +8402,202 @@ print(Status.default)
                 .any(|evidence| evidence.full_name == "test_app.resource"
                     && evidence.kind == "pytest_root")
         );
+    }
+
+    #[test]
+    fn phase03_activates_registered_flask_blueprints_only() {
+        let files = [
+            module(
+                "routes.py",
+                "routes",
+                "from flask import Blueprint\nactive = Blueprint('active', __name__)\ndormant = Blueprint('dormant', __name__)\n@active.route('/')\ndef served():\n    return helper()\n@dormant.route('/')\ndef parked():\n    return 0\ndef helper():\n    return 1\n",
+            ),
+            module(
+                "app.py",
+                "app",
+                "from flask import Flask\nfrom routes import active\napp = Flask(__name__)\napp.register_blueprint(active)\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["parked"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "routes.served" && entry.kind == "flask_registration"
+        }));
+    }
+
+    #[test]
+    fn phase03_selects_the_configured_django_urlconf() {
+        let files = [
+            module("settings.py", "settings", "ROOT_URLCONF = 'project.urls'\n"),
+            module(
+                "project/urls.py",
+                "project.urls",
+                "from django.urls import include, path\nfrom views import active\nimport signals\nurlpatterns = [path('', active), path('nested/', include('child_urls'))]\n",
+            ),
+            module(
+                "child_urls.py",
+                "child_urls",
+                "from django.urls import path\nfrom django.views import View\nclass Child(View):\n    def get(self, request):\n        return 1\nurlpatterns = [path('', Child.as_view())]\n",
+            ),
+            module(
+                "signals.py",
+                "signals",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef loaded(sender):\n    return 1\n",
+            ),
+            module(
+                "dormant_signals.py",
+                "dormant_signals",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef unimported(sender):\n    return 1\n",
+            ),
+            module(
+                "unused_urls.py",
+                "unused_urls",
+                "from django.urls import path\nfrom views import dormant\nurlpatterns = [path('', dormant)]\n",
+            ),
+            module(
+                "views.py",
+                "views",
+                "def active(request):\n    return helper()\ndef dormant(request):\n    return 0\ndef helper():\n    return 1\n",
+            ),
+            module(
+                "manage.py",
+                "manage",
+                "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["dormant", "unimported"]
+        );
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "views.active" && entry.kind == "django_registration"
+        }));
+        assert!(
+            result.evidence.iter().any(|entry| {
+                entry.full_name == "signals.loaded" && entry.kind == "django_signal"
+            })
+        );
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "child_urls.Child.get" && entry.kind == "framework_lifecycle"
+        }));
+    }
+
+    #[test]
+    fn phase03_flask_lookalike_does_not_register_and_unknown_blueprint_is_incomplete() {
+        let lookalike = module(
+            "fake.py",
+            "fake",
+            "def route(handler):\n    return handler\n@route\ndef parked():\n    return 1\n",
+        );
+        let result = analyze_phase03(&[lookalike], &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["parked"]);
+
+        let web = module(
+            "web.py",
+            "web",
+            "from flask import Flask\napp = Flask(__name__)\napp.register_blueprint(selected_blueprint)\n",
+        );
+        let result = analyze_phase03(&[web], &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+    }
+
+    #[test]
+    fn phase03_fastapi_dependencies_need_an_active_route() {
+        let files = [module(
+            "example.py",
+            "example",
+            "from fastapi import FastAPI, APIRouter, Depends\napp = FastAPI()\ndormant = APIRouter()\ndef active():\n    return object()\ndef inactive():\n    return object()\n@app.get('/')\ndef endpoint(dep=Depends(active)):\n    return 1\n@dormant.get('/')\ndef parked(dep=Depends(inactive)):\n    return 1\n",
+        )];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["inactive", "parked"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "example.active" && entry.kind == "fastapi_dependency"
+        }));
+    }
+
+    #[test]
+    fn phase03_models_tasks_listeners_and_pydantic_lifecycle() {
+        let files = [
+            module(
+                "tasks.py",
+                "tasks",
+                "from celery import Celery\napp = Celery('jobs')\n@app.task\ndef queued():\n    return task_helper()\ndef task_helper():\n    return 1\ndef dormant_task():\n    return 0\n",
+            ),
+            module(
+                "listeners.py",
+                "listeners",
+                "from sqlalchemy import event\nclass Engine: pass\n@event.listens_for(Engine, 'connect')\ndef connected(dbapi, record):\n    return None\ndef disconnected(dbapi, record):\n    return None\n",
+            ),
+            module(
+                "models.py",
+                "models",
+                "from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\n    def model_post_init(self, context):\n        return None\nclass Draft(BaseModel):\n    name: str\nUser(name='Ada')\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["disconnected", "dormant_task"]
+        );
+        assert_eq!(names(&result, Category::Class), ["Draft"]);
+        for target in [
+            "tasks.queued",
+            "listeners.connected",
+            "models.User.model_post_init",
+        ] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.full_name == target),
+                "missing framework evidence for {target}: {:?}",
+                result.evidence
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_discovers_unittest_and_pytest_plugin_hooks() {
+        let files = [
+            module(
+                "test_case.py",
+                "test_case",
+                "import unittest\npytest_plugins = ['plugin']\nclass Example(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls):\n        return None\n    def test_value(self):\n        assert True\ndef setUpModule():\n    return None\ndef helper():\n    return None\n",
+            ),
+            module(
+                "plugin.py",
+                "plugin",
+                "import pytest\ndef pytest_addhooks(pluginmanager):\n    return pluginmanager\ndef serialize(value):\n    return str(value)\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["helper", "serialize"]);
+        for target in [
+            "test_case.Example.setUpClass",
+            "test_case.Example.test_value",
+            "test_case.setUpModule",
+            "plugin.pytest_addhooks",
+        ] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.full_name == target),
+                "missing discovery evidence for {target}: {:?}",
+                result.evidence
+            );
+        }
     }
 }

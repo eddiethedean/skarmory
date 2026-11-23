@@ -166,6 +166,38 @@ guard when its operands have bounded scalar behavior. Comparisons that could
 invoke a selected class hook report incomplete coverage when reached. This
 supports the pinned recursive-group and caller-edit cases. [#52](https://github.com/eddiethedean/skarmory/issues/52)
 
+### Bounded Python framework discovery
+
+The `skylos-0.3` profile uses resolved imports for the framework identities in
+these models. A selected Flask app can register route and request callbacks
+directly or mount a blueprint. Blueprint callbacks require the mount to be
+reached. FastAPI supports imperative endpoint registration and literal
+`Depends` or `Security` defaults on active routes.
+
+Django URL discovery follows a recognized launcher and a literal
+`DJANGO_SETTINGS_MODULE` environment default in the same scope. It resolves
+the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
+`path` and `re_path` registrations, and literal `include` modules. Signal
+registrations through selected built-in signal providers follow imports
+from the startup, settings and active URL modules. Unresolved URL registrations
+in active URL modules produce coverage diagnostics.
+
+The profile also recognizes selected Celery task registrations, SQLAlchemy
+listeners, Pydantic model hooks, unittest test and lifecycle methods through
+effective class bindings, and pytest hooks through selected conftest modules
+or literal `pytest_plugins` declarations. These are bounded models under
+[#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
+suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
+Management command discovery, installed Django AppConfig loading, and
+additional FastAPI dependency patterns still need coverage.
+
+The pinned `django-urlpatterns`, `pytest-plugin-hooks`, and
+`python-unittest-lifecycle` corpus cases currently diverge. They require
+retention in standalone fixtures without a selected launcher, an active
+pytest plugin, or a discovered unittest test method, respectively. The
+unittest fixture also expects a test-only path whitelist. The reviewed
+inventory must account for these differences before qualification.
+
 ### Bounded Python receivers and lazy imports
 
 Ordinary constructors and instance methods use the first positional
