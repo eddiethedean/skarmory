@@ -8511,6 +8511,37 @@ print(Status.default)
     }
 
     #[test]
+    fn phase03_standalone_django_registrations_report_unknown_activation() {
+        let urls = module(
+            "urls.py",
+            "urls",
+            "from django.urls import path\ndef endpoint(request):\n    return 1\nurlpatterns = [path('', endpoint)]\n",
+        );
+        let signals = module(
+            "signals.py",
+            "signals",
+            "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef on_save(sender):\n    return 1\n",
+        );
+        let result = analyze_phase03(&[urls, signals], &[]);
+        for path in ["urls.py", "signals.py"] {
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| { issue.path == path && issue.kind == "unresolved_registration" }),
+                "{:?}",
+                result.issues
+            );
+        }
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|event| matches!(event.kind, "django_registration" | "django_signal"))
+        );
+    }
+
+    #[test]
     fn phase03_fastapi_dependencies_need_an_active_route() {
         let files = [module(
             "example.py",

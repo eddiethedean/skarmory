@@ -321,6 +321,39 @@ impl Graph<'_> {
     }
 
     fn collect_django_urlconfs(&mut self) {
+        if self
+            .scopes
+            .iter()
+            .all(|scope| scope.starts_django.is_empty())
+        {
+            for file in 0..self.files.len() {
+                if let Some(patterns) = self.local(file, "urlpatterns", END)
+                    && has_django_pattern(&self.binding_value(patterns, 0))
+                {
+                    self.issue(
+                        file,
+                        self.symbols[patterns].name.at,
+                        "unresolved_registration",
+                        "Django URL patterns have no selected startup and ROOT_URLCONF",
+                    );
+                }
+            }
+            for scope in 0..self.scopes.len() {
+                if let Some((_, target, _)) = self.scopes[scope]
+                    .routes
+                    .iter()
+                    .find(|(_, _, kind)| *kind == "django_signal")
+                {
+                    self.scope_issue(
+                        scope,
+                        self.symbols[*target].name.at,
+                        "unresolved_registration",
+                        "Django signal registration has no selected startup",
+                    );
+                }
+            }
+            return;
+        }
         for scope in 0..self.scopes.len() {
             for (at, settings) in std::mem::take(&mut self.scopes[scope].starts_django) {
                 let root = settings
@@ -455,5 +488,15 @@ impl Graph<'_> {
 
     pub(super) fn phase03_framework_edges(&mut self) -> Vec<Edge> {
         std::mem::take(&mut self.framework_roots)
+    }
+}
+
+fn has_django_pattern(value: &Value) -> bool {
+    match value {
+        Value::DjangoPattern(_) => true,
+        Value::Sequence(values) | Value::Alternatives(values) => {
+            values.iter().any(has_django_pattern)
+        }
+        _ => false,
     }
 }

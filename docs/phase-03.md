@@ -180,7 +180,9 @@ the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Signal
 registrations through selected built-in signal providers follow imports
 from the startup, settings and active URL modules. Unresolved URL registrations
-in active URL modules produce coverage diagnostics.
+in active URL modules produce coverage diagnostics. Standalone URL patterns
+resolved through Django's provider also report incomplete coverage when no
+startup is selected.
 
 The profile also recognizes selected Celery task registrations, SQLAlchemy
 listeners, Pydantic model hooks, unittest test and lifecycle methods through
