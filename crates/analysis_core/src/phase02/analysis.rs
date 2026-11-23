@@ -48,7 +48,7 @@ enum Value {
     DjangoPattern(Box<Value>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
-    FastapiDependency(SymbolId),
+    FastapiDependency(Option<SymbolId>),
     Executor,
     Submit,
     Process(Box<Value>),
@@ -184,6 +184,7 @@ enum ObjectKind {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum FrameworkClassRole {
     Unittest,
+    UnittestAsync,
     DjangoAppConfig,
     DjangoCommand,
     DjangoView,
@@ -192,6 +193,13 @@ enum FrameworkClassRole {
     CeleryTask,
     SqlAlchemyModel,
     PydanticModel,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum DjangoSettings {
+    Unset,
+    Module(String),
+    Unknown,
 }
 
 struct Scope<'a> {
@@ -213,7 +221,7 @@ struct Scope<'a> {
     activated_apps: Vec<Object>,
     mounts: Vec<(Object, Object)>,
     routes: Vec<(Object, SymbolId, &'static str)>,
-    django_settings: Option<String>,
+    django_settings: DjangoSettings,
     starts_django: Vec<(Location, Option<String>)>,
 }
 
@@ -363,12 +371,12 @@ enum SubmoduleAttachment {
 
 #[cfg(test)]
 fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None, false)
+    analyze_with_verification(files, entrypoints, None, None, None, false, None)
 }
 
 #[cfg(test)]
 fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None, true)
+    analyze_with_verification(files, entrypoints, None, None, None, true, None)
 }
 
 pub(super) fn analyze_with_verification(
@@ -378,6 +386,7 @@ pub(super) fn analyze_with_verification(
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
     runtime: Option<&runtime_evidence::Snapshot>,
     phase03: bool,
+    django_settings: Option<&std::ffi::OsStr>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
@@ -420,9 +429,17 @@ pub(super) fn analyze_with_verification(
         framework_lifecycle: Vec::new(),
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
+        fastapi_dependency_issues: Vec::new(),
+        fastapi_route_issues: Vec::new(),
         django_roots: BTreeSet::new(),
         django_registration_issues: Vec::new(),
-        unittest_classes: BTreeSet::new(),
+        initial_django_settings: django_settings.map_or(DjangoSettings::Unset, |value| {
+            value.to_str().map_or(DjangoSettings::Unknown, |value| {
+                DjangoSettings::Module(value.to_owned())
+            })
+        }),
+        unittest_classes: BTreeMap::new(),
+        pytest_plugins: Vec::new(),
     };
     for (file, source) in files.iter().enumerate() {
         graph.push_scope(file, None, None, &source.facts.body);
@@ -543,9 +560,13 @@ struct Graph<'a> {
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
+    fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
+    fastapi_route_issues: Vec<(ScopeId, Object, Issue)>,
     django_roots: BTreeSet<Object>,
     django_registration_issues: Vec<(Object, Issue)>,
-    unittest_classes: BTreeSet<SymbolId>,
+    initial_django_settings: DjangoSettings,
+    unittest_classes: BTreeMap<SymbolId, FrameworkClassRole>,
+    pytest_plugins: Vec<ScopeId>,
 }
 
 impl<'a> Graph<'a> {
@@ -576,7 +597,7 @@ impl<'a> Graph<'a> {
             activated_apps: Vec::new(),
             mounts: Vec::new(),
             routes: Vec::new(),
-            django_settings: None,
+            django_settings: self.initial_django_settings.clone(),
             starts_django: Vec::new(),
         });
         index
@@ -2839,12 +2860,10 @@ impl<'a> Graph<'a> {
                             .find(|(name, _)| name == "dependency")
                             .map(|(_, value)| value)
                     });
-                    match dependency.map(|value| recurse(self, value)) {
-                        Some(Value::Callable(invocation)) => {
-                            Value::FastapiDependency(invocation.target)
-                        }
-                        _ => Value::Unknown,
-                    }
+                    Value::FastapiDependency(match dependency.map(|value| recurse(self, value)) {
+                        Some(Value::Callable(invocation)) => Some(invocation.target),
+                        _ => None,
+                    })
                 }
                 Value::Provider(name)
                     if matches!(
@@ -3769,6 +3788,11 @@ impl<'a> Graph<'a> {
                                     invocation.target,
                                     framework_registration_kind(kind),
                                 ));
+                                if matches!(kind, ObjectKind::App | ObjectKind::Router) {
+                                    self.record_fastapi_route_options(
+                                        scope, parent, before, keywords,
+                                    );
+                                }
                             }
                             _ => self.scope_issue(
                                 scope,
@@ -3836,11 +3860,13 @@ impl<'a> Graph<'a> {
                             && matches!(self.identity(scope, key, before, 0),
                                 Value::Text(key) if key == "DJANGO_SETTINGS_MODULE")
                         {
-                            let settings = match self.identity(scope, settings, before, 0) {
-                                Value::Text(settings) => Some(settings),
-                                _ => None,
-                            };
-                            self.scopes[scope].django_settings = settings;
+                            if self.scopes[scope].django_settings == DjangoSettings::Unset {
+                                self.scopes[scope].django_settings =
+                                    match self.identity(scope, settings, before, 0) {
+                                        Value::Text(settings) => DjangoSettings::Module(settings),
+                                        _ => DjangoSettings::Unknown,
+                                    };
+                            }
                         } else {
                             self.scope_issue(
                                 scope,
@@ -3862,8 +3888,11 @@ impl<'a> Graph<'a> {
                             ) =>
                     {
                         let row = &mut self.scopes[scope];
-                        row.starts_django
-                            .push((expr.at, row.django_settings.clone()));
+                        let settings = match &row.django_settings {
+                            DjangoSettings::Module(module) => Some(module.clone()),
+                            DjangoSettings::Unset | DjangoSettings::Unknown => None,
+                        };
+                        row.starts_django.push((expr.at, settings));
                     }
                     Value::Provider(name)
                         if self.phase03
@@ -4280,45 +4309,111 @@ impl<'a> Graph<'a> {
                 self.edge(scope, invocation.target, kind, "certain");
                 true
             }
-            Value::FastapiDependency(target) => {
+            Value::FastapiDependency(Some(target)) => {
                 self.edge(scope, target, "fastapi_dependency", "certain");
                 true
             }
-            Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
-                let mut found = false;
+            Value::Sequence(values) | Value::Alternatives(values) => {
+                let mut resolved = true;
                 for value in values {
-                    found |= self.activate_framework_value(scope, value, kind);
+                    resolved &= self.activate_framework_value(scope, value, kind);
                 }
-                found
+                resolved
+            }
+            Value::Mapping(entries) => {
+                let mut resolved = true;
+                for value in entries.into_iter().skip(1).step_by(2) {
+                    resolved &= self.activate_framework_value(scope, value, kind);
+                }
+                resolved
             }
             _ => false,
         }
     }
 
-    fn record_framework_lifecycle_values(
+    fn record_fastapi_route_options(
         &mut self,
-        owner: SymbolId,
-        value: Value,
-        kind: &'static str,
-    ) -> bool {
-        match value {
-            Value::Callable(invocation) => {
-                self.framework_lifecycle
-                    .push((owner, invocation.target, kind));
-                true
-            }
-            Value::FastapiDependency(target) => {
-                self.framework_lifecycle.push((owner, target, kind));
-                true
-            }
-            Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
-                let mut found = false;
+        scope: ScopeId,
+        object: Object,
+        before: Location,
+        keywords: &[(String, Expression)],
+    ) {
+        let Some((_, expression)) = keywords.iter().find(|(name, _)| name == "dependencies") else {
+            return;
+        };
+        let mut all_resolved = true;
+        match self.identity(scope, expression, before, 0) {
+            Value::Sequence(values) => {
                 for value in values {
-                    found |= self.record_framework_lifecycle_values(owner, value, kind);
+                    if let Value::FastapiDependency(Some(target)) = value {
+                        self.scopes[scope]
+                            .routes
+                            .push((object, target, "fastapi_dependency"));
+                    } else {
+                        all_resolved = false;
+                    }
                 }
-                found
             }
-            _ => false,
+            _ => all_resolved = false,
+        }
+        if !all_resolved {
+            self.fastapi_route_issues.push((
+                scope,
+                object,
+                Issue::new(
+                    "unresolved_registration",
+                    &self.files[self.scopes[scope].file].path,
+                    "FastAPI route dependencies could not be resolved",
+                )
+                .at(expression.at),
+            ));
+        }
+    }
+
+    fn record_fastapi_dependency(
+        &mut self,
+        scope: ScopeId,
+        owner: SymbolId,
+        before: Location,
+        expression: &Expression,
+    ) {
+        match self.probe_identity(scope, expression, before) {
+            Value::FastapiDependency(Some(target)) => {
+                self.framework_lifecycle
+                    .push((owner, target, "fastapi_dependency"));
+            }
+            Value::FastapiDependency(None) => self.fastapi_dependency_issues.push((
+                owner,
+                Issue::new(
+                    "unresolved_registration",
+                    &self.files[self.scopes[scope].file].path,
+                    "FastAPI parameter dependency could not be resolved",
+                )
+                .at(expression.at),
+            )),
+            _ => {}
+        }
+    }
+
+    fn fastapi_annotation_dependencies(
+        &mut self,
+        scope: ScopeId,
+        owner: SymbolId,
+        before: Location,
+        annotation: &Expression,
+    ) {
+        // The frontend lowers subscription and tuple annotations into nested
+        // operand groups. Resolve the generic's binding before using metadata.
+        if let ExpressionKind::Operands(parts) = &annotation.kind
+            && let [generic, arguments] = parts.as_slice()
+            && matches!(self.probe_identity(scope, generic, before), Value::Provider(provider)
+                if matches!(provider.as_str(), "typing.Annotated" | "typing_extensions.Annotated"))
+            && let ExpressionKind::Operands(arguments) = &arguments.kind
+            && let Some((_, metadata)) = arguments.split_first()
+        {
+            for expression in metadata {
+                self.record_fastapi_dependency(scope, owner, before, expression);
+            }
         }
     }
 
@@ -4463,20 +4558,16 @@ impl<'a> Graph<'a> {
                     if definition.kind == DefinitionKind::Class {
                         self.scopes[scope].class_bodies.push(definition_scope);
                     }
-                    for annotation in &definition.annotations {
+                    for (index, annotation) in definition.annotations.iter().enumerate() {
                         self.annotation(scope, annotation, at, true);
+                        if self.phase03 && index < definition.parameter_annotation_count {
+                            self.fastapi_annotation_dependencies(scope, target, at, annotation);
+                        }
                     }
                     for expression in &definition.defaults {
                         self.walk(scope, expression, at);
-                        if self.phase03
-                            && let Value::FastapiDependency(dependency) =
-                                self.identity(scope, expression, at, 0)
-                        {
-                            self.framework_lifecycle.push((
-                                target,
-                                dependency,
-                                "fastapi_dependency",
-                            ));
+                        if self.phase03 {
+                            self.record_fastapi_dependency(scope, target, at, expression);
                         }
                     }
                     for base in &definition.bases {
@@ -4566,7 +4657,7 @@ impl<'a> Graph<'a> {
                             if otherwise_stops || *django_other == django_body {
                                 *django_other = django_body;
                             } else if !body_stops {
-                                *django_other = None;
+                                *django_other = DjangoSettings::Unknown;
                             }
                             if !body_stops && !body.is_empty() {
                                 self.scopes[scope]
@@ -4639,21 +4730,8 @@ impl<'a> Graph<'a> {
                 self.scopes[scope]
                     .routes
                     .push((object, target, framework_registration_kind(kind)));
-                if self.phase03
-                    && matches!(kind, ObjectKind::App | ObjectKind::Router)
-                    && let Some((_, dependencies)) =
-                        keywords.iter().find(|(name, _)| name == "dependencies")
-                {
-                    let value = self.identity(scope, dependencies, before, 0);
-                    if !self.record_framework_lifecycle_values(target, value, "fastapi_dependency")
-                    {
-                        self.scope_issue(
-                            scope,
-                            dependencies.at,
-                            "unresolved_registration",
-                            "FastAPI route dependencies could not be resolved",
-                        );
-                    }
+                if self.phase03 && matches!(kind, ObjectKind::App | ObjectKind::Router) {
+                    self.record_fastapi_route_options(scope, object, before, keywords);
                 }
             }
             Value::Provider(name)
@@ -4881,6 +4959,11 @@ impl<'a> Graph<'a> {
             && !self.fixtures.contains_key(&id)
     }
 
+    fn is_coroutine(&self, id: SymbolId) -> bool {
+        matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+            if definition.kind == DefinitionKind::Coroutine)
+    }
+
     fn is_pytest_file(&self, file: usize) -> bool {
         let filename = self.files[file].path.rsplit('/').next().unwrap_or_default();
         filename.starts_with("test_") || filename.ends_with("_test.py")
@@ -5060,7 +5143,7 @@ impl<'a> Graph<'a> {
             let module_tests = self.pytest_registrations(&self.scopes[file].names, "test_");
             self.record_pytest_tests(file, &namespaces, None, module_tests, &mut roots);
             for (class, collected) in self.pytest_registrations(&self.scopes[file].names, "Test") {
-                if self.phase03 && self.unittest_classes.contains(&class.target) {
+                if self.phase03 && self.unittest_classes.contains_key(&class.target) {
                     continue;
                 }
                 let Some((names, eligible)) = self.pytest_class_names(class.target) else {
@@ -5128,10 +5211,17 @@ impl<'a> Graph<'a> {
         // Register from outermost to innermost. Pytest requests an autouse
         // fixture by name, so a closer override can satisfy that request too.
         let mut registrations = BTreeMap::<String, Vec<PytestFixtureChoices>>::new();
-        for names in namespaces
+        for (plugin, names) in self
+            .pytest_plugins
             .iter()
-            .map(|&scope| &self.scopes[scope].names)
-            .chain(class)
+            .filter(|scope| !namespaces.contains(scope))
+            .map(|&scope| (true, &self.scopes[scope].names))
+            .chain(
+                namespaces
+                    .iter()
+                    .map(|&scope| (false, &self.scopes[scope].names)),
+            )
+            .chain(class.map(|names| (false, names)))
         {
             for (&alias, bindings) in names {
                 // Keep possible conditional bindings at the same precedence.
@@ -5149,13 +5239,19 @@ impl<'a> Graph<'a> {
                 for (name, alternatives) in alternatives {
                     let may_be_absent =
                         !has_unconditional_binding || alternatives.len() != candidates.len();
-                    registrations
-                        .entry(name.into())
-                        .or_default()
-                        .push(PytestFixtureChoices {
+                    let choices = registrations.entry(name.into()).or_default();
+                    // A local fixture can shadow globally registered plugins.
+                    // Keep competing plugin bindings possible when their load order
+                    // is not established by collection.
+                    if plugin && let Some(choice) = choices.last_mut() {
+                        choice.alternatives.extend(alternatives);
+                        choice.may_be_absent &= may_be_absent;
+                    } else {
+                        choices.push(PytestFixtureChoices {
                             alternatives,
                             may_be_absent,
                         });
+                    }
                 }
             }
         }
@@ -6388,6 +6484,23 @@ impl<'a> Graph<'a> {
         if !baseline_converged {
             self.issues.push(framework_limit());
         }
+        self.issues
+            .extend(
+                self.fastapi_dependency_issues
+                    .drain(..)
+                    .filter_map(|(target, issue)| {
+                        reach.fastapi_callbacks.contains(&target).then_some(issue)
+                    }),
+            );
+        self.issues
+            .extend(
+                self.fastapi_route_issues
+                    .drain(..)
+                    .filter_map(|(scope, object, issue)| {
+                        (reach.scopes.contains(&scope) && reach.active_objects.contains(&object))
+                            .then_some(issue)
+                    }),
+            );
         self.issues.extend(
             self.django_registration_issues
                 .drain(..)
@@ -7088,10 +7201,10 @@ fn builtin_noop_subclass_hook(name: &str) -> bool {
 
 fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
     match name {
-        "unittest.TestCase"
-        | "unittest.case.TestCase"
-        | "unittest.IsolatedAsyncioTestCase"
-        | "unittest.async_case.IsolatedAsyncioTestCase" => Some(FrameworkClassRole::Unittest),
+        "unittest.TestCase" | "unittest.case.TestCase" => Some(FrameworkClassRole::Unittest),
+        "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
+            Some(FrameworkClassRole::UnittestAsync)
+        }
         "django.apps.AppConfig" | "django.apps.config.AppConfig" => {
             Some(FrameworkClassRole::DjangoAppConfig)
         }
@@ -8553,6 +8666,25 @@ print(Status.default)
         assert_eq!(names(&result, Category::Function), ["inactive", "parked"]);
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "example.active" && entry.kind == "fastapi_dependency"
+        }));
+    }
+
+    #[test]
+    fn phase03_fastapi_mixed_registration_preserves_evidence_and_incomplete_coverage() {
+        let files = [module(
+            "example.py",
+            "example",
+            "from fastapi import Depends, FastAPI\nfrom external import opaque\ndef known():\n    return 1\napp = FastAPI(dependencies=[Depends(known), Depends(opaque)])\n",
+        )];
+        let result = analyze_phase03(&files, &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "example.known" && entry.kind == "fastapi_dependency"
         }));
     }
 

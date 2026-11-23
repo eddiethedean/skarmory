@@ -14,7 +14,9 @@ impl Graph<'_> {
                 continue;
             };
             let (root, lifecycle, fields) = match role {
-                FrameworkClassRole::Unittest => (None, &[][..], false),
+                FrameworkClassRole::Unittest | FrameworkClassRole::UnittestAsync => {
+                    (None, &[][..], false)
+                }
                 FrameworkClassRole::DjangoAppConfig | FrameworkClassRole::DjangoCommand => {
                     (None, &[][..], false)
                 }
@@ -49,8 +51,11 @@ impl Graph<'_> {
                     true,
                 ),
             };
-            if role == FrameworkClassRole::Unittest {
-                self.unittest_classes.insert(class);
+            if matches!(
+                role,
+                FrameworkClassRole::Unittest | FrameworkClassRole::UnittestAsync
+            ) {
+                self.unittest_classes.insert(class, role);
             }
             if let Some(kind) = root {
                 self.framework_roots.push(Edge {
@@ -99,18 +104,20 @@ impl Graph<'_> {
             } else if self.is_pytest_file(file) {
                 declarations.push(file);
             }
-            if !path
-                .rsplit('/')
-                .next()
-                .is_some_and(|name| name.starts_with("test"))
+            if !self.is_pytest_file(file)
+                && !path
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|name| name.starts_with("test"))
             {
                 continue;
             }
             let mut has_cases = false;
             for (class, certain) in self.pytest_registrations(&self.scopes[file].names, "") {
-                if !self.unittest_classes.contains(&class.target) {
+                let Some(role) = self.unittest_classes.get(&class.target) else {
                     continue;
-                }
+                };
+                let async_runner = *role == FrameworkClassRole::UnittestAsync;
                 let (lineage, _) = self.class_lineage(class.target);
                 let mut names = BTreeMap::new();
                 for scope in lineage {
@@ -134,16 +141,33 @@ impl Graph<'_> {
                 has_cases = true;
                 self.read.extend(class.bindings);
                 self.framework_root(class.target, "unittest_discovery", certain);
-                for hook in ["setUp", "tearDown", "setUpClass", "tearDownClass"] {
+                let lifecycle = [
+                    ("setUp", false),
+                    ("tearDown", false),
+                    ("setUpClass", false),
+                    ("tearDownClass", false),
+                    ("asyncSetUp", true),
+                    ("asyncTearDown", true),
+                ];
+                for (hook, asynchronous) in lifecycle {
+                    if asynchronous && !async_runner {
+                        continue;
+                    }
                     if let Some(bindings) = names.get(hook) {
-                        methods.extend(self.pytest_registrations(
-                            &BTreeMap::from([(hook, bindings.clone())]),
-                            hook,
-                        ));
+                        methods.extend(
+                            self.pytest_registrations(
+                                &BTreeMap::from([(hook, bindings.clone())]),
+                                hook,
+                            )
+                            .into_iter()
+                            .filter(|(method, _)| self.is_coroutine(method.target) == asynchronous),
+                        );
                     }
                 }
                 for (method, selected) in methods {
-                    if self.is_pytest_function(method.target) {
+                    if self.is_pytest_function(method.target)
+                        && (async_runner || !self.is_coroutine(method.target))
+                    {
                         self.read.extend(method.bindings);
                         self.method_receivers
                             .entry(method.target)
@@ -161,6 +185,7 @@ impl Graph<'_> {
                 for name in ["setUpModule", "tearDownModule"] {
                     if let Some(target) = self.local(file, name, END)
                         && self.is_pytest_function(target)
+                        && !self.is_coroutine(target)
                     {
                         self.framework_root(
                             target,
@@ -222,6 +247,7 @@ impl Graph<'_> {
         if let Some(&plugin) = self.modules.get(module) {
             if plugins.insert(plugin) {
                 declarations.push(plugin);
+                self.pytest_plugins.push(plugin);
             }
         } else {
             self.unresolved_pytest_plugins(file, binding);

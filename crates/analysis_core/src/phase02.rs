@@ -586,7 +586,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v10/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v11/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -692,6 +692,9 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     });
     let verification = (grep_verify && issues.is_empty())
         .then(|| grep_verification::Snapshot::read(&project, Some(&config.selection)));
+    let django_settings = phase03
+        .then(|| std::env::var_os("DJANGO_SETTINGS_MODULE"))
+        .flatten();
     let mut analysis = if issues.is_empty() {
         if local_configs.is_empty() {
             analysis::analyze_with_verification(
@@ -701,6 +704,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
+                django_settings.as_deref(),
             )
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
@@ -726,6 +730,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
+                django_settings.as_deref(),
             )
         }
     } else {

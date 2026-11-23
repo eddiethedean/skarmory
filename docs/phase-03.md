@@ -172,10 +172,12 @@ The `skylos-0.3` profile uses resolved imports for the framework identities in
 these models. A selected Flask app can register route and request callbacks
 directly or mount a blueprint. Blueprint callbacks require the mount to be
 reached. FastAPI supports imperative endpoint registration and literal
-`Depends` or `Security` defaults on active routes.
+`Depends` or `Security` dependencies in defaults, `Annotated` parameters, and
+route registration options on active routes.
 
-Django URL discovery follows a recognized launcher and a literal
-`DJANGO_SETTINGS_MODULE` environment default in the same scope. It resolves
+Django URL discovery follows a recognized launcher and the scan process's
+`DJANGO_SETTINGS_MODULE`, or the first literal default set in the launcher's
+scope when the variable is unset. It resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Signal
 registrations through selected built-in signal providers follow imports
@@ -186,9 +188,9 @@ startup is selected.
 
 The profile also recognizes selected Celery task registrations, SQLAlchemy
 listeners, Pydantic model hooks, unittest test and lifecycle methods through
-effective class bindings, and pytest hooks through selected conftest modules
-or literal `pytest_plugins` declarations. These are bounded models under
-[#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
+effective class bindings, and pytest hooks and fixtures through selected
+conftest modules or literal `pytest_plugins` declarations. These are bounded
+models under [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
 Management command discovery, installed Django AppConfig loading, and
 additional FastAPI dependency patterns still need coverage.
