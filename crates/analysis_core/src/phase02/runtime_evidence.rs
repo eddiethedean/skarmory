@@ -637,6 +637,82 @@ mod tests {
     }
 
     #[test]
+    fn runtime_observations_preserve_bounded_callback_calls() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def live():\n    return 1\ndef dispatch(callback):\n    def nested():\n        return 2\n    callback()\n    return nested()\ndispatch(live)\ndef unused():\n    return 3\n",
+        )
+        .unwrap();
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+                 INSERT INTO file VALUES (1, 'app.py');
+                 INSERT INTO line_bits VALUES (1, 1, X'40');",
+            )
+            .unwrap();
+        drop(database);
+        let covered = report(root, &options());
+        assert_eq!(covered["coverage"]["status"], "complete", "{covered}");
+        assert_eq!(unused(&covered), BTreeSet::from(["app.unused"]));
+        assert_eq!(covered["runtime_evidence"][0]["full_name"], "app.dispatch");
+
+        for (function, line, full_name) in [
+            ("dispatch", 3, "app.dispatch"),
+            ("nested", 4, "app.dispatch.nested"),
+        ] {
+            write(
+                root,
+                ".skylos_trace",
+                &json!({"version": 1, "calls": [{"file": "app.py", "function": function, "line": line}]}),
+            );
+            let traced = report(
+                root,
+                &Options {
+                    coverage_file: Input::Disabled,
+                    ..options()
+                },
+            );
+            assert_eq!(traced["coverage"]["status"], "complete", "{traced}");
+            assert_eq!(unused(&traced), BTreeSet::from(["app.unused"]));
+            assert_eq!(traced["runtime_evidence"][0]["full_name"], full_name);
+        }
+    }
+
+    #[test]
+    fn a_trace_alone_does_not_resolve_a_callback_argument() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def live():\n    return 1\ndef dispatch(callback):\n    return callback()\ndef dormant():\n    return dispatch(live)\n",
+        )
+        .unwrap();
+        let baseline = report(root, &options());
+        assert_eq!(baseline["coverage"]["status"], "complete");
+        assert!(unused(&baseline).contains("app.dispatch"));
+
+        write(
+            root,
+            ".skylos_trace",
+            &json!({"version": 1, "calls": [{"file": "app.py", "function": "dispatch", "line": 3}]}),
+        );
+        let traced = report(root, &options());
+        assert_eq!(traced["coverage"]["status"], "incomplete");
+        assert_eq!(traced["runtime_evidence"][0]["full_name"], "app.dispatch");
+        assert!(
+            traced["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_call" && issue["line"] == 4 })
+        );
+    }
+
+    #[test]
     fn artifact_rejection_does_not_change_static_incomplete_coverage() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();

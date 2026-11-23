@@ -5243,11 +5243,21 @@ impl<'a> Graph<'a> {
             evidence,
             ..
         } = reach;
+        // Runtime evidence establishes execution without identifying a caller.
+        // Resolve callback arguments from reachable call sites when available.
         let independently_retained: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
-                (!matches!(kind, "direct_call" | "grep_dynamic_call" | "type_reference"))
-                    .then_some(target)
+                (!matches!(
+                    kind,
+                    "direct_call"
+                        | "grep_dynamic_call"
+                        | "type_reference"
+                        | "runtime_trace"
+                        | "runtime_coverage"
+                        | "runtime_owner"
+                ))
+                .then_some(target)
             })
             .collect();
         for call in self
