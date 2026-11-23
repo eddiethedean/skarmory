@@ -59,6 +59,16 @@ enum Value {
 }
 
 impl Value {
+    fn contains_unknown(&self) -> bool {
+        match self {
+            Self::Unknown => true,
+            Self::Sequence(values) | Self::Mapping(values) => {
+                values.iter().any(Self::contains_unknown)
+            }
+            _ => false,
+        }
+    }
+
     fn may_contain_namespace(&self) -> bool {
         match self {
             Self::LocalNamespace(..) | Self::NamespaceCopy(_) | Self::OpaqueNamespace => true,
@@ -1541,7 +1551,7 @@ impl<'a> Graph<'a> {
     ) -> Value {
         let first_issue = self.scope_issues.len();
         let value = self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation);
-        if matches!(value, Value::Unknown) && self.scope_issues.len() == first_issue {
+        if value.contains_unknown() && self.scope_issues.len() == first_issue {
             self.scope_issue(
                 branch.scope,
                 branch.value.at,
