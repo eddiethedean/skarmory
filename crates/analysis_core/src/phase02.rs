@@ -316,7 +316,13 @@ impl RetainedEvidence {
                 .entry((event.full_name, event.file, event.line))
                 .or_default()
                 .insert(SymbolEvent {
-                    kind: event.kind,
+                    kind: match event.kind {
+                        "runtime_trace" => "trace_hit",
+                        "runtime_coverage" | runtime_evidence::COVERAGE_DECLARATION => {
+                            "coverage_hit"
+                        }
+                        other => other,
+                    },
                     certainty: event.certainty,
                 });
         }
@@ -567,7 +573,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v7/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v8/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )

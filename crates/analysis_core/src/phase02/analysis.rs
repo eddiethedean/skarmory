@@ -4957,6 +4957,7 @@ impl<'a> Graph<'a> {
                 .push(observation);
         }
         let mut matched = BTreeMap::<Observed<'_>, Option<SymbolId>>::new();
+        let mut declarations = BTreeMap::<Observed<'_>, Option<SymbolId>>::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
             let Binding::Definition(definition, body) = symbol.binding else {
                 continue;
@@ -4965,52 +4966,54 @@ impl<'a> Graph<'a> {
                 continue;
             }
             let file = self.files[self.scopes[body].file].path.as_str();
-            let mut observe = |line, function| {
+            let mut observe = |line, function, declaration| {
                 if let Some(observations) = by_location.get(&(file, line)) {
                     for &observation in observations {
-                        if observation.function.as_deref() == function {
-                            matched
-                                .entry(observation)
-                                .and_modify(|previous| {
-                                    if *previous != Some(id) {
-                                        *previous = None;
-                                    }
-                                })
-                                .or_insert(Some(id));
+                        if observation.function.as_deref() != function {
+                            continue;
                         }
+                        let matches = if declaration {
+                            if !observation.allow_declaration {
+                                continue;
+                            }
+                            &mut declarations
+                        } else {
+                            &mut matched
+                        };
+                        matches
+                            .entry(observation)
+                            .and_modify(|previous| {
+                                if *previous != Some(id) {
+                                    *previous = None;
+                                }
+                            })
+                            .or_insert(Some(id));
                     }
                 }
             };
             let name = Some(definition.name.text.as_str());
-            observe(definition.name.at.line, name);
+            observe(definition.name.at.line, name, false);
+            observe(definition.name.at.line, None, true);
             if let Some(decorator) = definition.decorators.first() {
-                observe(decorator.at.line, name);
+                observe(decorator.at.line, name, false);
             }
-            // Definition lines are also executed by the enclosing scope. Only
-            // use coverage of statements that execute inside this callable.
-            let mut pending = vec![definition.body.as_slice()];
-            while let Some(body) = pending.pop() {
-                for statement in body {
-                    if statement.at.line != definition.name.at.line {
-                        observe(statement.at.line, None);
-                    }
-                    match &statement.kind {
-                        StatementKind::If {
-                            body, otherwise, ..
-                        } => {
-                            pending.push(body);
-                            pending.push(otherwise);
-                        }
-                        StatementKind::With { body, .. } => pending.push(body),
-                        _ => {}
-                    }
+            for &line in &definition.body_coverage_lines {
+                if line != definition.name.at.line {
+                    observe(line, None, false);
                 }
             }
         }
         let mut evidence = Vec::new();
         let mut rejected = BTreeMap::<&str, usize>::new();
         for observation in &snapshot.observations {
-            let Some(&Some(target)) = matched.get(observation) else {
+            let (candidate, kind) = match matched.get(observation) {
+                Some(target) => (*target, observation.kind()),
+                None => (
+                    declarations.get(observation).copied().flatten(),
+                    runtime_evidence::COVERAGE_DECLARATION,
+                ),
+            };
+            let Some(target) = candidate else {
                 *rejected.entry(&observation.artifact).or_default() += 1;
                 continue;
             };
@@ -5020,26 +5023,28 @@ impl<'a> Graph<'a> {
             };
             roots.push(Edge {
                 target,
-                kind: observation.kind(),
+                kind,
                 certainty,
             });
-            // A nested callable can only be observed after an enclosing
-            // activation created it. Keep the dependencies of that activation.
-            let mut owner = self.scopes[self.symbols[target].scope].owner;
-            while let Some(target) = owner {
-                possible_roots.push(Edge {
-                    target,
-                    kind: "runtime_owner",
-                    certainty: "possible",
-                });
-                owner = self.scopes[self.symbols[target].scope].owner;
+            if kind != runtime_evidence::COVERAGE_DECLARATION {
+                // A nested callable can only be observed after an enclosing
+                // activation created it. Keep the dependencies of that activation.
+                let mut owner = self.scopes[self.symbols[target].scope].owner;
+                while let Some(target) = owner {
+                    possible_roots.push(Edge {
+                        target,
+                        kind: "runtime_owner",
+                        certainty: "possible",
+                    });
+                    owner = self.scopes[self.symbols[target].scope].owner;
+                }
             }
             evidence.push(runtime_evidence::Evidence {
                 artifact: observation.artifact.clone(),
                 file: observation.file.clone(),
                 line: observation.line,
                 full_name: self.full_name(target),
-                kind: observation.kind(),
+                kind,
                 provenance: observation.provenance,
             });
         }
@@ -5133,9 +5138,20 @@ impl<'a> Graph<'a> {
     fn finish(
         mut self,
         roots: Vec<Edge>,
-        possible_runtime_roots: Vec<Edge>,
+        mut possible_runtime_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
     ) -> Analysis {
+        // Declaration hints retain only the definition in the compatibility
+        // report. Leave them out of the execution graph and parameter analysis.
+        let mut coverage_declarations = BTreeSet::new();
+        possible_runtime_roots.retain(|edge| {
+            if edge.kind == runtime_evidence::COVERAGE_DECLARATION {
+                coverage_declarations.insert(edge.target);
+                false
+            } else {
+                true
+            }
+        });
         self.resolve_class_invocations();
         let mut reach = Reachability {
             scopes: (0..self.files.len()).collect(),
@@ -5276,7 +5292,14 @@ impl<'a> Graph<'a> {
             .transitive
             .iter()
             .map(|&target| (target, "reachable_from_root", "possible"));
-        for (id, kind, certainty) in evidence.into_iter().chain(transitive) {
+        let declaration_evidence = coverage_declarations
+            .iter()
+            .map(|&target| (target, runtime_evidence::COVERAGE_DECLARATION, "possible"));
+        for (id, kind, certainty) in evidence
+            .into_iter()
+            .chain(transitive)
+            .chain(declaration_evidence)
+        {
             if is_verification_edge(kind) {
                 continue;
             }
@@ -5303,7 +5326,9 @@ impl<'a> Graph<'a> {
                     (Category::Class, "SKY-U004", 90, "unreachable_class")
                 }
                 Binding::Definition(def, _)
-                    if !reachable_symbols.contains(&id) && def.kind != DefinitionKind::Class =>
+                    if !reachable_symbols.contains(&id)
+                        && !coverage_declarations.contains(&id)
+                        && def.kind != DefinitionKind::Class =>
                 {
                     (
                         Category::Function,

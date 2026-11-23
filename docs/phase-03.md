@@ -268,7 +268,10 @@ The reader accepts these formats:
   decorator line. A positive `count` is optional.
 - A standalone coverage.py SQLite database with `file` and `line_bits`
   tables. The analyzer retains a callable when a reported line matches a
-  statement in its body. Declaration lines alone supply no callable evidence.
+  statement in its body. Bare legacy bitmaps without a `context_id` column
+  can also retain a declaration to match the pinned compatibility behavior.
+  These unverified hints do not establish body execution or retain callees
+  through that body.
 - Version 2 JSON with a `revision`, a `fingerprints` map, and `calls` and/or
   `lines` arrays. Line observations contain `file` and a one-based `line`.
   Fingerprints are lowercase BLAKE3 hex digests of the selected file's UTF-8
@@ -284,7 +287,10 @@ Use the selected files for the same effective scan scope. Both the revision
 and the observed file's fingerprint must match to earn verified provenance.
 
 The `runtime_evidence` report field identifies the matched callable,
-observed location, artifact, and provenance. Legacy artifacts are unverified
+observed location, artifact, and provenance. It reports declaration-only
+matches as `runtime_coverage_declaration`. The grouped
+`dead_code_evidence` uses the compatibility event kinds `trace_hit` and
+`coverage_hit`. Legacy artifacts are unverified
 and contribute possible use. An observed nested callable supplies possible-use
 evidence for the scopes that created it. Evidence binds to selected files and
 unambiguous locations. The reader rejects symlink artifacts, caps inputs at

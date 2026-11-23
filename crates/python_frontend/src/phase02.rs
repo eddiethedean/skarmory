@@ -61,6 +61,7 @@ pub struct Definition {
     pub name: Name,
     pub kind: DefinitionKind,
     pub body: Vec<Statement>,
+    pub body_coverage_lines: Vec<usize>,
     pub decorators: Vec<Expression>,
     pub parameters: Vec<Name>,
     pub has_positional_parameter: bool,
@@ -336,6 +337,27 @@ impl Lowering<'_> {
         Ok(())
     }
 
+    fn body_coverage_lines(&self, statements: &[Stmt], lines: &mut Vec<usize>) {
+        for statement in statements {
+            // Record the executable statement location before lowering can
+            // discard a pass or replace an import with its individual aliases.
+            lines.push(self.0.locate(statement.start()).line);
+            match statement {
+                Stmt::If(node) => {
+                    self.body_coverage_lines(&node.body, lines);
+                    for clause in &node.elif_else_clauses {
+                        if clause.test.is_some() {
+                            lines.push(self.0.locate(clause.start()).line);
+                        }
+                        self.body_coverage_lines(&clause.body, lines);
+                    }
+                }
+                Stmt::With(node) => self.body_coverage_lines(&node.body, lines),
+                _ => {}
+            }
+        }
+    }
+
     fn suite(&self, statements: &[Stmt], depth: usize) -> Result<Vec<Statement>, FrontendError> {
         let mut result = Vec::new();
         let mut allows_future_import = depth == 0;
@@ -403,22 +425,28 @@ impl Lowering<'_> {
                     if let Some(returns) = &node.returns {
                         annotations.push(self.annotation(returns, next)?);
                     }
+                    let name = self.binding_name(node.name.as_str(), &node.name)?;
+                    let is_async = node.is_async;
+                    let body = Lowering(
+                        self.0,
+                        if is_async {
+                            SyntaxScope::AsyncFunction
+                        } else {
+                            SyntaxScope::Function
+                        },
+                    )
+                    .suite(&node.body, next)?;
+                    let mut body_coverage_lines = Vec::new();
+                    self.body_coverage_lines(&node.body, &mut body_coverage_lines);
                     StatementKind::Define(Definition {
-                        name: self.binding_name(node.name.as_str(), &node.name)?,
-                        kind: if node.is_async {
+                        name,
+                        kind: if is_async {
                             DefinitionKind::Coroutine
                         } else {
                             DefinitionKind::Function
                         },
-                        body: Lowering(
-                            self.0,
-                            if node.is_async {
-                                SyntaxScope::AsyncFunction
-                            } else {
-                                SyntaxScope::Function
-                            },
-                        )
-                        .suite(&node.body, next)?,
+                        body,
+                        body_coverage_lines,
                         decorators: node
                             .decorator_list
                             .iter()
@@ -453,6 +481,7 @@ impl Lowering<'_> {
                         kind: DefinitionKind::Class,
                         body: Lowering(self.0, SyntaxScope::ModuleOrClass)
                             .suite(&node.body, next)?,
+                        body_coverage_lines: Vec::new(),
                         decorators: node
                             .decorator_list
                             .iter()

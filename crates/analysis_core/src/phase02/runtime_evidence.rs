@@ -12,6 +12,7 @@ use crate::Issue;
 use crate::preview_source::{Project, Stamp, read_snapshot};
 
 const MAX_OBSERVATIONS: usize = 32_768;
+pub(super) const COVERAGE_DECLARATION: &str = "runtime_coverage_declaration";
 
 #[derive(Clone, Debug, Default)]
 pub enum Input {
@@ -34,6 +35,7 @@ pub(super) struct Observation {
     pub(super) file: String,
     pub(super) line: usize,
     pub(super) function: Option<String>,
+    pub(super) allow_declaration: bool,
     pub(super) provenance: Provenance,
 }
 
@@ -91,6 +93,8 @@ fn one() -> u64 {
 struct Line {
     file: String,
     line: usize,
+    #[serde(skip)]
+    allow_declaration: bool,
 }
 
 fn revision(sources: &BTreeMap<String, String>) -> String {
@@ -204,14 +208,14 @@ impl Snapshot {
                 continue;
             }
             let mut rejected = 0;
-            for (file, line, function) in calls
+            for (file, line, function, allow_declaration) in calls
                 .into_iter()
-                .map(|call| (call.file, call.line, Some(call.function)))
+                .map(|call| (call.file, call.line, Some(call.function), false))
                 .chain(
                     artifact
                         .lines
                         .into_iter()
-                        .map(|line| (line.file, line.line, None)),
+                        .map(|line| (line.file, line.line, None, line.allow_declaration)),
                 )
             {
                 let Some(file) =
@@ -241,6 +245,7 @@ impl Snapshot {
                     file,
                     line,
                     function,
+                    allow_declaration,
                     provenance,
                 });
             }
@@ -302,6 +307,16 @@ fn sqlite_coverage(bytes: &[u8]) -> Result<Vec<Line>, String> {
     if tables != 2 {
         return Err("coverage database requires file and line_bits tables".into());
     }
+    // The pinned compatibility format also accepts bare, context-free bitmaps
+    // as retention hints at declaration lines. coverage.py's contextual
+    // line records include declarations whenever a module is imported.
+    let allow_declaration: bool = database
+        .query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM pragma_table_info('line_bits') WHERE name = 'context_id' COLLATE NOCASE)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
     let mut query = database.prepare(
         "SELECT file.path, line_bits.numbits FROM line_bits JOIN file ON file.id = line_bits.file_id LIMIT 32769",
     ).map_err(|error| error.to_string())?;
@@ -330,6 +345,7 @@ fn sqlite_coverage(bytes: &[u8]) -> Result<Vec<Line>, String> {
                     lines.push(Line {
                         file: file.clone(),
                         line,
+                        allow_declaration,
                     });
                 }
             }
@@ -407,6 +423,14 @@ mod tests {
         assert_eq!(evidence[0]["kind"], "runtime_trace");
         assert_eq!(evidence[1]["kind"], "runtime_coverage");
 
+        let mut declaration = artifact.clone();
+        declaration["lines"] = json!([{"file": "app.py", "line": 5}]);
+        write(root, ".skylos_trace", &declaration);
+        let (rejected, _) = compare();
+        assert!(unused(&rejected).contains("app.covered"));
+        assert_eq!(rejected["runtime_evidence"].as_array().unwrap().len(), 1);
+        assert!(rejected.get("runtime_evidence_issues").is_some());
+
         for (field, invalid) in [
             ("revision", json!("stale")),
             ("fingerprints", json!({"app.py": "wrong"})),
@@ -474,6 +498,118 @@ mod tests {
         assert!(unused(&disabled).contains("app.covered"));
         let phase02 = report(root, &Options::default());
         assert!(unused(&phase02).contains("app.covered"));
+    }
+
+    #[test]
+    fn legacy_coverage_declarations_supply_possible_use_without_opening_the_body() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def traced():\n    return 1\n\ndef covered(extra):\n    return helper()\n\ndef helper():\n    return 2\n",
+        )
+        .unwrap();
+        write(
+            root,
+            ".skylos_trace",
+            &json!({"version": 1, "calls": [{"file": "app.py", "function": "traced", "line": 1}]}),
+        );
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, numbits BLOB);
+                 INSERT INTO file VALUES (1, 'app.py');
+                 INSERT INTO line_bits VALUES (1, X'10');",
+            )
+            .unwrap();
+        drop(database);
+
+        let report = report(
+            root,
+            &Options {
+                confidence: Some(0),
+                ..options()
+            },
+        );
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(unused(&report), BTreeSet::from(["app.helper"]));
+        assert_eq!(
+            report["unused_parameters"][0]["full_name"],
+            "app.covered.extra"
+        );
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        for (name, kind) in [("app.traced", "trace_hit"), ("app.covered", "coverage_hit")] {
+            let row = symbols
+                .iter()
+                .find(|row| row["qualified_name"] == name)
+                .unwrap();
+            assert_eq!(
+                row["evidence"],
+                json!([{ "kind": kind, "certainty": "possible" }])
+            );
+        }
+        assert!(
+            report["runtime_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["full_name"] == "app.covered"
+                        && row["kind"] == COVERAGE_DECLARATION
+                        && row["provenance"] == "unverified"
+                })
+        );
+    }
+
+    #[test]
+    fn coverage_lines_match_pass_and_multiline_import_statement_starts() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def stub():\n    pass\n\ndef load():\n    from math import (\n        pi,\n    )\n\ndef unused():\n    pass\n",
+        )
+        .unwrap();
+        fs::write(root.join("other.py"), "# second selected file\n").unwrap();
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+                 INSERT INTO file VALUES (1, 'app.py');
+                 INSERT INTO line_bits VALUES (1, 1, X'3602');",
+            )
+            .unwrap();
+        drop(database);
+
+        let clean = report(root, &options());
+        assert_eq!(clean["coverage"]["status"], "complete");
+        assert_eq!(unused(&clean), BTreeSet::from(["app.unused"]));
+        let observations: Vec<_> = clean["runtime_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["full_name"].as_str().unwrap(),
+                    row["line"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(observations, [("app.stub", 2), ("app.load", 5)]);
+        let cached = Options {
+            workers: 4,
+            cache_dir: Some(cache.path().into()),
+            ..options()
+        };
+        for expected_hits in [0, 2] {
+            let mut parallel = report(root, &cached);
+            let stats = parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(stats["hits"], expected_hits);
+            assert_eq!(parallel, clean);
+        }
     }
 
     #[test]
