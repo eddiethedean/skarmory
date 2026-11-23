@@ -255,6 +255,83 @@ fn reachable_builtin_evaluation_reports_incomplete_coverage() {
 }
 
 #[test]
+fn submodule_fallback_accepts_a_variadic_hook_that_raises_attribute_error() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("main.py"),
+        "from pkg import child\nprint(child.value())\n",
+    )
+    .unwrap();
+    let pkg = project.path().join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    fs::write(pkg.join("child.py"), "def value():\n    return 7\n").unwrap();
+    let initializer = pkg.join("__init__.py");
+
+    for profile in [Profile::SkylosPhase02, Profile::SkylosPhase03] {
+        let cache = tempfile::tempdir().unwrap();
+        let serial = Options {
+            profile,
+            ..Options::default()
+        };
+        let parallel = Options {
+            cache_dir: Some(cache.path().to_owned()),
+            workers: 4,
+            ..serial.clone()
+        };
+        let run = |options: &Options| -> Value {
+            serde_json::from_str(&scan(project.path(), options).unwrap().to_json().unwrap())
+                .unwrap()
+        };
+
+        for (edit, (signature, exception, complete)) in [
+            ("*args", "AttributeError(\"unavailable\")", true),
+            ("*args", "AttributeError(args)", true),
+            ("*args", "AttributeError", true),
+            ("*, name", "AttributeError(\"unavailable\")", false),
+            ("**args", "AttributeError", false),
+            ("*args", "AttributeError(missing())", false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fs::write(
+                &initializer,
+                format!("def __getattr__({signature}):\n    raise {exception}\n"),
+            )
+            .unwrap();
+
+            let clean = run(&serial);
+            let status = if complete { "complete" } else { "incomplete" };
+            assert_eq!(
+                clean["coverage"]["status"], status,
+                "{signature}: {exception}: {clean}"
+            );
+            if complete {
+                assert!(!finds(&clean, "value"), "{clean}");
+            } else {
+                assert!(
+                    clean["coverage"]["issues"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|issue| {
+                            issue["kind"] == "unresolved_lazy_export" && issue["path"] == "main.py"
+                        }),
+                    "{clean}"
+                );
+            }
+
+            for hits in [if edit == 0 { 0 } else { 2 }, 3] {
+                let mut cached = run(&parallel);
+                let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+                assert_eq!(stats["hits"], hits);
+                assert_eq!(cached, clean);
+            }
+        }
+    }
+}
+
+#[test]
 fn pytest_lazy_exports_require_a_positional_lookup_parameter() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

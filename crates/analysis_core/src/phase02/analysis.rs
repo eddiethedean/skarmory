@@ -1600,7 +1600,10 @@ impl<'a> Graph<'a> {
             return LazyMember::Unknown;
         };
         // Python supplies the lookup name as one positional string argument.
-        if definition.kind != DefinitionKind::Function || !definition.has_positional_parameter {
+        if definition.kind != DefinitionKind::Function
+            || !(definition.has_positional_parameter
+                || definition.has_variadic_positional_parameter)
+        {
             return LazyMember::Unknown;
         }
         let parameter_id = self
@@ -1611,7 +1614,22 @@ impl<'a> Graph<'a> {
         for statement in &definition.body {
             if let StatementKind::Raise(Some(exception)) = &statement.kind {
                 let target = match &exception.kind {
-                    ExpressionKind::Call { function, .. } => function,
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    } if definition.has_positional_parameter
+                        || (keywords.is_empty()
+                            && arguments.iter().all(|arg| match &arg.kind {
+                                ExpressionKind::Text(_)
+                                | ExpressionKind::Bool(_)
+                                | ExpressionKind::Scalar => true,
+                                ExpressionKind::Name(name) => name == &parameter.text,
+                                _ => false,
+                            })) =>
+                    {
+                        function
+                    }
                     _ => exception,
                 };
                 if matches!(&target.kind, ExpressionKind::Name(name) if name == "AttributeError")
@@ -1622,6 +1640,11 @@ impl<'a> Graph<'a> {
                 {
                     return LazyMember::Missing;
                 }
+            }
+            // A variadic hook receives a tuple, so only a proven missing
+            // member can be resolved without matching a string guard.
+            if !definition.has_positional_parameter {
+                break;
             }
             let StatementKind::If {
                 test,
