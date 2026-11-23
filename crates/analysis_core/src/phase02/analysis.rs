@@ -2831,6 +2831,16 @@ impl<'a> Graph<'a> {
                             );
                         }
                     }
+                    Value::Provider(name)
+                        if matches!(name.as_str(), "builtins.eval" | "builtins.exec") =>
+                    {
+                        self.scope_issue(
+                            scope,
+                            expr.at,
+                            "unresolved_call",
+                            format!("{name} can execute code outside the bounded model"),
+                        );
+                    }
                     Value::Provider(name) if name == "builtins.len" => {
                         if let [argument] = arguments.as_slice()
                             && keywords.is_empty()

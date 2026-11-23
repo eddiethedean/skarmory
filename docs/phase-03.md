@@ -178,8 +178,11 @@ overrides. Unresolved values and escaping results of unsupported namespace
 expressions, such as a dictionary union, report incomplete coverage. Length
 checks and provable truth tests can read the namespace without exposing its
 values. Shadowed names use ordinary call resolution.
-Object-argument `vars`, module and class namespace access, and arbitrary code
-evaluation remain outside this model. [#42](https://github.com/eddiethedean/skarmory/issues/42)
+Object-argument `vars` and module and class namespace reads remain outside this
+model. [#42](https://github.com/eddiethedean/skarmory/issues/42)
+Reachable calls resolved to `builtins.eval` or `builtins.exec`, including
+imported aliases, report incomplete coverage and withhold unused findings.
+The analyzer does not evaluate their arguments as Python code. [#78](https://github.com/eddiethedean/skarmory/issues/78)
 
 ### Grep verification preview
 
