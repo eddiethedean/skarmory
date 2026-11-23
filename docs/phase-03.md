@@ -268,10 +268,10 @@ The reader accepts these formats:
   decorator line. A positive `count` is optional.
 - A standalone coverage.py SQLite database with `file` and `line_bits`
   tables. The analyzer retains a callable when a reported line matches a
-  statement in its body. Bare legacy bitmaps without a `context_id` column
-  can also retain a declaration to match the pinned compatibility behavior.
-  These unverified hints do not establish body execution or retain callees
-  through that body.
+  statement or expression location in its body. Bare legacy bitmaps without
+  a `context_id` column can also retain a declaration to match the pinned
+  compatibility behavior. These unverified hints do not establish body
+  execution or retain callees through that body.
 - Version 2 JSON with a `revision`, a `fingerprints` map, and `calls` and/or
   `lines` arrays. Line observations contain `file` and a one-based `line`.
   Fingerprints are lowercase BLAKE3 hex digests of the selected file's UTF-8

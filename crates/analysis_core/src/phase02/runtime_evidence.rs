@@ -613,6 +613,63 @@ mod tests {
     }
 
     #[test]
+    fn coverage_matches_multiline_expressions_in_their_owning_callable() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def parse_port(value):\n    return (\n        int(value)\n    )\n\n\
+             def outer():\n    def inner(value):\n        return (\n            int(value)\n        )\n    return 0\n\n\
+             def unused():\n    return (\n        # A comment is not an executable location.\n        1\n    )\n",
+        )
+        .unwrap();
+        fs::write(root.join("other.py"), "# second selected file\n").unwrap();
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+                 INSERT INTO file VALUES (1, 'app.py');",
+            )
+            .unwrap();
+        let mut bits = [0_u8; 2];
+        for line in [3, 9, 15] {
+            bits[line / 8] |= 1 << (line % 8);
+        }
+        database
+            .execute("INSERT INTO line_bits VALUES (1, 1, ?1)", [bits.as_slice()])
+            .unwrap();
+        drop(database);
+
+        let clean = report(root, &options());
+        assert_eq!(clean["coverage"]["status"], "complete");
+        assert_eq!(unused(&clean), BTreeSet::from(["app.unused"]));
+        assert_eq!(
+            clean["runtime_evidence"],
+            json!([
+                {"artifact": ".coverage", "file": "app.py", "line": 3, "full_name": "app.parse_port", "kind": "runtime_coverage", "provenance": "unverified"},
+                {"artifact": ".coverage", "file": "app.py", "line": 9, "full_name": "app.outer.inner", "kind": "runtime_coverage", "provenance": "unverified"},
+            ])
+        );
+        assert_eq!(
+            clean["runtime_evidence_issues"][0]["message"],
+            "1 observations did not match a unique selected callable location"
+        );
+        let cached = Options {
+            workers: 4,
+            cache_dir: Some(cache.path().into()),
+            ..options()
+        };
+        for expected_hits in [0, 2] {
+            let mut parallel = report(root, &cached);
+            let stats = parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(stats["hits"], expected_hits);
+            assert_eq!(parallel, clean);
+        }
+    }
+
+    #[test]
     fn observed_closure_retains_dependencies_of_enclosing_scopes() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();

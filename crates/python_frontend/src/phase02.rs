@@ -2,7 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use ruff_python_ast::{Alias, BoolOp, CmpOp, Expr, Mod, Stmt, UnaryOp, token::TokenKind};
+use ruff_python_ast::{Alias, BoolOp, CmpOp, ElifElseClause, Expr, Mod, Stmt, UnaryOp};
+use ruff_python_ast::{
+    token::TokenKind,
+    visitor::{self, Visitor},
+};
 use ruff_text_size::Ranged;
 use serde::{Deserialize, Serialize};
 
@@ -251,6 +255,51 @@ enum SyntaxScope {
 
 struct Lowering<'a>(&'a Lines, SyntaxScope);
 
+struct BodyCoverage<'a> {
+    source: &'a Lines,
+    lines: BTreeSet<usize>,
+    visit_suite: bool,
+}
+
+impl BodyCoverage<'_> {
+    fn record(&mut self, node: &impl Ranged) {
+        self.lines.insert(self.source.locate(node.start()).line);
+    }
+}
+
+impl<'ast> Visitor<'ast> for BodyCoverage<'_> {
+    fn visit_stmt(&mut self, statement: &'ast Stmt) {
+        self.record(statement);
+        // Nested declarations can execute header expressions in this scope.
+        // Their suites belong to a separate scope.
+        let visit_suite = !matches!(statement, Stmt::FunctionDef(_) | Stmt::ClassDef(_));
+        let previous = std::mem::replace(&mut self.visit_suite, visit_suite);
+        visitor::walk_stmt(self, statement);
+        self.visit_suite = previous;
+    }
+
+    fn visit_body(&mut self, statements: &'ast [Stmt]) {
+        if self.visit_suite {
+            visitor::walk_body(self, statements);
+        }
+    }
+
+    fn visit_elif_else_clause(&mut self, clause: &'ast ElifElseClause) {
+        if clause.test.is_some() {
+            self.record(clause);
+        }
+        visitor::walk_elif_else_clause(self, clause);
+    }
+
+    fn visit_expr(&mut self, expression: &'ast Expr) {
+        self.record(expression);
+        if let Expr::Attribute(attribute) = expression {
+            self.record(&attribute.attr);
+        }
+        visitor::walk_expr(self, expression);
+    }
+}
+
 impl Lowering<'_> {
     fn check(&self, node: &impl Ranged, depth: usize) -> Result<(), FrontendError> {
         if depth >= MAX_NESTING {
@@ -337,27 +386,6 @@ impl Lowering<'_> {
         Ok(())
     }
 
-    fn body_coverage_lines(&self, statements: &[Stmt], lines: &mut Vec<usize>) {
-        for statement in statements {
-            // Record the executable statement location before lowering can
-            // discard a pass or replace an import with its individual aliases.
-            lines.push(self.0.locate(statement.start()).line);
-            match statement {
-                Stmt::If(node) => {
-                    self.body_coverage_lines(&node.body, lines);
-                    for clause in &node.elif_else_clauses {
-                        if clause.test.is_some() {
-                            lines.push(self.0.locate(clause.start()).line);
-                        }
-                        self.body_coverage_lines(&clause.body, lines);
-                    }
-                }
-                Stmt::With(node) => self.body_coverage_lines(&node.body, lines),
-                _ => {}
-            }
-        }
-    }
-
     fn suite(&self, statements: &[Stmt], depth: usize) -> Result<Vec<Statement>, FrontendError> {
         let mut result = Vec::new();
         let mut allows_future_import = depth == 0;
@@ -436,8 +464,12 @@ impl Lowering<'_> {
                         },
                     )
                     .suite(&node.body, next)?;
-                    let mut body_coverage_lines = Vec::new();
-                    self.body_coverage_lines(&node.body, &mut body_coverage_lines);
+                    let mut coverage = BodyCoverage {
+                        source: self.0,
+                        lines: BTreeSet::new(),
+                        visit_suite: true,
+                    };
+                    coverage.visit_body(&node.body);
                     StatementKind::Define(Definition {
                         name,
                         kind: if is_async {
@@ -446,7 +478,7 @@ impl Lowering<'_> {
                             DefinitionKind::Function
                         },
                         body,
-                        body_coverage_lines,
+                        body_coverage_lines: coverage.lines.into_iter().collect(),
                         decorators: node
                             .decorator_list
                             .iter()
