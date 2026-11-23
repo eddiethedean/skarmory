@@ -31,6 +31,7 @@ reference_python="$UV_PROJECT_ENVIRONMENT/bin/python"
   'test/test_package_local_exports.py::test_package_dynamic_local_namespace_stays_live[vars()]' \
   'test/test_package_local_exports.py::test_package_dynamic_local_namespace_stays_live[eval(source)]' \
   test/test_package_local_exports.py::test_module_all_does_not_export_a_function_local_with_the_same_name \
+  test/test_trace_file_analyzer.py \
   test/test_typescript_expanded.py::TestHardBenchmark \
   test/test_typescript_expanded.py::TestRealisticBenchmark
 
@@ -73,6 +74,10 @@ suites outside that collection root.
 | `test_package_dynamic_local_namespace_stays_live[vars()]` | Passed |
 | `test_package_dynamic_local_namespace_stays_live[eval(source)]` | Passed |
 | `test_module_all_does_not_export_a_function_local_with_the_same_name` | Strict xfail. The upstream marker names explicit `__all__` local-name collisions. |
+| `test_analyzer_trace_file_loads_only_explicit_path` | Passed |
+| `test_analyzer_trace_file_false_ignores_project_root_trace` | Passed |
+| `test_analyzer_default_trace_file_preserves_legacy_root_trace` | Passed |
+| `test_analyzer_default_trace_file_rejects_symlink` | Passed with symlink creation available. |
 | `TestHardBenchmark::test_all_dead_detected` | Skipped in setup because `hard_benchmark.ts` was absent |
 | `TestHardBenchmark::test_no_false_positives` | Skipped in setup because `hard_benchmark.ts` was absent |
 | `TestRealisticBenchmark::test_all_dead_detected` | Skipped in setup because `realistic_benchmark.ts` was absent |
