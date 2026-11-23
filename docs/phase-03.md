@@ -164,6 +164,63 @@ have their own milestones.
   Revalidate edit inputs and proof dependencies before applying or rolling back
   an explicitly requested change.
 
+### Bounded Python ordering guards
+
+The Skylos profiles analyze both branches of a single `<`, `<=`, `>`, or `>=`
+guard when its operands have bounded scalar behavior. Comparisons that could
+invoke a selected class hook report incomplete coverage when reached. This
+supports the pinned recursive-group and caller-edit cases. [#52](https://github.com/eddiethedean/skarmory/issues/52)
+
+### Bounded Python receivers and lazy imports
+
+Ordinary constructors and instance methods use the first positional
+parameter as the receiver regardless of its name. An explicit
+keyword receiver is resolved when the supported signature proves that the name
+accepts a keyword. Unknown receiver types and custom allocation can still
+make analysis incomplete.
+
+A literal equality branch in a module's `__getattr__` can return a selected
+member through `getattr(importlib.import_module("pkg.provider"), name)`.
+The analyzer resolves the loader and member through their bindings and tracks
+the selected import's initialization. The bounded model requires selected
+package initializers and abstains when attaching a child could replace a
+package member. Shadowed loaders and other unmodeled call effects also
+leave coverage incomplete.
+
+### Static package entry points
+
+The `skylos-0.3` profile reads package entry-point declarations from the scan
+root. It supports PEP 621 script and group tables, Poetry scripts and plugin
+groups, `[options.entry_points]` in `setup.cfg`, and literal entry points
+passed to a statically identified setuptools or distutils `setup()` call.
+Source modules and dotted members resolve against the selected Python files.
+A class target retains its public surface. A dotted class member retains the
+named member and the class needed to look it up.
+
+Metadata reads use the current snapshot even when Python facts come from the
+cache. Invalid or unresolved declarations produce coverage diagnostics.
+`setup.py` metadata is interpreted statically. When the script is itself
+selected for dead-code analysis, its Python statements follow the ordinary
+coverage rules.
+
+### Bounded Python function namespace reads
+
+In both Skylos profiles, zero-argument calls to the built-in `locals()` and
+`vars()` within a function retain the bindings that can be present at the
+call site, including captured cells. A namespace that escapes can retain
+possible callable targets with evidence, including coroutines and values
+supplied by selected callers and executor submissions. Dictionary copies keep
+the entries present after argument evaluation and apply explicit keyword
+overrides. Unresolved values and escaping results of unsupported namespace
+expressions, such as a dictionary union, report incomplete coverage. Length
+checks and provable truth tests can read the namespace without exposing its
+values. Shadowed names use ordinary call resolution.
+Object-argument `vars` and module and class namespace reads remain outside this
+model. [#42](https://github.com/eddiethedean/skarmory/issues/42)
+Reachable calls resolved to `builtins.eval` or `builtins.exec`, including
+imported aliases, report incomplete coverage and withhold unused findings.
+The analyzer does not evaluate their arguments as Python code. [#78](https://github.com/eddiethedean/skarmory/issues/78)
+
 ### Grep verification preview
 
 The native CLI enables grep verification with `--grep-verify`. In the native
@@ -199,6 +256,66 @@ explicit `cache_dir` option for persistent file-local facts, and rebuilds
 verification and reachability from the current scan inputs even with a warm
 cache. The pinned SDK flag creates no verification cache files.
 
+### Runtime evidence
+
+Select the Phase 0.3 profile to import runtime observations. By default it
+looks for project-root `.skylos_trace` and `.coverage` files. In the CLI,
+`--trace-file PATH` and `--coverage-file PATH` select explicit artifacts.
+`--no-trace` and `--no-coverage` disable the respective inputs. The Python SDK
+accepts `trace_file` and `coverage_file` with the same path behavior, or
+`False` to disable either input. Relative paths start at the scan root
+(or the containing directory for a file scan).
+
+The reader accepts these formats:
+
+- Legacy Skylos v1 JSON calls with `file`, `function`, and `line`. A call
+  must match the selected file, simple function name, and definition or first
+  decorator line. A positive `count` is optional.
+- A standalone coverage.py SQLite database with `file` and `line_bits`
+  tables. The analyzer retains a callable when a reported line matches a
+  statement or expression location in its body. Coverage source paths must
+  be absolute. The database does not record the base for relative paths, so
+  those observations are reported as rejected. Set `relative_files = False`
+  in coverage.py's `[run]` configuration to store absolute paths. Bare legacy
+  bitmaps without a `context_id` column can also retain a declaration to match
+  the pinned compatibility behavior. These unverified hints do not establish
+  body execution or retain callees through that body.
+- Version 2 JSON with a `revision`, a `fingerprints` map, and `calls` and/or
+  `lines` arrays. Line observations contain `file` and a one-based `line`.
+  Fingerprints are lowercase BLAKE3 hex digests of the selected file's UTF-8
+  content after CRLF and bare CR normalization to LF. Keys are selected
+  project-relative paths with forward slashes.
+
+The version 2 revision is the lowercase BLAKE3 hex digest of the source
+snapshot. Start the hash with the bytes `skarmory-source-snapshot-v1\0`
+(including the terminating NUL). In lexicographic path order, append each
+selected file's path length as an unsigned 64-bit little-endian integer,
+the UTF-8 path bytes, and the file's 32 raw BLAKE3 fingerprint bytes.
+Use the selected files for the same effective scan scope. Both the revision
+and the observed file's fingerprint must match to earn verified provenance.
+
+The `runtime_evidence` report field identifies the matched callable,
+observed location, artifact, and provenance. It reports declaration-only
+matches as `runtime_coverage_declaration`. The grouped
+`dead_code_evidence` uses the compatibility event kinds `trace_hit` and
+`coverage_hit`. Legacy artifacts are unverified
+and contribute possible use. An observed nested callable supplies possible-use
+evidence for the scopes that created it. Evidence binds to selected files and
+unambiguous locations. The reader rejects symlink artifacts, caps inputs at
+1 MiB and 32,768 observations per artifact, and rejects WAL-mode SQLite
+databases. A source newer than a legacy artifact cannot supply a match.
+Rejections appear in `runtime_evidence_issues`, independently of static scan
+coverage. Absence from any artifact supplies no evidence of non-use. Each
+scan reads current artifacts even when it reuses cached Python facts.
+
+To collect an unverified call trace explicitly, use
+`skarmory.runtime.collect_trace(project)` as a Python context manager around
+the workload you choose to run. It records calls on the current thread and
+writes `.skylos_trace` when the context exits successfully. Static scans read
+artifacts through Rust and run independently of that collection step.
+
+[Pinned trace inputs](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_trace_file_analyzer.py) · [Pinned coverage database cases](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_implicit_refs.py#L181-L232)
+
 ### Other planned compatibility policies
 
 Explicitly select the Phase 0.3 Skylos contract in the CLI and SDK to apply the
@@ -206,15 +323,6 @@ policies below. Keep existing Phase 0.2 invocations and defaults valid. The
 conformance harness selects the contract at the entry-point boundary and
 preserves each upstream case's inputs and omitted options.
 
-- **Trace provenance.** The compatibility profile reads a supplied v1 trace
-  path or, when the trace option is omitted, the project-root `.skylos_trace`.
-  Honor an explicit disable even when the root trace exists. Validate paths and
-  bind calls to selected source locations and definitions. Reject symlinks for
-  implicit discovery and reject malformed or known-stale observations. Legacy
-  records without revision and fingerprints can retain matched definitions
-  under this profile with unverified provenance. Verified observed-use evidence
-  requires validated revision and source fingerprints. Reading an artifact
-  executes no target code. [Pinned trace tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_trace_file_analyzer.py#L27-L103)
 - **Coverage and verdict.** In impact mode, evaluate base and head under the
   same effective comparison policy, including the pinned use of base policy
   and explicit operator configuration. Return an incomplete comparison when

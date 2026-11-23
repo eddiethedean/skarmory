@@ -265,3 +265,140 @@ class SdkTests(unittest.TestCase):
                     [cli, project, "--profile", "skylos-0.3", "--include-generated"]
                 )
                 self.assertEqual(json.loads(output), edited)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_package_export_does_not_retain_same_name_local(self):
+        # Independent control for the strict reference xfail at test/test_package_local_exports.py:60-81
+        # in Skylos 87978e69adf91b3811e97b00c40aa39d7937cd94.
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            package = project / "pkg"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                '__all__ = ["STATE", "run"]\n\n'
+                'STATE = "public"\n\n'
+                'def run():\n    STATE = "local"\n    return 0\n',
+                encoding="utf-8",
+            )
+            report = json.loads(skylos.analyze(
+                project, conf=60, profile="skylos-0.3", grep_verify=True, trace_file=False,
+            ))
+            self.assertEqual(report["coverage"]["status"], "complete", report)
+            variables = {finding["full_name"] for finding in report["unused_variables"]}
+            self.assertIn("pkg.run.STATE", variables)
+            self.assertNotIn("pkg.STATE", variables)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_package_function_namespace_reads_local_bindings(self):
+        # SDK controls for the locals() and vars() variants at test/test_package_local_exports.py:126-138
+        # in Skylos 87978e69adf91b3811e97b00c40aa39d7937cd94.
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            package = project / "pkg"
+            package.mkdir()
+            initializer = package / "__init__.py"
+            for expression in ("locals()", "vars()", "source"):
+                with self.subTest(expression=expression):
+                    initializer.write_text(
+                        "def evaluate(source):\n"
+                        "    retained_value = 17\n"
+                        f"    return {expression}\n",
+                        encoding="utf-8",
+                    )
+                    report = json.loads(skylos.analyze(
+                        project, conf=60, profile="skylos-0.3", grep_verify=True, trace_file=False,
+                    ))
+                    self.assertEqual(report["coverage"]["status"], "complete", report)
+                    variables = {finding["full_name"] for finding in report["unused_variables"]}
+                    if expression == "source":
+                        self.assertIn("pkg.evaluate.retained_value", variables)
+                    else:
+                        self.assertNotIn("pkg.evaluate.retained_value", variables)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_trace_selection_and_cli_parity(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            module = project / "app.py"
+            module.write_text(
+                "def primary():\n    return helper()\n"
+                "def secondary():\n    return 2\n"
+                "def helper():\n    return 3\n",
+                encoding="utf-8",
+            )
+            for path, function, line in (
+                (".skylos_trace", "primary", 1),
+                ("other.json", "secondary", 3),
+            ):
+                project.joinpath(path).write_text(
+                    json.dumps({
+                        "version": 1,
+                        "calls": [{"file": str(module), "function": function, "line": line}],
+                    }),
+                    encoding="utf-8",
+                )
+            for options, flags, expected in (
+                ({}, [], {"secondary"}),
+                ({"trace_file": Path("other.json")}, ["--trace-file", "other.json"], {"primary", "helper"}),
+                ({"trace_file": False}, ["--no-trace"], {"primary", "secondary", "helper"}),
+            ):
+                with self.subTest(options=options):
+                    report = json.loads(skylos.analyze(
+                        project, profile="skylos-0.3", conf=0, grep_verify=False, **options
+                    ))
+                    self.assertEqual(report["coverage"]["status"], "complete")
+                    self.assertEqual({row["name"] for row in report["unused_functions"]}, expected)
+                    if options.get("trace_file") is not False:
+                        self.assertEqual(report["runtime_evidence"][0]["provenance"], "unverified")
+                    if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                        raw = subprocess.check_output([
+                            cli, project, "--profile", "skylos-0.3", "--no-grep-verify",
+                            "--include-generated", "--all-advice", "--confidence", "0", *flags,
+                        ])
+                        self.assertEqual(report, json.loads(raw))
+
+            phase02 = json.loads(skylos.analyze(project, conf=0))
+            self.assertEqual(len(phase02["unused_functions"]), 3)
+            self.assertNotIn("runtime_evidence", phase02)
+            with self.assertRaises(TypeError):
+                skylos.analyze(project, trace_file=Path("other.json"))
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    @unittest.skipUnless(os.name == "posix", "requires POSIX symlink creation")
+    def test_phase03_default_trace_rejects_symlink(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            project.joinpath("app.py").write_text("def work():\n    return 1\n", encoding="utf-8")
+            trace = project / "observations.json"
+            trace.write_text(
+                '{"version":1,"calls":[{"file":"app.py","function":"work","line":1}]}',
+                encoding="utf-8",
+            )
+            project.joinpath(".skylos_trace").symlink_to(trace)
+            report = json.loads(skylos.analyze(project, profile="skylos-0.3", grep_verify=False))
+            self.assertEqual(report["coverage"]["status"], "complete")
+            self.assertEqual(report["runtime_evidence_issues"][0]["kind"], "runtime_evidence_rejected")
+            self.assertEqual([row["name"] for row in report["unused_functions"]], ["work"])
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_runtime_collection_can_be_imported_by_the_sdk(self):
+        from runpy import run_path
+
+        from skarmory.runtime import collect_trace
+
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            module = project / "app.py"
+            module.write_text(
+                "def called():\n    return 1\ndef untouched():\n    return 2\n",
+                encoding="utf-8",
+            )
+            namespace = run_path(str(module.resolve()))
+            with collect_trace(project, "taken.json"):
+                self.assertEqual(namespace["called"](), 1)
+            report = json.loads(skylos.analyze(
+                project, profile="skylos-0.3", grep_verify=False, trace_file="taken.json"
+            ))
+            self.assertEqual(report["coverage"]["status"], "complete")
+            self.assertEqual([row["name"] for row in report["unused_functions"]], ["untouched"])
+            self.assertEqual(report["runtime_evidence"][0]["provenance"], "unverified")

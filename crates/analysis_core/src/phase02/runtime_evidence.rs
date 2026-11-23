@@ -1,0 +1,981 @@
+//! Positive runtime observations matched against the current source snapshot.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::{ErrorKind, Write};
+use std::path::{Component, Path, PathBuf};
+
+use rusqlite::{Connection, OpenFlags};
+use serde::{Deserialize, Serialize};
+
+use crate::Issue;
+use crate::preview_source::{Project, Stamp, read_snapshot};
+
+const MAX_OBSERVATIONS: usize = 32_768;
+pub(super) const COVERAGE_DECLARATION: &str = "runtime_coverage_declaration";
+
+#[derive(Clone, Debug, Default)]
+pub enum Input {
+    #[default]
+    Default,
+    Disabled,
+    Path(PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Provenance {
+    Unverified,
+    Verified,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct Observation {
+    pub(super) artifact: String,
+    pub(super) file: String,
+    pub(super) line: usize,
+    pub(super) function: Option<String>,
+    pub(super) allow_declaration: bool,
+    pub(super) provenance: Provenance,
+}
+
+impl Observation {
+    pub(super) fn kind(&self) -> &'static str {
+        if self.function.is_some() {
+            "runtime_trace"
+        } else {
+            "runtime_coverage"
+        }
+    }
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub(super) struct Evidence {
+    pub(super) artifact: String,
+    pub(super) file: String,
+    pub(super) line: usize,
+    pub(super) full_name: String,
+    pub(super) kind: &'static str,
+    pub(super) provenance: Provenance,
+}
+
+#[derive(Default)]
+pub(super) struct Snapshot {
+    pub(super) observations: BTreeSet<Observation>,
+    pub(super) issues: Vec<Issue>,
+}
+
+#[derive(Deserialize)]
+struct Artifact {
+    version: u32,
+    #[serde(default)]
+    calls: Option<Vec<Call>>,
+    #[serde(default)]
+    lines: Vec<Line>,
+    revision: Option<String>,
+    fingerprints: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct Call {
+    file: String,
+    line: usize,
+    function: String,
+    #[serde(default = "one")]
+    count: u64,
+}
+
+fn one() -> u64 {
+    1
+}
+
+#[derive(Deserialize)]
+struct Line {
+    file: String,
+    line: usize,
+    #[serde(skip)]
+    allow_declaration: bool,
+}
+
+fn revision(sources: &BTreeMap<String, String>) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"skarmory-source-snapshot-v1\0");
+    for (path, source) in sources {
+        hasher.update(&(path.len() as u64).to_le_bytes());
+        hasher.update(path.as_bytes());
+        hasher.update(blake3::hash(source.as_bytes()).as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+impl Snapshot {
+    pub(super) fn read(
+        path: &Path,
+        project: &Project,
+        sources: &BTreeMap<String, String>,
+        stamps: &[Option<Stamp>],
+        trace: &Input,
+        coverage: &Input,
+    ) -> Self {
+        let mut snapshot = Self::default();
+        let requested_base = std::path::absolute(path).ok().and_then(|absolute| {
+            if path.is_file() {
+                absolute.parent().map(Path::to_owned)
+            } else {
+                Some(absolute)
+            }
+        });
+        let modified: BTreeMap<_, _> = project
+            .files
+            .iter()
+            .zip(stamps)
+            .filter_map(|(file, stamp)| Some((file.label.as_str(), stamp.as_ref()?.modified()?)))
+            .collect();
+        let mut revision_cache = None;
+        let mut digests = BTreeMap::<String, blake3::Hash>::new();
+        for (input, default) in [(trace, ".skylos_trace"), (coverage, ".coverage")] {
+            let (requested, implicit) = match input {
+                Input::Default => (Path::new(default), true),
+                Input::Disabled => continue,
+                Input::Path(path) => (path.as_path(), false),
+            };
+            let path = project.base().join(requested);
+            let label = project.label(&path);
+            let stamp = match fs::symlink_metadata(&path) {
+                Ok(metadata) => Stamp::new(&metadata),
+                Err(error) if implicit && error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => {
+                    snapshot.reject(&label, error);
+                    continue;
+                }
+            };
+            let (bytes, stamp) = match read_snapshot(&path, &label, Some(&stamp)) {
+                Ok(result) => result,
+                Err(issue) => {
+                    snapshot.reject(&label, issue.message);
+                    continue;
+                }
+            };
+            let sqlite = default == ".coverage" && bytes.starts_with(b"SQLite format 3\0");
+            let artifact = if sqlite {
+                sqlite_coverage(&bytes).map(|lines| Artifact {
+                    version: 1,
+                    calls: None,
+                    lines,
+                    revision: None,
+                    fingerprints: None,
+                })
+            } else {
+                serde_json::from_slice::<Artifact>(&bytes).map_err(|error| error.to_string())
+            };
+            let artifact = match artifact {
+                Ok(value) => value,
+                Err(error) => {
+                    snapshot.reject(&label, error);
+                    continue;
+                }
+            };
+            let provenance = match (artifact.version, &artifact.revision, &artifact.fingerprints) {
+                (1, None, None)
+                    if sqlite || (artifact.calls.is_some() && artifact.lines.is_empty()) =>
+                {
+                    Provenance::Unverified
+                }
+                (2, Some(expected), Some(_))
+                    if revision_cache.get_or_insert_with(|| revision(sources)) == expected =>
+                {
+                    Provenance::Verified
+                }
+                _ => {
+                    snapshot.reject(&label, "unsupported version or mismatched source revision");
+                    continue;
+                }
+            };
+            let calls = artifact.calls.unwrap_or_default();
+            if calls.len().saturating_add(artifact.lines.len()) > MAX_OBSERVATIONS
+                || calls.iter().any(|call| {
+                    call.count == 0
+                        || call.line == 0
+                        || call.file.is_empty()
+                        || call.function.is_empty()
+                })
+                || artifact
+                    .lines
+                    .iter()
+                    .any(|line| line.line == 0 || line.file.is_empty())
+            {
+                snapshot.reject(&label, "invalid observations or observation limit exceeded");
+                continue;
+            }
+            let mut rejected = 0;
+            let mut relative_coverage = 0;
+            for (file, line, function, allow_declaration) in calls
+                .into_iter()
+                .map(|call| (call.file, call.line, Some(call.function), false))
+                .chain(
+                    artifact
+                        .lines
+                        .into_iter()
+                        .map(|line| (line.file, line.line, None, line.allow_declaration)),
+                )
+            {
+                let file_path = Path::new(&file);
+                // SQLite coverage does not store the directory from which relative
+                // paths were recorded. The scan root may name a different file.
+                if sqlite && !file_path.is_absolute() {
+                    relative_coverage += 1;
+                    continue;
+                }
+                let Some(file) =
+                    selected_label(project.base(), requested_base.as_deref(), file_path)
+                else {
+                    continue;
+                };
+                let Some(source) = sources.get(&file) else {
+                    continue;
+                };
+                let fresh = if let Some(fingerprints) = &artifact.fingerprints {
+                    let digest = digests
+                        .entry(file.clone())
+                        .or_insert_with(|| blake3::hash(source.as_bytes()));
+                    fingerprints
+                        .get(&file)
+                        .is_some_and(|expected| digest.to_hex().as_str() == expected)
+                } else {
+                    !matches!((modified.get(file.as_str()), stamp.modified()), (Some(source), Some(artifact)) if *source > artifact)
+                };
+                if !fresh {
+                    rejected += 1;
+                    continue;
+                }
+                snapshot.observations.insert(Observation {
+                    artifact: label.clone(),
+                    file,
+                    line,
+                    function,
+                    allow_declaration,
+                    provenance,
+                });
+            }
+            if relative_coverage > 0 {
+                snapshot.reject(
+                    &label,
+                    format!(
+                        "{relative_coverage} coverage observations have relative source paths with no recorded base directory; collect with relative_files = False"
+                    ),
+                );
+            }
+            if rejected > 0 {
+                snapshot.reject(
+                    &label,
+                    format!("{rejected} observations have stale or missing source fingerprints"),
+                );
+            }
+        }
+        snapshot
+    }
+
+    fn reject(&mut self, path: &str, message: impl ToString) {
+        self.issues
+            .push(Issue::new("runtime_evidence_rejected", path, message));
+    }
+}
+
+fn selected_label(base: &Path, requested: Option<&Path>, path: &Path) -> Option<String> {
+    let relative = if path.is_absolute() {
+        path.strip_prefix(base)
+            .ok()
+            .or_else(|| path.strip_prefix(requested?).ok())?
+    } else {
+        path
+    };
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => parts.push(name.to_str()?),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(parts.join("/"))
+}
+
+fn sqlite_coverage(bytes: &[u8]) -> Result<Vec<Line>, String> {
+    use rusqlite::types::ValueRef;
+
+    // WAL databases require a separate log to establish a complete snapshot.
+    if bytes.get(18..20).is_some_and(|mode| mode.contains(&2)) {
+        return Err("coverage database requires a standalone SQLite snapshot".into());
+    }
+    // Query the same regular-file bytes that passed snapshot validation.
+    let mut file = tempfile::NamedTempFile::new().map_err(|error| error.to_string())?;
+    file.write_all(bytes).map_err(|error| error.to_string())?;
+    let database = Connection::open_with_flags(file.path(), OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    database
+        .execute_batch("PRAGMA trusted_schema = OFF")
+        .map_err(|error| error.to_string())?;
+    let tables: u32 = database.query_row(
+        "SELECT count(*) FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name IN ('file', 'line_bits')",
+        [],
+        |row| row.get(0),
+    ).map_err(|error| error.to_string())?;
+    if tables != 2 {
+        return Err("coverage database requires file and line_bits tables".into());
+    }
+    // The pinned compatibility format also accepts bare, context-free bitmaps
+    // as retention hints at declaration lines. coverage.py's contextual
+    // line records include declarations whenever a module is imported.
+    let allow_declaration: bool = database
+        .query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM pragma_table_info('line_bits') WHERE name = 'context_id' COLLATE NOCASE)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut query = database.prepare(
+        "SELECT file.path, line_bits.numbits FROM line_bits JOIN file ON file.id = line_bits.file_id LIMIT 32769",
+    ).map_err(|error| error.to_string())?;
+    let mut rows = query.query([]).map_err(|error| error.to_string())?;
+    let mut lines = Vec::new();
+    let mut row_count = 0;
+    while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+        row_count += 1;
+        if row_count > MAX_OBSERVATIONS {
+            return Err("coverage row limit exceeded".into());
+        }
+        let file: String = row.get(0).map_err(|error| error.to_string())?;
+        if file.len() > 4096 {
+            return Err("coverage source path exceeds 4096 bytes".into());
+        }
+        let ValueRef::Blob(bits) = row.get_ref(1).map_err(|error| error.to_string())? else {
+            return Err("invalid coverage line bitmap".into());
+        };
+        for (index, &byte) in bits.iter().enumerate() {
+            for bit in 0..8 {
+                let line = index * 8 + bit;
+                if line > 0 && byte & (1 << bit) != 0 {
+                    if lines.len() == MAX_OBSERVATIONS {
+                        return Err("coverage observation limit exceeded".into());
+                    }
+                    lines.push(Line {
+                        file: file.clone(),
+                        line,
+                        allow_declaration,
+                    });
+                }
+            }
+        }
+    }
+    Ok(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::phase02::{Options, Profile, scan};
+    use serde_json::{Value, json};
+
+    fn options() -> Options {
+        Options {
+            profile: Profile::SkylosPhase03,
+            grep_verify: Some(false),
+            ..Options::default()
+        }
+    }
+
+    fn write(root: &Path, name: &str, payload: &Value) {
+        fs::write(root.join(name), serde_json::to_vec(payload).unwrap()).unwrap();
+    }
+
+    fn insert_coverage_file(database: &Connection, id: u32, path: &Path) {
+        let path = fs::canonicalize(path).unwrap();
+        database
+            .execute(
+                "INSERT INTO file VALUES (?1, ?2)",
+                (id, path.to_str().unwrap()),
+            )
+            .unwrap();
+    }
+
+    fn report(root: &Path, options: &Options) -> Value {
+        serde_json::from_str(&scan(root, options).unwrap().to_json().unwrap()).unwrap()
+    }
+
+    fn unused(report: &Value) -> BTreeSet<&str> {
+        report["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|finding| finding["full_name"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn verified_evidence_is_rechecked_on_warm_scans() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let source = "def helper():\n    return 1\ndef traced():\n    return helper()\ndef covered():\n    return 2\ndef unused():\n    return 3\n";
+        fs::write(root.join("app.py"), source).unwrap();
+        let sources = BTreeMap::from([("app.py".into(), source.into())]);
+        let fingerprint = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let artifact = json!({
+            "version": 2, "revision": revision(&sources),
+            "fingerprints": {"app.py": fingerprint},
+            "calls": [{"file": "app.py", "function": "traced", "line": 3}],
+            "lines": [{"file": "app.py", "line": 6}]
+        });
+        let cached = Options {
+            workers: 4,
+            cache_dir: Some(cache.path().into()),
+            ..options()
+        };
+        let compare = || {
+            let clean = report(root, &options());
+            let mut with_cache = report(root, &cached);
+            let stats = with_cache.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(clean, with_cache);
+            assert_eq!(clean["coverage"]["status"], "complete");
+            (clean, stats)
+        };
+        write(root, ".skylos_trace", &artifact);
+        let (valid, stats) = compare();
+        assert_eq!(stats["misses"], 1);
+        assert_eq!(unused(&valid), BTreeSet::from(["app.unused"]));
+        let evidence = valid["runtime_evidence"].as_array().unwrap();
+        assert_eq!(evidence.len(), 2);
+        assert!(evidence.iter().all(|row| row["provenance"] == "verified"));
+        assert_eq!(evidence[0]["kind"], "runtime_trace");
+        assert_eq!(evidence[1]["kind"], "runtime_coverage");
+
+        let mut declaration = artifact.clone();
+        declaration["lines"] = json!([{"file": "app.py", "line": 5}]);
+        write(root, ".skylos_trace", &declaration);
+        let (rejected, _) = compare();
+        assert!(unused(&rejected).contains("app.covered"));
+        assert_eq!(rejected["runtime_evidence"].as_array().unwrap().len(), 1);
+        assert!(rejected.get("runtime_evidence_issues").is_some());
+
+        for (field, invalid) in [
+            ("revision", json!("stale")),
+            ("fingerprints", json!({"app.py": "wrong"})),
+            (
+                "calls",
+                json!([{"file": "app.py", "function": "traced", "line": 8}]),
+            ),
+            (
+                "calls",
+                json!([{"file": "app.py", "function": "traced", "line": 3, "count": 0}]),
+            ),
+        ] {
+            let mut changed = artifact.clone();
+            changed[field] = invalid;
+            write(root, ".skylos_trace", &changed);
+            let (rejected, stats) = compare();
+            assert_eq!(stats["hits"], 1);
+            assert!(unused(&rejected).contains("app.traced"));
+            assert_eq!(
+                rejected["runtime_evidence_issues"][0]["kind"],
+                "runtime_evidence_rejected"
+            );
+        }
+        write(root, ".skylos_trace", &artifact);
+        fs::write(root.join("app.py"), format!("{source}# newer source\n")).unwrap();
+        let (stale, _) = compare();
+        assert!(stale.get("runtime_evidence").is_none());
+        assert!(unused(&stale).contains("app.traced"));
+    }
+
+    #[test]
+    fn coverage_database_imports_only_positive_body_lines() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def covered():\n    def inner():\n        return 1\n    return 2\ndef unused():\n    return 3\n",
+        ).unwrap();
+        let path = root.join(".coverage");
+        let database = Connection::open(path).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+             CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+             INSERT INTO line_bits VALUES (1, 1, X'32');",
+            )
+            .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
+        drop(database);
+        let covered = report(root, &options());
+        assert_eq!(covered["coverage"]["status"], "complete");
+        assert_eq!(
+            unused(&covered),
+            BTreeSet::from(["app.covered.inner", "app.unused"])
+        );
+        assert_eq!(covered["runtime_evidence"][0]["line"], 4);
+        assert_eq!(covered["runtime_evidence"][0]["provenance"], "unverified");
+        let disabled = report(
+            root,
+            &Options {
+                coverage_file: Input::Disabled,
+                ..options()
+            },
+        );
+        assert!(unused(&disabled).contains("app.covered"));
+        let phase02 = report(root, &Options::default());
+        assert!(unused(&phase02).contains("app.covered"));
+    }
+
+    #[test]
+    fn coverage_does_not_guess_the_origin_of_relative_database_paths() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let worker = root.join("worker");
+        fs::create_dir(&worker).unwrap();
+        fs::write(worker.join("__init__.py"), "").unwrap();
+        fs::write(root.join("app.py"), "def observed():\n    return 2\n").unwrap();
+        fs::write(worker.join("app.py"), "def observed():\n    return 1\n").unwrap();
+        let artifact = PathBuf::from("worker/.coverage");
+        let path = root.join(&artifact);
+        let database = Connection::open(&path).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+                 INSERT INTO file VALUES (1, 'app.py');
+                 INSERT INTO line_bits VALUES (1, 1, X'04');",
+            )
+            .unwrap();
+        drop(database);
+
+        let scan_options = Options {
+            coverage_file: Input::Path(artifact),
+            ..options()
+        };
+        let relative = report(root, &scan_options);
+        assert_eq!(relative["coverage"]["status"], "complete");
+        assert_eq!(
+            unused(&relative),
+            BTreeSet::from(["app.observed", "worker.app.observed"])
+        );
+        assert!(relative.get("runtime_evidence").is_none());
+        let issues = &relative["runtime_evidence_issues"];
+        assert_eq!(issues[0]["kind"], "runtime_evidence_rejected");
+        assert_eq!(issues[0]["path"], "worker/.coverage");
+        assert!(issues[0]["message"].as_str().unwrap().contains("relative"));
+
+        let cached = Options {
+            workers: 4,
+            cache_dir: Some(cache.path().into()),
+            coverage_file: scan_options.coverage_file.clone(),
+            ..options()
+        };
+        let mut cold = report(root, &cached);
+        cold.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(cold, relative);
+
+        let database = Connection::open(path).unwrap();
+        insert_coverage_file(&database, 2, &worker.join("app.py"));
+        database
+            .execute("INSERT INTO line_bits VALUES (2, 1, X'04')", [])
+            .unwrap();
+        drop(database);
+
+        let mixed = report(root, &scan_options);
+        assert_eq!(mixed["coverage"]["status"], "complete");
+        assert_eq!(unused(&mixed), BTreeSet::from(["app.observed"]));
+        assert_eq!(mixed["runtime_evidence_issues"], *issues);
+        let evidence = mixed["runtime_evidence"].as_array().unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0]["file"], "worker/app.py");
+        assert_eq!(evidence[0]["line"], 2);
+        assert_eq!(evidence[0]["full_name"], "worker.app.observed");
+        assert_eq!(evidence[0]["provenance"], "unverified");
+
+        let mut warm = report(root, &cached);
+        let stats = warm.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(stats["hits"], 3);
+        assert_eq!(warm, mixed);
+    }
+
+    #[test]
+    fn legacy_coverage_declarations_supply_possible_use_without_opening_the_body() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def traced():\n    return 1\n\ndef covered(extra):\n    return helper()\n\ndef helper():\n    return 2\n",
+        )
+        .unwrap();
+        write(
+            root,
+            ".skylos_trace",
+            &json!({"version": 1, "calls": [{"file": "app.py", "function": "traced", "line": 1}]}),
+        );
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, numbits BLOB);
+                 INSERT INTO line_bits VALUES (1, X'10');",
+            )
+            .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
+        drop(database);
+
+        let report = report(
+            root,
+            &Options {
+                confidence: Some(0),
+                ..options()
+            },
+        );
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(unused(&report), BTreeSet::from(["app.helper"]));
+        assert_eq!(
+            report["unused_parameters"][0]["full_name"],
+            "app.covered.extra"
+        );
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        for (name, kind) in [("app.traced", "trace_hit"), ("app.covered", "coverage_hit")] {
+            let row = symbols
+                .iter()
+                .find(|row| row["qualified_name"] == name)
+                .unwrap();
+            assert_eq!(
+                row["evidence"],
+                json!([{ "kind": kind, "certainty": "possible" }])
+            );
+        }
+        assert!(
+            report["runtime_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["full_name"] == "app.covered"
+                        && row["kind"] == COVERAGE_DECLARATION
+                        && row["provenance"] == "unverified"
+                })
+        );
+    }
+
+    #[test]
+    fn coverage_lines_match_pass_and_multiline_import_statement_starts() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def stub():\n    pass\n\ndef load():\n    from math import (\n        pi,\n    )\n\ndef unused():\n    pass\n",
+        )
+        .unwrap();
+        fs::write(root.join("other.py"), "# second selected file\n").unwrap();
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+                 INSERT INTO line_bits VALUES (1, 1, X'3602');",
+            )
+            .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
+        drop(database);
+
+        let clean = report(root, &options());
+        assert_eq!(clean["coverage"]["status"], "complete");
+        assert_eq!(unused(&clean), BTreeSet::from(["app.unused"]));
+        let observations: Vec<_> = clean["runtime_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["full_name"].as_str().unwrap(),
+                    row["line"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(observations, [("app.stub", 2), ("app.load", 5)]);
+        let cached = Options {
+            workers: 4,
+            cache_dir: Some(cache.path().into()),
+            ..options()
+        };
+        for expected_hits in [0, 2] {
+            let mut parallel = report(root, &cached);
+            let stats = parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(stats["hits"], expected_hits);
+            assert_eq!(parallel, clean);
+        }
+    }
+
+    #[test]
+    fn coverage_matches_multiline_expressions_in_their_owning_callable() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def parse_port(value):\n    return (\n        int(value)\n    )\n\n\
+             def outer():\n    def inner(value):\n        return (\n            int(value)\n        )\n    return 0\n\n\
+             def unused():\n    return (\n        # A comment is not an executable location.\n        1\n    )\n",
+        )
+        .unwrap();
+        fs::write(root.join("other.py"), "# second selected file\n").unwrap();
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);",
+            )
+            .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
+        let mut bits = [0_u8; 2];
+        for line in [3, 9, 15] {
+            bits[line / 8] |= 1 << (line % 8);
+        }
+        database
+            .execute("INSERT INTO line_bits VALUES (1, 1, ?1)", [bits.as_slice()])
+            .unwrap();
+        drop(database);
+
+        let clean = report(root, &options());
+        assert_eq!(clean["coverage"]["status"], "complete");
+        assert_eq!(unused(&clean), BTreeSet::from(["app.unused"]));
+        assert_eq!(
+            clean["runtime_evidence"],
+            json!([
+                {"artifact": ".coverage", "file": "app.py", "line": 3, "full_name": "app.parse_port", "kind": "runtime_coverage", "provenance": "unverified"},
+                {"artifact": ".coverage", "file": "app.py", "line": 9, "full_name": "app.outer.inner", "kind": "runtime_coverage", "provenance": "unverified"},
+            ])
+        );
+        assert_eq!(
+            clean["runtime_evidence_issues"][0]["message"],
+            "1 observations did not match a unique selected callable location"
+        );
+        let cached = Options {
+            workers: 4,
+            cache_dir: Some(cache.path().into()),
+            ..options()
+        };
+        for expected_hits in [0, 2] {
+            let mut parallel = report(root, &cached);
+            let stats = parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(stats["hits"], expected_hits);
+            assert_eq!(parallel, clean);
+        }
+    }
+
+    #[test]
+    fn observed_closure_retains_dependencies_of_enclosing_scopes() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def prepare():\n    return 41\ndef make():\n    value = prepare()\n    def nested():\n        return value + 1\n    return nested\ndef unused():\n    return False\n",
+        ).unwrap();
+        write(
+            root,
+            ".skylos_trace",
+            &json!({
+                "version": 1, "calls": [{"file": "app.py", "function": "nested", "line": 5}]
+            }),
+        );
+        let traced = report(root, &options());
+        assert_eq!(traced["coverage"]["status"], "complete");
+        assert_eq!(unused(&traced), BTreeSet::from(["app.unused"]));
+        let symbols = traced["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(symbols.iter().any(|row| {
+            row["qualified_name"] == "app.prepare" && row["evidence"][0]["certainty"] == "possible"
+        }));
+    }
+
+    #[test]
+    fn runtime_observations_preserve_bounded_callback_calls() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def live():\n    return 1\ndef dispatch(callback):\n    def nested():\n        return 2\n    callback()\n    return nested()\ndispatch(live)\ndef unused():\n    return 3\n",
+        )
+        .unwrap();
+        let database = Connection::open(root.join(".coverage")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+                 INSERT INTO line_bits VALUES (1, 1, X'40');",
+            )
+            .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
+        drop(database);
+        let covered = report(root, &options());
+        assert_eq!(covered["coverage"]["status"], "complete", "{covered}");
+        assert_eq!(unused(&covered), BTreeSet::from(["app.unused"]));
+        assert_eq!(covered["runtime_evidence"][0]["full_name"], "app.dispatch");
+
+        for (function, line, full_name) in [
+            ("dispatch", 3, "app.dispatch"),
+            ("nested", 4, "app.dispatch.nested"),
+        ] {
+            write(
+                root,
+                ".skylos_trace",
+                &json!({"version": 1, "calls": [{"file": "app.py", "function": function, "line": line}]}),
+            );
+            let traced = report(
+                root,
+                &Options {
+                    coverage_file: Input::Disabled,
+                    ..options()
+                },
+            );
+            assert_eq!(traced["coverage"]["status"], "complete", "{traced}");
+            assert_eq!(unused(&traced), BTreeSet::from(["app.unused"]));
+            assert_eq!(traced["runtime_evidence"][0]["full_name"], full_name);
+        }
+    }
+
+    #[test]
+    fn a_trace_alone_does_not_resolve_a_callback_argument() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def live():\n    return 1\ndef dispatch(callback):\n    return callback()\ndef dormant():\n    return dispatch(live)\n",
+        )
+        .unwrap();
+        let baseline = report(root, &options());
+        assert_eq!(baseline["coverage"]["status"], "complete");
+        assert!(unused(&baseline).contains("app.dispatch"));
+
+        write(
+            root,
+            ".skylos_trace",
+            &json!({"version": 1, "calls": [{"file": "app.py", "function": "dispatch", "line": 3}]}),
+        );
+        let traced = report(root, &options());
+        assert_eq!(traced["coverage"]["status"], "incomplete");
+        assert_eq!(traced["runtime_evidence"][0]["full_name"], "app.dispatch");
+        assert!(
+            traced["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_call" && issue["line"] == 4 })
+        );
+    }
+
+    #[test]
+    fn an_observed_recursive_callback_still_needs_a_bounded_initial_caller() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let source = "def live():\n    return 1\ndef dispatch(callback, again):\n    if again:\n        return dispatch(live, False) + callback()\n    return callback()\n";
+        fs::write(root.join("app.py"), source).unwrap();
+        let fingerprints = json!({"app.py": blake3::hash(source.as_bytes()).to_hex().as_str()});
+        let revision = revision(&BTreeMap::from([("app.py".into(), source.into())]));
+        let calls = json!([{"file": "app.py", "function": "dispatch", "line": 3}]);
+        for artifact in [
+            json!({"version": 1, "calls": calls}),
+            json!({"version": 2, "calls": calls, "revision": revision, "fingerprints": fingerprints}),
+        ] {
+            write(root, ".skylos_trace", &artifact);
+            let traced = report(root, &options());
+            assert_eq!(traced["runtime_evidence"][0]["full_name"], "app.dispatch");
+            assert_eq!(traced["coverage"]["status"], "incomplete", "{traced}");
+            assert!(
+                traced["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_call" && issue["line"] == 6)
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_caller_can_corroborate_a_runtime_observation() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def live():\n    return 1\ndef dispatch(callback):\n    return callback()\ndef launch():\n    return dispatch(live)\ndef unused():\n    return 2\n",
+        )
+        .unwrap();
+        fs::write(root.join("jobs.yml"), "handler: app.py:launch\n").unwrap();
+        let options = Options {
+            grep_verify: Some(true),
+            ..options()
+        };
+        let baseline = report(root, &options);
+        assert_eq!(baseline["coverage"]["status"], "complete", "{baseline}");
+        assert_eq!(unused(&baseline), BTreeSet::from(["app.unused"]));
+        write(
+            root,
+            ".skylos_trace",
+            &json!({"version": 1, "calls": [{"file": "app.py", "function": "dispatch", "line": 3}]}),
+        );
+        let traced = report(root, &options);
+        assert_eq!(traced["runtime_evidence"][0]["full_name"], "app.dispatch");
+        assert_eq!(traced["coverage"]["status"], "complete", "{traced}");
+        assert_eq!(unused(&traced), BTreeSet::from(["app.unused"]));
+    }
+
+    #[test]
+    fn artifact_rejection_does_not_change_static_incomplete_coverage() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let source = root.join("app.py");
+        fs::write(&source, "def unused():\n    return 1\n").unwrap();
+        fs::write(root.join(".skylos_trace"), "malformed").unwrap();
+        let malformed = report(root, &options());
+        assert_eq!(malformed["coverage"]["status"], "complete");
+        assert_eq!(
+            malformed["runtime_evidence_issues"][0]["kind"],
+            "runtime_evidence_rejected"
+        );
+        assert!(unused(&malformed).contains("app.unused"));
+
+        write(
+            root,
+            ".skylos_trace",
+            &json!({
+                "version": 1, "calls": [{"file": "app.py", "function": "unused", "line": 1}]
+            }),
+        );
+        let artifact_time = fs::metadata(root.join(".skylos_trace"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(artifact_time + std::time::Duration::from_secs(10)),
+            )
+            .unwrap();
+        let stale = report(root, &options());
+        assert_eq!(stale["coverage"]["status"], "complete");
+        assert!(
+            stale["runtime_evidence_issues"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("stale")
+        );
+        assert!(unused(&stale).contains("app.unused"));
+
+        fs::write(&source, "def missing():\n    return @\n").unwrap();
+        let incomplete = report(root, &options());
+        assert_eq!(incomplete["coverage"]["status"], "incomplete");
+        assert!(
+            incomplete["unused_functions"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
