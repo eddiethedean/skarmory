@@ -78,6 +78,77 @@ fn edits_rebuild_roots_and_recursive_reachability() {
 }
 
 #[test]
+fn function_namespace_reads_keep_local_bindings_live_across_cache_edits() {
+    use skarmory_core::phase02::Profile;
+
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let pkg = project.path().join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    let initializer = pkg.join("__init__.py");
+    fs::write(pkg.join("neighbor.py"), "unread_global = 1\n").unwrap();
+
+    let serial = Options {
+        profile: Profile::SkylosPhase03,
+        ..Options::default()
+    };
+    let parallel = Options {
+        cache_dir: Some(cache.path().to_owned()),
+        workers: 4,
+        ..serial.clone()
+    };
+    let run = |options: &Options| -> Value {
+        serde_json::from_str(&scan(project.path(), options).unwrap().to_json().unwrap()).unwrap()
+    };
+
+    // The first two expressions exercise the pinned Skylos 5.7.0 package
+    // namespace positives. Root the function and add an independent unused control.
+    for (imports, expression, expected_hit) in [
+        ("", "locals()", 0),
+        ("", "vars()", 1),
+        ("from builtins import locals as collect", "collect()", 1),
+        ("import builtins as core", "core.vars()", 1),
+        ("", "0", 1),
+    ] {
+        fs::write(
+            &initializer,
+            format!(
+                r#"{imports}
+__all__ = ["evaluate", "control"]
+
+def evaluate(source):
+    retained_value = object()
+    return {expression}
+
+def control():
+    unread_local = object()
+    return 0
+"#
+            ),
+        )
+        .unwrap();
+
+        let clean = run(&serial);
+        assert_eq!(
+            clean["coverage"]["status"], "complete",
+            "{expression}: {clean}"
+        );
+        let variables = clean["unused_variables"].as_array().unwrap();
+        let flagged = |name| variables.iter().any(|item| item["full_name"] == name);
+        assert_eq!(flagged("pkg.evaluate.retained_value"), expression == "0");
+        assert!(flagged("pkg.control.unread_local"));
+        assert!(flagged("pkg.neighbor.unread_global"));
+
+        for hits in [expected_hit, 2] {
+            let mut cached = run(&parallel);
+            let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(stats["hits"], hits);
+            assert_eq!(cached, clean);
+        }
+    }
+}
+
+#[test]
 fn exported_callable_instances_retain_effective_call_methods() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

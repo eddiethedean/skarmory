@@ -45,6 +45,11 @@ enum Value {
     Bool(bool),
     Sequence(Vec<Value>),
     Mapping(Vec<Value>),
+    // Python 3.11 can refresh a previously returned dictionary on a later read.
+    LocalNamespace(ScopeId, [usize; 2]),
+    NamespaceCopy(Box<NamespaceCopy>),
+    NamespaceParameter(SymbolId),
+    OpaqueNamespace,
     Range,
     /// An exact built-in container with scalar elements and untracked length and order.
     BuiltinIterable,
@@ -54,6 +59,16 @@ enum Value {
 }
 
 impl Value {
+    fn may_contain_namespace(&self) -> bool {
+        match self {
+            Self::LocalNamespace(..) | Self::NamespaceCopy(_) | Self::OpaqueNamespace => true,
+            Self::Sequence(values) | Self::Mapping(values) => {
+                values.iter().any(Self::may_contain_namespace)
+            }
+            _ => false,
+        }
+    }
+
     fn is_builtin_scalar(&self) -> bool {
         matches!(self, Self::Scalar | Self::Bool(_) | Self::Text(_))
     }
@@ -61,6 +76,15 @@ impl Value {
     fn is_builtin_scalar_or_iterable(&self) -> bool {
         self.is_builtin_scalar() || matches!(self, Self::Range | Self::BuiltinIterable)
     }
+}
+
+#[derive(Clone)]
+struct NamespaceCopy {
+    owner: ScopeId,
+    first: [usize; 2],
+    copied_at: (ScopeId, [usize; 2]),
+    site: (ScopeId, [usize; 2]),
+    keywords: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Copy)]
@@ -117,6 +141,11 @@ struct Scope<'a> {
     owner: Option<SymbolId>,
     body: &'a [Statement],
     names: BTreeMap<&'a str, Vec<SymbolId>>,
+    namespace_reads: BTreeMap<[usize; 2], NamespaceRead>,
+    namespace_copy_cutoffs: BTreeMap<[usize; 2], [usize; 2]>,
+    namespace_captures: OnceCell<Vec<SymbolId>>,
+    namespace_exclusions: Vec<RangeInclusive<[usize; 2]>>,
+    namespace_escape_exclusions: BTreeMap<[usize; 2], Vec<RangeInclusive<[usize; 2]>>>,
     edges: Vec<Edge>,
     imports: Vec<usize>,
     evaluated_imports: Vec<SymbolId>,
@@ -127,11 +156,22 @@ struct Scope<'a> {
     routes: Vec<(Object, SymbolId)>,
 }
 
+struct NamespaceRead {
+    bindings: Vec<SymbolId>,
+    exclusions: Vec<RangeInclusive<[usize; 2]>>,
+}
+
 enum Binding<'a> {
     Definition(&'a Definition, ScopeId),
     Import(&'a Import),
     Variable(Option<&'a Expression>, Location),
     Parameter,
+}
+
+enum LexicalBinding {
+    Found(SymbolId),
+    UnboundLocal,
+    Missing,
 }
 
 struct Symbol<'a> {
@@ -157,7 +197,7 @@ struct ClassInvocation {
 struct DirectArguments {
     caller: ScopeId,
     at: Location,
-    bounded_callbacks: BTreeMap<String, Invocation>,
+    values: BTreeMap<String, Value>,
 }
 
 struct Export {
@@ -259,6 +299,7 @@ pub(super) fn analyze_with_verification(
         direct_submodule_imports: BTreeMap::new(),
         by_location: BTreeMap::new(),
         read: BTreeSet::new(),
+        namespace_exports: BTreeMap::new(),
         direct: BTreeSet::new(),
         conditional: BTreeMap::new(),
         dormant_classes: BTreeSet::new(),
@@ -272,6 +313,7 @@ pub(super) fn analyze_with_verification(
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
+        executor_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
@@ -332,6 +374,10 @@ pub(super) fn analyze_with_verification(
     };
     let mut roots = graph.external_roots(entrypoints, &initialization_edges);
     roots.extend(graph.test_edges());
+    // A dormant consumer must not consume another scope's export traversal.
+    for exports in std::mem::take(&mut graph.namespace_exports).into_values() {
+        graph.retain_exports(exports, &initialization_edges, "possible");
+    }
     graph.finish(roots, verification)
 }
 
@@ -343,6 +389,7 @@ struct Graph<'a> {
     direct_submodule_imports: BTreeMap<usize, Vec<SymbolId>>,
     by_location: BTreeMap<(ScopeId, usize, usize), SymbolId>,
     read: BTreeSet<SymbolId>,
+    namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
     dormant_classes: BTreeSet<SymbolId>,
@@ -356,6 +403,7 @@ struct Graph<'a> {
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
+    executor_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
@@ -381,6 +429,11 @@ impl<'a> Graph<'a> {
             owner,
             body,
             names: BTreeMap::new(),
+            namespace_reads: BTreeMap::new(),
+            namespace_copy_cutoffs: BTreeMap::new(),
+            namespace_captures: OnceCell::new(),
+            namespace_exclusions: Vec::new(),
+            namespace_escape_exclusions: BTreeMap::new(),
             edges: Vec::new(),
             imports: Vec::new(),
             evaluated_imports: Vec::new(),
@@ -595,7 +648,14 @@ impl<'a> Graph<'a> {
             })
     }
 
-    fn lexical(&self, origin: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+    fn lexical(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+        match self.lexical_binding(scope, name, before) {
+            LexicalBinding::Found(id) => Some(id),
+            LexicalBinding::UnboundLocal | LexicalBinding::Missing => None,
+        }
+    }
+
+    fn lexical_binding(&self, origin: ScopeId, name: &str, before: Location) -> LexicalBinding {
         let mut scope = origin;
         let mut before = before;
         loop {
@@ -605,14 +665,22 @@ impl<'a> Graph<'a> {
             // capture a class namespace as an enclosing lexical scope.
             if scope == origin || !class {
                 if let Some(id) = self.local(scope, name, before) {
-                    return Some(id);
+                    return LexicalBinding::Found(id);
                 }
-                if row.owner.is_some() && !class && row.names.contains_key(name) {
-                    // A local binding shadows the outer name even before assignment.
-                    return None;
+                if row.owner.is_some()
+                    && !class
+                    && (row.names.contains_key(name)
+                        || matches!(name, "locals" | "vars") && suite_binds_name(row.body, name))
+                {
+                    // A function declaration shadows these builtins even in a
+                    // branch omitted from the runtime binding index.
+                    return LexicalBinding::UnboundLocal;
                 }
             }
-            scope = row.parent?;
+            let Some(parent) = row.parent else {
+                return LexicalBinding::Missing;
+            };
+            scope = parent;
             before = END;
         }
     }
@@ -1136,7 +1204,7 @@ impl<'a> Graph<'a> {
                 .collect();
             for call in &self.direct_arguments[&callee] {
                 for parameter in &parameters {
-                    if let Some(&invocation) = call.bounded_callbacks.get(*parameter)
+                    if let Some(&Value::Callable(invocation)) = call.values.get(*parameter)
                         && !self.receiver_conflicts(invocation)
                         && let Binding::Definition(definition, body) =
                             self.symbols[invocation.target].binding
@@ -1254,7 +1322,6 @@ impl<'a> Graph<'a> {
         }
         self.read.insert(id);
         let scope = symbol.scope;
-        let file = self.scopes[scope].file;
         if self.binding_depends_on_branch(id, before) {
             self.scope_issue(
                 scope,
@@ -1264,6 +1331,13 @@ impl<'a> Graph<'a> {
             );
             return Value::Unknown;
         }
+        self.binding_value(id, depth)
+    }
+
+    fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
+        let symbol = &self.symbols[id];
+        let scope = symbol.scope;
+        let file = self.scopes[scope].file;
         match symbol.binding {
             Binding::Definition(_, _) => Value::Callable(Invocation::ordinary(id)),
             Binding::Variable(Some(value), before) => {
@@ -1655,6 +1729,41 @@ impl<'a> Graph<'a> {
                     self.class_member(*class, "__eq__", 0).is_some()
                         || !equal && self.class_member(*class, "__ne__", 0).is_some()
                 }
+                Value::LocalNamespace(scope, first)
+                    if matches!(
+                        other,
+                        Value::Mapping(_)
+                            | Value::LocalNamespace(..)
+                            | Value::Unknown
+                            | Value::OpaqueNamespace
+                    ) =>
+                {
+                    self.has_equality_hooks
+                        && (!self.namespace_has_only_scalars(*scope, *first)
+                            || match other {
+                                Value::Mapping(items) => {
+                                    !items.iter().all(Value::is_builtin_scalar)
+                                }
+                                Value::LocalNamespace(scope, first) => {
+                                    !self.namespace_has_only_scalars(*scope, *first)
+                                }
+                                _ => true,
+                            })
+                }
+                Value::NamespaceCopy(_)
+                    if matches!(
+                        other,
+                        Value::Mapping(_)
+                            | Value::LocalNamespace(..)
+                            | Value::NamespaceCopy(_)
+                            | Value::BuiltinIterable
+                            | Value::Unknown
+                            | Value::OpaqueNamespace
+                    ) =>
+                {
+                    self.has_equality_hooks
+                }
+                Value::OpaqueNamespace => self.has_equality_hooks,
                 // A mapping can compare keys and values independent of the
                 // order in which the literals list their entries.
                 Value::Mapping(items)
@@ -1678,6 +1787,21 @@ impl<'a> Graph<'a> {
             })
     }
 
+    fn namespace_has_only_scalars(&mut self, scope: ScopeId, first: [usize; 2]) -> bool {
+        let reads = &self.scopes[scope].namespace_reads;
+        if !reads.contains_key(&first) {
+            return false;
+        }
+        // Python 3.11 can refresh an earlier namespace through another read.
+        let bindings: BTreeSet<_> = reads
+            .range(first..)
+            .flat_map(|(_, read)| read.bindings.iter().copied())
+            .collect();
+        bindings
+            .into_iter()
+            .all(|id| self.binding_value(id, 0).is_builtin_scalar())
+    }
+
     fn ordering_may_call_method(&self, left: &Value, right: &Value) -> bool {
         let operands = [left, right];
         // Only two potential sequences can invoke element equality during ordering.
@@ -1687,7 +1811,7 @@ impl<'a> Graph<'a> {
                     .into_iter()
                     .any(|value| value.is_builtin_scalar() || matches!(value, Value::Range)));
         operands.into_iter().any(|operand| match operand {
-            Value::Unknown | Value::OperatorResult => unknown_may_dispatch,
+            Value::Unknown | Value::OperatorResult | Value::OpaqueNamespace => unknown_may_dispatch,
             _ => !operand.is_builtin_scalar_or_iterable(),
         })
     }
@@ -1811,7 +1935,8 @@ impl<'a> Graph<'a> {
         };
         match &expression.kind {
             ExpressionKind::Name(name) => {
-                if let Some(id) = self.lexical(scope, name, before) {
+                let binding = self.lexical_binding(scope, name, before);
+                if let LexicalBinding::Found(id) = binding {
                     let binding_scope = self.symbols[id].scope;
                     let before = if binding_scope == scope {
                         before
@@ -1828,6 +1953,12 @@ impl<'a> Graph<'a> {
                         self.record_class_reference(caller, &value);
                     }
                     return value;
+                }
+                if matches!(name.as_str(), "locals" | "vars") {
+                    return match binding {
+                        LexicalBinding::Missing => Value::Provider(format!("builtins.{name}")),
+                        _ => Value::Unknown,
+                    };
                 }
                 if name == "__name__" {
                     return Value::Unknown;
@@ -1909,6 +2040,19 @@ impl<'a> Graph<'a> {
                     .map_or(Value::Unknown, |(value, _)| value),
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
                 Value::Provider(name)
+                    if name == "builtins.object" && arguments.is_empty() && keywords.is_empty() =>
+                {
+                    Value::Scalar
+                }
+                Value::Provider(name)
+                    if matches!(name.as_str(), "builtins.locals" | "builtins.vars")
+                        && arguments.is_empty()
+                        && keywords.is_empty()
+                        && self.in_function(scope) =>
+                {
+                    Value::LocalNamespace(scope, position(expression.at))
+                }
+                Value::Provider(name)
                     if name == "builtins.len" && arguments.len() == 1 && keywords.is_empty() =>
                 {
                     // The call walker handles __len__ dispatch independently of its integer result.
@@ -1921,7 +2065,13 @@ impl<'a> Graph<'a> {
                             let value = recurse(self, argument);
                             // A scalar result alone cannot account for a custom truth test.
                             if value.is_builtin_scalar_or_iterable()
-                                || matches!(value, Value::Sequence(_) | Value::Mapping(_))
+                                || matches!(
+                                    value,
+                                    Value::Sequence(_)
+                                        | Value::Mapping(_)
+                                        | Value::LocalNamespace(..)
+                                        | Value::NamespaceCopy(_)
+                                )
                             {
                                 Value::Scalar
                             } else {
@@ -1931,21 +2081,60 @@ impl<'a> Graph<'a> {
                         _ => Value::Unknown,
                     }
                 }
-                Value::Provider(name) if name == "builtins.dict" => match arguments.as_slice() {
-                    [] => Value::Mapping(
-                        keywords
-                            .iter()
-                            .flat_map(|(name, value)| {
-                                [Value::Text(name.clone()), recurse(self, value)]
-                            })
-                            .collect(),
-                    ),
-                    [argument] if keywords.is_empty() => match recurse(self, argument) {
-                        value @ Value::Mapping(_) => value,
+                Value::Provider(name) if name == "builtins.dict" => {
+                    let named: BTreeMap<_, _> = keywords
+                        .iter()
+                        .map(|(name, value)| (name.clone(), recurse(self, value)))
+                        .collect();
+                    let site = (scope, position(expression.at));
+                    match arguments.as_slice() {
+                        [] => Value::Mapping(mapping_entries(named).collect()),
+                        [argument] => match recurse(self, argument) {
+                            mapping @ Value::Mapping(_) if named.is_empty() => mapping,
+                            Value::Mapping(entries)
+                                if entries.iter().any(Value::may_contain_namespace)
+                                    || named.values().any(Value::may_contain_namespace) =>
+                            {
+                                // Exact string keys overwritten by keywords
+                                // no longer expose their old values.
+                                let (pairs, _) = entries.as_chunks::<2>();
+                                let mut result: Vec<_> = pairs
+                                    .iter()
+                                    .filter(|entry| !matches!(&entry[0], Value::Text(key) if named.contains_key(key)))
+                                    .flatten()
+                                    .cloned()
+                                    .collect();
+                                result.extend(mapping_entries(named));
+                                Value::Mapping(result)
+                            }
+                            Value::LocalNamespace(owner, first) => {
+                                let cutoff = self.scopes[scope]
+                                    .namespace_copy_cutoffs
+                                    .get(&site.1)
+                                    .copied()
+                                    .unwrap_or(site.1);
+                                Value::NamespaceCopy(Box::new(NamespaceCopy {
+                                    owner,
+                                    first,
+                                    copied_at: (scope, cutoff),
+                                    site,
+                                    keywords: named,
+                                }))
+                            }
+                            Value::NamespaceCopy(mut copy) => {
+                                copy.site = site;
+                                copy.keywords.extend(named);
+                                Value::NamespaceCopy(copy)
+                            }
+                            Value::OpaqueNamespace => Value::OpaqueNamespace,
+                            _ if named.values().any(Value::may_contain_namespace) => {
+                                Value::OpaqueNamespace
+                            }
+                            _ => Value::Unknown,
+                        },
                         _ => Value::Unknown,
-                    },
-                    _ => Value::Unknown,
-                },
+                    }
+                }
                 Value::Provider(name)
                     if keywords.is_empty()
                         && matches!(name.as_str(), "builtins.list" | "builtins.tuple") =>
@@ -2058,7 +2247,17 @@ impl<'a> Graph<'a> {
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
             ExpressionKind::Scalar => Value::Scalar,
-            ExpressionKind::Operands(_) => Value::OperatorResult,
+            ExpressionKind::Operands(operands) => {
+                if self.has_namespace_reads(scope)
+                    && operands
+                        .iter()
+                        .any(|value| recurse(self, value).may_contain_namespace())
+                {
+                    Value::OpaqueNamespace
+                } else {
+                    Value::OperatorResult
+                }
+            }
             ExpressionKind::Sequence(items) => {
                 Value::Sequence(items.iter().map(|expr| recurse(self, expr)).collect())
             }
@@ -2091,14 +2290,28 @@ impl<'a> Graph<'a> {
                 _ => Value::Scalar,
             },
             ExpressionKind::Boolean { and, values } => {
-                for value in values {
+                let mut result = Value::Bool(*and);
+                for (index, value) in values.iter().enumerate() {
                     match recurse(self, value) {
-                        Value::Bool(value) if value != *and => return Value::Bool(value),
+                        Value::Bool(value) if value != *and => {
+                            if matches!(result, Value::Bool(_)) {
+                                result = Value::Bool(value);
+                            }
+                            break;
+                        }
                         Value::Bool(_) => {}
-                        _ => return Value::Unknown,
+                        Value::LocalNamespace(owner, first)
+                            if *and
+                                && index + 1 < values.len()
+                                && self.namespace_is_nonempty(owner, first) => {}
+                        value if value.may_contain_namespace() => {
+                            return Value::OpaqueNamespace;
+                        }
+                        _ if !self.has_namespace_reads(scope) => return Value::Unknown,
+                        _ => result = Value::Unknown,
                     }
                 }
-                Value::Bool(*and)
+                result
             }
             ExpressionKind::OrderingComparison { left, right } => {
                 let left = recurse(self, left);
@@ -2204,6 +2417,31 @@ impl<'a> Graph<'a> {
                 for value in values {
                     self.expose(scope, value, kind, at);
                 }
+                return;
+            }
+            Value::OpaqueNamespace => {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_export",
+                    "a function namespace escapes through an expression outside the bounded model",
+                );
+                return;
+            }
+            Value::LocalNamespace(..) | Value::NamespaceCopy(_) => {
+                let row = &mut self.scopes[scope];
+                row.namespace_escape_exclusions
+                    .entry(position(at))
+                    .or_insert_with(|| row.namespace_exclusions.clone());
+                self.namespace_exports
+                    .entry(scope)
+                    .or_default()
+                    .push(Export {
+                        scope,
+                        at,
+                        kind: "local_namespace",
+                        value,
+                    });
                 return;
             }
             _ => return,
@@ -2350,7 +2588,7 @@ impl<'a> Graph<'a> {
                 }
             }
             // Comparison expressions check their own dispatch during the walk.
-            Value::Unknown | Value::OperatorResult
+            Value::Unknown | Value::OperatorResult | Value::OpaqueNamespace
                 if (self.has_bool_hooks || self.has_length_hooks)
                     && !matches!(
                         test.kind,
@@ -2375,7 +2613,8 @@ impl<'a> Graph<'a> {
                     return;
                 }
             }
-            Value::Unknown | Value::OperatorResult if self.has_length_hooks => {}
+            Value::Unknown | Value::OperatorResult | Value::OpaqueNamespace
+                if self.has_length_hooks => {}
             _ => return,
         }
         self.scope_issue(
@@ -2410,6 +2649,114 @@ impl<'a> Graph<'a> {
         };
         self.invoke(scope, invocation, kind, "certain", at);
         true
+    }
+
+    fn in_function(&self, scope: ScopeId) -> bool {
+        self.scopes[scope]
+            .owner
+            .is_some_and(|owner| !self.is_class(owner))
+    }
+
+    fn namespace_is_nonempty(&self, owner: ScopeId, first: [usize; 2]) -> bool {
+        let at = Location {
+            line: first[0],
+            column: first[1],
+        };
+        self.scopes[owner]
+            .namespace_reads
+            .get(&first)
+            .is_some_and(|read| {
+                read.bindings.iter().any(|&id| {
+                    self.symbols[id].scope == owner && !self.binding_depends_on_branch(id, at)
+                })
+            })
+    }
+
+    fn has_namespace_reads(&self, mut scope: ScopeId) -> bool {
+        loop {
+            let row = &self.scopes[scope];
+            if !row.namespace_reads.is_empty() {
+                return true;
+            }
+            let Some(parent) = row.parent else {
+                return false;
+            };
+            scope = parent;
+        }
+    }
+
+    fn read_local_namespace(&mut self, scope: ScopeId, before: Location, at: Location) {
+        let row = &self.scopes[scope];
+        let visible = |id: SymbolId| {
+            let symbol = &self.symbols[id];
+            !matches!(symbol.binding, Binding::Variable(None, _))
+                && !row
+                    .namespace_exclusions
+                    .iter()
+                    .any(|span| span.contains(&position(symbol.name.at)))
+        };
+        let mut bindings = Vec::new();
+        for names in row.names.values() {
+            let end =
+                names.partition_point(|&id| position(self.symbols[id].name.at) < position(before));
+            // Walk the possible assignments back to the last definite value.
+            for id in names[..end].iter().rev().copied().filter(|&id| visible(id)) {
+                bindings.push(id);
+                if !self.binding_depends_on_branch(id, before) {
+                    break;
+                }
+            }
+        }
+        bindings.extend(
+            row.namespace_captures
+                .get_or_init(|| self.namespace_captures(scope)),
+        );
+        self.read.extend(bindings.iter().copied());
+        let row = &mut self.scopes[scope];
+        row.namespace_reads.insert(
+            position(at),
+            NamespaceRead {
+                bindings,
+                exclusions: row.namespace_exclusions.clone(),
+            },
+        );
+    }
+
+    fn namespace_captures(&self, scope: ScopeId) -> Vec<SymbolId> {
+        let owner = self.scopes[scope]
+            .owner
+            .expect("namespace belongs to a function");
+        let Binding::Definition(definition, _) = self.symbols[owner].binding else {
+            unreachable!("function scope has a definition");
+        };
+        let postponed = self.files[self.scopes[scope].file]
+            .facts
+            .postponed_annotations;
+        let free_names = namespace_free_names(definition, postponed);
+        let mut captures = Vec::new();
+        for name in free_names {
+            let mut parent = self.scopes[scope].parent;
+            while let Some(outer) = parent {
+                let row = &self.scopes[outer];
+                if row.owner.is_none() {
+                    break;
+                }
+                if self.in_function(outer) {
+                    if let Some(bindings) = row.names.get(name) {
+                        // A closure can run before or after a later assignment.
+                        captures.extend(bindings.iter().copied().filter(|&id| {
+                            !matches!(self.symbols[id].binding, Binding::Variable(None, _))
+                        }));
+                        break;
+                    }
+                    if suite_binds_name(row.body, name) {
+                        break;
+                    }
+                }
+                parent = row.parent;
+            }
+        }
+        captures
     }
 
     fn walk_expression(
@@ -2470,6 +2817,20 @@ impl<'a> Graph<'a> {
                             self.expose(scope, value, "passed_callable", argument.at);
                         }
                     }
+                    Value::Provider(name)
+                        if matches!(name.as_str(), "builtins.locals" | "builtins.vars") =>
+                    {
+                        if arguments.is_empty() && keywords.is_empty() && self.in_function(scope) {
+                            self.read_local_namespace(scope, before, expr.at);
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "only zero-argument namespace reads in functions are bounded",
+                            );
+                        }
+                    }
                     Value::Provider(name) if name == "builtins.len" => {
                         if let [argument] = arguments.as_slice()
                             && keywords.is_empty()
@@ -2487,13 +2848,10 @@ impl<'a> Graph<'a> {
                             expr.at,
                         );
                     }
-                    Value::Submit => self.activate_argument(
-                        scope,
-                        arguments.first(),
-                        before,
-                        "executor_submission",
-                        expr.at,
-                    ),
+                    Value::Submit => {
+                        self.activate_submission(scope, before, expr.at, arguments, keywords);
+                    }
+
                     Value::Start(value) => match *value {
                         Value::Callable(_) => {
                             self.activate_callback(scope, *value, "process_target", expr.at);
@@ -2555,6 +2913,15 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name) if is_known_call(&name) => {
+                        let row = &mut self.scopes[scope];
+                        if name == "builtins.dict"
+                            && let Some((&read, _)) = row.namespace_reads.last_key_value()
+                            && read > position(expr.at)
+                        {
+                            // The call copies after all arguments have run,
+                            // including any reads that refreshed its input.
+                            row.namespace_copy_cutoffs.insert(position(expr.at), read);
+                        }
                         if let Value::Object(object, ObjectKind::App) =
                             self.identity(scope, expr, before, 0)
                         {
@@ -2678,8 +3045,24 @@ impl<'a> Graph<'a> {
         args: &[Expression],
         keywords: &[(String, Expression)],
     ) {
+        if let Some(values) = self.call_argument_values(caller, callee, before, args, keywords) {
+            self.direct_arguments
+                .entry(callee)
+                .or_default()
+                .push(DirectArguments { caller, at, values });
+        }
+    }
+
+    fn call_argument_values(
+        &mut self,
+        caller: ScopeId,
+        callee: SymbolId,
+        before: Location,
+        args: &[Expression],
+        keywords: &[(String, Expression)],
+    ) -> Option<BTreeMap<String, Value>> {
         let Binding::Definition(definition, _) = self.symbols[callee].binding else {
-            return;
+            return None;
         };
         if definition.kind != DefinitionKind::Function
             || !definition.simple_positional_parameters
@@ -2687,27 +3070,59 @@ impl<'a> Graph<'a> {
                 .owner
                 .is_some_and(|owner| self.is_class(owner))
         {
-            return;
+            return None;
         }
-        let mut bounded_callbacks = BTreeMap::new();
+        let mut values = BTreeMap::new();
         for (parameter, argument) in definition.parameters.iter().zip(args) {
-            if let Value::Callable(target) = self.identity(caller, argument, before, 0) {
-                bounded_callbacks.insert(parameter.text.clone(), target);
-            }
+            values.insert(
+                parameter.text.clone(),
+                self.identity(caller, argument, before, 0),
+            );
         }
         for (parameter, argument) in keywords {
-            if let Value::Callable(target) = self.identity(caller, argument, before, 0) {
-                bounded_callbacks.insert(parameter.clone(), target);
-            }
+            values.insert(
+                parameter.clone(),
+                self.identity(caller, argument, before, 0),
+            );
         }
-        self.direct_arguments
-            .entry(callee)
-            .or_default()
-            .push(DirectArguments {
-                caller,
-                at,
-                bounded_callbacks,
-            });
+        Some(values)
+    }
+
+    fn activate_submission(
+        &mut self,
+        scope: ScopeId,
+        before: Location,
+        at: Location,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+    ) {
+        let target = arguments.first().map_or(Value::Unknown, |argument| {
+            self.identity(scope, argument, before, 0)
+        });
+        if let Value::Callable(invocation) = &target
+            && let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+        {
+            let values = self
+                .call_argument_values(scope, invocation.target, before, &arguments[1..], keywords)
+                .unwrap_or_else(|| {
+                    definition
+                        .parameters
+                        .iter()
+                        .map(|p| (p.text.clone(), Value::Unknown))
+                        .collect()
+                });
+            // Executor submissions can supply namespace values but cannot
+            // establish a synchronous call during module initialization.
+            self.executor_arguments
+                .entry(invocation.target)
+                .or_default()
+                .push(DirectArguments {
+                    caller: scope,
+                    at,
+                    values,
+                });
+        }
+        self.activate_callback(scope, target, "executor_submission", at);
     }
 
     fn activate_argument(
@@ -2920,9 +3335,37 @@ impl<'a> Graph<'a> {
                     otherwise,
                 } => {
                     let stop = match self.walk_if_test(scope, test, at) {
-                        Some(true) => self.suite(scope, body),
-                        Some(false) => self.suite(scope, otherwise),
-                        None => self.suite(scope, body) & self.suite(scope, otherwise),
+                        Some(true) => {
+                            self.scopes[scope]
+                                .namespace_exclusions
+                                .extend(namespace_span(otherwise));
+                            self.suite(scope, body)
+                        }
+                        Some(false) => {
+                            self.scopes[scope]
+                                .namespace_exclusions
+                                .extend(namespace_span(body));
+                            self.suite(scope, otherwise)
+                        }
+                        None => {
+                            let body_stops = self.suite(scope, body);
+                            let excluded_branch = self.scopes[scope].namespace_exclusions.len();
+                            self.scopes[scope]
+                                .namespace_exclusions
+                                .extend(namespace_span(body));
+                            let otherwise_stops = self.suite(scope, otherwise);
+                            if !body_stops && !body.is_empty() {
+                                self.scopes[scope]
+                                    .namespace_exclusions
+                                    .remove(excluded_branch);
+                            }
+                            if otherwise_stops {
+                                self.scopes[scope]
+                                    .namespace_exclusions
+                                    .extend(namespace_span(otherwise));
+                            }
+                            body_stops && otherwise_stops
+                        }
                     };
                     if stop {
                         return true;
@@ -3492,14 +3935,21 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn retain_exports(&mut self, exports: Vec<Export>, initialization_edges: &[Vec<ScopeId>]) {
+    fn retain_exports(
+        &mut self,
+        exports: Vec<Export>,
+        initialization_edges: &[Vec<ScopeId>],
+        certainty: &'static str,
+    ) {
         let mut pending: VecDeque<_> = exports
             .into_iter()
-            .map(|export| (export, "certain"))
+            .map(|export| (export, certainty))
             .collect();
         let mut modules = BTreeSet::new();
         let mut exported_constructors = BTreeSet::new();
         let mut visited_instances = BTreeSet::new();
+        let mut visited_namespaces = BTreeSet::new();
+        let mut visited_namespace_copies = BTreeSet::new();
         while let Some((
             Export {
                 scope,
@@ -3510,30 +3960,108 @@ impl<'a> Graph<'a> {
             certainty,
         )) = pending.pop_front()
         {
+            let visit_scope = (kind == "local_namespace").then_some(scope);
             let members = match value {
                 Value::Callable(invocation) => {
                     self.invoke(scope, invocation, kind, certainty, at);
+                    if kind == "local_namespace" {
+                        self.uncertain(
+                            scope,
+                            at,
+                            "a callable may escape through a function namespace",
+                        );
+                    }
                     let class = invocation.target;
-                    if self.is_class(class) && exported_constructors.insert(class) {
+                    if self.is_class(class) && exported_constructors.insert((visit_scope, class)) {
                         self.constructor(scope, class, "constructor", "possible", at);
                         vec![Value::Instance(class)]
                     } else {
                         Vec::new()
                     }
                 }
-                Value::Instance(class) if visited_instances.insert(class) => {
+                Value::Coroutine(_) if kind == "local_namespace" => {
+                    self.expose(scope, value, kind, at);
+                    Vec::new()
+                }
+                Value::NamespaceParameter(parameter) => {
+                    let default = self.namespace_parameter_default(parameter);
+                    let symbol = &self.symbols[parameter];
+                    let owner = self.scopes[symbol.scope]
+                        .owner
+                        .expect("parameter belongs to a definition");
+                    let mut callers = self
+                        .direct_arguments
+                        .get(&owner)
+                        .into_iter()
+                        .chain(self.executor_arguments.get(&owner))
+                        .flatten()
+                        .peekable();
+                    if callers.peek().is_some() {
+                        pending.extend(callers.map(|call| {
+                            // Use the call site's scope so that an inactive
+                            // caller cannot make its argument reachable.
+                            let value = call
+                                .values
+                                .get(&symbol.name.text)
+                                .cloned()
+                                .or_else(|| default.clone())
+                                .unwrap_or(Value::Unknown);
+                            (
+                                Export {
+                                    scope: call.caller,
+                                    at: call.at,
+                                    kind,
+                                    value,
+                                },
+                                "possible",
+                            )
+                        }));
+                    } else if self.direct.contains(&owner) {
+                        // This call shape has no bounded argument mapping.
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_export",
+                            "a project argument in an escaping namespace could not be resolved",
+                        );
+                    }
+                    default.into_iter().collect()
+                }
+                Value::Instance(class) if visited_instances.insert((visit_scope, class)) => {
                     self.exported_class_members(class, scope, at)
                 }
-                Value::Module(file) if modules.insert(file) => {
+                Value::Module(file) if modules.insert((visit_scope, file)) => {
                     self.exported_module_members(file, initialization_edges)
                 }
+                Value::LocalNamespace(owner, first)
+                    if visited_namespaces.insert((scope, owner, first, position(at))) =>
+                {
+                    self.namespace_export_values(owner, first, scope, at, None)
+                }
+                Value::NamespaceCopy(copy)
+                    if visited_namespace_copies.insert((scope, position(at), copy.site)) =>
+                {
+                    let mut values = self.namespace_export_values(
+                        copy.owner,
+                        copy.first,
+                        scope,
+                        at,
+                        Some(&copy),
+                    );
+                    values.extend(copy.keywords.into_values());
+                    values
+                }
                 Value::Sequence(items) | Value::Mapping(items) => items,
-                Value::Unknown => {
+                Value::Unknown | Value::OpaqueNamespace => {
                     self.scope_issue(
                         scope,
                         at,
                         "unresolved_export",
-                        "a public member could not be resolved",
+                        if kind == "local_namespace" {
+                            "an escaping function namespace contains an unresolved value"
+                        } else {
+                            "a public member could not be resolved"
+                        },
                     );
                     Vec::new()
                 }
@@ -3551,6 +4079,89 @@ impl<'a> Graph<'a> {
                 )
             }));
         }
+    }
+
+    fn namespace_export_values(
+        &mut self,
+        owner: ScopeId,
+        first: [usize; 2],
+        consumer: ScopeId,
+        at: Location,
+        copy: Option<&NamespaceCopy>,
+    ) -> Vec<Value> {
+        let reads = &self.scopes[owner].namespace_reads;
+        let Some(initial) = reads.get(&first) else {
+            return Vec::new();
+        };
+        let escape_at = position(at);
+        let escape_exclusions = (owner == consumer)
+            .then(|| {
+                self.scopes[consumer]
+                    .namespace_escape_exclusions
+                    .get(&escape_at)
+            })
+            .flatten()
+            .map_or(&[][..], Vec::as_slice);
+        let excludes = |spans: &[RangeInclusive<_>], at| spans.iter().any(|span| span.contains(at));
+        let copied_at = copy
+            .filter(|copy| copy.copied_at.0 == owner)
+            // The namespace expression can be an argument of the copy call.
+            .map(|copy| copy.copied_at.1.max(first));
+        // A later same-frame call can refresh the original dictionary.
+        // Independent copies keep their contents at the time of the copy.
+        let bindings: BTreeSet<_> = reads
+            .range(first..)
+            .take_while(|(candidate, _)| copied_at.is_none_or(|at| **candidate <= at))
+            .filter(|(candidate, read)| {
+                !excludes(&initial.exclusions, candidate)
+                    && !excludes(escape_exclusions, candidate)
+                    && !excludes(&read.exclusions, &first)
+                    && (owner != consumer || !excludes(&read.exclusions, &escape_at))
+            })
+            .flat_map(|(_, read)| read.bindings.iter().copied())
+            .filter(|&id| {
+                copy.is_none_or(|copy| !copy.keywords.contains_key(&self.symbols[id].name.text))
+            })
+            .collect();
+        bindings
+            .into_iter()
+            .map(|id| {
+                let value = self.binding_value(id, 0);
+                if matches!(value, Value::Unknown)
+                    && matches!(self.symbols[id].binding, Binding::Parameter)
+                {
+                    Value::NamespaceParameter(id)
+                } else {
+                    value
+                }
+            })
+            .collect()
+    }
+
+    fn namespace_parameter_default(&mut self, parameter: SymbolId) -> Option<Value> {
+        let symbol = &self.symbols[parameter];
+        let owner = self.scopes[symbol.scope].owner?;
+        let function = &self.symbols[owner];
+        let Binding::Definition(definition, _) = function.binding else {
+            return None;
+        };
+        if definition.defaults.is_empty() {
+            return None;
+        }
+        if !definition.simple_positional_parameters {
+            return Some(Value::Unknown);
+        }
+        // Simple positional-or-keyword defaults occupy the final parameters.
+        let first_default = definition.parameters.len() - definition.defaults.len();
+        let index = definition.parameters[first_default..]
+            .iter()
+            .position(|candidate| candidate.text == symbol.name.text)?;
+        Some(self.identity(
+            function.scope,
+            &definition.defaults[index],
+            definition.name.at,
+            0,
+        ))
     }
 
     fn exported_class_members(
@@ -3592,6 +4203,8 @@ impl<'a> Graph<'a> {
                     }
                     Value::Sequence(_)
                     | Value::Mapping(_)
+                    | Value::LocalNamespace(..)
+                    | Value::NamespaceCopy(_)
                     | Value::Module(_)
                     | Value::Coroutine(_)
                     | Value::ScheduledTask => None,
@@ -3832,7 +4445,7 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        self.retain_exports(exports, initialization_edges);
+        self.retain_exports(exports, initialization_edges, "certain");
 
         let mut roots = Vec::new();
         for id in 0..self.symbols.len() {
@@ -4193,9 +4806,10 @@ impl<'a> Graph<'a> {
             let finite = !independently_retained.contains(&owner)
                 && callers.peek().is_some()
                 && callers.all(|callsite| {
-                    callsite
-                        .bounded_callbacks
-                        .contains_key(&parameter.name.text)
+                    matches!(
+                        callsite.values.get(&parameter.name.text),
+                        Some(Value::Callable(_))
+                    )
                 });
             if !finite {
                 self.issues.push(
@@ -4388,8 +5002,136 @@ fn framework_limit() -> Issue {
     Issue::new("analysis_limit", ".", "framework activation limit exceeded")
 }
 
+fn mapping_entries(keywords: BTreeMap<String, Value>) -> impl Iterator<Item = Value> {
+    keywords
+        .into_iter()
+        .flat_map(|(name, value)| [Value::Text(name), value])
+}
+
 fn position(at: Location) -> [usize; 2] {
     [at.line, at.column]
+}
+
+fn namespace_span(body: &[Statement]) -> Option<RangeInclusive<[usize; 2]>> {
+    body.first()
+        .map(|first| position(first.at)..=[suite_end(body)[0], usize::MAX])
+}
+
+// Python creates closure cells from lexical references even in skipped code.
+fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&str> {
+    let class = definition.kind == DefinitionKind::Class;
+    let mut assigned: BTreeSet<_> = definition
+        .parameters
+        .iter()
+        .map(|p| p.text.as_str())
+        .collect();
+    let mut nested_reads = BTreeSet::new();
+    let mut expressions = Vec::new();
+    let mut statements: Vec<_> = definition.body.iter().collect();
+    while let Some(statement) = statements.pop() {
+        match &statement.kind {
+            StatementKind::Define(child) => {
+                assigned.insert(child.name.text.as_str());
+                nested_reads.extend(namespace_free_names(child, postponed));
+                expressions.extend(&child.decorators);
+                expressions.extend(&child.bases);
+                expressions.extend(&child.defaults);
+                if !postponed {
+                    expressions.extend(&child.annotations);
+                }
+            }
+            StatementKind::Import(import) => {
+                assigned.insert(import.local.text.as_str());
+            }
+            StatementKind::Assign {
+                names,
+                value,
+                annotation,
+            } => {
+                assigned.extend(names.iter().map(|name| name.text.as_str()));
+                expressions.extend(value);
+                if class && !postponed {
+                    expressions.extend(annotation);
+                }
+            }
+            StatementKind::If {
+                test,
+                body,
+                otherwise,
+            } => {
+                expressions.push(test);
+                statements.extend(body);
+                statements.extend(otherwise);
+            }
+            StatementKind::With { items, body } => {
+                for (value, name) in items {
+                    expressions.push(value);
+                    assigned.extend(name.iter().map(|name| name.text.as_str()));
+                }
+                statements.extend(body);
+            }
+            StatementKind::Return(value) | StatementKind::Raise(value) => expressions.extend(value),
+            StatementKind::Assert(value) | StatementKind::Evaluate(value) => {
+                expressions.push(value)
+            }
+        }
+    }
+    let mut reads = BTreeSet::new();
+    while let Some(expression) = expressions.pop() {
+        match &expression.kind {
+            ExpressionKind::Name(name) => {
+                reads.insert(name.as_str());
+            }
+            ExpressionKind::Member(value, _)
+            | ExpressionKind::Not(value)
+            | ExpressionKind::Await(value) => expressions.push(value),
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } => {
+                expressions.push(function);
+                expressions.extend(arguments);
+                expressions.extend(keywords.iter().map(|(_, value)| value));
+            }
+            ExpressionKind::Sequence(values)
+            | ExpressionKind::Dictionary(values)
+            | ExpressionKind::Boolean { values, .. }
+            | ExpressionKind::Operands(values) => expressions.extend(values),
+            ExpressionKind::Compare { left, right, .. }
+            | ExpressionKind::OrderingComparison { left, right } => {
+                expressions.extend([left.as_ref(), right.as_ref()]);
+            }
+            ExpressionKind::Text(_) | ExpressionKind::Bool(_) | ExpressionKind::Scalar => {}
+        }
+    }
+    reads.retain(|name| !assigned.contains(name));
+    // Class-local names cannot supply cells to nested functions.
+    if !class {
+        nested_reads.retain(|name| !assigned.contains(name));
+    }
+    reads.extend(nested_reads);
+    reads
+}
+
+// Function locals are declared at compile time, including bindings in
+// branches that the runtime index can prove are never executed.
+fn suite_binds_name(body: &[Statement], name: &str) -> bool {
+    body.iter().any(|statement| match &statement.kind {
+        StatementKind::Define(definition) => definition.name.text == name,
+        StatementKind::Import(import) => import.local.text == name,
+        StatementKind::Assign { names, .. } => names.iter().any(|target| target.text == name),
+        StatementKind::If {
+            body, otherwise, ..
+        } => suite_binds_name(body, name) || suite_binds_name(otherwise, name),
+        StatementKind::With { items, body } => {
+            items
+                .iter()
+                .any(|(_, target)| target.as_ref().is_some_and(|target| target.text == name))
+                || suite_binds_name(body, name)
+        }
+        _ => false,
+    })
 }
 
 fn suite_end(body: &[Statement]) -> [usize; 2] {
@@ -4579,6 +5321,533 @@ mod tests {
         assert_eq!(names(&result, Category::Variable), ["quiet"]);
         assert_eq!(names(&result, Category::Parameter), ["unread"]);
         assert_eq!(names(&result, Category::File), ["empty.py"]);
+    }
+
+    #[test]
+    fn local_namespace_observes_possible_bindings_at_the_call() {
+        let files = [module(
+            "main.py",
+            "main",
+            r#"import os
+
+def _entry(flag):
+    visible = 0
+    visible = 1
+    if flag:
+        visible = 2
+    ignored: int
+    def callback():
+        return 0
+    result = locals()
+    later = 1
+    return result
+
+_entry(True)
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Variable),
+            ["ignored", "later", "visible"]
+        );
+        assert!(result.findings.iter().any(|finding| {
+            finding.category == Category::Variable && finding.name == "visible" && finding.line == 4
+        }));
+        assert_eq!(names(&result, Category::Import), ["os"]);
+        assert!(result.evidence.iter().any(|evidence| {
+            evidence.full_name == "main._entry.callback"
+                && evidence.kind == "local_namespace"
+                && evidence.certainty == "possible"
+        }));
+    }
+
+    #[test]
+    fn escaping_local_namespace_retains_instance_calls_and_constructors() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build", "register"]
+
+def handle():
+    return 42
+
+class Handler:
+    def __call__(self):
+        return handle()
+
+def build():
+    snapshot = locals()
+    action = Handler()
+    vars()
+    return snapshot
+
+def initialize():
+    return 1
+
+def register():
+    class Plugin:
+        def __init__(self):
+            initialize()
+    return dict(vars(), registered=True)
+
+def unused():
+    return 0
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        for name in ["pkg.Handler.__call__", "pkg.register.Plugin.__init__"] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| { entry.full_name == name && entry.certainty == "possible" }),
+                "{name}: {:?}",
+                result.evidence
+            );
+        }
+    }
+
+    #[test]
+    fn escaping_composite_namespace_reports_unresolved_values() {
+        for expression in [
+            "debug is True and locals() or {}",
+            "vars() | {'version': 1}",
+            "dict(vars() | {'version': 1})",
+            "dict({'snapshot': vars() | {'version': 1}}, status='ok')",
+        ] {
+            let source = format!(
+                r#"__all__ = ["build"]
+
+def build(debug):
+    def action():
+        return 42
+    namespace = {expression}
+    return {{"snapshot": namespace}}
+"#
+            );
+            let result = analyze(&[module("pkg/__init__.py", "pkg", &source)], &[]);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_export" && issue.line == Some(7)),
+                "{expression}: {:?}",
+                result.issues
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_keywords_preserve_nested_namespace_entries() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build"]
+
+def handle():
+    return 42
+
+def build():
+    def action():
+        return handle()
+    return dict({"namespace": locals()}, status="ok")
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(
+            names(&result, Category::Function).is_empty(),
+            "{:?}",
+            result.findings
+        );
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "pkg.build.action" && entry.kind == "local_namespace"
+        }));
+    }
+
+    #[test]
+    fn namespace_dictionary_copy_respects_overrides_and_refreshes() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"from builtins import locals as collect
+
+__all__ = ["build", "snapshot"]
+
+def build():
+    def callback(consumer):
+        return consumer()
+    def retained():
+        return 42
+    return dict(collect(), callback=None)
+
+def snapshot():
+    copied = dict(collect())
+    def after_copy():
+        return 42
+    collect()
+    return copied
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["after_copy", "callback"]
+        );
+    }
+
+    #[test]
+    fn namespace_copy_includes_refreshes_during_argument_evaluation() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build", "snapshot"]
+
+def handle():
+    return 42
+
+def build():
+    saved = locals()
+    def action():
+        return handle()
+    return dict(saved, size=len(locals()))
+
+def snapshot():
+    saved = locals()
+    def too_late():
+        return 42
+    return dict(saved), len(locals())
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["too_late"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "pkg.build.action" && entry.kind == "local_namespace"
+        }));
+    }
+
+    #[test]
+    fn namespace_truth_test_does_not_export_a_proven_nonempty_namespace() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"from builtins import locals as collect
+
+__all__ = ["flag"]
+
+def flag(enabled):
+    def unused(consumer):
+        return consumer()
+    return collect() and True
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+    }
+
+    #[test]
+    fn escaping_namespace_retains_executor_arguments() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"from concurrent.futures import ThreadPoolExecutor
+
+__all__ = ["build"]
+
+def handle():
+    return 42
+
+class Action:
+    def __call__(self):
+        return handle()
+
+def worker(action):
+    return locals()
+
+def build():
+    with ThreadPoolExecutor() as executor:
+        return executor.submit(worker, action=Action())
+
+class Dormant:
+    def __call__(self, consumer):
+        return consumer()
+
+def unused():
+    with ThreadPoolExecutor() as executor:
+        return executor.submit(worker, Dormant())
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        assert_eq!(names(&result, Category::Class), ["Dormant"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "pkg.Action.__call__"
+                && entry.kind == "local_namespace"
+                && entry.certainty == "possible"
+        }));
+    }
+
+    #[test]
+    fn escaping_local_namespace_retains_project_arguments() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build"]
+
+def live():
+    return 42
+
+class Action:
+    def __call__(self):
+        return live()
+
+def _namespace(action):
+    return locals()
+
+def build():
+    return _namespace(action=Action())
+
+class Dormant:
+    def __call__(self, callback):
+        return callback()
+
+def unused():
+    return _namespace(Dormant())
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        assert_eq!(names(&result, Category::Class), ["Dormant"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "pkg.Action.__call__"
+                && entry.kind == "local_namespace"
+                && entry.certainty == "possible"
+        }));
+    }
+
+    #[test]
+    fn escaping_local_namespace_retains_coroutine_targets() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build"]
+
+def handle():
+    return 42
+
+async def process():
+    return handle()
+
+def build():
+    task = process()
+    return locals()
+
+async def unused():
+    return 0
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "pkg.process"
+                && entry.kind == "local_namespace"
+                && entry.certainty == "possible"
+        }));
+    }
+
+    #[test]
+    fn scalar_local_namespace_equality_rules_out_unrelated_hooks() {
+        for (expression, expected_issues) in [
+            ("collect() == {'enabled': True}", 0),
+            ("collect() == {'enabled': Entry()}", 1),
+        ] {
+            let source = format!(
+                r#"from builtins import locals as collect
+
+__all__ = ["check"]
+
+class Entry:
+    def __eq__(self, other):
+        return False
+
+def check():
+    enabled = True
+    return {expression}
+"#
+            );
+            let result = analyze(&[module("pkg/__init__.py", "pkg", &source)], &[]);
+            assert_eq!(
+                result.issues.len(),
+                expected_issues,
+                "{expression}: {:?}",
+                result.issues
+            );
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .all(|issue| issue.kind == "unresolved_comparison")
+            );
+        }
+    }
+
+    #[test]
+    fn escaping_local_namespace_reports_opaque_local_values() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build"]
+
+class Handler:
+    def run(self):
+        return 42
+
+def make():
+    return Handler()
+
+def build():
+    action = make()
+    return locals()
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| { issue.kind == "unresolved_export" && issue.line == Some(12) }),
+            "{:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn counting_local_namespace_entries_does_not_expose_callables() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"from builtins import locals as collect
+
+__all__ = ["count"]
+
+class Sized:
+    def __len__(self):
+        return 1
+
+def count(preview):
+    if preview is True:
+        def unused(handler):
+            return handler()
+        namespace = collect()
+        return len(namespace)
+    return vars()
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+    }
+
+    #[test]
+    fn local_namespace_excludes_assignments_from_exited_branches() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build"]
+
+def build(enabled):
+    if enabled:
+        unused = 1
+        return {}
+    else:
+        carried = 2
+    return locals()
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Variable), ["unused"]);
+    }
+
+    #[test]
+    fn local_namespace_retains_compiler_captures_including_skipped_reads() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"__all__ = ["build"]
+DEBUG = False
+
+def build():
+    context = object()
+    captured_through_child = object()
+    unrelated = object()
+    def collect():
+        if DEBUG:
+            print(context)
+        def child():
+            if DEBUG:
+                print(captured_through_child)
+        return vars()
+    return collect()
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Variable), ["unrelated"]);
+    }
+
+    #[test]
+    fn local_namespace_requires_a_proven_zero_argument_builtin() {
+        let files = [module(
+            "main.py",
+            "main",
+            r#"from builtins import vars as collect
+
+def _entry():
+    def locals():
+        return 0
+    unread = 1
+    return locals()
+
+def _opaque(value, source):
+    candidate = 1
+    collect(value)
+    return eval(source)
+
+def _unbound():
+    if False:
+        vars = object
+    return vars()
+
+_entry()
+_opaque(object(), "pass")
+_unbound()
+"#,
+        )];
+        let result = analyze(&files, &[]);
+        assert_eq!(names(&result, Category::Variable), ["candidate", "unread"]);
+        assert_eq!(
+            result
+                .issues
+                .iter()
+                .map(|issue| (issue.kind, issue.line))
+                .collect::<BTreeSet<_>>(),
+            [
+                ("unresolved_call", Some(11)),
+                ("unresolved_call", Some(12)),
+                ("unresolved_call", Some(17))
+            ]
+            .into()
+        );
     }
 
     #[test]
