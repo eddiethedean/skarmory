@@ -265,3 +265,52 @@ class SdkTests(unittest.TestCase):
                     [cli, project, "--profile", "skylos-0.3", "--include-generated"]
                 )
                 self.assertEqual(json.loads(output), edited)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_package_export_does_not_retain_same_name_local(self):
+        # Independent control for the strict reference xfail at test/test_package_local_exports.py:60-81
+        # in Skylos 87978e69adf91b3811e97b00c40aa39d7937cd94.
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            package = project / "pkg"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                '__all__ = ["STATE", "run"]\n\n'
+                'STATE = "public"\n\n'
+                'def run():\n    STATE = "local"\n    return 0\n',
+                encoding="utf-8",
+            )
+            report = json.loads(skylos.analyze(
+                project, conf=60, profile="skylos-0.3", grep_verify=True, trace_file=False,
+            ))
+            self.assertEqual(report["coverage"]["status"], "complete", report)
+            variables = {finding["full_name"] for finding in report["unused_variables"]}
+            self.assertIn("pkg.run.STATE", variables)
+            self.assertNotIn("pkg.STATE", variables)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_package_function_namespace_reads_local_bindings(self):
+        # SDK controls for the locals() and vars() variants at test/test_package_local_exports.py:126-138
+        # in Skylos 87978e69adf91b3811e97b00c40aa39d7937cd94.
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            package = project / "pkg"
+            package.mkdir()
+            initializer = package / "__init__.py"
+            for expression in ("locals()", "vars()", "source"):
+                with self.subTest(expression=expression):
+                    initializer.write_text(
+                        "def evaluate(source):\n"
+                        "    retained_value = 17\n"
+                        f"    return {expression}\n",
+                        encoding="utf-8",
+                    )
+                    report = json.loads(skylos.analyze(
+                        project, conf=60, profile="skylos-0.3", grep_verify=True, trace_file=False,
+                    ))
+                    self.assertEqual(report["coverage"]["status"], "complete", report)
+                    variables = {finding["full_name"] for finding in report["unused_variables"]}
+                    if expression == "source":
+                        self.assertIn("pkg.evaluate.retained_value", variables)
+                    else:
+                        self.assertNotIn("pkg.evaluate.retained_value", variables)

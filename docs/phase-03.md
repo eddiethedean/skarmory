@@ -166,6 +166,38 @@ guard when its operands have bounded scalar behavior. Comparisons that could
 invoke a selected class hook report incomplete coverage when reached. This
 supports the pinned recursive-group and caller-edit cases. [#52](https://github.com/eddiethedean/skarmory/issues/52)
 
+### Bounded Python receivers and lazy imports
+
+Ordinary constructors and instance methods use the first positional
+parameter as the receiver regardless of its name. An explicit
+keyword receiver is resolved when the supported signature proves that the name
+accepts a keyword. Unknown receiver types and custom allocation can still
+make analysis incomplete.
+
+A literal equality branch in a module's `__getattr__` can return a selected
+member through `getattr(importlib.import_module("pkg.provider"), name)`.
+The analyzer resolves the loader and member through their bindings and tracks
+the selected import's initialization. The bounded model requires selected
+package initializers and abstains when attaching a child could replace a
+package member. Shadowed loaders and other unmodeled call effects also
+leave coverage incomplete.
+
+### Static package entry points
+
+The `skylos-0.3` profile reads package entry-point declarations from the scan
+root. It supports PEP 621 script and group tables, Poetry scripts and plugin
+groups, `[options.entry_points]` in `setup.cfg`, and literal entry points
+passed to a statically identified setuptools or distutils `setup()` call.
+Source modules and dotted members resolve against the selected Python files.
+A class target retains its public surface. A dotted class member retains the
+named member and the class needed to look it up.
+
+Metadata reads use the current snapshot even when Python facts come from the
+cache. Invalid or unresolved declarations produce coverage diagnostics.
+`setup.py` metadata is interpreted statically. When the script is itself
+selected for dead-code analysis, its Python statements follow the ordinary
+coverage rules.
+
 ### Bounded Python function namespace reads
 
 In both Skylos profiles, zero-argument calls to the built-in `locals()` and

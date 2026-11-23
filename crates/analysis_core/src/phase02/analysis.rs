@@ -11,6 +11,7 @@ use skarmory_python::phase02::{
 };
 
 use super::config::Entrypoint;
+use super::package_entrypoints;
 use super::{Analysis, AnalyzedFile, Category, Evidence, Finding};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
@@ -296,13 +297,14 @@ enum SubmoduleAttachment {
 
 #[cfg(test)]
 fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None)
+    analyze_with_verification(files, entrypoints, None, None)
 }
 
 pub(super) fn analyze_with_verification(
     files: &[AnalyzedFile],
     entrypoints: &[Entrypoint],
     verification: Option<&grep_verification::Snapshot>,
+    package_entrypoints: Option<&package_entrypoints::Snapshot>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
@@ -386,6 +388,9 @@ pub(super) fn analyze_with_verification(
         };
     };
     let mut roots = graph.external_roots(entrypoints, &initialization_edges);
+    if let Some(package_entrypoints) = package_entrypoints {
+        graph.retain_package_entrypoints(package_entrypoints, &initialization_edges);
+    }
     roots.extend(graph.test_edges());
     // A dormant consumer must not consume another scope's export traversal.
     for exports in std::mem::take(&mut graph.namespace_exports).into_values() {
@@ -662,13 +667,19 @@ impl<'a> Graph<'a> {
     }
 
     fn lexical(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
-        match self.lexical_binding(scope, name, before) {
+        match self.lexical_binding(scope, name, before, false) {
             LexicalBinding::Found(id) => Some(id),
             LexicalBinding::UnboundLocal | LexicalBinding::Missing => None,
         }
     }
 
-    fn lexical_binding(&self, origin: ScopeId, name: &str, before: Location) -> LexicalBinding {
+    fn lexical_binding(
+        &self,
+        origin: ScopeId,
+        name: &str,
+        before: Location,
+        check_dormant_declarations: bool,
+    ) -> LexicalBinding {
         let mut scope = origin;
         let mut before = before;
         loop {
@@ -683,10 +694,11 @@ impl<'a> Graph<'a> {
                 if row.owner.is_some()
                     && !class
                     && (row.names.contains_key(name)
-                        || matches!(name, "locals" | "vars") && suite_binds_name(row.body, name))
+                        || (check_dormant_declarations || matches!(name, "locals" | "vars"))
+                            && suite_binds_name(row.body, name))
                 {
-                    // A function declaration shadows these builtins even in a
-                    // branch omitted from the runtime binding index.
+                    // A lexical declaration can shadow an outer binding even
+                    // in a branch omitted from the runtime binding index.
                     return LexicalBinding::UnboundLocal;
                 }
             }
@@ -1573,6 +1585,138 @@ impl<'a> Graph<'a> {
         value
     }
 
+    fn lazy_call(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+        evaluation: ValueEvaluation<'a>,
+    ) -> Value {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &expression.kind
+        else {
+            unreachable!()
+        };
+        let ValueEvaluation::Lazy {
+            execution_scope, ..
+        } = evaluation
+        else {
+            unreachable!()
+        };
+        let recurse = |this: &mut Self, expression| {
+            this.expression_value(scope, expression, before, depth + 1, evaluation)
+        };
+        let plain_hook = self.scopes[scope].owner.is_some_and(|id| {
+            matches!(self.symbols[id].binding, Binding::Definition(definition, _) if definition.decorators.is_empty())
+        });
+        if plain_hook && keywords.is_empty() {
+            match (recurse(self, function), arguments.as_slice()) {
+                (Value::Provider(provider), [base, name]) if provider == "builtins.getattr" => {
+                    if let (base @ Value::Module(_), Value::Text(name)) =
+                        (recurse(self, base), recurse(self, name))
+                    {
+                        return self.lazy_attribute(
+                            base,
+                            &name,
+                            (scope, before),
+                            depth + 1,
+                            execution_scope,
+                        );
+                    }
+                }
+                (Value::Provider(provider), [name]) if provider == "importlib.import_module" => {
+                    if let Value::Text(name) = recurse(self, name)
+                        && let Some(&target) = self.modules.get(name.as_str())
+                        && !within_package(&self.files[self.scopes[scope].file].module, &name)
+                    {
+                        // An omitted initializer can change the imported module or
+                        // prevent it from loading. This path requires selected packages.
+                        let parents: Option<Vec<_>> = name
+                            .match_indices('.')
+                            .map(|(end, _)| self.lazy_import_parent(&name, end))
+                            .collect();
+                        if let Some(parents) = parents {
+                            if let Some(caller) = execution_scope {
+                                let caller_module = &self.files[self.scopes[caller].file].module;
+                                self.scopes[caller]
+                                    .imports
+                                    .extend(parents.into_iter().filter(|&file| {
+                                        !within_package(caller_module, &self.files[file].module)
+                                    }));
+                                self.scopes[caller].imports.push(target);
+                            }
+                            return Value::Module(target);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.scope_issue(
+            scope,
+            expression.at,
+            "unresolved_lazy_export",
+            "effects of the lazy return expression are outside the bounded model",
+        );
+        Value::Unknown
+    }
+
+    fn lazy_import_parent(&self, name: &str, end: usize) -> Option<usize> {
+        let &parent = self.modules.get(&name[..end])?;
+        let child = name[end + 1..].split('.').next()?;
+        // Loading a child can replace an existing attribute on its package.
+        // The static import attachment index cannot order this lazy effect.
+        let replaces_search_path =
+            self.scopes[parent]
+                .names
+                .get("__path__")
+                .is_some_and(|bindings| {
+                    bindings
+                        .iter()
+                        .any(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+                });
+        if !self.files[parent].is_package
+            || replaces_search_path
+            || has_implicit_module_member(child, true)
+            || self.local(parent, child, END).is_some()
+            || self.local(parent, "__getattr__", END).is_some_and(|hook| {
+                !matches!(self.lazy_lookup(hook, child, END), LazyMember::Missing)
+            })
+        {
+            return None;
+        }
+        Some(parent)
+    }
+
+    fn lazy_attribute(
+        &mut self,
+        base: Value,
+        name: &str,
+        access: (ScopeId, Location),
+        depth: usize,
+        execution_scope: Option<ScopeId>,
+    ) -> Value {
+        if let Some(caller) = execution_scope
+            && let Value::Module(file) = base
+            && let ModuleMember::Lazy(hook, branch) =
+                self.selected_module_member(file, name, END, access, ModuleMemberAccess::Attribute)
+        {
+            self.read.insert(hook);
+            self.nested_lazy_imports
+                .push((branch.scope, branch.imports));
+            return self.lazy_value(access.0, &branch, depth + 2, Some(caller));
+        }
+        let value = self.member(base, name, access, depth);
+        if let Some(caller) = execution_scope {
+            self.record_class_reference(caller, &value);
+        }
+        value
+    }
+
     fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
         self.lazy_dispatch(id, before, |name, scope, body, argument| {
             (name == member).then(|| Self::lazy_branch(scope, body, argument))
@@ -1970,13 +2114,16 @@ impl<'a> Graph<'a> {
             );
             return Value::Unknown;
         }
-        // An evaluated lazy return can read a known binding. Effectful
-        // operations in the expression itself require additional execution.
+        if matches!(evaluation, ValueEvaluation::Lazy { .. })
+            && matches!(expression.kind, ExpressionKind::Call { .. })
+        {
+            return self.lazy_call(scope, expression, before, depth, evaluation);
+        }
+        // Other effectful operations require additional execution.
         if matches!(evaluation, ValueEvaluation::Lazy { .. })
             && matches!(
                 expression.kind,
-                ExpressionKind::Call { .. }
-                    | ExpressionKind::Await(_)
+                ExpressionKind::Await(_)
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Operands(_)
             )
@@ -1994,7 +2141,11 @@ impl<'a> Graph<'a> {
         };
         match &expression.kind {
             ExpressionKind::Name(name) => {
-                let binding = self.lexical_binding(scope, name, before);
+                let lazy = matches!(evaluation, ValueEvaluation::Lazy { .. });
+                let binding = self.lexical_binding(scope, name, before, lazy);
+                if lazy && matches!(binding, LexicalBinding::UnboundLocal) {
+                    return Value::Unknown;
+                }
                 if let LexicalBinding::Found(id) = binding {
                     if let ValueEvaluation::Lazy {
                         argument: Some((parameter, text)),
@@ -2035,7 +2186,7 @@ impl<'a> Graph<'a> {
                 if name == "__name__" {
                     return Value::Unknown;
                 }
-                if (self.grep_verify && name == "getattr"
+                if ((self.grep_verify || lazy) && name == "getattr"
                     || matches!(
                         name.as_str(),
                         "print"
@@ -2069,27 +2220,16 @@ impl<'a> Graph<'a> {
             ExpressionKind::Member(base, name) => {
                 let base = recurse(self, base);
                 if let ValueEvaluation::Lazy {
-                    execution_scope: Some(caller),
-                    ..
+                    execution_scope, ..
                 } = evaluation
                 {
-                    if let Value::Module(file) = base
-                        && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
-                            file,
-                            name,
-                            END,
-                            (scope, before),
-                            ModuleMemberAccess::Attribute,
-                        )
-                    {
-                        self.read.insert(hook);
-                        self.nested_lazy_imports
-                            .push((branch.scope, branch.imports));
-                        return self.lazy_value(scope, &branch, depth + 3, Some(caller));
-                    }
-                    let value = self.member(base, name, (scope, before), depth + 1);
-                    self.record_class_reference(caller, &value);
-                    return value;
+                    return self.lazy_attribute(
+                        base,
+                        name,
+                        (scope, before),
+                        depth + 1,
+                        execution_scope,
+                    );
                 }
                 self.member(base, name, (scope, before), depth + 1)
             }
@@ -3270,10 +3410,7 @@ impl<'a> Graph<'a> {
         {
             return None;
         }
-        let parameter = definition
-            .parameters
-            .first()
-            .filter(|param| param.text == "self")?;
+        let parameter = definition.parameters.first()?;
         Some(self.by_location[&(body, parameter.at.line, parameter.at.column)])
     }
 
@@ -3284,14 +3421,25 @@ impl<'a> Graph<'a> {
         keywords: &'expr [(String, Expression)],
         mut evaluate: impl FnMut(&mut Self, &'expr Expression) -> Value,
     ) -> Invocation {
-        if matches!(invocation.receiver, Receiver::Explicit(_)) {
+        // A plain call to a function from a class namespace has no
+        // descriptor binding. Its receiver, if any, comes from the arguments.
+        if matches!(invocation.receiver, Receiver::Explicit(_))
+            || (matches!(invocation.receiver, Receiver::Ordinary)
+                && self.receiver_parameter(invocation.target).is_some())
+        {
             let argument = arguments.first().or_else(|| {
-                // The simple signature model proves that `self` accepts a keyword.
-                if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.simple_positional_parameters) {
-                    keywords.iter().find(|(name, _)| name == "self").map(|(_, value)| value)
-                } else {
-                    None
+                let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+                else {
+                    return None;
+                };
+                // A simple positional signature also accepts keywords by name.
+                if !definition.simple_positional_parameters {
+                    return None;
                 }
+                let parameter = definition.parameters.first()?;
+                keywords
+                    .iter()
+                    .find_map(|(name, value)| (name == &parameter.text).then_some(value))
             });
             let class = match argument.map(|argument| evaluate(self, argument)) {
                 Some(Value::Instance(class)) => Some(class),
@@ -4415,6 +4563,97 @@ impl<'a> Graph<'a> {
         members
     }
 
+    fn retain_package_entrypoints(
+        &mut self,
+        metadata: &package_entrypoints::Snapshot,
+        initialization_edges: &[Vec<ScopeId>],
+    ) {
+        let mut exports = Vec::new();
+        let at = Location { line: 1, column: 1 };
+        for entry in &metadata.entries {
+            let unresolved = || {
+                let reference = if entry.attributes.is_empty() {
+                    entry.module.clone()
+                } else {
+                    format!("{}:{}", entry.module, entry.attributes.join("."))
+                };
+                let mut issue = Issue::new(
+                    "unresolved_package_entrypoint",
+                    entry.manifest,
+                    format!(
+                        "package entry point {reference:?} could not be resolved in the selected sources"
+                    ),
+                );
+                issue.line = entry.line;
+                issue
+            };
+            let Some(&file) = self.modules.get(entry.module.as_str()) else {
+                if !metadata.file_only {
+                    self.issues.push(unresolved());
+                }
+                continue;
+            };
+            // Importing a module-only entry executes its top-level code, which
+            // is already part of the compatibility profile's initial roots.
+            let mut value = Value::Module(file);
+            for attribute in &entry.attributes {
+                let access = (file, END);
+                value = match value {
+                    Value::Module(module) => {
+                        let initialization_imports = OnceCell::new();
+                        let mode = ModuleMemberAccess::Export {
+                            at,
+                            initialization_edges,
+                            initialization_imports: &initialization_imports,
+                        };
+                        self.external_member(module, attribute, access, mode)
+                    }
+                    value => {
+                        if let Value::Callable(invocation) = &value
+                            && self.is_class(invocation.target)
+                        {
+                            // Looking up Class.member loads Class without
+                            // exposing the rest of its public members.
+                            self.edge(file, invocation.target, "package_entrypoint", "certain");
+                        }
+                        self.member(value, attribute, access, 0)
+                    }
+                };
+            }
+            match value {
+                Value::Unknown
+                | Value::OpaqueNamespace
+                | Value::OperatorResult
+                | Value::Provider(_) => self.issues.push(unresolved()),
+                Value::Module(_) => {}
+                value => exports.push(Export {
+                    scope: file,
+                    at,
+                    kind: "package_entrypoint",
+                    value,
+                }),
+            }
+        }
+        self.retain_exports(exports, initialization_edges, "certain");
+    }
+
+    fn external_member(
+        &mut self,
+        file: usize,
+        name: &str,
+        access: (ScopeId, Location),
+        mode: ModuleMemberAccess<'_>,
+    ) -> Value {
+        if let ModuleMember::Lazy(hook, branch) =
+            self.selected_module_member(file, name, END, access, mode)
+        {
+            self.read.insert(hook);
+            self.execute_lazy_branch(file, &branch)
+        } else {
+            self.module_member_at(&self.files[file].module, name, END, access, mode, 0)
+        }
+    }
+
     fn external_roots(
         &mut self,
         entrypoints: &[Entrypoint],
@@ -4442,21 +4681,7 @@ impl<'a> Graph<'a> {
                             initialization_edges,
                             initialization_imports: &initialization_imports,
                         };
-                        let value = if let ModuleMember::Lazy(hook, branch) =
-                            self.selected_module_member(file, &export, END, access, mode)
-                        {
-                            self.read.insert(hook);
-                            self.execute_lazy_branch(file, &branch)
-                        } else {
-                            self.module_member_at(
-                                &self.files[file].module,
-                                &export,
-                                END,
-                                access,
-                                mode,
-                                0,
-                            )
-                        };
+                        let value = self.external_member(file, &export, access, mode);
                         match value {
                             Value::Unknown => self.issue(
                                 file,
@@ -5991,6 +6216,122 @@ _unbound()
     }
 
     #[test]
+    fn resolves_literal_lazy_import_with_real_loader_identity() {
+        let package = |loader: &str, name: &str| {
+            module(
+                "pkg/__init__.py",
+                "pkg",
+                &format!(
+                    "{loader}\n__all__ = ['work']\ndef __getattr__(name):\n    if name == 'work':\n        return getattr(load({name}), name)\n    raise AttributeError(name)\n"
+                ),
+            )
+        };
+        let provider = || {
+            module(
+                "pkg/worker.py",
+                "pkg.worker",
+                "def work():\n    return 1\ndef unused():\n    return 2\n",
+            )
+        };
+        let import = "from importlib import import_module as load";
+        let result = analyze(&[package(import, "'pkg.worker'"), provider()], &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        assert!(result.evidence.iter().any(|evidence| {
+            evidence.full_name == "pkg.worker.work" && evidence.kind == "public_export"
+        }));
+
+        let opaque = analyze(&[package(import, "name"), provider()], &[]);
+        assert!(
+            opaque
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_lazy_export")
+        );
+        let unselected_parent = analyze(
+            &[
+                package(import, "'pkg.sub.worker'"),
+                module(
+                    "pkg/sub/worker.py",
+                    "pkg.sub.worker",
+                    "def work():\n    return 1\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            unselected_parent
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_lazy_export")
+        );
+
+        for hook in [
+            "def __getattr__(name):\n    if name == 'work':\n        return getattr(load('worker'), name)\n    if False:\n        getattr = None\n    raise AttributeError(name)\n",
+            "@classmethod\ndef __getattr__(name):\n    if name == 'work':\n        return getattr(load('worker'), name)\n    raise AttributeError(name)\n",
+        ] {
+            let unresolved = analyze(
+                &[
+                    module(
+                        "pkg/__init__.py",
+                        "pkg",
+                        &format!("{import}\n__all__ = ['work']\n{hook}"),
+                    ),
+                    module("worker.py", "worker", "def work():\n    return 1\n"),
+                ],
+                &[],
+            );
+            assert!(
+                unresolved
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export")
+            );
+        }
+
+        let collision = analyze(
+            &[
+                package(
+                    "from importlib import import_module as load\ndef worker():\n    return 3",
+                    "'pkg.worker'",
+                ),
+                provider(),
+                module(
+                    "main.py",
+                    "main",
+                    "import pkg\nfrom pkg import work\nwork()\npkg.worker()\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            collision
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_lazy_export")
+        );
+
+        let shadowed = analyze(
+            &[
+                package(import, "'pkg.worker'"),
+                provider(),
+                module(
+                    "importlib.py",
+                    "importlib",
+                    "def import_module(name):\n    return None\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            shadowed
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_lazy_export")
+        );
+    }
+
+    #[test]
     fn unknown_dispatch_blocks_reachable_but_not_dormant_code() {
         let source = "def go(callback):\n    callback()\n";
         let dormant = analyze(&[module("main.py", "main", source)], &[]);
@@ -6142,6 +6483,81 @@ _unbound()
         assert!(result.evidence.iter().any(
             |evidence| evidence.full_name == "main.Base.run" && evidence.kind == "direct_call"
         ));
+    }
+
+    #[test]
+    fn instance_dispatch_uses_the_first_positional_parameter() {
+        let source = "\
+def finish_setup():
+    return 1
+
+class Service:
+    def __init__(instance):
+        instance.prepare()
+    def prepare(instance):
+        return instance.finish()
+    def finish(instance, /):
+        return finish_setup()
+    def unused(instance):
+        return 0
+";
+        for caller in [
+            "Service()\n",
+            "Factory = Service\ncreated = Factory()\nService.prepare(instance=created)\n",
+        ] {
+            let result = analyze(
+                &[module("main.py", "main", &format!("{source}{caller}"))],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{caller}\n{:?}", result.issues);
+            assert_eq!(names(&result, Category::Function), ["unused"]);
+            for target in [
+                "main.Service.prepare",
+                "main.Service.finish",
+                "main.finish_setup",
+            ] {
+                assert!(
+                    result
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.full_name == target && edge.kind == "direct_call"),
+                    "missing evidence for {target} after {caller}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bare_class_body_call_checks_its_supplied_receiver() {
+        let files = [module(
+            "main.py",
+            "main",
+            "\
+def configured():
+    return False
+
+class Configuration:
+    def __bool__(self):
+        return configured()
+
+class Status:
+    def label(config):
+        if config:
+            return 'on'
+        return 'off'
+    default = label(Configuration())
+print(Status.default)
+",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| { issue.kind == "unresolved_call" && issue.line == Some(13) }),
+            "{:?}",
+            result.issues
+        );
     }
 
     #[test]
