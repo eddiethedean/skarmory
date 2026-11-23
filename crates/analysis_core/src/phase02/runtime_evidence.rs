@@ -713,6 +713,61 @@ mod tests {
     }
 
     #[test]
+    fn an_observed_recursive_callback_still_needs_a_bounded_initial_caller() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let source = "def live():\n    return 1\ndef dispatch(callback, again):\n    if again:\n        return dispatch(live, False) + callback()\n    return callback()\n";
+        fs::write(root.join("app.py"), source).unwrap();
+        let fingerprints = json!({"app.py": blake3::hash(source.as_bytes()).to_hex().as_str()});
+        let revision = revision(&BTreeMap::from([("app.py".into(), source.into())]));
+        let calls = json!([{"file": "app.py", "function": "dispatch", "line": 3}]);
+        for artifact in [
+            json!({"version": 1, "calls": calls}),
+            json!({"version": 2, "calls": calls, "revision": revision, "fingerprints": fingerprints}),
+        ] {
+            write(root, ".skylos_trace", &artifact);
+            let traced = report(root, &options());
+            assert_eq!(traced["runtime_evidence"][0]["full_name"], "app.dispatch");
+            assert_eq!(traced["coverage"]["status"], "incomplete", "{traced}");
+            assert!(
+                traced["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_call" && issue["line"] == 6)
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_caller_can_corroborate_a_runtime_observation() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def live():\n    return 1\ndef dispatch(callback):\n    return callback()\ndef launch():\n    return dispatch(live)\ndef unused():\n    return 2\n",
+        )
+        .unwrap();
+        fs::write(root.join("jobs.yml"), "handler: app.py:launch\n").unwrap();
+        let options = Options {
+            grep_verify: Some(true),
+            ..options()
+        };
+        let baseline = report(root, &options);
+        assert_eq!(baseline["coverage"]["status"], "complete", "{baseline}");
+        assert_eq!(unused(&baseline), BTreeSet::from(["app.unused"]));
+        write(
+            root,
+            ".skylos_trace",
+            &json!({"version": 1, "calls": [{"file": "app.py", "function": "dispatch", "line": 3}]}),
+        );
+        let traced = report(root, &options);
+        assert_eq!(traced["runtime_evidence"][0]["full_name"], "app.dispatch");
+        assert_eq!(traced["coverage"]["status"], "complete", "{traced}");
+        assert_eq!(unused(&traced), BTreeSet::from(["app.unused"]));
+    }
+
+    #[test]
     fn artifact_rejection_does_not_change_static_incomplete_coverage() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();

@@ -5135,6 +5135,29 @@ impl<'a> Graph<'a> {
         false
     }
 
+    fn verification_edges(
+        &self,
+        reach: &Reachability,
+        roots: &BTreeSet<SymbolId>,
+    ) -> VecDeque<Edge> {
+        let mut pending: VecDeque<_> = roots
+            .iter()
+            .map(|&target| Edge {
+                target,
+                kind: "grep_configuration",
+                certainty: "possible",
+            })
+            .collect();
+        pending.extend(reach.scopes.iter().flat_map(|&scope| {
+            self.scopes[scope]
+                .edges
+                .iter()
+                .copied()
+                .filter(|edge| is_verification_edge(edge.kind))
+        }));
+        pending
+    }
+
     fn finish(
         mut self,
         roots: Vec<Edge>,
@@ -5157,6 +5180,18 @@ impl<'a> Graph<'a> {
             scopes: (0..self.files.len()).collect(),
             ..Reachability::default()
         };
+        let runtime_targets: BTreeSet<_> = roots
+            .iter()
+            .chain(&possible_runtime_roots)
+            .filter(|edge| is_runtime_execution_edge(edge.kind))
+            .map(|edge| edge.target)
+            .collect();
+        let observed_callback = !runtime_targets.is_empty()
+            && self.parameter_calls.iter().any(|call| {
+                self.scopes[self.symbols[call.parameter].scope]
+                    .owner
+                    .is_some_and(|owner| runtime_targets.contains(&owner))
+            });
         let mut pending = VecDeque::from(roots);
         // Only visited class declarations execute when their parent is reached.
         let class_bodies: BTreeSet<_> = self
@@ -5174,6 +5209,30 @@ impl<'a> Graph<'a> {
         }
         for &scope in &reach.scopes {
             pending.extend(&self.scopes[scope].edges);
+        }
+        // Check whether a runtime observation of a callback owner has an
+        // independent static witness. Calls reached only through the runtime
+        // roots, such as a recursive call, cannot explain the initial call.
+        let mut static_reach = None;
+        if observed_callback {
+            let mut static_only = Reachability {
+                scopes: reach.scopes.clone(),
+                ..Reachability::default()
+            };
+            let static_pending = pending
+                .iter()
+                .copied()
+                .filter(|edge| !is_runtime_execution_edge(edge.kind))
+                .collect();
+            if self.traverse(
+                &mut static_only,
+                static_pending,
+                &class_bodies,
+                false,
+                false,
+            ) {
+                static_reach = Some(static_only);
+            }
         }
         let baseline_converged = self.traverse(&mut reach, pending, &class_bodies, false, false);
         if !possible_runtime_roots.is_empty()
@@ -5193,22 +5252,15 @@ impl<'a> Graph<'a> {
             if !self.configuration_roots(snapshot, &mut verification) {
                 self.issues.push(grep_verification::evidence_limit());
             }
-            let mut pending: VecDeque<_> = verification
-                .roots
-                .iter()
-                .map(|&target| Edge {
-                    target,
-                    kind: "grep_configuration",
-                    certainty: "possible",
-                })
-                .collect();
-            pending.extend(reach.scopes.iter().flat_map(|&scope| {
-                self.scopes[scope]
-                    .edges
-                    .iter()
-                    .copied()
-                    .filter(|edge| is_verification_edge(edge.kind))
-            }));
+            if let Some(mut static_only) = static_reach.take() {
+                let pending = self.verification_edges(&static_only, &verification.roots);
+                if pending.is_empty()
+                    || self.traverse(&mut static_only, pending, &class_bodies, true, true)
+                {
+                    static_reach = Some(static_only);
+                }
+            }
+            let pending = self.verification_edges(&reach, &verification.roots);
             if !pending.is_empty() && !self.traverse(&mut reach, pending, &class_bodies, true, true)
             {
                 self.issues.push(framework_limit());
@@ -5243,21 +5295,21 @@ impl<'a> Graph<'a> {
             evidence,
             ..
         } = reach;
-        // Runtime evidence establishes execution without identifying a caller.
-        // Resolve callback arguments from reachable call sites when available.
         let independently_retained: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
-                (!matches!(
-                    kind,
-                    "direct_call"
-                        | "grep_dynamic_call"
-                        | "type_reference"
-                        | "runtime_trace"
-                        | "runtime_coverage"
-                        | "runtime_owner"
-                ))
-                .then_some(target)
+                if matches!(kind, "direct_call" | "grep_dynamic_call" | "type_reference") {
+                    return None;
+                }
+                if is_runtime_execution_edge(kind)
+                    && let Binding::Definition(_, body) = self.symbols[target].binding
+                    && static_reach
+                        .as_ref()
+                        .is_some_and(|reach| reach.scopes.contains(&body))
+                {
+                    return None;
+                }
+                Some(target)
             })
             .collect();
         for call in self
@@ -5479,6 +5531,10 @@ fn is_verification_edge(kind: &str) -> bool {
         kind,
         "grep_configuration" | "grep_dynamic" | "grep_dynamic_call"
     )
+}
+
+fn is_runtime_execution_edge(kind: &str) -> bool {
+    matches!(kind, "runtime_trace" | "runtime_coverage" | "runtime_owner")
 }
 
 fn framework_limit() -> Issue {
