@@ -171,8 +171,11 @@ supports the pinned recursive-group and caller-edit cases. [#52](https://github.
 Ordinary constructors and instance methods use the first positional
 parameter as the receiver regardless of its name. An explicit
 keyword receiver is resolved when the supported signature proves that the name
-accepts a keyword. Unknown receiver types and custom allocation can still
-make analysis incomplete.
+accepts a keyword. The analyzer retains each finite receiver selected by an
+exhaustive `if`/`else` assignment or conditional expression, propagates the
+selected child class through inherited methods, and follows a simple `__new__`
+that returns one selected class instance. Opaque receiver sources and custom
+allocation with an unbounded result still make analysis incomplete.
 
 A literal equality branch in a module's `__getattr__` can return a selected
 member through `getattr(importlib.import_module("pkg.provider"), name)`.
@@ -180,7 +183,9 @@ The analyzer resolves the loader and member through their bindings and tracks
 the selected import's initialization. The bounded model requires selected
 package initializers and abstains when attaching a child could replace a
 package member. Shadowed loaders and other unmodeled call effects also
-leave coverage incomplete.
+leave coverage incomplete. A literal module-name mapping can provide the lazy
+dispatch table when the hook checks membership and subscripts that same mapping;
+computed or mutated tables remain incomplete.
 
 ### Static package entry points
 
@@ -196,7 +201,11 @@ Metadata reads use the current snapshot even when Python facts come from the
 cache. Invalid or unresolved declarations produce coverage diagnostics.
 `setup.py` metadata is interpreted statically. When the script is itself
 selected for dead-code analysis, its Python statements follow the ordinary
-coverage rules.
+coverage rules. Statically selected entry points are also listed in
+`analysis_summary.dead_code_liveness.rescued` with `package_entrypoint`
+evidence. A direct, unshadowed `open(...).close()` statement is treated as an
+unrelated external side effect; other unsupported setup-script effects remain
+incomplete.
 
 ### Bounded Python function namespace reads
 

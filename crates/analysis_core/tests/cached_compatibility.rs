@@ -1365,3 +1365,76 @@ def __getattr__(name):
         );
     }
 }
+
+#[test]
+fn finite_receivers_and_lazy_tables_follow_edits_with_cached_workers() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("left.py"),
+        "def work():\n    return left_only()\ndef left_only():\n    return 1\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("right.py"),
+        "def work():\n    return right_only()\ndef right_only():\n    return 2\n",
+    )
+    .unwrap();
+    let initializer = package.join("__init__.py");
+    let main = project.path().join("main.py");
+    let classes = "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\nclass Third:\n    def run(self):\n        return 3\n";
+
+    for (provider, receiver, unused_provider, retained_receivers) in [
+        (
+            "left",
+            "if choose:\n    receiver = First()\nelse:\n    receiver = Second()\n",
+            "right_only",
+            &["main.First.run", "main.Second.run"][..],
+        ),
+        (
+            "right",
+            "receiver = First() if choose else Second()\n",
+            "left_only",
+            &["main.First.run", "main.Second.run"][..],
+        ),
+        (
+            "left",
+            "receiver = Third()\nif outer:\n    if inner:\n        receiver = First()\nelse:\n    receiver = Second()\n",
+            "right_only",
+            &["main.First.run", "main.Second.run", "main.Third.run"][..],
+        ),
+        (
+            "right",
+            "Factory = First if choose else Second\nreceiver = Factory()\n",
+            "left_only",
+            &["main.First.run", "main.Second.run"][..],
+        ),
+    ] {
+        fs::write(
+            &initializer,
+            format!(
+                "import importlib\n_LAZY = {{'work': 'pkg.{provider}'}}\n__all__ = ['work']\ndef __getattr__(name):\n    if name in _LAZY:\n        return getattr(importlib.import_module(_LAZY[name]), name)\n    raise AttributeError(name)\n"
+            ),
+        )
+        .unwrap();
+        fs::write(&main, format!("{classes}{receiver}receiver.run()\n")).unwrap();
+
+        let (result, _) = compare(project.path(), cache.path());
+        assert_eq!(result["coverage"]["status"], "complete", "{result}");
+        let unused: Vec<_> = result["unused_functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["full_name"].as_str())
+            .collect();
+        for name in retained_receivers {
+            assert!(!unused.contains(name), "{result}");
+        }
+        assert!(finds(&result, unused_provider), "{result}");
+        let (warm, stats) = compare(project.path(), cache.path());
+        assert_eq!(stats["hits"], 4);
+        assert_eq!(warm, result);
+    }
+}
