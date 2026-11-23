@@ -190,6 +190,15 @@ in active URL modules produce coverage diagnostics. Standalone URL patterns
 resolved through Django's provider also report incomplete coverage when no
 startup is selected.
 
+For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
+application modules, their models modules, and the `ready()` hook of a resolved
+AppConfig. It accepts explicit config class paths and resolves default selection
+in a local `apps.py`. A management launcher exposes local `BaseCommand`
+subclasses named `Command` in the installed apps' public
+`management/commands` modules. Earlier installed apps take precedence when
+command names collide. A literal argument list limits discovery to the chosen
+command. An unresolved app or command export produces incomplete coverage.
+
 The profile also recognizes selected Celery task registrations, SQLAlchemy
 listeners, Pydantic model hooks, unittest test and lifecycle methods through
 effective class bindings, and pytest hooks and fixtures through selected
@@ -197,8 +206,8 @@ conftest modules or literal `pytest_plugins` declarations. pytest autouse fixtur
 also apply to unittest cases collected by pytest. These are bounded models under
 [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
-Management command discovery, installed Django AppConfig loading, and
-additional FastAPI dependency patterns still need coverage.
+Additional Django command dispatch and FastAPI dependency patterns still need
+coverage.
 
 The pinned `django-urlpatterns`, `pytest-plugin-hooks`, and
 `python-unittest-lifecycle` corpus cases currently diverge. They require

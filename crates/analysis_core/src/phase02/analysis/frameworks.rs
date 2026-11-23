@@ -2,6 +2,19 @@
 
 use super::*;
 
+pub(super) struct DjangoStartup {
+    pub(super) at: Location,
+    pub(super) settings: Option<String>,
+    pub(super) requires_urlconf: bool,
+    pub(super) commands: DjangoCommands,
+}
+
+pub(super) enum DjangoCommands {
+    None,
+    Available,
+    Selected(String),
+}
+
 impl Graph<'_> {
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
@@ -388,29 +401,41 @@ impl Graph<'_> {
             return;
         }
         for scope in 0..self.scopes.len() {
-            for (at, settings) in std::mem::take(&mut self.scopes[scope].starts_django) {
-                let root = settings
-                    .and_then(|module| self.modules.get(module.as_str()).copied())
-                    .and_then(|file| {
-                        let row = &mut self.scopes[scope];
-                        row.activated_apps
-                            .extend([django_loaded_module(file), django_loaded_module(row.file)]);
-                        self.local(file, "ROOT_URLCONF", END)
-                    })
-                    .and_then(|binding| match self.binding(binding, END, 0) {
-                        Value::Text(module) => self.modules.get(module.as_str()).copied(),
-                        _ => None,
-                    });
+            for startup in std::mem::take(&mut self.scopes[scope].starts_django) {
+                let Some(settings) = startup
+                    .settings
+                    .as_deref()
+                    .and_then(|module| self.modules.get(module).copied())
+                else {
+                    self.scope_issue(
+                        scope,
+                        startup.at,
+                        "unresolved_registration",
+                        "Django startup settings could not be resolved",
+                    );
+                    continue;
+                };
+                let row = &mut self.scopes[scope];
+                row.activated_apps.extend([
+                    django_loaded_module(settings),
+                    django_loaded_module(row.file),
+                ]);
+                self.collect_django_apps(scope, settings, &startup.commands);
+                let binding = self.local(settings, "ROOT_URLCONF", END);
+                let root = binding.and_then(|binding| match self.binding(binding, END, 0) {
+                    Value::Text(module) => self.modules.get(module.as_str()).copied(),
+                    _ => None,
+                });
                 if let Some(file) = root {
                     let object = framework_module(file);
                     self.scopes[scope].activated_apps.push(object);
                     self.django_roots.insert(object);
-                } else {
+                } else if startup.requires_urlconf || binding.is_some() {
                     self.scope_issue(
                         scope,
-                        at,
+                        startup.at,
                         "unresolved_registration",
-                        "Django settings and ROOT_URLCONF could not be resolved",
+                        "Django ROOT_URLCONF could not be resolved",
                     );
                 }
             }
@@ -460,6 +485,229 @@ impl Graph<'_> {
                             "Django error handler callback could not be resolved",
                         );
                     }
+                }
+            }
+        }
+    }
+
+    fn collect_django_apps(&mut self, scope: ScopeId, settings: usize, commands: &DjangoCommands) {
+        let Some(binding) = self.local(settings, "INSTALLED_APPS", END) else {
+            return;
+        };
+        let at = self.symbols[binding].name.at;
+        let object = django_loaded_module(settings);
+        let Value::Sequence(apps) = self.binding(binding, END, 0) else {
+            self.django_registration_issue(
+                object,
+                at,
+                "Django INSTALLED_APPS is not a resolved sequence",
+            );
+            return;
+        };
+        let mut registered_commands = BTreeMap::new();
+        for app in apps {
+            let resolved = if let Value::Text(entry) = app {
+                self.django_app_config(scope, object, &entry, at)
+            } else {
+                None
+            };
+            let Some(app) = resolved else {
+                self.django_registration_issue(
+                    object,
+                    at,
+                    "Django INSTALLED_APPS entry could not be resolved in selected sources",
+                );
+                continue;
+            };
+            let prefix = format!("{}.", self.files[app].module);
+            for module in [
+                Some(app),
+                self.modules
+                    .get(format!("{prefix}models").as_str())
+                    .copied(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.scopes[scope]
+                    .activated_apps
+                    .push(django_loaded_module(module));
+            }
+            if matches!(commands, DjangoCommands::None) {
+                continue;
+            }
+            let prefix = format!("{prefix}management.commands.");
+            for (module, &file) in self.modules.range(prefix.as_str()..) {
+                let Some(name) = module.strip_prefix(&prefix) else {
+                    break;
+                };
+                if !name.contains('.') && !name.starts_with('_') && !self.files[file].is_package {
+                    // Earlier installed apps override later commands with the same name.
+                    registered_commands.entry(name.to_owned()).or_insert(file);
+                }
+            }
+        }
+        for (name, file) in registered_commands {
+            if matches!(commands, DjangoCommands::Selected(command) if *command != name) {
+                continue;
+            }
+            let command = self.local(file, "Command", END).and_then(|binding| {
+                if self.conditional.contains_key(&binding) {
+                    return None;
+                }
+                self.django_class_binding(binding, FrameworkClassRole::DjangoCommand)
+            });
+            if let Some(command) = command {
+                self.read.extend(command.bindings);
+                self.scopes[scope]
+                    .activated_apps
+                    .push(django_loaded_module(file));
+                self.activate_django_class(
+                    scope,
+                    object,
+                    command.target,
+                    &["__init__", "add_arguments", "handle"],
+                    "django_command",
+                    at,
+                );
+            } else {
+                self.django_registration_issue(
+                    object,
+                    at,
+                    "Django command module has no resolved BaseCommand subclass named Command",
+                );
+            }
+        }
+    }
+
+    fn django_app_config(
+        &mut self,
+        scope: ScopeId,
+        object: Object,
+        entry: &str,
+        at: Location,
+    ) -> Option<usize> {
+        let (file, config) = if let Some(&app) = self.modules.get(entry) {
+            let Some(&file) = self.modules.get(format!("{entry}.apps").as_str()) else {
+                return Some(app);
+            };
+            self.scopes[scope]
+                .activated_apps
+                .push(django_loaded_module(file));
+            let candidates: Vec<_> = self.scopes[file]
+                .names
+                .values()
+                .flat_map(|bindings| self.effective_bindings(bindings).iter().copied())
+                .collect();
+            let mut configs = Vec::new();
+            for binding in candidates {
+                let Some(config) =
+                    self.django_class_binding(binding, FrameworkClassRole::DjangoAppConfig)
+                else {
+                    continue;
+                };
+                if self.conditional.contains_key(&binding) {
+                    return None;
+                }
+                let default = match self.django_class_attribute(config.target, "default") {
+                    None => false,
+                    Some(binding) => match self.binding(binding, END, 0) {
+                        Value::Bool(false) => continue,
+                        Value::Bool(true) => true,
+                        _ => return None,
+                    },
+                };
+                configs.push((config, default));
+            }
+            let config = if configs.len() == 1 {
+                configs.pop()?.0
+            } else {
+                let mut defaults = configs.into_iter().filter(|(_, default)| *default);
+                match (defaults.next(), defaults.next()) {
+                    (Some((config, _)), None) => config,
+                    (None, _) => return Some(app),
+                    _ => return None,
+                }
+            };
+            (file, config)
+        } else {
+            let (module, name) = entry.rsplit_once('.')?;
+            let file = *self.modules.get(module)?;
+            let binding = self.local(file, name, END)?;
+            if self.conditional.contains_key(&binding) {
+                return None;
+            }
+            (
+                file,
+                self.django_class_binding(binding, FrameworkClassRole::DjangoAppConfig)?,
+            )
+        };
+        let class = config.target;
+        let binding = self.django_class_attribute(class, "name")?;
+        let Value::Text(name) = self.binding(binding, END, 0) else {
+            return None;
+        };
+        let app = *self.modules.get(name.as_str())?;
+        self.read.extend(config.bindings);
+        self.scopes[scope]
+            .activated_apps
+            .push(django_loaded_module(file));
+        self.activate_django_class(
+            scope,
+            object,
+            class,
+            &["__init__", "ready"],
+            "django_app_config",
+            at,
+        );
+        Some(app)
+    }
+
+    fn django_class_binding(
+        &mut self,
+        binding: SymbolId,
+        role: FrameworkClassRole,
+    ) -> Option<CallableBinding> {
+        let config = self.probe_callable_binding(binding)?;
+        let target = config.target;
+        (self.is_class(target)
+            && self.framework_class_role(target, &mut BTreeSet::new(), 0) == Some(role))
+        .then_some(config)
+    }
+
+    fn django_class_attribute(&mut self, class: SymbolId, name: &str) -> Option<SymbolId> {
+        let (lineage, _) = self.class_lineage(class);
+        lineage
+            .into_iter()
+            .find_map(|scope| self.local(scope, name, END))
+    }
+
+    fn activate_django_class(
+        &mut self,
+        scope: ScopeId,
+        object: Object,
+        class: SymbolId,
+        hooks: &[&str],
+        kind: &'static str,
+        at: Location,
+    ) {
+        self.scopes[scope].routes.push((object, class, kind));
+        for name in hooks {
+            if let Some(binding) = self.django_class_attribute(class, name) {
+                if let Value::Callable(invocation) = self.binding(binding, END, 0) {
+                    self.scopes[scope]
+                        .routes
+                        .push((object, invocation.target, kind));
+                    self.method_receivers
+                        .entry(invocation.target)
+                        .or_default()
+                        .insert(class);
+                } else {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django lifecycle callback could not be resolved",
+                    );
                 }
             }
         }

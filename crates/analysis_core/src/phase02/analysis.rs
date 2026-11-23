@@ -223,7 +223,7 @@ struct Scope<'a> {
     mounts: Vec<(Object, Object)>,
     routes: Vec<(Object, SymbolId, &'static str)>,
     django_settings: DjangoSettings,
-    starts_django: Vec<(Location, Option<String>)>,
+    starts_django: Vec<frameworks::DjangoStartup>,
 }
 
 struct NamespaceRead {
@@ -304,7 +304,7 @@ struct PytestFixture {
     autouse: bool,
 }
 
-struct PytestRegistration {
+struct CallableBinding {
     target: SymbolId,
     bindings: Vec<SymbolId>,
 }
@@ -312,12 +312,12 @@ struct PytestRegistration {
 type PytestNames<'a> = BTreeMap<&'a str, Vec<SymbolId>>;
 
 struct PytestFixtureChoices {
-    alternatives: Vec<PytestRegistration>,
+    alternatives: Vec<CallableBinding>,
     may_be_absent: bool,
 }
 
 struct PytestFixtureRequests<'a> {
-    tests: &'a [(PytestRegistration, bool)],
+    tests: &'a [(CallableBinding, bool)],
     certain_case: bool,
 }
 
@@ -3930,12 +3930,43 @@ impl<'a> Graph<'a> {
                                     | "django.core.management.execute_from_command_line"
                             ) =>
                     {
-                        let row = &mut self.scopes[scope];
-                        let settings = match &row.django_settings {
+                        let settings = match &self.scopes[scope].django_settings {
                             DjangoSettings::Module(module) => Some(module.clone()),
                             DjangoSettings::Unset | DjangoSettings::Unknown => None,
                         };
-                        row.starts_django.push((expr.at, settings));
+                        let commands = if name == "django.core.management.execute_from_command_line"
+                        {
+                            let argv = arguments.first().or_else(|| {
+                                keywords
+                                    .iter()
+                                    .find(|(name, _)| name == "argv")
+                                    .map(|(_, value)| value)
+                            });
+                            match argv.map(|value| self.identity(scope, value, before, 0)) {
+                                Some(Value::Sequence(values)) => match values.get(1) {
+                                    Some(Value::Text(command)) if !command.starts_with('-') => {
+                                        frameworks::DjangoCommands::Selected(command.clone())
+                                    }
+                                    Some(Value::Text(_)) | None => frameworks::DjangoCommands::None,
+                                    _ => frameworks::DjangoCommands::Available,
+                                },
+                                _ => frameworks::DjangoCommands::Available,
+                            }
+                        } else {
+                            frameworks::DjangoCommands::None
+                        };
+                        self.scopes[scope]
+                            .starts_django
+                            .push(frameworks::DjangoStartup {
+                                at: expr.at,
+                                settings,
+                                requires_urlconf: matches!(
+                                    name.as_str(),
+                                    "django.core.wsgi.get_wsgi_application"
+                                        | "django.core.asgi.get_asgi_application"
+                                ),
+                                commands,
+                            });
                     }
                     Value::Provider(name)
                         if self.phase03
@@ -5031,14 +5062,14 @@ impl<'a> Graph<'a> {
         &bindings[first..]
     }
 
-    fn pytest_target(&self, id: SymbolId) -> Option<PytestRegistration> {
+    fn probe_callable_binding(&self, id: SymbolId) -> Option<CallableBinding> {
         let mut bindings = Vec::new();
         let Value::Callable(Invocation { target, .. }) =
             self.pytest_binding(id, None, &mut bindings, 0)?
         else {
             return None;
         };
-        Some(PytestRegistration { target, bindings })
+        Some(CallableBinding { target, bindings })
     }
 
     // Collect identity evidence without marking unrelated namespace entries
@@ -5160,7 +5191,7 @@ impl<'a> Graph<'a> {
         &self,
         names: &PytestNames<'a>,
         prefix: &str,
-    ) -> Vec<(PytestRegistration, bool)> {
+    ) -> Vec<(CallableBinding, bool)> {
         names
             .iter()
             .filter(|(name, _)| name.starts_with(prefix))
@@ -5168,7 +5199,8 @@ impl<'a> Graph<'a> {
                 let candidates = self.effective_bindings(bindings);
                 candidates.iter().filter_map(move |id| {
                     let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
-                    self.pytest_target(*id).map(|target| (target, certain))
+                    self.probe_callable_binding(*id)
+                        .map(|target| (target, certain))
                 })
             })
             .collect()
@@ -5249,7 +5281,7 @@ impl<'a> Graph<'a> {
         file: usize,
         namespaces: &[ScopeId],
         class: Option<&PytestNames<'a>>,
-        tests: Vec<(PytestRegistration, bool)>,
+        tests: Vec<(CallableBinding, bool)>,
         roots: &mut BTreeMap<SymbolId, bool>,
     ) {
         let tests: Vec<_> = tests
@@ -5309,7 +5341,7 @@ impl<'a> Graph<'a> {
                 let candidates = self.effective_bindings(bindings);
                 let has_unconditional_binding = !self.conditional.contains_key(&candidates[0]);
                 for &binding in candidates.iter().rev() {
-                    if let Some(resolved) = self.pytest_target(binding)
+                    if let Some(resolved) = self.probe_callable_binding(binding)
                         && let Some(fixture) = self.fixtures.get(&resolved.target)
                     {
                         let name = fixture.name.as_deref().unwrap_or(alias);
@@ -8681,6 +8713,150 @@ print(Status.default)
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "child_urls.Child.get" && entry.kind == "framework_lifecycle"
         }));
+    }
+
+    #[test]
+    fn phase03_loads_django_appconfig_only_for_installed_apps() {
+        let files = [
+            module(
+                "settings.py",
+                "settings",
+                "INSTALLED_APPS = ['demo.apps.Selected', 'automatic']\n",
+            ),
+            module("demo/__init__.py", "demo", ""),
+            module("automatic/__init__.py", "automatic", ""),
+            module(
+                "demo/apps.py",
+                "demo.apps",
+                "from django.apps import AppConfig\nclass Base(AppConfig):\n    def ready(self):\n        import demo.signals\nclass Selected(Base):\n    name = 'demo'\nclass Dormant(AppConfig):\n    name = 'demo'\n    def ready(self):\n        parked()\ndef parked():\n    pass\n",
+            ),
+            module(
+                "automatic/apps.py",
+                "automatic.apps",
+                "from django.apps import AppConfig\nclass Selected(AppConfig):\n    name = 'automatic'\n    default = True\n    def ready(self):\n        loaded()\nclass Dormant(AppConfig):\n    name = 'automatic'\n    def ready(self):\n        parked()\ndef loaded():\n    pass\ndef parked():\n    pass\n",
+            ),
+            module(
+                "demo/signals.py",
+                "demo.signals",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef on_save(sender):\n    return sender\n",
+            ),
+            module(
+                "main.py",
+                "main",
+                "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Class), ["Dormant", "Dormant"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "demo.apps.Base.ready" && entry.kind == "django_app_config"
+        }));
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "automatic.apps.Selected.ready" && entry.kind == "django_app_config"
+        }));
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "demo.signals.on_save" && entry.kind == "django_signal"
+        }));
+    }
+
+    #[test]
+    fn phase03_discovers_django_commands_from_the_selected_launcher_and_apps() {
+        for (argv, expected) in [
+            (
+                "",
+                &[
+                    "demo.management.commands.sync.Command.handle",
+                    "demo.management.commands.audit.Command.handle",
+                ][..],
+            ),
+            (
+                "['manage.py', 'sync']",
+                &["demo.management.commands.sync.Command.handle"][..],
+            ),
+            ("['manage.py']", &[][..]),
+        ] {
+            let files = [
+                module(
+                    "settings.py",
+                    "settings",
+                    "INSTALLED_APPS = ['demo', 'other']\n",
+                ),
+                module("demo/__init__.py", "demo", ""),
+                module("other/__init__.py", "other", ""),
+                module(
+                    "manage.py",
+                    "manage",
+                    &format!(
+                        "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line({argv})\n"
+                    ),
+                ),
+            ];
+            let command_source = "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self):\n        return helper()\ndef helper():\n    return 0\n";
+            let files: Vec<_> = files
+                .into_iter()
+                .chain(
+                    [
+                        (
+                            "demo/management/commands/sync.py",
+                            "demo.management.commands.sync",
+                        ),
+                        (
+                            "demo/management/commands/audit.py",
+                            "demo.management.commands.audit",
+                        ),
+                        (
+                            "demo/management/commands/_private.py",
+                            "demo.management.commands._private",
+                        ),
+                        (
+                            "other/management/commands/sync.py",
+                            "other.management.commands.sync",
+                        ),
+                        (
+                            "uninstalled/management/commands/sync.py",
+                            "uninstalled.management.commands.sync",
+                        ),
+                    ]
+                    .map(|(path, name)| module(path, name, command_source)),
+                )
+                .collect();
+            let result = analyze_phase03(&files, &[]);
+            assert!(result.issues.is_empty(), "{argv}: {:?}", result.issues);
+            let found: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|entry| {
+                    entry.kind == "django_command" && entry.full_name.ends_with(".handle")
+                })
+                .map(|entry| entry.full_name.as_str())
+                .collect();
+            assert_eq!(found, expected.iter().copied().collect(), "{argv}");
+        }
+    }
+
+    #[test]
+    fn phase03_reports_unresolved_django_installation() {
+        let settings = module(
+            "settings.py",
+            "settings",
+            "INSTALLED_APPS = ['demo.apps.Unknown']\n",
+        );
+        let startup = module(
+            "main.py",
+            "main",
+            "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+        );
+        let result = analyze_phase03(&[settings, startup], &[]);
+        assert!(
+            result.issues.iter().any(|issue| {
+                issue.path == "settings.py"
+                    && issue.kind == "unresolved_registration"
+                    && issue.message.contains("INSTALLED_APPS")
+            }),
+            "{:?}",
+            result.issues
+        );
     }
 
     #[test]

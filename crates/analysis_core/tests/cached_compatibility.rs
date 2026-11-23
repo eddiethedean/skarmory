@@ -76,6 +76,64 @@ fn flask_registration_changes_reuse_unchanged_route_facts() {
 }
 
 #[test]
+fn django_settings_edits_change_discovery_with_cached_app_facts() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("demo");
+    let commands = app.join("management/commands");
+    fs::create_dir_all(&commands).unwrap();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(app.join("__init__.py"), "").unwrap();
+    fs::write(
+        root.join("manage.py"),
+        "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line()\n",
+    ).unwrap();
+    fs::write(
+        app.join("apps.py"),
+        "from django.apps import AppConfig\nclass DemoConfig(AppConfig):\n    name = 'demo'\n    def ready(self):\n        configure()\ndef configure():\n    pass\n",
+    ).unwrap();
+    fs::write(
+        commands.join("sync.py"),
+        "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self):\n        return sync_records()\ndef sync_records():\n    return 0\n",
+    ).unwrap();
+    let serial = Options {
+        profile: Profile::SkylosPhase03,
+        grep_verify: Some(false),
+        ..Options::default()
+    };
+    let parallel = Options {
+        workers: 4,
+        cache_dir: Some(cache.path().to_owned()),
+        ..serial.clone()
+    };
+    let run = |options: &Options| -> Value {
+        serde_json::from_str(&scan(root, options).unwrap().to_json().unwrap()).unwrap()
+    };
+
+    for (installed, hits, unused) in [("['demo']", 0, false), ("[]", 4, true), ("[]", 5, true)] {
+        fs::write(
+            root.join("settings.py"),
+            format!("INSTALLED_APPS = {installed}\n"),
+        )
+        .unwrap();
+        let expected = run(&serial);
+        assert_eq!(expected["coverage"]["status"], "complete", "{expected}");
+        for name in ["configure", "sync_records"] {
+            assert_eq!(finds(&expected, name), unused, "{name}: {expected}");
+        }
+        let mut parallel_report = run(&parallel);
+        let stats = parallel_report
+            .as_object_mut()
+            .unwrap()
+            .remove("cache")
+            .unwrap();
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(parallel_report, expected);
+    }
+}
+
+#[test]
 fn edits_rebuild_roots_and_recursive_reachability() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
