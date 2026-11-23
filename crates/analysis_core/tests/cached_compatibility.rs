@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use serde_json::Value;
-use skarmory_core::phase02::{Options, scan};
+use skarmory_core::phase02::{Options, Profile, scan};
 
 fn compare(project: &Path, cache: &Path) -> (Value, Value) {
     let clean = scan(project, &Options::default()).unwrap();
@@ -79,8 +79,6 @@ fn edits_rebuild_roots_and_recursive_reachability() {
 
 #[test]
 fn function_namespace_reads_keep_local_bindings_live_across_cache_edits() {
-    use skarmory_core::phase02::Profile;
-
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let pkg = project.path().join("pkg");
@@ -144,6 +142,114 @@ def control():
             let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
             assert_eq!(stats["hits"], hits);
             assert_eq!(cached, clean);
+        }
+    }
+}
+
+#[test]
+fn reachable_builtin_evaluation_reports_incomplete_coverage() {
+    let project = tempfile::tempdir().unwrap();
+    let pkg = project.path().join("pkg");
+    fs::create_dir(&pkg).unwrap();
+    fs::write(pkg.join("neighbor.py"), "unread_global = 1\n").unwrap();
+    let initializer = pkg.join("__init__.py");
+
+    for profile in [Profile::SkylosPhase02, Profile::SkylosPhase03] {
+        let cache = tempfile::tempdir().unwrap();
+        let serial = Options {
+            profile,
+            ..Options::default()
+        };
+        let parallel = Options {
+            cache_dir: Some(cache.path().to_owned()),
+            workers: 4,
+            ..serial.clone()
+        };
+        let run = |options: &Options| -> Value {
+            serde_json::from_str(&scan(project.path(), options).unwrap().to_json().unwrap())
+                .unwrap()
+        };
+
+        for (edit, (imports, target, shadow, export, diagnostic)) in [
+            (
+                "from builtins import eval as evaluate",
+                "evaluate",
+                "",
+                "run",
+                Some("eval"),
+            ),
+            (
+                "from builtins import exec as evaluate",
+                "evaluate",
+                "",
+                "run",
+                Some("exec"),
+            ),
+            (
+                "import builtins as runtime",
+                "runtime.eval",
+                "",
+                "run",
+                Some("eval"),
+            ),
+            (
+                "from builtins import eval as evaluate",
+                "evaluate",
+                "    def evaluate(value):\n        return value\n",
+                "run",
+                None,
+            ),
+            (
+                "from builtins import exec as evaluate",
+                "evaluate",
+                "",
+                "control",
+                None,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fs::write(&initializer, format!(
+                "{imports}\n__all__ = [\"{export}\"]\n\ndef run(source):\n{shadow}    retained = 7\n    return {target}(source)\n\ndef control():\n    return 0\n"
+            )).unwrap();
+
+            let clean = run(&serial);
+            let issues = clean["coverage"]["issues"].as_array().unwrap();
+            let variables = clean["unused_variables"].as_array().unwrap();
+            if let Some(name) = diagnostic {
+                assert_eq!(clean["coverage"]["status"], "incomplete", "{clean}");
+                assert_eq!(issues.len(), 1, "{clean}");
+                assert_eq!(issues[0]["kind"], "unresolved_call");
+                assert_eq!(issues[0]["path"], "pkg/__init__.py");
+                assert_eq!(issues[0]["line"], 6);
+                assert!(issues[0]["message"].as_str().unwrap().contains(name));
+                assert!(variables.is_empty(), "{clean}");
+            } else {
+                assert_eq!(clean["coverage"]["status"], "complete", "{clean}");
+                assert!(
+                    variables
+                        .iter()
+                        .any(|entry| entry["full_name"] == "pkg.neighbor.unread_global"),
+                    "{clean}"
+                );
+                assert_eq!(finds(&clean, "run"), export == "control", "{clean}");
+                if export == "run" {
+                    assert!(
+                        variables
+                            .iter()
+                            .any(|entry| entry["full_name"] == "pkg.run.retained"),
+                        "{clean}"
+                    );
+                }
+            }
+
+            for hits in [usize::from(edit > 0), 2] {
+                let mut cached = run(&parallel);
+                let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+                assert_eq!(stats["hits"], hits);
+                assert_eq!(cached, clean);
+            }
         }
     }
 }
