@@ -173,7 +173,11 @@ these models. A selected Flask app can register route and request callbacks
 directly or mount a blueprint. Blueprint callbacks require the mount to be
 reached. FastAPI supports imperative endpoint registration and literal
 `Depends` or `Security` dependencies in defaults, `Annotated` parameters, and
-route registration options on active routes.
+route and router registration options. A mount copies the routes available at
+its registration site, including already completed module imports. Unresolved
+ordering across scopes reports incomplete coverage. Direct route registration
+resolves postponed parameter annotations at the registration site and retains
+the constructor of a selected class dependency.
 
 Django URL discovery follows a recognized launcher and the scan process's
 `DJANGO_SETTINGS_MODULE`, or the first literal default set in the launcher's
@@ -189,8 +193,9 @@ startup is selected.
 The profile also recognizes selected Celery task registrations, SQLAlchemy
 listeners, Pydantic model hooks, unittest test and lifecycle methods through
 effective class bindings, and pytest hooks and fixtures through selected
-conftest modules or literal `pytest_plugins` declarations. These are bounded
-models under [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
+conftest modules or literal `pytest_plugins` declarations. pytest autouse fixtures
+also apply to unittest cases collected by pytest. These are bounded models under
+[#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
 Management command discovery, installed Django AppConfig loading, and
 additional FastAPI dependency patterns still need coverage.

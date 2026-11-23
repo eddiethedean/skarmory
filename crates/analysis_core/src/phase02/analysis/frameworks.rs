@@ -138,6 +138,7 @@ impl Graph<'_> {
                 if methods.is_empty() {
                     continue;
                 }
+                let certain_case = certain && methods.iter().any(|(_, selected)| *selected);
                 has_cases = true;
                 self.read.extend(class.bindings);
                 self.framework_root(class.target, "unittest_discovery", certain);
@@ -163,6 +164,12 @@ impl Graph<'_> {
                             .filter(|(method, _)| self.is_coroutine(method.target) == asynchronous),
                         );
                     }
+                }
+                if self.is_pytest_file(file) {
+                    self.pytest_unittest_cases
+                        .entry(file)
+                        .or_default()
+                        .push((names, certain_case));
                 }
                 for (method, selected) in methods {
                     if self.is_pytest_function(method.target)

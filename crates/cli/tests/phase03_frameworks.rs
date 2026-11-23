@@ -127,6 +127,222 @@ def unused():
 }
 
 #[test]
+fn fastapi_mount_uses_the_registered_router_snapshot() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("routes.py"),
+        r#"from fastapi import APIRouter, Depends
+
+def router_guard():
+    return 1
+
+def dormant_guard():
+    return 2
+
+router = APIRouter(dependencies=[Depends(router_guard)])
+dormant = APIRouter(dependencies=[Depends(dormant_guard)])
+
+@router.get("/early")
+def early():
+    return 1
+
+@dormant.get("/")
+def parked():
+    return 2
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("web.py"),
+        r#"from fastapi import APIRouter, Depends, FastAPI
+from routes import router
+
+def nested_guard():
+    return 1
+
+def mount_guard():
+    return 1
+
+def empty_guard():
+    return 1
+
+app = FastAPI()
+parent = APIRouter()
+parent.include_router(router, dependencies=[Depends(nested_guard)])
+app.include_router(parent, dependencies=[Depends(mount_guard)])
+empty = APIRouter()
+app.include_router(empty, dependencies=[Depends(empty_guard)])
+
+def late_dependency():
+    return 1
+
+def late():
+    return 2
+
+router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "routes.dormant_guard",
+            "routes.parked",
+            "web.empty_guard",
+            "web.late",
+            "web.late_dependency"
+        ],
+        "{report}"
+    );
+    for hits in [0, 2] {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn fastapi_factory_can_mount_an_imported_router() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("routes.py"),
+        r#"from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/")
+def endpoint():
+    return 1
+
+def abandoned():
+    return 2
+"#,
+    )
+    .unwrap();
+    for (global, local) in [
+        ("from routes import router\n", ""),
+        ("", "    from routes import router\n"),
+    ] {
+        fs::write(root.join("web.py"), format!(
+            "from fastapi import FastAPI\n{global}\ndef create():\n{local}    app = FastAPI()\n    app.include_router(router)\n    return app\n\napplication = create()\n",
+        )).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["routes.abandoned"],
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn fastapi_uses_registration_time_for_postponed_but_not_eager_annotations() {
+    for (postponed, nested, app_default) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, false, true),
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let future = if postponed {
+            "from __future__ import annotations\n"
+        } else {
+            ""
+        };
+        let wrapper = if app_default {
+            "def wrapper():\n    return 0\n"
+        } else if nested {
+            "def wrapper(value=Depends(endpoint)):\n    return value\n"
+        } else {
+            "wrapper = endpoint\n"
+        };
+        let settings = if app_default {
+            "dependencies=[Depends(endpoint)]"
+        } else {
+            ""
+        };
+        fs::write(
+            project.path().join("web.py"),
+            format!(
+                r#"{future}from fastapi import Depends, FastAPI
+from typing import Annotated
+
+def earlier():
+    return 1
+
+dependency = earlier
+
+def endpoint(value: Annotated[int, Depends(dependency)]):
+    return value
+
+def configured():
+    return 2
+
+app = FastAPI({settings})
+dependency = configured
+{wrapper}app.add_api_route("/", wrapper)
+"#
+            ),
+        )
+        .unwrap();
+        let report = scan(project.path());
+        let unused = if postponed {
+            "web.earlier"
+        } else {
+            "web.configured"
+        };
+        assert_eq!(findings(&report, "unused_functions"), [unused], "{report}");
+    }
+}
+
+#[test]
+fn fastapi_runs_constructor_of_the_selected_dependency() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import APIRouter, Depends, FastAPI
+from typing import Annotated
+
+def prepare():
+    return 1
+
+def unused_prepare():
+    return 2
+
+class Service:
+    def __init__(self):
+        prepare()
+
+class Draft:
+    def __init__(self):
+        unused_prepare()
+
+app = FastAPI()
+dormant = APIRouter()
+
+@app.get("/")
+def endpoint(service: Annotated[Service, Depends(Service)]):
+    return 1
+
+@dormant.get("/")
+def parked(service: Annotated[Draft, Depends(Draft)]):
+    return 2
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.parked", "web.unused_prepare"],
+        "{report}"
+    );
+}
+
+#[test]
 fn django_settings_override_and_first_default_select_the_urlconf() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -280,6 +496,46 @@ def test_value(resource, choice):
     assert_eq!(
         findings(&report, "unused_functions"),
         ["plugin.choice"],
+        "{report}"
+    );
+}
+
+#[test]
+fn pytest_applies_autouse_plugin_fixtures_to_unittest_cases() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("conftest.py"), "pytest_plugins = ['plugin']\n").unwrap();
+    fs::write(
+        root.join("plugin.py"),
+        r#"from pytest import fixture
+
+@fixture(autouse=True)
+def setup_environment():
+    assert prepare() == 1
+
+@fixture
+def explicit():
+    return 2
+
+def prepare():
+    return 1
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("checks_test.py"),
+        r#"import unittest
+
+class WebChecks(unittest.TestCase):
+    def test_index(self, explicit=None):
+        assert explicit is None
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["plugin.explicit"],
         "{report}"
     );
 }

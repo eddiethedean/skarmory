@@ -16,6 +16,7 @@ use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
+mod fastapi;
 mod frameworks;
 
 const MAX_BINDING_CHAIN: usize = 64;
@@ -315,6 +316,11 @@ struct PytestFixtureChoices {
     may_be_absent: bool,
 }
 
+struct PytestFixtureRequests<'a> {
+    tests: &'a [(PytestRegistration, bool)],
+    certain_case: bool,
+}
+
 struct LazyBranch<'a> {
     scope: ScopeId,
     imports: &'a [Statement],
@@ -430,7 +436,7 @@ pub(super) fn analyze_with_verification(
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
         fastapi_dependency_issues: Vec::new(),
-        fastapi_route_issues: Vec::new(),
+        fastapi: fastapi::Fastapi::default(),
         django_roots: BTreeSet::new(),
         django_registration_issues: Vec::new(),
         initial_django_settings: django_settings.map_or(DjangoSettings::Unset, |value| {
@@ -440,6 +446,7 @@ pub(super) fn analyze_with_verification(
         }),
         unittest_classes: BTreeMap::new(),
         pytest_plugins: Vec::new(),
+        pytest_unittest_cases: BTreeMap::new(),
     };
     for (file, source) in files.iter().enumerate() {
         graph.push_scope(file, None, None, &source.facts.body);
@@ -477,6 +484,7 @@ pub(super) fn analyze_with_verification(
         graph.suite(scope, body);
     }
     if phase03 {
+        graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
     }
     graph.resolve_receiver_calls(false);
@@ -561,12 +569,13 @@ struct Graph<'a> {
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
-    fastapi_route_issues: Vec<(ScopeId, Object, Issue)>,
+    fastapi: fastapi::Fastapi,
     django_roots: BTreeSet<Object>,
     django_registration_issues: Vec<(Object, Issue)>,
     initial_django_settings: DjangoSettings,
     unittest_classes: BTreeMap<SymbolId, FrameworkClassRole>,
     pytest_plugins: Vec<ScopeId>,
+    pytest_unittest_cases: BTreeMap<ScopeId, Vec<(PytestNames<'a>, bool)>>,
 }
 
 impl<'a> Graph<'a> {
@@ -1157,10 +1166,11 @@ impl<'a> Graph<'a> {
         import: &Import,
     ) -> Option<LazyBranch<'a>> {
         let source = self.scopes[source_scope].file;
-        if let Some(&id) =
-            self.by_location
-                .get(&(source_scope, import.local.at.line, import.local.at.column))
-        {
+        let binding = self
+            .by_location
+            .get(&(source_scope, import.local.at.line, import.local.at.column))
+            .copied();
+        if let Some(id) = binding {
             // A selected lazy branch evaluates its imports in the caller's
             // execution, even though their bindings belong to the hook.
             self.scopes[scope].evaluated_imports.push(id);
@@ -1207,14 +1217,26 @@ impl<'a> Graph<'a> {
         }
         // Package self-imports can read the bindings already established at
         // this statement. Sibling submodule imports also need no final parent state.
+        let local_initializer = binding.filter(|id| {
+            self.phase03
+                && scope != source
+                && scope == source_scope
+                && !self.conditional.contains_key(id)
+        });
         if let Some(target) = module_file
             && before.is_none()
             && !(child.is_some() && within_package(own_module, module))
         {
             self.scopes[scope].imports.push(target);
+            if let Some(id) = local_initializer {
+                self.scopes[scope].initializer_imports.push((id, target));
+            }
         }
         if let Some(child) = child {
             self.scopes[scope].imports.push(child);
+            if let Some(id) = local_initializer {
+                self.scopes[scope].initializer_imports.push((id, child));
+            }
         }
         // Importing a dotted module can also execute its package initializers.
         let mut has_selected_parent = false;
@@ -3742,7 +3764,20 @@ impl<'a> Graph<'a> {
                             && let Value::Object(child, ObjectKind::Router) =
                                 self.identity(scope, target, before, 0)
                         {
-                            self.scopes[scope].mounts.push((parent, child));
+                            if self.phase03 {
+                                self.fastapi_mount(
+                                    parent,
+                                    child,
+                                    fastapi::Site {
+                                        scope,
+                                        at: expr.at,
+                                        before,
+                                    },
+                                    keywords,
+                                );
+                            } else {
+                                self.scopes[scope].mounts.push((parent, child));
+                            }
                         } else {
                             self.scope_issue(
                                 scope,
@@ -3783,15 +3818,23 @@ impl<'a> Graph<'a> {
                         let target = callback_argument(&method, arguments, keywords);
                         match target.map(|target| self.identity(scope, target, before, 0)) {
                             Some(Value::Callable(invocation)) => {
-                                self.scopes[scope].routes.push((
-                                    parent,
-                                    invocation.target,
-                                    framework_registration_kind(kind),
-                                ));
                                 if matches!(kind, ObjectKind::App | ObjectKind::Router) {
-                                    self.record_fastapi_route_options(
-                                        scope, parent, before, keywords,
+                                    self.fastapi_route(
+                                        parent,
+                                        fastapi::Site {
+                                            scope,
+                                            at: expr.at,
+                                            before,
+                                        },
+                                        invocation.target,
+                                        keywords,
                                     );
+                                } else {
+                                    self.scopes[scope].routes.push((
+                                        parent,
+                                        invocation.target,
+                                        framework_registration_kind(kind),
+                                    ));
                                 }
                             }
                             _ => self.scope_issue(
@@ -3901,6 +3944,7 @@ impl<'a> Graph<'a> {
                                 "fastapi.FastAPI" | "fastapi.applications.FastAPI"
                             ) =>
                     {
+                        let mut defaults = Vec::new();
                         for (keyword, value) in keywords {
                             if matches!(
                                 keyword.as_str(),
@@ -3911,6 +3955,16 @@ impl<'a> Graph<'a> {
                                     | "exception_handlers"
                             ) {
                                 let value = self.identity(scope, value, before, 0);
+                                if keyword == "dependencies"
+                                    && let Value::Sequence(dependencies) = &value
+                                {
+                                    defaults.extend(dependencies.iter().filter_map(|dependency| {
+                                        match dependency {
+                                            Value::FastapiDependency(target) => *target,
+                                            _ => None,
+                                        }
+                                    }));
+                                }
                                 if !self.activate_framework_value(scope, value, "fastapi_lifecycle")
                                 {
                                     self.scope_issue(
@@ -3927,7 +3981,28 @@ impl<'a> Graph<'a> {
                         else {
                             unreachable!()
                         };
-                        self.scopes[scope].activated_apps.push(object);
+                        self.fastapi_app(object, scope, defaults);
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "fastapi.APIRouter" | "fastapi.routing.APIRouter"
+                            ) =>
+                    {
+                        if let Value::Object(object, ObjectKind::Router) =
+                            self.identity(scope, expr, before, 0)
+                        {
+                            self.fastapi_router_defaults(
+                                object,
+                                fastapi::Site {
+                                    scope,
+                                    at: expr.at,
+                                    before,
+                                },
+                                keywords,
+                            );
+                        }
                     }
                     Value::Provider(name)
                         if self.phase03 && name == "django.urls.register_converter" =>
@@ -4310,7 +4385,7 @@ impl<'a> Graph<'a> {
                 true
             }
             Value::FastapiDependency(Some(target)) => {
-                self.edge(scope, target, "fastapi_dependency", "certain");
+                self.fastapi_dependency_edge(scope, target);
                 true
             }
             Value::Sequence(values) | Value::Alternatives(values) => {
@@ -4331,45 +4406,6 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn record_fastapi_route_options(
-        &mut self,
-        scope: ScopeId,
-        object: Object,
-        before: Location,
-        keywords: &[(String, Expression)],
-    ) {
-        let Some((_, expression)) = keywords.iter().find(|(name, _)| name == "dependencies") else {
-            return;
-        };
-        let mut all_resolved = true;
-        match self.identity(scope, expression, before, 0) {
-            Value::Sequence(values) => {
-                for value in values {
-                    if let Value::FastapiDependency(Some(target)) = value {
-                        self.scopes[scope]
-                            .routes
-                            .push((object, target, "fastapi_dependency"));
-                    } else {
-                        all_resolved = false;
-                    }
-                }
-            }
-            _ => all_resolved = false,
-        }
-        if !all_resolved {
-            self.fastapi_route_issues.push((
-                scope,
-                object,
-                Issue::new(
-                    "unresolved_registration",
-                    &self.files[self.scopes[scope].file].path,
-                    "FastAPI route dependencies could not be resolved",
-                )
-                .at(expression.at),
-            ));
-        }
-    }
-
     fn record_fastapi_dependency(
         &mut self,
         scope: ScopeId,
@@ -4379,8 +4415,7 @@ impl<'a> Graph<'a> {
     ) {
         match self.probe_identity(scope, expression, before) {
             Value::FastapiDependency(Some(target)) => {
-                self.framework_lifecycle
-                    .push((owner, target, "fastapi_dependency"));
+                self.fastapi_parameter_dependency(owner, target);
             }
             Value::FastapiDependency(None) => self.fastapi_dependency_issues.push((
                 owner,
@@ -4395,13 +4430,12 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn fastapi_annotation_dependencies(
+    fn fastapi_annotation_metadata<'expr>(
         &mut self,
         scope: ScopeId,
-        owner: SymbolId,
         before: Location,
-        annotation: &Expression,
-    ) {
+        annotation: &'expr Expression,
+    ) -> &'expr [Expression] {
         // The frontend lowers subscription and tuple annotations into nested
         // operand groups. Resolve the generic's binding before using metadata.
         if let ExpressionKind::Operands(parts) = &annotation.kind
@@ -4411,9 +4445,9 @@ impl<'a> Graph<'a> {
             && let ExpressionKind::Operands(arguments) = &arguments.kind
             && let Some((_, metadata)) = arguments.split_first()
         {
-            for expression in metadata {
-                self.record_fastapi_dependency(scope, owner, before, expression);
-            }
+            metadata
+        } else {
+            &[]
         }
     }
 
@@ -4560,8 +4594,15 @@ impl<'a> Graph<'a> {
                     }
                     for (index, annotation) in definition.annotations.iter().enumerate() {
                         self.annotation(scope, annotation, at, true);
-                        if self.phase03 && index < definition.parameter_annotation_count {
-                            self.fastapi_annotation_dependencies(scope, target, at, annotation);
+                        if self.phase03
+                            && index < definition.parameter_annotation_count
+                            && !self.files[self.scopes[scope].file]
+                                .facts
+                                .postponed_annotations
+                        {
+                            for meta in self.fastapi_annotation_metadata(scope, at, annotation) {
+                                self.record_fastapi_dependency(scope, target, at, meta);
+                            }
                         }
                     }
                     for expression in &definition.defaults {
@@ -4727,11 +4768,23 @@ impl<'a> Graph<'a> {
         }
         match self.identity(scope, function, before, 0) {
             Value::Method(object, kind, name) if is_route(kind, &name, self.phase03) => {
-                self.scopes[scope]
-                    .routes
-                    .push((object, target, framework_registration_kind(kind)));
                 if self.phase03 && matches!(kind, ObjectKind::App | ObjectKind::Router) {
-                    self.record_fastapi_route_options(scope, object, before, keywords);
+                    self.fastapi_route(
+                        object,
+                        fastapi::Site {
+                            scope,
+                            at: decorator.at,
+                            before,
+                        },
+                        target,
+                        keywords,
+                    );
+                } else {
+                    self.scopes[scope].routes.push((
+                        object,
+                        target,
+                        framework_registration_kind(kind),
+                    ));
                 }
             }
             Value::Provider(name)
@@ -5142,6 +5195,24 @@ impl<'a> Graph<'a> {
             let namespaces: Vec<_> = ancestors.chain(std::iter::once(file)).collect();
             let module_tests = self.pytest_registrations(&self.scopes[file].names, "test_");
             self.record_pytest_tests(file, &namespaces, None, module_tests, &mut roots);
+            if !self.fixtures.is_empty()
+                && let Some(cases) = self.pytest_unittest_cases.remove(&file)
+            {
+                for (names, certain_case) in cases {
+                    // pytest runs autouse fixtures for unittest cases but does
+                    // not inject fixtures through unittest method parameters.
+                    self.collect_pytest_fixtures(
+                        file,
+                        &namespaces,
+                        Some(&names),
+                        PytestFixtureRequests {
+                            tests: &[],
+                            certain_case,
+                        },
+                        &mut roots,
+                    );
+                }
+            }
             for (class, collected) in self.pytest_registrations(&self.scopes[file].names, "Test") {
                 if self.phase03 && self.unittest_classes.contains_key(&class.target) {
                     continue;
@@ -5196,7 +5267,16 @@ impl<'a> Graph<'a> {
             self.read.extend(&test.bindings);
         }
         if !self.fixtures.is_empty() {
-            self.collect_pytest_fixtures(file, namespaces, class, &tests, roots);
+            self.collect_pytest_fixtures(
+                file,
+                namespaces,
+                class,
+                PytestFixtureRequests {
+                    tests: &tests,
+                    certain_case: tests.iter().any(|(_, certain)| *certain),
+                },
+                roots,
+            );
         }
     }
 
@@ -5205,7 +5285,7 @@ impl<'a> Graph<'a> {
         file: usize,
         namespaces: &[ScopeId],
         class: Option<&PytestNames<'a>>,
-        tests: &[(PytestRegistration, bool)],
+        requests: PytestFixtureRequests<'_>,
         roots: &mut BTreeMap<SymbolId, bool>,
     ) {
         // Register from outermost to innermost. Pytest requests an autouse
@@ -5273,11 +5353,11 @@ impl<'a> Graph<'a> {
                 pending.push((
                     name.as_str(),
                     BTreeMap::new(),
-                    certain && tests.iter().any(|(_, certain)| *certain),
+                    certain && requests.certain_case,
                 ));
             }
         }
-        for (test, certain) in tests {
+        for (test, certain) in requests.tests {
             let Binding::Definition(definition, _) = self.symbols[test.target].binding else {
                 continue;
             };
@@ -6239,8 +6319,21 @@ impl<'a> Graph<'a> {
                     continue;
                 }
                 let certainty = if possible { "possible" } else { edge.certainty };
-                if matches!(edge.kind, "fastapi_registration" | "fastapi_dependency") {
-                    reach.fastapi_callbacks.insert(edge.target);
+                if matches!(edge.kind, "fastapi_registration" | "fastapi_dependency")
+                    && reach.fastapi_callbacks.insert(edge.target)
+                {
+                    pending.extend(self.fastapi_parameter_dependencies(edge.target).iter().map(
+                        |&target| Edge {
+                            target,
+                            kind: "fastapi_dependency",
+                            certainty,
+                        },
+                    ));
+                }
+                if edge.kind == "fastapi_dependency"
+                    && let Some(effects) = self.fastapi_constructor_effects(edge.target)
+                {
+                    self.open_fastapi_effects(effects, reach, &mut pending);
                 }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
                 reach.symbols.insert(edge.target);
@@ -6302,13 +6395,11 @@ impl<'a> Graph<'a> {
                     }
                 }
             }
+            if self.phase03 {
+                self.activate_fastapi(reach, &mut pending);
+            }
             for &(owner, target, kind) in &self.framework_lifecycle {
-                let active = if kind == "fastapi_dependency" {
-                    reach.fastapi_callbacks.contains(&owner)
-                } else {
-                    reach.symbols.contains(&owner)
-                };
-                if active && !reach.has_evidence(target, kind) {
+                if reach.symbols.contains(&owner) && !reach.has_evidence(target, kind) {
                     pending.push_back(Edge {
                         target,
                         kind,
@@ -6492,15 +6583,7 @@ impl<'a> Graph<'a> {
                         reach.fastapi_callbacks.contains(&target).then_some(issue)
                     }),
             );
-        self.issues
-            .extend(
-                self.fastapi_route_issues
-                    .drain(..)
-                    .filter_map(|(scope, object, issue)| {
-                        (reach.scopes.contains(&scope) && reach.active_objects.contains(&object))
-                            .then_some(issue)
-                    }),
-            );
+        self.report_fastapi_coverage(&reach);
         self.issues.extend(
             self.django_registration_issues
                 .drain(..)
@@ -6741,6 +6824,8 @@ struct Reachability {
     symbols: BTreeSet<SymbolId>,
     active_objects: BTreeSet<Object>,
     fastapi_callbacks: BTreeSet<SymbolId>,
+    unordered_fastapi_mounts: BTreeSet<usize>,
+    fastapi_limited: bool,
     evidence: BTreeSet<(SymbolId, &'static str, &'static str)>,
 }
 
