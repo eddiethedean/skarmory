@@ -208,6 +208,7 @@ impl Snapshot {
                 continue;
             }
             let mut rejected = 0;
+            let mut relative_coverage = 0;
             for (file, line, function, allow_declaration) in calls
                 .into_iter()
                 .map(|call| (call.file, call.line, Some(call.function), false))
@@ -218,8 +219,15 @@ impl Snapshot {
                         .map(|line| (line.file, line.line, None, line.allow_declaration)),
                 )
             {
+                let file_path = Path::new(&file);
+                // SQLite coverage does not store the directory from which relative
+                // paths were recorded. The scan root may name a different file.
+                if sqlite && !file_path.is_absolute() {
+                    relative_coverage += 1;
+                    continue;
+                }
                 let Some(file) =
-                    selected_label(project.base(), requested_base.as_deref(), Path::new(&file))
+                    selected_label(project.base(), requested_base.as_deref(), file_path)
                 else {
                     continue;
                 };
@@ -248,6 +256,14 @@ impl Snapshot {
                     allow_declaration,
                     provenance,
                 });
+            }
+            if relative_coverage > 0 {
+                snapshot.reject(
+                    &label,
+                    format!(
+                        "{relative_coverage} coverage observations have relative source paths with no recorded base directory; collect with relative_files = False"
+                    ),
+                );
             }
             if rejected > 0 {
                 snapshot.reject(
@@ -372,6 +388,16 @@ mod tests {
         fs::write(root.join(name), serde_json::to_vec(payload).unwrap()).unwrap();
     }
 
+    fn insert_coverage_file(database: &Connection, id: u32, path: &Path) {
+        let path = fs::canonicalize(path).unwrap();
+        database
+            .execute(
+                "INSERT INTO file VALUES (?1, ?2)",
+                (id, path.to_str().unwrap()),
+            )
+            .unwrap();
+    }
+
     fn report(root: &Path, options: &Options) -> Value {
         serde_json::from_str(&scan(root, options).unwrap().to_json().unwrap()).unwrap()
     }
@@ -475,10 +501,10 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
              CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
-             INSERT INTO file VALUES (1, 'app.py');
              INSERT INTO line_bits VALUES (1, 1, X'32');",
             )
             .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
         drop(database);
         let covered = report(root, &options());
         assert_eq!(covered["coverage"]["status"], "complete");
@@ -501,6 +527,79 @@ mod tests {
     }
 
     #[test]
+    fn coverage_does_not_guess_the_origin_of_relative_database_paths() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let worker = root.join("worker");
+        fs::create_dir(&worker).unwrap();
+        fs::write(worker.join("__init__.py"), "").unwrap();
+        fs::write(root.join("app.py"), "def observed():\n    return 2\n").unwrap();
+        fs::write(worker.join("app.py"), "def observed():\n    return 1\n").unwrap();
+        let artifact = PathBuf::from("worker/.coverage");
+        let path = root.join(&artifact);
+        let database = Connection::open(&path).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
+                 INSERT INTO file VALUES (1, 'app.py');
+                 INSERT INTO line_bits VALUES (1, 1, X'04');",
+            )
+            .unwrap();
+        drop(database);
+
+        let scan_options = Options {
+            coverage_file: Input::Path(artifact),
+            ..options()
+        };
+        let relative = report(root, &scan_options);
+        assert_eq!(relative["coverage"]["status"], "complete");
+        assert_eq!(
+            unused(&relative),
+            BTreeSet::from(["app.observed", "worker.app.observed"])
+        );
+        assert!(relative.get("runtime_evidence").is_none());
+        let issues = &relative["runtime_evidence_issues"];
+        assert_eq!(issues[0]["kind"], "runtime_evidence_rejected");
+        assert_eq!(issues[0]["path"], "worker/.coverage");
+        assert!(issues[0]["message"].as_str().unwrap().contains("relative"));
+
+        let cached = Options {
+            workers: 4,
+            cache_dir: Some(cache.path().into()),
+            coverage_file: scan_options.coverage_file.clone(),
+            ..options()
+        };
+        let mut cold = report(root, &cached);
+        cold.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(cold, relative);
+
+        let database = Connection::open(path).unwrap();
+        insert_coverage_file(&database, 2, &worker.join("app.py"));
+        database
+            .execute("INSERT INTO line_bits VALUES (2, 1, X'04')", [])
+            .unwrap();
+        drop(database);
+
+        let mixed = report(root, &scan_options);
+        assert_eq!(mixed["coverage"]["status"], "complete");
+        assert_eq!(unused(&mixed), BTreeSet::from(["app.observed"]));
+        assert_eq!(mixed["runtime_evidence_issues"], *issues);
+        let evidence = mixed["runtime_evidence"].as_array().unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0]["file"], "worker/app.py");
+        assert_eq!(evidence[0]["line"], 2);
+        assert_eq!(evidence[0]["full_name"], "worker.app.observed");
+        assert_eq!(evidence[0]["provenance"], "unverified");
+
+        let mut warm = report(root, &cached);
+        let stats = warm.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(stats["hits"], 3);
+        assert_eq!(warm, mixed);
+    }
+
+    #[test]
     fn legacy_coverage_declarations_supply_possible_use_without_opening_the_body() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
@@ -519,10 +618,10 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
                  CREATE TABLE line_bits (file_id INTEGER, numbits BLOB);
-                 INSERT INTO file VALUES (1, 'app.py');
                  INSERT INTO line_bits VALUES (1, X'10');",
             )
             .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
         drop(database);
 
         let report = report(
@@ -578,10 +677,10 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
                  CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
-                 INSERT INTO file VALUES (1, 'app.py');
                  INSERT INTO line_bits VALUES (1, 1, X'3602');",
             )
             .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
         drop(database);
 
         let clean = report(root, &options());
@@ -629,10 +728,10 @@ mod tests {
         database
             .execute_batch(
                 "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
-                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
-                 INSERT INTO file VALUES (1, 'app.py');",
+                 CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);",
             )
             .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
         let mut bits = [0_u8; 2];
         for line in [3, 9, 15] {
             bits[line / 8] |= 1 << (line % 8);
@@ -707,10 +806,10 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);
                  CREATE TABLE line_bits (file_id INTEGER, context_id INTEGER, numbits BLOB);
-                 INSERT INTO file VALUES (1, 'app.py');
                  INSERT INTO line_bits VALUES (1, 1, X'40');",
             )
             .unwrap();
+        insert_coverage_file(&database, 1, &root.join("app.py"));
         drop(database);
         let covered = report(root, &options());
         assert_eq!(covered["coverage"]["status"], "complete", "{covered}");
