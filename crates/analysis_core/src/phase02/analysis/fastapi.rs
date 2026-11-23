@@ -13,7 +13,6 @@ pub(super) struct Fastapi {
     default_dependencies: BTreeMap<Object, Vec<SymbolId>>,
     constructor_effects: BTreeMap<SymbolId, ScopeId>,
     parameter_dependencies: BTreeMap<SymbolId, Vec<SymbolId>>,
-    postponed_signatures: Vec<(ScopeId, Site, SymbolId)>,
 }
 
 #[derive(Clone, Copy)]
@@ -27,13 +26,21 @@ struct Event {
     site: Site,
     effects: ScopeId,
     included_router: Option<Object>,
+    signature_targets: Vec<SymbolId>,
+    signatures: BTreeMap<Option<usize>, ScopeId>,
     // Proven execution prefixes before this inclusion. Completed imports use END.
     prior_scopes: BTreeMap<ScopeId, Location>,
 }
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct Inclusion {
+    cutoff: usize,
+    outer_mount: usize,
+}
+
 #[derive(Default)]
 struct Snapshots {
-    visited: BTreeMap<(Object, Option<usize>), bool>,
+    visited: BTreeMap<(Object, Option<Inclusion>), bool>,
     unordered_mounts: BTreeSet<usize>,
     limited: bool,
 }
@@ -78,12 +85,9 @@ impl Graph<'_> {
     ) {
         let effects = self.fastapi_effect_scope(site);
         self.edge(effects, target, "fastapi_registration", "certain");
-        self.fastapi
-            .postponed_signatures
-            .push((effects, site, target));
-        let targets = self.fastapi_options(effects, site, keywords);
-        self.queue_fastapi_signatures(effects, site, targets);
-        self.fastapi_event(object, site, effects, None);
+        let mut targets = self.fastapi_options(effects, site, keywords);
+        targets.push(target);
+        self.fastapi_event(object, site, effects, None, targets);
     }
 
     pub(super) fn fastapi_mount(
@@ -95,8 +99,7 @@ impl Graph<'_> {
     ) {
         let effects = self.fastapi_effect_scope(site);
         let targets = self.fastapi_options(effects, site, keywords);
-        self.queue_fastapi_signatures(effects, site, targets);
-        self.fastapi_event(parent, site, effects, Some(child));
+        self.fastapi_event(parent, site, effects, Some(child), targets);
     }
 
     fn fastapi_event(
@@ -105,12 +108,15 @@ impl Graph<'_> {
         site: Site,
         effects: ScopeId,
         included_router: Option<Object>,
+        signature_targets: Vec<SymbolId>,
     ) {
         let id = self.fastapi.events.len();
         self.fastapi.events.push(Event {
             site,
             effects,
             included_router,
+            signature_targets,
+            signatures: BTreeMap::new(),
             prior_scopes: BTreeMap::new(),
         });
         self.fastapi.by_object.entry(object).or_default().push(id);
@@ -147,12 +153,6 @@ impl Graph<'_> {
             }
         }
         targets
-    }
-
-    fn queue_fastapi_signatures(&mut self, effects: ScopeId, site: Site, targets: Vec<SymbolId>) {
-        self.fastapi
-            .postponed_signatures
-            .extend(targets.into_iter().map(|target| (effects, site, target)));
     }
 
     pub(super) fn fastapi_dependency_edge(&mut self, effects: ScopeId, target: SymbolId) {
@@ -260,22 +260,8 @@ impl Graph<'_> {
     pub(super) fn index_fastapi_mounts(&mut self) {
         for (object, defaults) in &self.fastapi.default_dependencies {
             for &id in self.fastapi.by_object.get(object).into_iter().flatten() {
-                let event = &self.fastapi.events[id];
-                self.fastapi.postponed_signatures.extend(
-                    defaults
-                        .iter()
-                        .map(|&target| (event.effects, event.site, target)),
-                );
+                self.fastapi.events[id].signature_targets.extend(defaults);
             }
-        }
-        let mut visited = BTreeSet::new();
-        let mut previous_scope = None;
-        for (effects, site, target) in std::mem::take(&mut self.fastapi.postponed_signatures) {
-            if previous_scope != Some(effects) {
-                visited.clear();
-                previous_scope = Some(effects);
-            }
-            self.fastapi_deferred_parameters(effects, site, target, &mut visited);
         }
         for event in &mut self.fastapi.events {
             if event.included_router.is_none() {
@@ -308,6 +294,88 @@ impl Graph<'_> {
                 }
             }
         }
+        self.index_fastapi_signatures();
+    }
+
+    fn index_fastapi_signatures(&mut self) {
+        for id in 0..self.fastapi.events.len() {
+            self.prepare_fastapi_signatures(id, None);
+        }
+
+        // A copied route is reconstructed at each inclusion. Evaluate the
+        // callable's postponed signature at the final app inclusion site,
+        // using the intermediate inclusions only to determine route order.
+        let mut pending = Vec::new();
+        for object in self.fastapi.apps.keys() {
+            for &mount in self.fastapi.by_object.get(object).into_iter().flatten() {
+                if let Some(router) = self.fastapi.events[mount].included_router {
+                    pending.push((
+                        router,
+                        Inclusion {
+                            cutoff: mount,
+                            outer_mount: mount,
+                        },
+                    ));
+                }
+            }
+        }
+        let mut visited = BTreeSet::new();
+        let mut evaluations = 0;
+        while let Some((object, inclusion)) = pending.pop() {
+            if visited.len() >= MAX_SNAPSHOTS || evaluations >= MAX_SNAPSHOTS {
+                break;
+            }
+            if !visited.insert((object, inclusion)) {
+                continue;
+            }
+            let Some(events) = self.fastapi.by_object.get(&object).cloned() else {
+                continue;
+            };
+            for id in events {
+                if !self.fastapi_event_precedes(id, inclusion.cutoff) {
+                    continue;
+                }
+                if evaluations >= MAX_SNAPSHOTS {
+                    break;
+                }
+                if self.prepare_fastapi_signatures(id, Some(inclusion.outer_mount)) {
+                    evaluations += 1;
+                }
+                if let Some(router) = self.fastapi.events[id].included_router {
+                    pending.push((
+                        router,
+                        Inclusion {
+                            cutoff: id,
+                            ..inclusion
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    fn prepare_fastapi_signatures(&mut self, id: usize, mount: Option<usize>) -> bool {
+        let event = &self.fastapi.events[id];
+        if event.signature_targets.is_empty() || event.signatures.contains_key(&mount) {
+            return false;
+        }
+        let site = mount.map_or(event.site, |id| self.fastapi.events[id].site);
+        let targets = event.signature_targets.clone();
+        let effects = self.fastapi_effect_scope(site);
+        let mut visited = BTreeSet::new();
+        for target in targets {
+            self.fastapi_deferred_parameters(effects, site, target, &mut visited);
+        }
+        self.fastapi.events[id].signatures.insert(mount, effects);
+        true
+    }
+
+    fn fastapi_event_precedes(&self, id: usize, mount: usize) -> bool {
+        let event = &self.fastapi.events[id];
+        self.fastapi.events[mount]
+            .prior_scopes
+            .get(&event.site.scope)
+            .is_some_and(|&before| position(event.site.at) < position(before))
     }
 
     pub(super) fn activate_fastapi(&self, reach: &mut Reachability, pending: &mut VecDeque<Edge>) {
@@ -326,13 +394,13 @@ impl Graph<'_> {
     fn fastapi_snapshot(
         &self,
         object: Object,
-        mount: Option<usize>,
+        inclusion: Option<Inclusion>,
         reach: &mut Reachability,
         pending: &mut VecDeque<Edge>,
         snapshots: &mut Snapshots,
         depth: usize,
     ) -> bool {
-        let key = (object, mount);
+        let key = (object, inclusion);
         if let Some(&has_routes) = snapshots.visited.get(&key) {
             return has_routes;
         }
@@ -346,26 +414,45 @@ impl Graph<'_> {
             if !reach.scopes.contains(&event.site.scope) {
                 continue;
             }
-            if let Some(cutoff) = mount {
-                let inclusion = &self.fastapi.events[cutoff];
-                if !inclusion
-                    .prior_scopes
-                    .get(&event.site.scope)
-                    .is_some_and(|&before| position(event.site.at) < position(before))
-                {
-                    if event.site.scope != inclusion.site.scope {
-                        snapshots.unordered_mounts.insert(cutoff);
-                    }
-                    continue;
+            if let Some(inclusion) = inclusion
+                && !self.fastapi_event_precedes(id, inclusion.cutoff)
+            {
+                if event.site.scope != self.fastapi.events[inclusion.cutoff].site.scope {
+                    snapshots.unordered_mounts.insert(inclusion.cutoff);
                 }
+                continue;
             }
             // include_router copies only the routes present at this call. Its
             // dependencies apply once at least one route is copied.
             if event.included_router.is_none_or(|child| {
-                self.fastapi_snapshot(child, Some(id), reach, pending, snapshots, depth + 1)
+                let outer_mount = inclusion.map_or(id, |outer| outer.outer_mount);
+                self.fastapi_snapshot(
+                    child,
+                    Some(Inclusion {
+                        cutoff: id,
+                        outer_mount,
+                    }),
+                    reach,
+                    pending,
+                    snapshots,
+                    depth + 1,
+                )
             }) {
                 has_routes = true;
                 self.open_fastapi_effects(event.effects, reach, pending);
+                if let Some(&scope) = event.signatures.get(&None)
+                    && inclusion.is_some()
+                {
+                    // Keep diagnostics from evaluating the original signature.
+                    // Its selected dependencies belong to the original router.
+                    reach.scopes.insert(scope);
+                }
+                let signature_site = inclusion.map(|outer| outer.outer_mount);
+                if let Some(&scope) = event.signatures.get(&signature_site) {
+                    self.open_fastapi_effects(scope, reach, pending);
+                } else if !event.signature_targets.is_empty() {
+                    snapshots.limited = true;
+                }
             }
         }
         if has_routes && let Some(&scope) = self.fastapi.router_defaults.get(&object) {

@@ -175,9 +175,10 @@ reached. FastAPI supports imperative endpoint registration and literal
 `Depends` or `Security` dependencies in defaults, `Annotated` parameters, and
 route and router registration options. A mount copies the routes available at
 its registration site, including already completed module imports. Unresolved
-ordering across scopes reports incomplete coverage. Direct route registration
-resolves postponed parameter annotations at the registration site and retains
-the constructor of a selected class dependency.
+ordering across scopes reports incomplete coverage. The analyzer resolves
+postponed parameter annotations at direct registration or when the route is
+copied into the serving app, and retains the constructor of a selected class
+dependency.
 
 Django URL discovery follows a recognized launcher and the scan process's
 `DJANGO_SETTINGS_MODULE`, or the first literal default set in the launcher's

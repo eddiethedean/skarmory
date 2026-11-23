@@ -8931,6 +8931,26 @@ print(Status.default)
     }
 
     #[test]
+    fn phase03_fastapi_reevaluates_postponed_dependencies_at_the_outer_mount() {
+        let files = [module(
+            "web.py",
+            "web",
+            "from __future__ import annotations\nfrom typing import Annotated\nfrom fastapi import APIRouter, Depends, FastAPI\nrouter = APIRouter()\nparent = APIRouter()\ndef initial():\n    return 1\nselected = initial\n@router.get('/')\ndef endpoint(value: Annotated[int, Depends(selected)]):\n    return value\ndef intermediate():\n    return 2\nselected = intermediate\nparent.include_router(router)\ndef final():\n    return 3\nselected = final\napp = FastAPI()\napp.include_router(parent)\n",
+        )];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["initial", "intermediate"]
+        );
+        assert!(
+            result.evidence.iter().any(|entry| {
+                entry.full_name == "web.final" && entry.kind == "fastapi_dependency"
+            })
+        );
+    }
+
+    #[test]
     fn phase03_fastapi_mixed_registration_preserves_evidence_and_incomplete_coverage() {
         let files = [module(
             "example.py",
