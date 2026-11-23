@@ -1286,3 +1286,49 @@ fn grep_roots_and_literal_dispatch_follow_current_configuration_with_a_warm_cach
     assert!(edited.get("grep_verification_evidence").is_none());
     assert_eq!(unused(&edited).len(), 8);
 }
+
+#[test]
+fn literal_lazy_exports_follow_import_edits_with_cached_providers() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let package = project.path().join("pkg");
+    fs::create_dir(&package).unwrap();
+    fs::write(
+        package.join("left.py"),
+        "def work():\n    return left_only()\ndef left_only():\n    return 1\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("right.py"),
+        "def work():\n    return right_only()\ndef right_only():\n    return 2\n",
+    )
+    .unwrap();
+
+    for (provider, unused, retained, hits) in [
+        ("left", "right_only", "left_only", 0),
+        ("right", "left_only", "right_only", 2),
+    ] {
+        fs::write(
+            package.join("__init__.py"),
+            format!(
+                r#"from importlib import import_module as load
+__all__ = ["work"]
+
+def __getattr__(name):
+    if name == "work":
+        return getattr(load("pkg.{provider}"), name)
+    raise AttributeError(name)
+"#
+            ),
+        )
+        .unwrap();
+        let (result, stats) = compare(project.path(), cache.path());
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(result["coverage"]["status"], "complete", "{result}");
+        assert!(finds(&result, unused), "{result}");
+        assert!(!finds(&result, retained), "{result}");
+        let (warm, stats) = compare(project.path(), cache.path());
+        assert_eq!(stats["hits"], 3);
+        assert_eq!(warm, result);
+    }
+}

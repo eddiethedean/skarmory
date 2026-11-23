@@ -17,6 +17,7 @@ use crate::{Coverage, Issue};
 
 mod analysis;
 pub(crate) mod config;
+mod package_entrypoints;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Profile {
@@ -635,11 +636,21 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         }
     }
 
+    let package_entrypoints =
+        (phase03 && issues.is_empty()).then(|| package_entrypoints::Snapshot::read(path, &files));
+    let available_package_entrypoints = package_entrypoints
+        .as_ref()
+        .filter(|metadata| metadata.issues.is_empty());
     let verification = (grep_verify && issues.is_empty())
         .then(|| grep_verification::Snapshot::read(&project, Some(&config.selection)));
     let mut analysis = if issues.is_empty() {
         if local_configs.is_empty() {
-            analysis::analyze_with_verification(&files, &config.entrypoints, verification.as_ref())
+            analysis::analyze_with_verification(
+                &files,
+                &config.entrypoints,
+                verification.as_ref(),
+                available_package_entrypoints,
+            )
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
             let mut root_paths = BTreeSet::new();
@@ -657,7 +668,12 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 let paths = Arc::new(paths);
                 entrypoints.extend(config.entrypoints.iter().map(|item| item.scoped(&paths)));
             }
-            analysis::analyze_with_verification(&files, &entrypoints, verification.as_ref())
+            analysis::analyze_with_verification(
+                &files,
+                &entrypoints,
+                verification.as_ref(),
+                available_package_entrypoints,
+            )
         }
     } else {
         Analysis::default()
@@ -665,6 +681,10 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     issues.append(&mut analysis.issues);
     if let Some(verification) = verification {
         issues.extend(verification.finish(&project, Some(&config.selection)));
+    }
+    if let Some(mut metadata) = package_entrypoints {
+        issues.append(&mut metadata.issues);
+        issues.extend(metadata.verify());
     }
     issues.extend(project.verify(stamps));
     if !config.unchanged(path, options)
