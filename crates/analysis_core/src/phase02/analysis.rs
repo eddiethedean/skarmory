@@ -1599,16 +1599,14 @@ impl<'a> Graph<'a> {
         let [parameter] = definition.parameters.as_slice() else {
             return LazyMember::Unknown;
         };
-        if definition.kind != DefinitionKind::Function {
+        // Python supplies the lookup name as one positional string argument.
+        if definition.kind != DefinitionKind::Function || !definition.has_positional_parameter {
             return LazyMember::Unknown;
         }
-        let parameter_id = if definition.has_positional_parameter {
-            self.by_location
-                .get(&(scope, parameter.at.line, parameter.at.column))
-                .copied()
-        } else {
-            None
-        };
+        let parameter_id = self
+            .by_location
+            .get(&(scope, parameter.at.line, parameter.at.column))
+            .copied();
         // Prove literal dispatch only, after ordinary module lookup failed.
         for statement in &definition.body {
             if let StatementKind::Raise(Some(exception)) = &statement.kind {
