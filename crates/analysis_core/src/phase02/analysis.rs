@@ -5023,11 +5023,13 @@ impl<'a> Graph<'a> {
                 kind: observation.kind(),
                 certainty,
             });
+            // A nested callable can only be observed after an enclosing
+            // activation created it. Keep the dependencies of that activation.
             let mut owner = self.scopes[self.symbols[target].scope].owner;
             while let Some(target) = owner {
-                roots.push(Edge {
+                possible_roots.push(Edge {
                     target,
-                    kind: "type_reference",
+                    kind: "runtime_owner",
                     certainty: "possible",
                 });
                 owner = self.scopes[self.symbols[target].scope].owner;

@@ -285,7 +285,8 @@ and the observed file's fingerprint must match to earn verified provenance.
 
 The `runtime_evidence` report field identifies the matched callable,
 observed location, artifact, and provenance. Legacy artifacts are unverified
-and contribute possible use. Evidence only binds to selected files and
+and contribute possible use. An observed nested callable supplies possible-use
+evidence for the scopes that created it. Evidence binds to selected files and
 unambiguous locations. The reader rejects symlink artifacts, caps inputs at
 1 MiB and 32,768 observations per artifact, and rejects WAL-mode SQLite
 databases. A source newer than a legacy artifact cannot supply a match.

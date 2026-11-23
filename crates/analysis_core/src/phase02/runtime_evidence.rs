@@ -477,6 +477,30 @@ mod tests {
     }
 
     #[test]
+    fn observed_closure_retains_dependencies_of_enclosing_scopes() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join("app.py"),
+            "def prepare():\n    return 41\ndef make():\n    value = prepare()\n    def nested():\n        return value + 1\n    return nested\ndef unused():\n    return False\n",
+        ).unwrap();
+        write(
+            root,
+            ".skylos_trace",
+            &json!({
+                "version": 1, "calls": [{"file": "app.py", "function": "nested", "line": 5}]
+            }),
+        );
+        let traced = report(root, &options());
+        assert_eq!(traced["coverage"]["status"], "complete");
+        assert_eq!(unused(&traced), BTreeSet::from(["app.unused"]));
+        let symbols = traced["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(symbols.iter().any(|row| {
+            row["qualified_name"] == "app.prepare" && row["evidence"][0]["certainty"] == "possible"
+        }));
+    }
+
+    #[test]
     fn artifact_rejection_does_not_change_static_incomplete_coverage() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
