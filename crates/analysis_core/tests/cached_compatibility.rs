@@ -1331,4 +1331,37 @@ def __getattr__(name):
         assert_eq!(stats["hits"], 3);
         assert_eq!(warm, result);
     }
+
+    let initializer = package.join("__init__.py");
+    let source = fs::read_to_string(&initializer).unwrap();
+    fs::write(&initializer, format!("__path__: list\n{source}")).unwrap();
+    let (annotation_only, _) = compare(project.path(), cache.path());
+    assert_eq!(annotation_only["coverage"]["status"], "complete");
+    assert!(!finds(&annotation_only, "right_only"));
+
+    // An annotation following a write does not restore the default path.
+    fs::write(
+        &initializer,
+        format!("__path__ = ['alternate']\n__path__: list\n{source}"),
+    )
+    .unwrap();
+    for hits in [2, 3] {
+        let (result, stats) = compare(project.path(), cache.path());
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(result["coverage"]["status"], "incomplete", "{result}");
+        assert!(
+            result["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unresolved_lazy_export" && issue["file"] == "pkg/__init__.py"
+                }),
+            "{result}"
+        );
+        assert!(
+            result["unused_functions"].as_array().unwrap().is_empty(),
+            "{result}"
+        );
+    }
 }

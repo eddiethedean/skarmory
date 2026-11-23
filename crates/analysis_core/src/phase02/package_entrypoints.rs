@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use skarmory_python::phase02::{
-    Expression, ExpressionKind, ModuleFacts, Statement, StatementKind, extract,
+    Expression, ExpressionKind, Import, ModuleFacts, Statement, StatementKind, extract,
 };
 use skarmory_python::simple_name;
 
@@ -192,8 +192,10 @@ impl Snapshot {
         let mut groups = BTreeMap::<_, Vec<_>>::new();
         for (index, raw) in source.lines().enumerate() {
             let line = raw.trim();
-            if line.starts_with('[') {
-                entry_points = line == "[options.entry_points]";
+            if let Some(header) = line.strip_prefix('[') {
+                entry_points = header
+                    .rsplit_once(']')
+                    .is_some_and(|(name, _)| name == "options.entry_points");
                 current_group = None;
             }
             if !entry_points || line.is_empty() || line.starts_with(['#', ';', '[']) {
@@ -226,30 +228,30 @@ impl Snapshot {
         local_setuptools: bool,
         local_distutils: bool,
     ) {
+        let setup_import = |import: &Import| {
+            let module = import.module.as_str();
+            let local_provider = match module {
+                "setuptools" => local_setuptools,
+                "distutils" | "distutils.core" => local_distutils,
+                _ => false,
+            };
+            match (import.level, module, import.member.as_deref()) {
+                _ if local_provider => SetupValue::Unknown,
+                (0, "setuptools" | "distutils.core", Some("setup")) => SetupValue::Setup,
+                (0, "setuptools" | "distutils.core", None) if !import.exposes_top_level => {
+                    SetupValue::SetupModule
+                }
+                (0, "distutils" | "distutils.core", None) => SetupValue::Distutils,
+                _ => SetupValue::Unknown,
+            }
+        };
         let mut bindings = BTreeMap::new();
-        let mut setup_imported = false;
         let mut unmodeled_effect = None;
         let mut declared_entries = Vec::new();
         for statement in &facts.body {
             match &statement.kind {
                 StatementKind::Import(import) => {
-                    let module = import.module.as_str();
-                    let local_provider = match module {
-                        "setuptools" => local_setuptools,
-                        "distutils" | "distutils.core" => local_distutils,
-                        _ => false,
-                    };
-                    let identity = match (import.level, module, import.member.as_deref()) {
-                        _ if local_provider => SetupValue::Unknown,
-                        (0, "setuptools" | "distutils.core", Some("setup")) => SetupValue::Setup,
-                        (0, "setuptools" | "distutils.core", None) if !import.exposes_top_level => {
-                            SetupValue::SetupModule
-                        }
-                        (0, "distutils" | "distutils.core", None) => SetupValue::Distutils,
-                        _ => SetupValue::Unknown,
-                    };
-                    setup_imported |= !matches!(identity, SetupValue::Unknown);
-                    bindings.insert(import.local.text.as_str(), identity);
+                    bindings.insert(import.local.text.as_str(), setup_import(import));
                 }
                 StatementKind::Assign {
                     names,
@@ -313,8 +315,10 @@ impl Snapshot {
             }
         }
         if let Some(line) = unmodeled_effect
-            && setup_imported
             && facts.body.iter().any(mentions_setup_entry_points)
+            && has_setup_import(&facts.body, &|import| {
+                !matches!(setup_import(import), SetupValue::Unknown)
+            })
         {
             self.invalid("setup.py", Some(line));
             return;
@@ -408,6 +412,27 @@ enum SetupValue<'a> {
     Sequence(Rc<[SetupValue<'a>]>),
     Mapping(Rc<BTreeMap<&'a str, SetupValue<'a>>>),
     Unknown,
+}
+
+// Recognize providers in conditional setup code so it cannot silently
+// bypass the diagnostic for registration outside the static model.
+fn has_setup_import(body: &[Statement], is_setup_import: &impl Fn(&Import) -> bool) -> bool {
+    body.iter().any(|statement| match &statement.kind {
+        StatementKind::Import(import) => is_setup_import(import),
+        StatementKind::If {
+            test,
+            body,
+            otherwise,
+        } => match test.kind {
+            ExpressionKind::Bool(true) => has_setup_import(body, is_setup_import),
+            ExpressionKind::Bool(false) => has_setup_import(otherwise, is_setup_import),
+            _ => {
+                has_setup_import(body, is_setup_import)
+                    || has_setup_import(otherwise, is_setup_import)
+            }
+        },
+        _ => false,
+    })
 }
 
 fn mentions_setup_entry_points(statement: &Statement) -> bool {
@@ -751,6 +776,52 @@ mod tests {
         assert!(report.coverage.issues.iter().any(|issue| {
             issue.kind == "invalid_package_entrypoints" && issue.path == "setup.py"
         }));
+    }
+
+    #[test]
+    fn setup_cfg_recognizes_entry_points_after_a_section_header_comment() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        write(
+            root,
+            "app.py",
+            "def main():\n    return 0\ndef unused():\n    return 1\n",
+        );
+        write(
+            root,
+            "setup.cfg",
+            "[options.entry_points] # generated\nconsole_scripts =\n    demo = app:main\n",
+        );
+        let report = scan(root, &options()).unwrap();
+        assert!(report.is_complete(), "{}", report.to_json().unwrap());
+        assert_eq!(diagnostic_names(&report), BTreeSet::from(["app.unused"]));
+    }
+
+    #[test]
+    fn guarded_setup_registration_reports_incomplete_metadata_coverage() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        write(root, "app.py", "def main():\n    return 0\n");
+        write(
+            root,
+            "setup.py",
+            "if __name__ == '__main__':\n    from setuptools import setup\n    setup(entry_points={'console_scripts': ['demo = app:main']})\n",
+        );
+        let report = scan(
+            root,
+            &Options {
+                excludes: vec!["setup.py".into()],
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(!report.is_complete(), "{}", report.to_json().unwrap());
+        assert!(report.coverage.issues.iter().any(|issue| {
+            issue.kind == "invalid_package_entrypoints"
+                && issue.path == "setup.py"
+                && issue.line == Some(1)
+        }));
+        assert!(!diagnostic_names(&report).contains("app.main"));
     }
 
     #[test]

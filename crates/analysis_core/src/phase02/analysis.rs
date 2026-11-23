@@ -1670,7 +1670,17 @@ impl<'a> Graph<'a> {
         let child = name[end + 1..].split('.').next()?;
         // Loading a child can replace an existing attribute on its package.
         // The static import attachment index cannot order this lazy effect.
+        let replaces_search_path =
+            self.scopes[parent]
+                .names
+                .get("__path__")
+                .is_some_and(|bindings| {
+                    bindings
+                        .iter()
+                        .any(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+                });
         if !self.files[parent].is_package
+            || replaces_search_path
             || has_implicit_module_member(child, true)
             || self.local(parent, child, END).is_some()
             || self.local(parent, "__getattr__", END).is_some_and(|hook| {
@@ -3411,7 +3421,12 @@ impl<'a> Graph<'a> {
         keywords: &'expr [(String, Expression)],
         mut evaluate: impl FnMut(&mut Self, &'expr Expression) -> Value,
     ) -> Invocation {
-        if matches!(invocation.receiver, Receiver::Explicit(_)) {
+        // A plain call to a function from a class namespace has no
+        // descriptor binding. Its receiver, if any, comes from the arguments.
+        if matches!(invocation.receiver, Receiver::Explicit(_))
+            || (matches!(invocation.receiver, Receiver::Ordinary)
+                && self.receiver_parameter(invocation.target).is_some())
+        {
             let argument = arguments.first().or_else(|| {
                 let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
                 else {
@@ -6510,6 +6525,39 @@ class Service:
                 );
             }
         }
+    }
+
+    #[test]
+    fn bare_class_body_call_checks_its_supplied_receiver() {
+        let files = [module(
+            "main.py",
+            "main",
+            "\
+def configured():
+    return False
+
+class Configuration:
+    def __bool__(self):
+        return configured()
+
+class Status:
+    def label(config):
+        if config:
+            return 'on'
+        return 'off'
+    default = label(Configuration())
+print(Status.default)
+",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| { issue.kind == "unresolved_call" && issue.line == Some(13) }),
+            "{:?}",
+            result.issues
+        );
     }
 
     #[test]
