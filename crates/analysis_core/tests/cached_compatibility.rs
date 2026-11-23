@@ -1384,18 +1384,26 @@ fn finite_receivers_and_lazy_tables_follow_edits_with_cached_workers() {
     .unwrap();
     let initializer = package.join("__init__.py");
     let main = project.path().join("main.py");
-    let classes = "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\n";
+    let classes = "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\nclass Third:\n    def run(self):\n        return 3\n";
 
-    for (provider, receiver, unused_provider) in [
+    for (provider, receiver, unused_provider, retained_receivers) in [
         (
             "left",
             "if choose:\n    receiver = First()\nelse:\n    receiver = Second()\n",
             "right_only",
+            &["main.First.run", "main.Second.run"][..],
         ),
         (
             "right",
             "receiver = First() if choose else Second()\n",
             "left_only",
+            &["main.First.run", "main.Second.run"][..],
+        ),
+        (
+            "left",
+            "receiver = Third()\nif outer:\n    if inner:\n        receiver = First()\nelse:\n    receiver = Second()\n",
+            "right_only",
+            &["main.First.run", "main.Second.run", "main.Third.run"][..],
         ),
     ] {
         fs::write(
@@ -1415,8 +1423,8 @@ fn finite_receivers_and_lazy_tables_follow_edits_with_cached_workers() {
             .iter()
             .filter_map(|row| row["full_name"].as_str())
             .collect();
-        for name in ["main.First.run", "main.Second.run"] {
-            assert!(!unused.contains(&name), "{result}");
+        for name in retained_receivers {
+            assert!(!unused.contains(name), "{result}");
         }
         assert!(finds(&result, unused_provider), "{result}");
         let (warm, stats) = compare(project.path(), cache.path());

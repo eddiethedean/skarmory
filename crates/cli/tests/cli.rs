@@ -1749,7 +1749,7 @@ fn skylos_roots_only_effective_explicit_reexports() {
         ("old = old\n", 0),
         ("alias = old\nold = alias\n", 0),
         ("def replacement():\n    pass\nold = replacement\n", 1),
-        ("if int('0'):\n    old = None\n", 2),
+        ("if int('0'):\n    old = None\n", 0),
     ] {
         fs::write(
             pkg.join("__init__.py"),

@@ -19,6 +19,7 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
 const MAX_PYTEST_REQUEST_STATES: usize = 16_384;
+const MAX_CONDITIONAL_STATES: usize = 4_096;
 const END: Location = Location {
     line: usize::MAX,
     column: usize::MAX,
@@ -63,6 +64,25 @@ enum Value {
 }
 
 impl Value {
+    fn alternatives(values: Vec<Self>) -> Self {
+        fn flatten(value: Value, flattened: &mut Vec<Value>) {
+            match value {
+                Value::Alternatives(values) => {
+                    for value in values {
+                        flatten(value, flattened);
+                    }
+                }
+                value => flattened.push(value),
+            }
+        }
+
+        let mut flattened = Vec::new();
+        for value in values {
+            flatten(value, &mut flattened);
+        }
+        Self::Alternatives(flattened)
+    }
+
     fn contains_unknown(&self) -> bool {
         match self {
             Self::Unknown => true,
@@ -449,7 +469,7 @@ struct Graph<'a> {
     namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
-    conditional_groups: BTreeMap<SymbolId, (usize, bool)>,
+    conditional_groups: BTreeMap<SymbolId, Vec<(usize, bool)>>,
     next_conditional_group: usize,
     dormant_classes: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
@@ -666,7 +686,10 @@ impl<'a> Graph<'a> {
         let end = suite_end(body);
         for id in first_symbol..self.symbols.len() {
             if self.symbols[id].scope == scope {
-                self.conditional_groups.insert(id, (group, branch));
+                self.conditional_groups
+                    .entry(id)
+                    .or_default()
+                    .push((group, branch));
                 self.conditional
                     .entry(id)
                     .or_default()
@@ -1422,27 +1445,57 @@ impl<'a> Graph<'a> {
         before: Location,
         depth: usize,
     ) -> Option<Value> {
-        let (group, _) = *self.conditional_groups.get(&id)?;
         let symbol = &self.symbols[id];
         let candidates = self.scopes[symbol.scope]
             .names
             .get(symbol.name.text.as_str())?;
-        let mut branches = BTreeMap::new();
+        let mut eligible = Vec::new();
         for &candidate in candidates {
             if position(self.symbols[candidate].name.at) >= position(before) {
                 break;
             }
-            if let Some(&(candidate_group, branch)) = self.conditional_groups.get(&candidate)
-                && candidate_group == group
-            {
-                branches.insert(branch, candidate);
-            }
+            eligible.push(candidate);
         }
-        let (Some(&body), Some(&otherwise)) = (branches.get(&true), branches.get(&false)) else {
+        if !self.conditional_groups.contains_key(&id) {
             return None;
-        };
+        }
+        if let Some(fallback) = eligible
+            .iter()
+            .rposition(|candidate| !self.conditional_groups.contains_key(candidate))
+        {
+            eligible.drain(..fallback);
+        }
+        let groups = eligible
+            .iter()
+            .filter_map(|candidate| self.conditional_groups.get(candidate))
+            .flatten()
+            .map(|(group, _)| *group)
+            .collect::<BTreeSet<_>>();
+        let group_bits = groups
+            .into_iter()
+            .enumerate()
+            .map(|(bit, group)| (group, bit))
+            .collect::<BTreeMap<_, _>>();
+        let states = 1usize.checked_shl(group_bits.len() as u32)?;
+        if states > MAX_CONDITIONAL_STATES {
+            return None;
+        }
+        let mut selected = BTreeSet::new();
+        for state in 0..states {
+            let candidate = eligible.iter().rev().copied().find(|candidate| {
+                self.conditional_groups
+                    .get(candidate)
+                    .is_none_or(|conditions| {
+                        conditions.iter().all(|(group, branch)| {
+                            let bit = group_bits[group];
+                            ((state >> bit) & 1 == 1) == *branch
+                        })
+                    })
+            })?;
+            selected.insert(candidate);
+        }
         let mut values = Vec::new();
-        for candidate in [body, otherwise] {
+        for candidate in selected {
             self.read.insert(candidate);
             let value = self.binding_value(candidate, depth + 1);
             if value.contains_unknown() {
@@ -1450,7 +1503,7 @@ impl<'a> Graph<'a> {
             }
             values.push(value);
         }
-        Some(Value::Alternatives(values))
+        Some(Value::alternatives(values))
     }
 
     fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
@@ -1994,7 +2047,7 @@ impl<'a> Graph<'a> {
         depth: usize,
     ) -> Value {
         match base {
-            Value::Alternatives(values) => Value::Alternatives(
+            Value::Alternatives(values) => Value::alternatives(
                 values
                     .into_iter()
                     .map(|value| self.member(value, name, access, depth + 1))
@@ -2662,7 +2715,7 @@ impl<'a> Graph<'a> {
                     if values.iter().any(Value::contains_unknown) {
                         Value::Unknown
                     } else {
-                        Value::Alternatives(values)
+                        Value::alternatives(values)
                     }
                 }
             },
@@ -7157,15 +7210,18 @@ _unbound()
     }
 
     #[test]
-    fn conditional_shadowing_cannot_prove_the_previous_target_unused() {
+    fn conditional_shadowing_retains_previous_and_new_targets() {
         let source = "def old():\n    pass\ndef new():\n    pass\nhandler = old\nif flag:\n    handler = new\nhandler()\n";
         let result = analyze(&[module("main.py", "main", source)], &[]);
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.kind == "ambiguous_binding")
-        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(names(&result, Category::Function).is_empty());
+        for target in ["main.old", "main.new"] {
+            assert!(result.evidence.iter().any(|evidence| {
+                evidence.full_name == target
+                    && evidence.kind == "direct_call"
+                    && evidence.certainty == "possible"
+            }));
+        }
     }
 
     #[test]
@@ -7358,6 +7414,49 @@ _unbound()
         assert!(known.evidence.iter().any(|evidence| {
             evidence.full_name == "main.First.run" && evidence.kind == "direct_call"
         }));
+    }
+
+    #[test]
+    fn nested_finite_receiver_paths_retain_every_selected_method() {
+        let classes = "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\nclass Third:\n    def run(self):\n        return 3\ndef unused():\n    return 4\n";
+        for usage in [
+            "receiver = Third()\nif outer:\n    if inner:\n        receiver = First()\nelse:\n    receiver = Second()\nreceiver.run()\n",
+            "receiver = (First() if inner else Second()) if outer else Third()\nreceiver.run()\n",
+        ] {
+            let result = analyze(
+                &[module("main.py", "main", &format!("{classes}{usage}"))],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{usage}\n{:?}", result.issues);
+            assert_eq!(names(&result, Category::Function), ["unused"]);
+            for target in ["main.First.run", "main.Second.run", "main.Third.run"] {
+                assert!(result.evidence.iter().any(|evidence| {
+                    evidence.full_name == target
+                        && evidence.kind == "direct_call"
+                        && evidence.certainty == "possible"
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn conditional_state_limit_remains_incomplete() {
+        let mut source =
+            "class Target:\n    def run(self):\n        return 1\nreceiver = Target()\n".to_owned();
+        for index in 0..13 {
+            source.push_str(&format!("if choice_{index}:\n    receiver = Target()\n"));
+        }
+        source.push_str("receiver.run()\n");
+
+        let result = analyze(&[module("main.py", "main", &source)], &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "ambiguous_binding"),
+            "{:?}",
+            result.issues
+        );
     }
 
     #[test]
