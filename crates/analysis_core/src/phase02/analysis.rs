@@ -245,13 +245,16 @@ struct LazyBranch<'a> {
     imports: &'a [Statement],
     value: &'a Expression,
     at: Location,
+    argument: Option<(SymbolId, &'a str)>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ValueEvaluation {
+#[derive(Clone, Copy)]
+enum ValueEvaluation<'a> {
     Identity,
-    LazyIdentity,
-    LazyExecution(ScopeId),
+    Lazy {
+        execution_scope: Option<ScopeId>,
+        argument: Option<(SymbolId, &'a str)>,
+    },
 }
 
 enum LazyMember<'a> {
@@ -1132,8 +1135,7 @@ impl<'a> Graph<'a> {
     fn execute_lazy_branch(&mut self, scope: ScopeId, branch: &LazyBranch<'a>) -> Value {
         // Keep imports discovered through return expressions on the same
         // worklist as nested from-imports. All execute for the original caller.
-        let evaluation = ValueEvaluation::LazyExecution(scope);
-        let value = self.lazy_value(scope, branch, 0, evaluation);
+        let value = self.lazy_value(scope, branch, 0, Some(scope));
         let mut pending = vec![(branch.scope, branch.imports)];
         pending.append(&mut self.nested_lazy_imports);
         let mut visited = BTreeSet::new();
@@ -1149,7 +1151,7 @@ impl<'a> Graph<'a> {
                 let module = self.relative_module(file, import);
                 if let Some(branch) = self.record_import(scope, handler, module.as_deref(), import)
                 {
-                    self.lazy_value(scope, &branch, 0, evaluation);
+                    self.lazy_value(scope, &branch, 0, Some(scope));
                     pending.push((branch.scope, branch.imports));
                     pending.append(&mut self.nested_lazy_imports);
                 }
@@ -1489,7 +1491,7 @@ impl<'a> Graph<'a> {
                 }
                 ModuleMember::Lazy(id, branch) => {
                     self.read.insert(id);
-                    self.lazy_value(scope, &branch, depth + 2, ValueEvaluation::LazyIdentity)
+                    self.lazy_value(scope, &branch, depth + 2, None)
                 }
                 ModuleMember::Ambiguous => {
                     self.scope_issue(scope, at, "ambiguous_binding",
@@ -1547,9 +1549,13 @@ impl<'a> Graph<'a> {
         caller: ScopeId,
         branch: &LazyBranch<'a>,
         depth: usize,
-        evaluation: ValueEvaluation,
+        execution_scope: Option<ScopeId>,
     ) -> Value {
         let first_issue = self.scope_issues.len();
+        let evaluation = ValueEvaluation::Lazy {
+            execution_scope,
+            argument: branch.argument,
+        };
         let value = self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation);
         if value.contains_unknown() && self.scope_issues.len() == first_issue {
             self.scope_issue(
@@ -1568,8 +1574,8 @@ impl<'a> Graph<'a> {
     }
 
     fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
-        self.lazy_dispatch(id, before, |name, scope, body| {
-            (name == member).then(|| Self::lazy_branch(scope, body))
+        self.lazy_dispatch(id, before, |name, scope, body, argument| {
+            (name == member).then(|| Self::lazy_branch(scope, body, argument))
         })
     }
 
@@ -1577,7 +1583,12 @@ impl<'a> Graph<'a> {
         &self,
         id: SymbolId,
         before: Location,
-        mut visit: impl FnMut(&'a str, ScopeId, &'a [Statement]) -> Option<LazyMember<'a>>,
+        mut visit: impl FnMut(
+            &'a str,
+            ScopeId,
+            &'a [Statement],
+            Option<(SymbolId, &'a str)>,
+        ) -> Option<LazyMember<'a>>,
     ) -> LazyMember<'a> {
         if self.binding_depends_on_branch(id, before) {
             return LazyMember::Conditional;
@@ -1591,6 +1602,13 @@ impl<'a> Graph<'a> {
         if definition.kind != DefinitionKind::Function {
             return LazyMember::Unknown;
         }
+        let parameter_id = if definition.has_positional_parameter {
+            self.by_location
+                .get(&(scope, parameter.at.line, parameter.at.column))
+                .copied()
+        } else {
+            None
+        };
         // Prove literal dispatch only, after ordinary module lookup failed.
         for statement in &definition.body {
             if let StatementKind::Raise(Some(exception)) = &statement.kind {
@@ -1635,14 +1653,23 @@ impl<'a> Graph<'a> {
             if name != &parameter.text {
                 break;
             }
-            if let Some(result) = visit(text, scope, body) {
+            if let Some(result) = visit(
+                text,
+                scope,
+                body,
+                parameter_id.map(|id| (id, text.as_str())),
+            ) {
                 return result;
             }
         }
         LazyMember::Unknown
     }
 
-    fn lazy_branch(scope: ScopeId, body: &'a [Statement]) -> LazyMember<'a> {
+    fn lazy_branch(
+        scope: ScopeId,
+        body: &'a [Statement],
+        argument: Option<(SymbolId, &'a str)>,
+    ) -> LazyMember<'a> {
         if let Some((
             Statement {
                 kind: StatementKind::Return(Some(value)),
@@ -1659,6 +1686,7 @@ impl<'a> Graph<'a> {
                 imports,
                 value,
                 at: *at,
+                argument,
             });
         }
         LazyMember::Unknown
@@ -1910,7 +1938,7 @@ impl<'a> Graph<'a> {
         expression: &Expression,
         before: Location,
         depth: usize,
-        evaluation: ValueEvaluation,
+        evaluation: ValueEvaluation<'a>,
     ) -> Value {
         if depth >= MAX_BINDING_CHAIN {
             self.issue(
@@ -1923,7 +1951,7 @@ impl<'a> Graph<'a> {
         }
         // An evaluated lazy return can read a known binding. Effectful
         // operations in the expression itself require additional execution.
-        if evaluation != ValueEvaluation::Identity
+        if matches!(evaluation, ValueEvaluation::Lazy { .. })
             && matches!(
                 expression.kind,
                 ExpressionKind::Call { .. }
@@ -1947,6 +1975,15 @@ impl<'a> Graph<'a> {
             ExpressionKind::Name(name) => {
                 let binding = self.lexical_binding(scope, name, before);
                 if let LexicalBinding::Found(id) = binding {
+                    if let ValueEvaluation::Lazy {
+                        argument: Some((parameter, text)),
+                        ..
+                    } = evaluation
+                        && id == parameter
+                    {
+                        self.read.insert(id);
+                        return Value::Text(text.to_owned());
+                    }
                     let binding_scope = self.symbols[id].scope;
                     let before = if binding_scope == scope {
                         before
@@ -1959,7 +1996,11 @@ impl<'a> Graph<'a> {
                         END
                     };
                     let value = self.binding(id, before, depth + 1);
-                    if let ValueEvaluation::LazyExecution(caller) = evaluation {
+                    if let ValueEvaluation::Lazy {
+                        execution_scope: Some(caller),
+                        ..
+                    } = evaluation
+                    {
                         self.record_class_reference(caller, &value);
                     }
                     return value;
@@ -2006,7 +2047,11 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Member(base, name) => {
                 let base = recurse(self, base);
-                if let ValueEvaluation::LazyExecution(caller) = evaluation {
+                if let ValueEvaluation::Lazy {
+                    execution_scope: Some(caller),
+                    ..
+                } = evaluation
+                {
                     if let Value::Module(file) = base
                         && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
                             file,
@@ -2019,7 +2064,7 @@ impl<'a> Graph<'a> {
                         self.read.insert(hook);
                         self.nested_lazy_imports
                             .push((branch.scope, branch.imports));
-                        return self.lazy_value(scope, &branch, depth + 3, evaluation);
+                        return self.lazy_value(scope, &branch, depth + 3, Some(caller));
                     }
                     let value = self.member(base, name, (scope, before), depth + 1);
                     self.record_class_reference(caller, &value);
@@ -4243,11 +4288,11 @@ impl<'a> Graph<'a> {
         let hook = self.local(file, "__getattr__", END);
         let mut lazy_members = BTreeMap::new();
         if let Some(hook) = hook {
-            let fallback = self.lazy_dispatch(hook, END, |name, scope, body| {
+            let fallback = self.lazy_dispatch(hook, END, |name, scope, body, argument| {
                 if !name.starts_with('_') && self.local(file, name, END).is_none() {
                     lazy_members
                         .entry(name)
-                        .or_insert_with(|| Self::lazy_branch(scope, body));
+                        .or_insert_with(|| Self::lazy_branch(scope, body, argument));
                 }
                 None
             });

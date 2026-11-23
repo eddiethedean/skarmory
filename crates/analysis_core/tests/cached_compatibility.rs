@@ -281,6 +281,10 @@ fn lazy_exports_report_unresolved_values_inside_containers() {
         };
 
         for (edit, (expr, incomplete)) in [
+            ("{\"name\": name}", false),
+            ("(name,)", false),
+            ("(name != \"example\" and missing,)", false),
+            ("(name, missing)", true),
             ("(missing,)", true),
             ("[{\"key\": (missing,)}]", true),
             ("{missing: 1}", true),
