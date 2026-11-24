@@ -90,3 +90,40 @@ The missing-fixture cases remain blocked under [#45](https://github.com/eddiethe
 The mixed npm case retains its combined assertion and both coverage checks.
 See the [upstream test gate](phase-03.md#required-upstream-test-gate) for the
 remaining inventory and release evidence requirements.
+
+## Python entry point and export results
+
+The added SDK cases ran on macOS 26.6.2 (25G83), ARM64, with CPython
+3.11.14, uv 0.11.3, and pytest 9.0.3 for the reference. The reference
+uses the same pinned revision and lock digest above. The candidate was
+installed from the locally built macOS ARM64 wheel under CPython 3.11.9.
+The macOS run exercises the ports locally. The inventory requires the
+Linux x86-64 release wheel for gate credit.
+
+From the pinned checkout, using the frozen reference environment above:
+
+```sh
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "$reference_python" -m pytest -p no:cacheprovider -q -rA \
+  test/test_reachability_integration_qa.py::test_external_entry_and_callback_roots_keep_transitive_helpers_live \
+  test/test_dead_code_liveness.py::test_plugin_entry_point_groups_are_live \
+  test/test_dead_code_liveness.py::test_setup_py_and_setup_cfg_entry_points_are_read_without_running_setup \
+  test/test_analyzer.py::TestAnalyze::test_pyproject_gui_script_entrypoint_is_not_reported_dead
+```
+
+| Original SDK case | Pinned Skylos | Local Skarmory |
+| --- | --- | --- |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-False]` | Passed | Blocked by incomplete coverage at `atexit.register`. |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-True]` | Passed | Blocked by the same `unresolved_call` diagnostic. |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[export-False]` | Passed | Passed |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[export-True]` | Passed | Passed |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[entrypoint-False]` | Passed | Passed |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[entrypoint-True]` | Passed | Passed |
+| `test_plugin_entry_point_groups_are_live` | Passed | Passed |
+| `test_setup_py_and_setup_cfg_entry_points_are_read_without_running_setup` | Passed | Passed |
+| `TestAnalyze::test_pyproject_gui_script_entrypoint_is_not_reported_dead` | Passed | Passed |
+
+The port preserves the original fixture creation and assertions, including the
+marker check that verifies `setup.py` does not execute. It verifies the
+effective grep setting in each case and checks trace disablement where the
+original test explicitly requests it. The two callback cases stay in the
+inventory and receive zero pass credit. [Callback coverage issue #118](https://github.com/eddiethedean/skarmory/issues/118)

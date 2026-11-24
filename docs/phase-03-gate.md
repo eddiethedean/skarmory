@@ -49,16 +49,25 @@ blocked, skipped, duplicated, stale, or unsuccessful, or if the inventory is
 incomplete. The existing Phase 0.2 conformance fixtures and independent
 controls continue to run through the packaging checks.
 
-The release workflow produces the Linux CPython 3.11 SDK receipt by installing
-the same-run wheel into a clean environment and running the
-[seed adapter](../tests/conformance/run_phase03_seed.py). The adapter executes
-the original upstream pytest cases with their markers in the frozen Skylos
-environment. For the candidate run it selects `skylos-0.3` in the installed
-Skarmory SDK, forwards the upstream scan options, and disables upstream
-expected-failure markers. It checks that the wheel's files match the installed
-package and that the original assertion lines execute. Runtime-evidence cases
-also require receipts proving that an observation was imported, explicit
-disablement took effect, or an unsafe artifact was rejected, as applicable.
+The release workflow installs the same-run Linux wheel in a clean SDK
+environment and builds the native CLI from the same candidate checkout. The
+[seed adapter](../tests/conformance/run_phase03_seed.py) records separate SDK
+and CLI receipts. It runs the original upstream assertions with their markers
+in the frozen Skylos environment. Candidate runs select `skylos-0.3` and
+disable upstream expected-failure markers.
+
+For SDK cases, the adapter forwards upstream scan options, checks the
+candidate interpreter version and architecture, and compares the installed
+package with the wheel. Runtime-evidence cases verify import, explicit
+disablement, or rejection as appropriate. For the recursive CLI case, the
+adapter records the binary hash and verifies complete scans of both fixture
+states with the default grep verification. Both adapters check that the
+original assertion lines execute.
+
+For versions below 0.3, matching pull requests and manual workflow runs
+require the mapped SDK and CLI cases to pass and upload the full gate decision.
+The full decision remains blocked while required evidence is missing.
+Publication of 0.3 and later requires that full decision to pass.
 
 Run the checker regression tests with the following command.
 

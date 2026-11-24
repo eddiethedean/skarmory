@@ -1,4 +1,4 @@
-"""Run original pinned pytest cases against Skylos and an installed SDK wheel."""
+"""Run original pinned pytest cases against Skylos and candidate artifacts."""
 
 import argparse
 import ast
@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from phase03_cli import CASE as CLI_CASE
+from phase03_cli import RecursiveCaseCli
+
 PORT = "tests/conformance/run_phase03_seed.py"
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
@@ -21,8 +24,16 @@ SCRIPT = Path(__file__).resolve()
 # exact wheel before letting the original assertions exercise its SDK.
 CHECK_WHEEL = """
 from pathlib import Path, PurePosixPath
+import platform
 import sys
 from zipfile import ZipFile
+
+expected = sys.argv[2]
+observed = f"{sys.platform}-{platform.machine()}-cp{sys.version_info.major}{sys.version_info.minor}"
+implementation = platform.python_implementation()
+if implementation != "CPython" or observed != expected:
+    raise SystemExit(f"Required candidate SDK platform {expected}, found {implementation} {observed}")
+
 import skarmory
 from skarmory import _native
 
@@ -58,6 +69,15 @@ def environment():
     return env
 
 
+def check_candidate_wheel(sdk_python, artifact, expected_platform, cwd, env):
+    result = subprocess.run(
+        [str(sdk_python), "-I", "-c", CHECK_WHEEL, str(artifact), expected_platform],
+        cwd=cwd, env=env, text=True, capture_output=True, timeout=60, check=False,
+    )
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "candidate SDK wheel validation failed")
+
+
 def scan_candidate(sdk_python, path, options):
     def json_value(value):
         if isinstance(value, os.PathLike):
@@ -83,11 +103,16 @@ def port_cases(args):
     if args.variant not in variants:
         raise ValueError(f"unknown inventory variant: {args.variant}")
     variant = variants[args.variant]
-    if variant["layer"] != "sdk" or variant["backend"] != "python":
-        raise ValueError("the seed runner requires a Python backend SDK variant")
+    layer = variant["layer"]
+    if layer not in {"sdk", "cli"} or variant["backend"] != "python":
+        raise ValueError("the seed runner requires a Python backend SDK or CLI variant")
     cases = {key: case for key, case in expected[args.variant].items() if case["port"] == PORT}
     if not cases:
-        raise ValueError(f"no seed SDK port mappings for {args.variant}")
+        raise ValueError(f"no seed port mappings for {args.variant}")
+    if layer == "cli" and set(cases) != {CLI_CASE}:
+        raise ValueError("the CLI port only supports the original recursive control pair")
+    if layer == "sdk" and args.sdk_python is None:
+        raise ValueError("--sdk-python is required for the SDK variant")
     return inventory, digest, variant, cases
 
 
@@ -115,7 +140,7 @@ class AssertionTrace:
 def pytest_worker(args):
     import pytest
 
-    _, _, _, cases = port_cases(args)
+    _, _, variant, cases = port_cases(args)
     sys.path.insert(0, str(args.upstream))
     sys.modules["skylos_fast"] = None
     from skylos.core.fast import FAST_AVAILABLE
@@ -138,6 +163,7 @@ def pytest_worker(args):
             self.failed_assertions = {}
             self.scans = set()
             self.grep_scans = set()
+            self.grep_disables = set()
             self.trace_imports = set()
             self.trace_disables = set()
             self.trace_rejections = set()
@@ -148,7 +174,6 @@ def pytest_worker(args):
             case = cases[key]
             trace = AssertionTrace(args.upstream / case["source"])
             old_trace = sys.gettrace()
-            original = item.module.analyze
 
             def analyze(path, **options):
                 scanned = scan_candidate(args.sdk_python, path, options)
@@ -156,8 +181,11 @@ def pytest_worker(args):
                 if report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
                 self.scans.add(key)
-                if report["analysis_summary"]["grep_verify"]["enabled"] is True:
+                grep_enabled = report["analysis_summary"]["grep_verify"]["enabled"]
+                if grep_enabled is True:
                     self.grep_scans.add(key)
+                if options.get("grep_verify") is False and grep_enabled is False:
+                    self.grep_disables.add(key)
                 if any(
                     evidence["kind"] == "runtime_trace"
                     for evidence in report.get("runtime_evidence", [])
@@ -176,15 +204,22 @@ def pytest_worker(args):
                     self.trace_rejections.add(key)
                 return scanned
 
-            if args.mode == "candidate":
-                item.module.analyze = analyze
-            try:
-                sys.settrace(trace)
-                return (yield)
-            finally:
-                sys.settrace(old_trace)
-                item.module.analyze = original
-                self.lines[key] = {f"{case['source']}:{line}" for line in trace.completed}
+            cli = None
+            with pytest.MonkeyPatch.context() as patch:
+                if args.mode == "candidate":
+                    if variant["layer"] == "cli":
+                        cli = RecursiveCaseCli(args.artifact)
+                        patch.setattr(item.module, "subprocess", cli)
+                    else:
+                        patch.setattr(item.module, "analyze", analyze)
+                try:
+                    sys.settrace(trace)
+                    return (yield)
+                finally:
+                    sys.settrace(old_trace)
+                    if cli is not None and cli.proved:
+                        self.scans.add(key)
+                    self.lines[key] = {f"{case['source']}:{line}" for line in trace.completed}
 
         def pytest_runtest_makereport(self, item, call):
             if (
@@ -228,8 +263,12 @@ def pytest_worker(args):
             proven = required in lines
             if required == "installed-sdk":
                 proven = args.mode == "candidate"
+            elif required == "native-cli-control-pair":
+                proven = key in capture.scans
             elif required == "grep-verification":
                 proven = key in capture.grep_scans
+            elif required == "grep-verification-disabled":
+                proven = key in capture.grep_disables
             elif required == "runtime-trace-import":
                 proven = key in capture.trace_imports
             elif required == "runtime-trace-disabled":
@@ -271,8 +310,10 @@ def write_receipt(args):
         errors = []
         common = [
             sys.executable, str(SCRIPT), "--upstream", str(args.upstream), "--inventory",
-            str(args.inventory), "--variant", args.variant, "--sdk-python", str(args.sdk_python),
+            str(args.inventory), "--variant", args.variant, "--artifact", str(args.artifact),
         ]
+        if args.sdk_python is not None:
+            common.extend(("--sdk-python", str(args.sdk_python)))
         for mode in ("reference", "candidate"):
             output = work / (mode + ".json")
             commands[mode] = [*common, "--mode", mode, "--output", str(output)]
@@ -294,10 +335,9 @@ def write_receipt(args):
         else:
             for mode, command in commands.items():
                 try:
-                    if mode == "candidate":
-                        subprocess.run(
-                            [str(args.sdk_python), "-I", "-c", CHECK_WHEEL, str(args.artifact)],
-                            cwd=work, env=env, timeout=60, check=True,
+                    if mode == "candidate" and variant["layer"] == "sdk":
+                        check_candidate_wheel(
+                            args.sdk_python, args.artifact, variant["platform"], work, env,
                         )
                     run = subprocess.run(command, cwd=args.upstream, env=env, timeout=180, check=False)
                     if run.returncode not in {0, 1}:
@@ -307,7 +347,7 @@ def write_receipt(args):
                     errors.append(f"{mode}: {error}")
 
     if sha256(args.artifact) != artifact_digest:
-        errors.append("candidate wheel changed during execution")
+        errors.append("candidate artifact changed during execution")
     results = []
     for case_id, case in cases.items():
         reference = reports.get("reference", {}).get(case_id, {})
@@ -352,8 +392,8 @@ def main():
     parser.add_argument("--upstream", required=True, type=Path)
     parser.add_argument("--inventory", required=True, type=Path)
     parser.add_argument("--variant", required=True)
-    parser.add_argument("--sdk-python", required=True, type=Path)
-    parser.add_argument("--artifact", type=Path)
+    parser.add_argument("--sdk-python", type=Path)
+    parser.add_argument("--artifact", required=True, type=Path)
     parser.add_argument("--candidate-revision")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--mode", choices=("reference", "candidate"), help=argparse.SUPPRESS)
@@ -363,8 +403,8 @@ def main():
         if path is not None:
             # Preserve the venv interpreter symlink and its sys.prefix.
             setattr(args, name, path.absolute())
-    if not args.mode and (args.artifact is None or args.candidate_revision is None):
-        parser.error("--artifact and --candidate-revision are required for a receipt")
+    if not args.mode and args.candidate_revision is None:
+        parser.error("--candidate-revision is required for a receipt")
     try:
         return pytest_worker(args) if args.mode else write_receipt(args)
     except (OSError, ValueError) as error:

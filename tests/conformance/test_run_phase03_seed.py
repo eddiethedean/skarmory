@@ -1,10 +1,16 @@
 import json
+import platform
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from run_phase03_seed import AssertionTrace, scan_candidate
+from run_phase03_seed import (
+    AssertionTrace,
+    check_candidate_wheel,
+    environment,
+    scan_candidate,
+)
 
 
 def original_assertions(stop, value):
@@ -36,6 +42,23 @@ class AssertionTraceTests(unittest.TestCase):
                 finally:
                     sys.settrace(previous)
                 self.assertEqual(trace.completed & {first, last}, expected)
+
+
+class CandidateWheelTests(unittest.TestCase):
+    def test_rejects_candidate_with_wrong_interpreter_or_architecture(self):
+        actual_platform = (
+            f"{sys.platform}-{platform.machine()}-cp{sys.version_info.major}{sys.version_info.minor}"
+        )
+        wrong_python = f"{sys.platform}-{platform.machine()}-cp999"
+        wrong_architecture = actual_platform.replace(platform.machine(), "unsupported-arch")
+        for declared in (wrong_python, wrong_architecture):
+            with (
+                self.subTest(declared=declared),
+                self.assertRaisesRegex(ValueError, "Required candidate SDK platform"),
+            ):
+                check_candidate_wheel(
+                    Path(sys.executable), Path("unused.whl"), declared, Path.cwd(), environment(),
+                )
 
 
 class CandidateScanTests(unittest.TestCase):
