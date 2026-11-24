@@ -2,12 +2,11 @@
 
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts/check_dead_code_gate.py"
@@ -18,6 +17,7 @@ NATIVE_CASE = "go:example.org/engine::TestResolve/preserve"
 ASSERTION = "retain the re-exported implementation"
 EARLIER_ASSERTION = "initialize the export provider"
 PREREQUISITE = "fixture package created"
+FIXTURE = "manual/mixed_repo/hard_benchmark.ts"
 
 
 def digest(path):
@@ -34,12 +34,13 @@ class ReleaseGateTests(unittest.TestCase):
         self.artifact.write_bytes(b"candidate artifact")
         self.report = self.folder / "report.json"
 
-    def write_inventory(self, complete=True, extra_case=""):
+    def write_inventory(self, complete=True, extra_case="", fixtures=""):
         self.inventory.write_text(
             f"""
 schema_version = 1
 reference_revision = "{REFERENCE}"
 inventory_complete = {str(complete).lower()}
+{fixtures}
 
 [[variants]]
 id = "python-sdk"
@@ -106,13 +107,15 @@ port = "crates/analysis_core/tests/resolve.rs"
             }],
         }
 
-    def run_gate(self, *receipts, artifacts=True):
+    def run_gate(self, *receipts, artifacts=True, fixture_root=None):
         command = [
             sys.executable, str(GATE), "--inventory", str(self.inventory),
             "--candidate-revision", CANDIDATE, "--report", str(self.report),
         ]
         if artifacts:
             command.extend(["--artifact", f"candidate={self.artifact}"])
+        if fixture_root is not None:
+            command.extend(["--fixture-root", str(fixture_root)])
         for index, receipt in enumerate(receipts):
             path = self.folder / f"ledger-{index}.json"
             serialized = receipt if isinstance(receipt, str) else json.dumps(receipt)
@@ -147,6 +150,55 @@ port = "crates/analysis_core/tests/resolve.rs"
             "inventory is not complete",
         )
         self.assertIn("fixture unavailable", report["cases"][0]["reasons"])
+
+    def test_missing_and_unreviewed_fixture_block_even_with_passing_results(self):
+        self.write_inventory(
+            extra_case=f'fixtures = ["{FIXTURE}"]',
+            fixtures=f'[[fixtures]]\npath = "{FIXTURE}"',
+        )
+        receipts = [self.receipt("go-engine"), self.receipt("python-sdk")]
+        self.assert_blocked(receipts, "fixture root was not supplied")
+        report = self.assert_blocked(receipts, "required fixture is missing", fixture_root=self.folder)
+        self.assertIn(FIXTURE, report["fixtures"])
+        self.assertEqual(report["cases"][1]["status"], "passed")
+        path = self.folder / FIXTURE
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"unverified substitute")
+        self.assert_blocked(
+            receipts, "fixture provenance, digest, and license are unverified", fixture_root=self.folder,
+        )
+
+    def test_reviewed_fixture_bytes_and_receipt_must_both_match(self):
+        path = self.folder / FIXTURE
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"test data for a reviewed fixture")
+        expected_hash = digest(path)
+        self.write_inventory(
+            extra_case=f'fixtures = ["{FIXTURE}"]',
+            fixtures=(
+                f'[[fixtures]]\npath = "{FIXTURE}"\nsha256 = "{expected_hash}"\n'
+                'provenance = "reviewed source record"\nlicense = "Apache-2.0"'
+            ),
+        )
+        engine, sdk = self.receipt("go-engine"), self.receipt("python-sdk")
+        self.assert_blocked([engine], "required result is missing", fixture_root=self.folder)
+        self.assert_blocked([engine, sdk], "receipt fixture hashes", fixture_root=self.folder)
+        sdk["results"][0]["fixture_sha256"] = {FIXTURE: "0" * 64}
+        self.assert_blocked([engine, sdk], "receipt fixture hashes", fixture_root=self.folder)
+        sdk["results"][0]["fixture_sha256"] = {FIXTURE: expected_hash}
+        run, report = self.run_gate(engine, sdk, fixture_root=self.folder)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(report["fixtures"][FIXTURE]["observed_sha256"], expected_hash)
+        path.write_bytes(b"replacement")
+        self.assert_blocked([engine, sdk], "SHA-256 does not match", fixture_root=self.folder)
+
+    def test_unsafe_and_undeclared_fixture_paths_are_rejected(self):
+        for path in ("../outside.ts", "C:/outside.ts"):
+            with self.subTest(path=path):
+                self.write_inventory(fixtures=f'[[fixtures]]\npath = "{path}"')
+                self.assert_blocked([], "fixture path must be a normalized relative path")
+        self.write_inventory(extra_case=f'fixtures = ["{FIXTURE}"]')
+        self.assert_blocked([], "unknown fixture")
 
     def test_missing_shard_result_and_duplicate_receipts_block_release(self):
         self.write_inventory()
