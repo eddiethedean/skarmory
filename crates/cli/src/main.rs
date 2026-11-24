@@ -29,10 +29,10 @@ enum Policy {
 
 #[derive(Parser)]
 #[command(name = "skarmory", version = skarmory_core::VERSION)]
-#[command(about = "Analyze Python 3.11 source code for dead code.")]
+#[command(about = "Analyze source code for dead code.")]
 #[command(after_help = "JSON goes to stdout by default. Incomplete analysis exits with 2.")]
 struct Cli {
-    /// Python source file or project directory.
+    /// Source file or project directory. JavaScript and TypeScript file reachability requires a package directory.
     #[arg(value_name = "PATH")]
     path: PathBuf,
 

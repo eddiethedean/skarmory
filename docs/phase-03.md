@@ -105,6 +105,37 @@ their provenance, content hashes, and license are verified.
 The source audit identifies where to start collection. The frozen case
 inventory and Skarmory-backed execution results are Phase 0.3 deliverables.
 
+## JavaScript and TypeScript file reachability
+
+The `skylos-0.3` profile supports `SKY-E003` for a single package scanned
+from its root directory. It reads the root `package.json` main entry and
+follows local static ECMAScript imports and re-exports, including type-only
+imports. It accepts exact source paths and unique extensionless file or
+`index` matches among selected JavaScript and TypeScript sources. For a
+TypeScript importer, a `.js`, `.jsx`, or `.mjs` specifier prefers a matching
+TypeScript source before the emitted JavaScript file. Disconnected files,
+including groups that only import each other, appear in `unused_files`.
+The report records reached modules in `dead_code_evidence` and applies the
+project rule ignore and first-line `// skylos: ignore[SKY-E003]` directive.
+
+The CLI and installed Python SDK use the same Rust graph. Cached scans reuse
+file-local parser facts and rebuild the graph from the current sources and
+package manifest. The `javascript_file_analysis` summary identifies the rule,
+its supported scope, and its coverage status.
+
+Missing, excluded, or ambiguous import targets make the file analysis
+incomplete. File-scoped scans, bare package imports, CommonJS and dynamic
+loading, declaration files, and detected alternative project configuration
+also produce incomplete coverage. JavaScript parsing and reachability gaps
+keep the overall report incomplete and preserve findings from completed Python
+analysis. The parser accepts up to 16 KiB of source per file in this slice.
+Larger inputs produce an explicit analysis-limit diagnostic. If JavaScript and
+TypeScript sources exceed the space left in the shared snapshot budget, the
+file graph is incomplete and Python analysis can still use its admitted inputs.
+Package exports, workspace and `tsconfig` resolution, package scripts, browser
+and component assets, binding and export analysis, and npm dependency
+analysis remain part of [#45](https://github.com/eddiethedean/skarmory/issues/45).
+
 ## Scope and acceptance
 
 | Workstream | Deliverable | Required controls | Issue |

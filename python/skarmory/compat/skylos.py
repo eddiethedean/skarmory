@@ -1,4 +1,4 @@
-"""The declared offline Python dead-code profile for Skylos 5.7.0."""
+"""The declared offline dead-code profiles for Skylos 5.7.0."""
 
 from collections.abc import Sequence
 from os import fspath
@@ -37,7 +37,9 @@ def analyze(
     default. Pass a path relative to the project root or False to disable
     the corresponding input. The report keeps runtime provenance and
     rejected evidence separate from static coverage.
-    Pass `enable_quality=True` in Phase 0.3 to check unused runtime dependencies.
+    Phase 0.3 also checks unused JavaScript and TypeScript files in a bounded
+    package graph rooted at the package.json main entry.
+    Pass `enable_quality=True` in Phase 0.3 to check unused Python dependencies.
     """
     if profile not in ("skylos", "skylos-0.3"):
         raise ValueError("profile must be skylos or skylos-0.3")
