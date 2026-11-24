@@ -376,6 +376,7 @@ jobs:
           python scripts/check_dead_code_gate.py \
             --inventory tests/conformance/phase03-inventory.toml \
             --candidate-revision "$(git rev-parse HEAD)" \
+            --fixture-root phase03-skylos \
             --report phase03-evidence/gate.json "${evidence[@]}" || gate_status=$?
           if [[ "$DEAD_CODE_GATE_REQUIRED" == true ]] || ((gate_status > 1)); then
             exit "$gate_status"
