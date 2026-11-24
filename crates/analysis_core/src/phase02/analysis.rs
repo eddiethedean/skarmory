@@ -49,6 +49,9 @@ enum Value {
     DjangoPattern(Box<Value>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
+    DjangoSignal,
+    DjangoSignalConnect,
+    DjangoReceiver(frameworks::DjangoReceiver),
     FastapiDependency(Option<SymbolId>),
     Executor,
     Submit,
@@ -190,6 +193,7 @@ enum FrameworkClassRole {
     DjangoCommand,
     DjangoView,
     DjangoModel,
+    DjangoSignal,
     DjangoAdmin,
     CeleryTask,
     SqlAlchemyModel,
@@ -224,6 +228,7 @@ struct Scope<'a> {
     routes: Vec<(Object, SymbolId, &'static str)>,
     django_settings: DjangoSettings,
     starts_django: Vec<frameworks::DjangoStartup>,
+    django_signals: Vec<frameworks::DjangoSignalRegistration>,
 }
 
 struct NamespaceRead {
@@ -407,6 +412,7 @@ pub(super) fn analyze_with_verification(
         conditional: BTreeMap::new(),
         conditional_groups: BTreeMap::new(),
         next_conditional_group: 0,
+        branch_depth: 0,
         dormant_classes: BTreeSet::new(),
         subclassed: BTreeSet::new(),
         instance_receivers: BTreeMap::new(),
@@ -541,6 +547,7 @@ struct Graph<'a> {
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
     conditional_groups: BTreeMap<SymbolId, Vec<(usize, bool)>>,
     next_conditional_group: usize,
+    branch_depth: usize,
     dormant_classes: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
@@ -610,6 +617,7 @@ impl<'a> Graph<'a> {
             routes: Vec::new(),
             django_settings: self.initial_django_settings.clone(),
             starts_django: Vec::new(),
+            django_signals: Vec::new(),
         });
         index
     }
@@ -2182,6 +2190,11 @@ impl<'a> Graph<'a> {
                 {
                     return Value::DjangoViewFactory(class);
                 }
+                if matches!(member, Value::DjangoSignalConnect)
+                    && matches!(base, Value::Callable(_))
+                {
+                    return Value::Unknown;
+                }
                 if let Value::Callable(invocation) = member
                     && self.receiver_parameter(invocation.target).is_some()
                 {
@@ -2194,6 +2207,7 @@ impl<'a> Graph<'a> {
                     member
                 }
             }
+            Value::DjangoSignal if name == "connect" => Value::DjangoSignalConnect,
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
@@ -2357,13 +2371,22 @@ impl<'a> Graph<'a> {
                 Value::Provider(base) if self.phase03 && framework_managed_base(&base) => {
                     match (framework_class_provider(&base), name) {
                         (_, "__init_subclass__")
-                        | (Some(FrameworkClassRole::PydanticModel), "__init__" | "__new__") => None,
+                        | (
+                            Some(
+                                FrameworkClassRole::PydanticModel
+                                | FrameworkClassRole::DjangoSignal,
+                            ),
+                            "__init__" | "__new__",
+                        ) => None,
                         (
                             Some(FrameworkClassRole::PydanticModel),
                             "model_dump" | "model_dump_json" | "model_validate",
                         ) => Some(Value::Provider(format!("pydantic.BaseModel.{name}"))),
                         (Some(FrameworkClassRole::DjangoView), "as_view") => {
                             Some(Value::Provider("django.views.View.as_view".into()))
+                        }
+                        (Some(FrameworkClassRole::DjangoSignal), "connect") => {
+                            Some(Value::DjangoSignalConnect)
                         }
                         _ => Some(Value::Unknown),
                     }
@@ -2828,6 +2851,18 @@ impl<'a> Graph<'a> {
                     ),
                     ObjectKind::CeleryApp,
                 ),
+                Value::Provider(name) if self.phase03 && is_django_signal_constructor(&name) => {
+                    if registration_arguments(arguments, keywords, ["use_caching"]).is_some() {
+                        Value::DjangoSignal
+                    } else {
+                        Value::Unknown
+                    }
+                }
+                Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
+                    Value::DjangoReceiver(
+                        self.django_receiver(scope, arguments, keywords, before, depth),
+                    )
+                }
                 Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
                     let module = match (arguments.as_slice(), keywords.as_slice()) {
                         ([module], []) => Some(module),
@@ -3849,46 +3884,39 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
+                    Value::DjangoSignalConnect => {
+                        self.connect_django_signal(
+                            scope, arguments, keywords, before, expr.at, false,
+                        );
+                    }
                     Value::Provider(name)
                         if self.phase03
-                            && (name == "sqlalchemy.event.listen"
-                                || name.strip_suffix(".connect").is_some_and(is_django_signal)) =>
+                            && name.strip_suffix(".connect").is_some_and(is_django_signal) =>
                     {
-                        let callback = if name == "sqlalchemy.event.listen" {
-                            arguments.get(2).or_else(|| {
-                                keywords
-                                    .iter()
-                                    .find(|(name, _)| name == "fn")
-                                    .map(|(_, value)| value)
-                            })
-                        } else {
-                            arguments.first().or_else(|| {
-                                keywords
-                                    .iter()
-                                    .find(|(name, _)| name == "receiver")
-                                    .map(|(_, value)| value)
-                            })
-                        };
-                        if name == "sqlalchemy.event.listen" {
-                            self.activate_argument(
-                                scope,
-                                callback,
-                                before,
-                                "sqlalchemy_listener",
-                                expr.at,
-                            );
-                        } else if let Some(Value::Callable(invocation)) =
-                            callback.map(|target| self.identity(scope, target, before, 0))
-                        {
-                            self.record_django_signal(scope, invocation.target);
-                        } else {
-                            self.scope_issue(
-                                scope,
-                                expr.at,
-                                "unresolved_registration",
-                                "Django signal callback could not be resolved",
-                            );
-                        }
+                        self.connect_django_signal(
+                            scope, arguments, keywords, before, expr.at, true,
+                        );
+                    }
+                    Value::DjangoReceiver(signal) => {
+                        let callback = registration_arguments(arguments, keywords, ["func"])
+                            .and_then(|[callback]| callback)
+                            .map(|target| self.identity(scope, target, before, 0));
+                        self.record_django_signal(scope, signal, callback, expr.at);
+                    }
+                    Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listen" => {
+                        let callback = arguments.get(2).or_else(|| {
+                            keywords
+                                .iter()
+                                .find(|(name, _)| name == "fn")
+                                .map(|(_, value)| value)
+                        });
+                        self.activate_argument(
+                            scope,
+                            callback,
+                            before,
+                            "sqlalchemy_listener",
+                            expr.at,
+                        );
                     }
                     Value::Provider(name)
                         if self.phase03 && name == "sqlalchemy.event.listens_for.callback" =>
@@ -4232,8 +4260,10 @@ impl<'a> Graph<'a> {
                 Some(true) => self.walk(scope, body, before),
                 Some(false) => self.walk(scope, otherwise, before),
                 None => {
+                    self.branch_depth += 1;
                     self.walk(scope, body, before);
                     self.walk(scope, otherwise, before);
+                    self.branch_depth -= 1;
                 }
             },
             ExpressionKind::Membership {
@@ -4731,6 +4761,7 @@ impl<'a> Graph<'a> {
                         }
                         None => {
                             let django_before = self.scopes[scope].django_settings.clone();
+                            self.branch_depth += 1;
                             let body_stops = self.suite(scope, body);
                             let django_body = std::mem::replace(
                                 &mut self.scopes[scope].django_settings,
@@ -4741,6 +4772,7 @@ impl<'a> Graph<'a> {
                                 .namespace_exclusions
                                 .extend(namespace_span(body));
                             let otherwise_stops = self.suite(scope, otherwise);
+                            self.branch_depth -= 1;
                             let django_other = &mut self.scopes[scope].django_settings;
                             if otherwise_stops || *django_other == django_body {
                                 *django_other = django_body;
@@ -4834,38 +4866,38 @@ impl<'a> Graph<'a> {
                     ));
                 }
             }
+            Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
+                let signal = self.django_receiver(scope, args, keywords, before, 0);
+                self.record_django_signal(
+                    scope,
+                    signal,
+                    Some(Value::Callable(Invocation::ordinary(target))),
+                    decorator.at,
+                );
+            }
+            Value::DjangoReceiver(signal)
+                if !matches!(decorator.kind, ExpressionKind::Call { .. }) =>
+            {
+                self.record_django_signal(
+                    scope,
+                    signal,
+                    Some(Value::Callable(Invocation::ordinary(target))),
+                    decorator.at,
+                );
+            }
             Value::Provider(name)
                 if self.phase03
                     && matches!(
                         name.as_str(),
-                        "django.dispatch.receiver"
-                            | "sqlalchemy.event.listens_for"
-                            | "celery.shared_task"
+                        "sqlalchemy.event.listens_for" | "celery.shared_task"
                     ) =>
             {
                 let kind = match name.as_str() {
-                    "django.dispatch.receiver" => "django_signal",
                     "sqlalchemy.event.listens_for" => "sqlalchemy_listener",
                     "celery.shared_task" => "celery_task",
                     _ => unreachable!(),
                 };
-                if kind == "django_signal" {
-                    if let Some(signal) = args.first()
-                        && matches!(self.identity(scope, signal, before, 0),
-                            Value::Provider(provider) if is_django_signal(&provider))
-                    {
-                        self.record_django_signal(scope, target);
-                    } else {
-                        self.scope_issue(
-                            scope,
-                            decorator.at,
-                            "unresolved_registration",
-                            "Django signal identity could not be resolved",
-                        );
-                    }
-                } else {
-                    self.edge(scope, target, kind, "certain");
-                }
+                self.edge(scope, target, kind, "certain");
             }
             Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
             Value::Provider(name)
@@ -6418,6 +6450,19 @@ impl<'a> Graph<'a> {
                                 .copied()
                                 .map(django_loaded_module),
                         );
+                        for edge in self.scopes[scope]
+                            .django_signals
+                            .iter()
+                            .flat_map(|registration| registration.callbacks.iter())
+                        {
+                            let certainty = if possible { "possible" } else { edge.certainty };
+                            if !reach
+                                .evidence
+                                .contains(&(edge.target, edge.kind, certainty))
+                            {
+                                pending.push_back(*edge);
+                            }
+                        }
                     }
                 }
                 let scope = &self.scopes[scope];
@@ -7197,6 +7242,8 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
     name.starts_with("builtins.")
         || phase03
             && (name.starts_with("pydantic.BaseModel.")
+                || is_django_signal_constructor(name)
+                || is_django_receiver(name)
                 || matches!(
                     name,
                     "flask.Flask"
@@ -7277,7 +7324,15 @@ fn django_management_settings(argv: &[Value]) -> DjangoSettings {
 }
 
 fn is_django_signal(provider: &str) -> bool {
-    provider
+    matches!(
+        provider,
+        "django.core.signals.request_started"
+            | "django.core.signals.request_finished"
+            | "django.core.signals.got_request_exception"
+            | "django.core.signals.setting_changed"
+            | "django.test.signals.setting_changed"
+            | "django.test.signals.template_rendered"
+    ) || provider
         .strip_prefix("django.db.models.signals.")
         .is_some_and(|name| {
             matches!(
@@ -7294,6 +7349,20 @@ fn is_django_signal(provider: &str) -> bool {
                     | "post_migrate"
             )
         })
+}
+
+fn is_django_signal_constructor(provider: &str) -> bool {
+    matches!(
+        provider,
+        "django.dispatch.Signal" | "django.dispatch.dispatcher.Signal"
+    )
+}
+
+fn is_django_receiver(provider: &str) -> bool {
+    matches!(
+        provider,
+        "django.dispatch.receiver" | "django.dispatch.dispatcher.receiver"
+    )
 }
 
 fn framework_registration_kind(kind: ObjectKind) -> &'static str {
@@ -7382,6 +7451,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.db.models.Model" | "django.db.models.base.Model" => {
             Some(FrameworkClassRole::DjangoModel)
         }
+        name if is_django_signal_constructor(name) => Some(FrameworkClassRole::DjangoSignal),
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }

@@ -235,12 +235,8 @@ scan process's `DJANGO_SETTINGS_MODULE`, or the first literal default set in
 the launcher's scope, in that order. It resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
-class-based views reach their effective `setup()` hook. Signal
-registrations through selected built-in signal providers follow imports
-from the startup, settings and active URL modules. Unresolved URL registrations
-in active URL modules produce coverage diagnostics. Recognized URL patterns
-and signal registrations report incomplete coverage when no Django startup
-is reached.
+class-based views reach their effective `setup()` hook. Unresolved URL
+registrations in active URL modules produce coverage diagnostics.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
@@ -250,6 +246,17 @@ subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
+
+Django signal discovery follows modules loaded through startup, including
+imports in an installed app's `ready()` hook. It resolves selected Django
+signal providers, direct `Signal()` instances, and subclasses that inherit
+Django's `connect()` method. It accepts `@receiver`, a stored receiver
+decorator, and `connect()`, including the named signal and callback arguments
+and literal lists or tuples of signals. Custom signals and registrations inside
+an unresolved branch contribute possible-use evidence. Opaque registrations
+in loaded modules and registrations without a selected startup produce
+coverage diagnostics. The model does not prove which dispatches occur.
+[Django signal registration](https://docs.djangoproject.com/en/5.2/topics/signals/#connecting-receiver-functions)
 
 The profile also recognizes selected Celery task registrations, SQLAlchemy
 listeners, Pydantic model hooks, unittest test and lifecycle methods through
@@ -263,12 +270,13 @@ suite mapping and qualification are tracked by the [upstream gate](#required-ups
 Additional Django command dispatch and FastAPI dependency patterns still need
 coverage.
 
-The pinned `django-urlpatterns`, `pytest-plugin-hooks`, and
-`python-unittest-lifecycle` corpus cases currently diverge. They require
-retention in standalone fixtures without a selected launcher, an active
-pytest plugin, or a discovered unittest test method, respectively. The
-unittest fixture also expects a test-only path whitelist. The reviewed
-inventory must account for these differences before qualification.
+The pinned `django-urlpatterns`, `django-signal-receiver`, `pytest-plugin-hooks`,
+and `python-unittest-lifecycle` corpus cases currently diverge. The two Django
+fixtures omit startup. Skarmory reports incomplete coverage for each.
+The pytest and unittest fixtures expect retention without an active plugin or a
+discovered test method, respectively. The unittest fixture also expects a
+test-only path whitelist. The reviewed inventory must account for these
+differences before qualification.
 
 ### Bounded Python receivers and lazy imports
 

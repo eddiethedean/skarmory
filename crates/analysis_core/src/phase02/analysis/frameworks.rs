@@ -15,6 +15,21 @@ pub(super) enum DjangoCommands {
     Selected(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DjangoReceiver {
+    Certain,
+    Possible,
+    Empty,
+    Unresolved,
+    Invalid,
+}
+
+pub(super) struct DjangoSignalRegistration {
+    pub(super) at: Location,
+    pub(super) callbacks: Vec<Edge>,
+    issue: Option<&'static str>,
+}
+
 impl Graph<'_> {
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
@@ -40,7 +55,9 @@ impl Graph<'_> {
                     ][..],
                     false,
                 ),
-                FrameworkClassRole::DjangoModel => (None, &[][..], false),
+                FrameworkClassRole::DjangoModel | FrameworkClassRole::DjangoSignal => {
+                    (None, &[][..], false)
+                }
                 // A ModelAdmin subclass is live only after an actual admin.register
                 // registration. Lifecycle entries are therefore owner-gated.
                 FrameworkClassRole::DjangoAdmin => (
@@ -533,34 +550,44 @@ impl Graph<'_> {
     }
 
     pub(super) fn report_django_startup_coverage(&mut self, reach: &Reachability) {
-        if !self.django_startup_scopes.is_disjoint(&reach.scopes) {
-            return;
-        }
-        for file in 0..self.files.len() {
-            if let Some(patterns) = self.local(file, "urlpatterns", END)
-                && has_django_pattern(&self.binding_value(patterns, 0))
-            {
-                self.issue(
-                    file,
-                    self.symbols[patterns].name.at,
-                    "unresolved_registration",
-                    "Django URL patterns have no selected startup and ROOT_URLCONF",
-                );
+        let no_startup = self.django_startup_scopes.is_disjoint(&reach.scopes);
+        if no_startup {
+            for file in 0..self.files.len() {
+                if let Some(patterns) = self.local(file, "urlpatterns", END)
+                    && has_django_pattern(&self.binding_value(patterns, 0))
+                {
+                    self.issue(
+                        file,
+                        self.symbols[patterns].name.at,
+                        "unresolved_registration",
+                        "Django URL patterns have no selected startup and ROOT_URLCONF",
+                    );
+                }
             }
         }
         for &scope in &reach.scopes {
             let row = &self.scopes[scope];
-            if let Some((_, target, _)) = row
-                .routes
-                .iter()
-                .find(|(_, _, kind)| *kind == "django_signal")
-            {
-                self.issue(
-                    row.file,
-                    self.symbols[*target].name.at,
-                    "unresolved_registration",
-                    "Django signal registration has no selected startup",
-                );
+            let loaded = reach
+                .active_objects
+                .contains(&django_loaded_module(row.file));
+            for registration in &row.django_signals {
+                let issue = if no_startup {
+                    Some("Django signal registration has no selected startup")
+                } else if loaded {
+                    registration.issue
+                } else {
+                    None
+                };
+                if let Some(message) = issue {
+                    self.issues.push(
+                        Issue::new(
+                            "unresolved_registration",
+                            &self.files[row.file].path,
+                            message,
+                        )
+                        .at(registration.at),
+                    );
+                }
             }
         }
     }
@@ -801,11 +828,173 @@ impl Graph<'_> {
         }
     }
 
-    pub(super) fn record_django_signal(&mut self, scope: ScopeId, target: SymbolId) {
-        let file = self.scopes[scope].file;
+    pub(super) fn django_receiver(
+        &mut self,
+        scope: ScopeId,
+        args: &[Expression],
+        keywords: &[(String, Expression)],
+        before: Location,
+        depth: usize,
+    ) -> DjangoReceiver {
+        // receiver(signal, **kwargs) forwards these keyword arguments to connect().
+        let Some([Some(signal), ..]) =
+            registration_arguments(args, keywords, ["signal", "sender", "weak", "dispatch_uid"])
+                .filter(|_| args.len() <= 1)
+        else {
+            return DjangoReceiver::Invalid;
+        };
+        let value = self.identity(scope, signal, before, depth + 1);
+        self.django_signal_sources(&value)
+    }
+
+    fn django_signal_sources(&mut self, value: &Value) -> DjangoReceiver {
+        match value {
+            Value::Sequence(values) if values.is_empty() => DjangoReceiver::Empty,
+            Value::Sequence(values) => {
+                let mut source = DjangoReceiver::Certain;
+                for value in values {
+                    match self.django_signal_source(value) {
+                        DjangoReceiver::Certain => {}
+                        DjangoReceiver::Possible => source = DjangoReceiver::Possible,
+                        _ => return DjangoReceiver::Unresolved,
+                    }
+                }
+                source
+            }
+            Value::Alternatives(values) => {
+                let mut sources = values.iter().map(|value| self.django_signal_sources(value));
+                let Some(first) = sources
+                    .next()
+                    .filter(|first| *first != DjangoReceiver::Unresolved)
+                else {
+                    return DjangoReceiver::Unresolved;
+                };
+                let mut source = first;
+                for other in sources {
+                    if other == DjangoReceiver::Unresolved {
+                        return other;
+                    }
+                    if other != first {
+                        source = DjangoReceiver::Possible;
+                    }
+                }
+                source
+            }
+            _ => self.django_signal_source(value),
+        }
+    }
+
+    fn django_signal_source(&mut self, value: &Value) -> DjangoReceiver {
+        match value {
+            Value::Provider(provider) if is_django_signal(provider) => DjangoReceiver::Certain,
+            Value::DjangoSignal => DjangoReceiver::Possible,
+            Value::Instance(class)
+                if matches!(
+                    self.class_member(*class, "connect", 0),
+                    Some(Value::DjangoSignalConnect)
+                ) =>
+            {
+                DjangoReceiver::Possible
+            }
+            _ => DjangoReceiver::Unresolved,
+        }
+    }
+
+    pub(super) fn connect_django_signal(
+        &mut self,
+        scope: ScopeId,
+        args: &[Expression],
+        keywords: &[(String, Expression)],
+        before: Location,
+        at: Location,
+        builtin: bool,
+    ) {
+        let callback = registration_arguments(
+            args,
+            keywords,
+            ["receiver", "sender", "weak", "dispatch_uid"],
+        )
+        .and_then(|[callback, ..]| callback)
+        .map(|callback| self.identity(scope, callback, before, 0));
+        let signal = if builtin {
+            DjangoReceiver::Certain
+        } else {
+            DjangoReceiver::Possible
+        };
+        self.record_django_signal(scope, signal, callback, at);
+    }
+
+    pub(super) fn record_django_signal(
+        &mut self,
+        scope: ScopeId,
+        signal: DjangoReceiver,
+        callback: Option<Value>,
+        at: Location,
+    ) {
+        if signal == DjangoReceiver::Empty {
+            return;
+        }
+        let conditional_scope = self.branch_depth != 0
+            || self.scopes[scope]
+                .owner
+                .is_some_and(|owner| self.conditional.contains_key(&owner));
+        let (candidates, conditional) = match callback {
+            Some(Value::Alternatives(values)) => (values, true),
+            Some(value) => (vec![value], conditional_scope),
+            None => (Vec::new(), false),
+        };
+        let mut issue = match signal {
+            DjangoReceiver::Invalid => {
+                Some("Django receiver decorator arguments could not be resolved")
+            }
+            DjangoReceiver::Unresolved => Some("Django signal identity could not be resolved"),
+            _ => None,
+        };
+        let mut callbacks = Vec::new();
+        if signal != DjangoReceiver::Invalid {
+            if candidates.is_empty() {
+                issue = Some("Django signal callback arguments could not be resolved");
+            }
+            for value in candidates {
+                let Value::Callable(invocation) = value else {
+                    issue = Some("Django signal callback could not be resolved");
+                    continue;
+                };
+                if self.is_class(invocation.target)
+                    || matches!(invocation.receiver, Receiver::Explicit(_))
+                {
+                    issue = Some("Django signal callback could not be resolved");
+                    continue;
+                }
+                if let Some(class) = invocation.receiver.supplied() {
+                    self.method_receivers
+                        .entry(invocation.target)
+                        .or_default()
+                        .insert(class);
+                }
+                let certainty = if signal == DjangoReceiver::Certain
+                    && !conditional
+                    && !self.conditional.contains_key(&invocation.target)
+                    && !invocation.verified
+                {
+                    "certain"
+                } else {
+                    "possible"
+                };
+                callbacks.push(Edge {
+                    target: invocation.target,
+                    kind: "django_signal",
+                    certainty,
+                });
+            }
+        }
         self.scopes[scope]
-            .routes
-            .push((django_loaded_module(file), target, "django_signal"));
+            .django_signals
+            .push(DjangoSignalRegistration {
+                at,
+                callbacks,
+                issue,
+            });
     }
 
     fn collect_django_patterns(&mut self, file: usize, parent: Object, value: Value, at: Location) {
