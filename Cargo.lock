@@ -1560,6 +1560,7 @@ dependencies = [
  "serde_json",
  "shlex",
  "skarmory_python",
+ "stacker",
  "tempfile",
  "time",
  "toml",

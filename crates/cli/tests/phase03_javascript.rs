@@ -225,6 +225,46 @@ fn marks_missing_ambiguous_or_unmodeled_inputs_incomplete() {
 }
 
 #[test]
+fn does_not_report_a_module_reached_through_commonjs_as_unused() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(root, "package.json", r#"{"main":"main.js"}"#);
+    put(root, "main.js", "module.require('./live.js');\n");
+    put(root, "live.js", "console.log('live');\n");
+
+    let report = scan(root, &["."], 2);
+    assert_eq!(
+        report["coverage"]["issues"][0]["kind"],
+        "unsupported_js_module_loading"
+    );
+    assert!(findings(&report).is_empty());
+}
+
+#[test]
+fn parser_bounds_large_expressions_with_multiple_workers() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(root, "package.json", r#"{"main":"main.js"}"#);
+    put(root, "spare.js", "export const spare = 1;\n");
+
+    let nested = format!(
+        "export const value = {}1{};",
+        "(".repeat(2_000),
+        ")".repeat(2_000)
+    );
+    put(root, "main.js", &nested);
+    let report = scan(root, &[".", "--workers", "4"], 0);
+    assert_eq!(findings(&report), [("spare.js", 80)]);
+
+    let oversized = format!("export const value = {}1;", "1+".repeat(20_000));
+    put(root, "main.js", &oversized);
+    let report = scan(root, &[".", "--workers", "4"], 2);
+    assert_eq!(report["coverage"]["issues"][0]["kind"], "analysis_limit");
+    assert_eq!(report["coverage"]["issues"][0]["path"], "main.js");
+    assert!(findings(&report).is_empty());
+}
+
+#[test]
 fn cache_reuses_file_facts_and_refreshes_graph_after_source_and_manifest_edits() {
     let tree = tempfile::tempdir().unwrap();
     let root = tree.path();

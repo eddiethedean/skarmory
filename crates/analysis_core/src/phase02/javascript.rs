@@ -23,6 +23,10 @@ pub(super) const UNIMPORTED: &str = "unimported_file";
 pub(super) const DEAD_IMPORTERS: &str = "imported_only_by_unused_files";
 const EXTENSIONS: &[&str] = &["js", "jsx", "mjs", "ts", "tsx", "mts"];
 const MANIFEST: &str = "package.json";
+// Oxc can recurse in both parsing and AST traversal. Bound the amount of
+// input that can create frames and reserve a stack independent of the caller.
+const MAX_PARSE_BYTES: usize = 16 * 1024;
+const PARSER_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Module {
@@ -55,13 +59,26 @@ pub(super) fn extract(
             location: Location { line: 1, column: 1 },
         });
     }
+    if source.len() > MAX_PARSE_BYTES {
+        return Err(FrontendError {
+            kind: "analysis_limit",
+            message: "JavaScript or TypeScript source exceeds the 16 KiB parser input budget"
+                .into(),
+            location: Location { line: 1, column: 1 },
+        });
+    }
+    let parse = |source: &str| {
+        stacker::maybe_grow(PARSER_STACK_BYTES, PARSER_STACK_BYTES, || {
+            parse(source, source_type)
+        })
+    };
     match cache {
         Some(cache) => cache.get_or_extract_variant(
-            &format!("phase03-js-v1/oxc-0.159.0/{extension}"),
+            &format!("phase03-js-v2/oxc-0.159.0/{extension}"),
             source,
-            |source| parse(source, source_type),
+            parse,
         ),
-        None => parse(source, source_type),
+        None => parse(source),
     }
 }
 
@@ -166,7 +183,7 @@ impl<'a> Visit<'a> for OtherLoaders {
     fn visit_identifier_reference(&mut self, item: &IdentifierReference<'a>) {
         if matches!(
             item.name.as_str(),
-            "require" | "Worker" | "SharedWorker" | "importScripts" | "eval"
+            "require" | "module" | "Worker" | "SharedWorker" | "importScripts" | "eval"
         ) {
             self.first.get_or_insert(item.span);
         }

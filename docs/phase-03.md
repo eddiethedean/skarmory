@@ -124,7 +124,9 @@ its supported scope, and its coverage status.
 Missing, excluded, or ambiguous import targets make the file analysis
 incomplete. File-scoped scans, bare package imports, CommonJS and dynamic
 loading, declaration files, and detected alternative project configuration
-also produce incomplete coverage. The first slice uses local source paths.
+also produce incomplete coverage. The parser accepts up to 16 KiB of source
+per file in this slice. Larger inputs produce an explicit analysis-limit
+diagnostic. The first slice uses local source paths.
 Package exports, workspace and `tsconfig` resolution, package scripts, browser
 and component assets, binding and export analysis, and npm dependency
 analysis remain part of [#45](https://github.com/eddiethedean/skarmory/issues/45).
