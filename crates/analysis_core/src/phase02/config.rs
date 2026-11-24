@@ -430,6 +430,10 @@ impl Config {
     pub(super) fn same_layers(&self, other: &Self) -> bool {
         other.sources == self.sources && other.digests == self.digests
     }
+
+    pub(super) fn input_digests(&self) -> impl Iterator<Item = (&String, &blake3::Hash)> {
+        self.sources.iter().zip(&self.digests)
+    }
 }
 
 pub(super) enum Decision {

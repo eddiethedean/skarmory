@@ -51,6 +51,10 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
+    pub(super) fn input_stamps(&self) -> impl Iterator<Item = (&PathBuf, &Stamp)> {
+        self.inventory.iter().flat_map(|inventory| inventory.iter())
+    }
+
     pub(super) fn has_configuration_references(&self) -> bool {
         !self.module_paths.is_empty()
             || !self.qualified_paths.is_empty()
