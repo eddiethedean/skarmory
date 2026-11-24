@@ -2,14 +2,13 @@
 """Verify Phase 0.3 release evidence against the reviewed case inventory."""
 
 import argparse
-from collections import Counter
 import hashlib
 import json
-from pathlib import Path
 import re
 import sys
 import tomllib
-
+from collections import Counter
+from pathlib import Path, PurePosixPath
 
 BASELINE = (
     Path(__file__).resolve().parents[1]
@@ -63,6 +62,57 @@ def indexed_records(records, key):
     return indexed
 
 
+def read_fixtures(inventory):
+    fixtures = indexed_records(inventory.get("fixtures", []), "path")
+    for name, fixture in fixtures.items():
+        relative_path = PurePosixPath(name)
+        if (
+            relative_path.is_absolute() or not relative_path.parts
+            or ".." in relative_path.parts or relative_path.as_posix() != name
+            or any(character in name for character in ("\\", ":", "\0"))
+        ):
+            raise ValueError(f"fixture path must be a normalized relative path: {name!r}")
+        review = ("sha256", "provenance", "license")
+        if any(field in fixture for field in review):
+            for field in review:
+                require_string(fixture, field)
+            if not re.fullmatch(r"[0-9a-f]{64}", fixture["sha256"]):
+                raise ValueError(f"{name}: fixture sha256 must be a full lowercase SHA-256")
+    return fixtures
+
+
+def verify_fixtures(fixtures, root):
+    evidence = {}
+    for fixture in fixtures:
+        name = fixture["path"]
+        result = {
+            key: fixture[key]
+            for key in ("path", "sha256", "provenance", "license")
+            if key in fixture
+        }
+        evidence[name] = result
+        if root is None:
+            result["blocker"] = f"{name}: fixture root was not supplied"
+            continue
+        try:
+            path = root.resolve() / name
+            if path.resolve(strict=True) != path or not path.is_file():
+                result["blocker"] = f"{name}: fixture must be a regular file at its declared path"
+                continue
+            result["observed_sha256"] = sha256(path)
+        except FileNotFoundError:
+            result["blocker"] = f"{name}: required fixture is missing"
+            continue
+        except (OSError, RuntimeError) as error:
+            result["blocker"] = f"{name}: unable to verify fixture: {error}"
+            continue
+        if "sha256" not in fixture:
+            result["blocker"] = f"{name}: original fixture provenance, digest, and license are unverified"
+        elif result["observed_sha256"] != fixture["sha256"]:
+            result["blocker"] = f"{name}: fixture SHA-256 does not match the reviewed original"
+    return evidence
+
+
 def read_inventory(path):
     raw = path.read_bytes()
     inventory = tomllib.loads(raw.decode("utf-8"))
@@ -78,6 +128,7 @@ def read_inventory(path):
 
     variants = indexed_records(inventory.get("variants"), "id")
     cases = indexed_records(inventory.get("cases"), "id")
+    fixtures = read_fixtures(inventory)
     if not variants or not cases:
         raise ValueError("inventory must include cases and variants")
     for variant in variants.values():
@@ -102,6 +153,10 @@ def read_inventory(path):
             raise ValueError(f"{case_id}: reference_xfail must name a mapped assertion")
         string_list(case, "prerequisites", unique=True)
         string_list(case, "omitted_assertions", unique=True)
+        if "fixtures" in case:
+            for fixture in string_list(case, "fixtures", unique=True):
+                if fixture not in fixtures:
+                    raise ValueError(f"{case_id}: unknown fixture {fixture!r}")
         for variant in string_list(case, "variants", required=True, unique=True):
             if variant not in variants:
                 raise ValueError(f"{case_id}: unknown variant {variant!r}")
@@ -202,7 +257,7 @@ def verify_ledger(ledger, identity, cases, errors):
     return results
 
 
-def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths):
+def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, fixture_root=None):
     report = {
         "schema_version": SCHEMA_VERSION,
         "candidate_revision": candidate_revision,
@@ -210,6 +265,7 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths):
         "errors": [],
         "cases": [],
         "artifacts": {},
+        "fixtures": {},
         "ledgers": [],
     }
     errors = report["errors"]
@@ -223,6 +279,7 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths):
     report["reference_revision"] = inventory["reference_revision"]
     report["inventory_sha256"] = inventory_hash
     report["inventory_complete"] = inventory["inventory_complete"]
+    report["fixtures"] = verify_fixtures(inventory.get("fixtures", []), fixture_root)
     if not inventory["inventory_complete"]:
         errors.append("the case and variant inventory is not complete")
 
@@ -275,13 +332,25 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths):
                 reasons.append("Skarmory port is not mapped")
             if blocker := case.get("blocker"):
                 reasons.append(blocker)
+            case_fixtures = {
+                name: report["fixtures"][name] for name in case.get("fixtures", [])
+            }
+            fixture_blockers = [
+                fixture["blocker"] for fixture in case_fixtures.values() if "blocker" in fixture
+            ]
+            reasons.extend(fixture_blockers)
             if variant_errors:
                 reasons.append("variant ledger is missing or invalid")
             if case_id not in results:
                 reasons.append("required result is missing")
             else:
                 try:
-                    reasons.extend(verify_result(results[case_id], case))
+                    result = results[case_id]
+                    reasons.extend(verify_result(result, case))
+                    if case_fixtures and not fixture_blockers:
+                        expected_hashes = {name: item["sha256"] for name, item in case_fixtures.items()}
+                        if result.get("fixture_sha256") != expected_hashes:
+                            reasons.append("receipt fixture hashes do not match the reviewed originals")
                 except ValueError as error:
                     reasons.append(str(error))
             report["cases"].append({
@@ -302,9 +371,12 @@ def main():
     parser.add_argument("--candidate-revision", required=True)
     parser.add_argument("--artifact", action="append", default=[], metavar="ROLE=PATH")
     parser.add_argument("--ledger", type=Path, action="append", default=[])
+    parser.add_argument("--fixture-root", type=Path, help="checkout or directory containing reviewed fixtures")
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    report = evaluate(args.inventory, args.candidate_revision, args.artifact, args.ledger)
+    report = evaluate(
+        args.inventory, args.candidate_revision, args.artifact, args.ledger, args.fixture_root
+    )
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     blocked = [case for case in report["cases"] if case["status"] != "passed"]
     for error in report["errors"]:

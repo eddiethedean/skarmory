@@ -44,6 +44,13 @@ layer = "sdk"
 environment = "CPython 3.11, pinned Skylos uv.lock test extra and TypeScript grammar"
 artifact = "sdk"
 
+# Review provenance, license, and SHA-256 when the original sources are recovered.
+[[fixtures]]
+path = "manual/mixed_repo/hard_benchmark.ts"
+
+[[fixtures]]
+path = "manual/mixed_repo/realistic_benchmark.ts"
+
 # The target set is finish_packet, arrange_packet, and arrange_packet.process_packet.
 # The expected unused subset is all targets, finish_packet and process_packet,
 # or empty, depending on which body the fixture activates.
@@ -313,45 +320,45 @@ omitted_assertions = []
 id = "test/test_typescript_expanded.py::TestHardBenchmark::test_all_dead_detected"
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2221"]
-prerequisites = ["original manual/mixed_repo/hard_benchmark.ts with verified provenance, SHA-256, and license", "TypeScript frontend", "test/test_typescript_expanded.py:23"]
+fixtures = ["manual/mixed_repo/hard_benchmark.ts"]
+prerequisites = ["TypeScript frontend", "test/test_typescript_expanded.py:23"]
 provenance = "Pinned test names manual/mixed_repo/hard_benchmark.ts. Original source is missing."
 variants = ["linux-x86_64-native-typescript-engine"]
 port = ""
 omitted_assertions = []
-blocker = "Pinned checkout omits manual/mixed_repo/hard_benchmark.ts (#45)"
 
 [[cases]]
 id = "test/test_typescript_expanded.py::TestHardBenchmark::test_no_false_positives"
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2225"]
-prerequisites = ["original manual/mixed_repo/hard_benchmark.ts with verified provenance, SHA-256, and license", "TypeScript frontend", "test/test_typescript_expanded.py:23"]
+fixtures = ["manual/mixed_repo/hard_benchmark.ts"]
+prerequisites = ["TypeScript frontend", "test/test_typescript_expanded.py:23"]
 provenance = "Pinned test names manual/mixed_repo/hard_benchmark.ts. Original source is missing."
 variants = ["linux-x86_64-native-typescript-engine"]
 port = ""
 omitted_assertions = []
-blocker = "Pinned checkout omits manual/mixed_repo/hard_benchmark.ts (#45)"
 
 [[cases]]
 id = "test/test_typescript_expanded.py::TestRealisticBenchmark::test_all_dead_detected"
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2320"]
-prerequisites = ["original manual/mixed_repo/realistic_benchmark.ts with verified provenance, SHA-256, and license", "TypeScript frontend", "test/test_typescript_expanded.py:23"]
+fixtures = ["manual/mixed_repo/realistic_benchmark.ts"]
+prerequisites = ["TypeScript frontend", "test/test_typescript_expanded.py:23"]
 provenance = "Pinned test names manual/mixed_repo/realistic_benchmark.ts. Original source is missing."
 variants = ["linux-x86_64-native-typescript-engine"]
 port = ""
 omitted_assertions = []
-blocker = "Pinned checkout omits manual/mixed_repo/realistic_benchmark.ts (#45)"
 
 [[cases]]
 id = "test/test_typescript_expanded.py::TestRealisticBenchmark::test_no_false_positives"
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2324"]
-prerequisites = ["original manual/mixed_repo/realistic_benchmark.ts with verified provenance, SHA-256, and license", "TypeScript frontend", "test/test_typescript_expanded.py:23"]
+fixtures = ["manual/mixed_repo/realistic_benchmark.ts"]
+prerequisites = ["TypeScript frontend", "test/test_typescript_expanded.py:23"]
 provenance = "Pinned test names manual/mixed_repo/realistic_benchmark.ts. Original source is missing."
 variants = ["linux-x86_64-native-typescript-engine"]
 port = ""
 omitted_assertions = []
-blocker = "Pinned checkout omits manual/mixed_repo/realistic_benchmark.ts (#45)"
 
 # The combined assertion retains SKY-U005, SKY-Q408, and SKY-Q409.
 # It also checks complete npm dependency coverage and no analysis errors.
