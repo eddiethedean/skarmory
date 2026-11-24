@@ -622,7 +622,7 @@ fn validate_category(category: Option<&str>) -> Result<(), ConfigError> {
 }
 
 struct Snapshot {
-    facts: Result<FileFacts, skarmory_python::FrontendError>,
+    facts: FileFacts,
     source: String,
     hide_findings: bool,
 }
@@ -694,6 +694,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let mut sources = BTreeMap::new();
     let mut files = Vec::new();
     let mut js_modules = BTreeMap::new();
+    let mut javascript_analysis = Analysis::default();
     let mut stamps = Vec::new();
     let mut file_configs = BTreeMap::new();
     let mut directory_configs = BTreeMap::new();
@@ -710,23 +711,24 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 None => extract(source),
             }
             .map(FileFacts::Python)
-        };
-        Snapshot {
+        }
+        .map_err(|error| Issue::new(error.kind, &file.label, error.message).at(error.location))?;
+        Ok(Snapshot {
             facts,
             source: source.to_owned(),
             hide_findings: !path.is_file()
                 && config
                     .selection
                     .suppress_generated_findings(&file.label, source),
-        }
+        })
     }) {
         Ok(work) => {
             for (file, work) in project.files.iter().zip(work) {
                 stamps.push(work.stamp);
                 selected_paths.push(file.label.clone());
-                match work.result {
+                match work.result.and_then(|snapshot| snapshot) {
                     Ok(Snapshot {
-                        facts: Ok(facts),
+                        facts,
                         source,
                         hide_findings,
                     }) => {
@@ -769,11 +771,12 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                             }
                         }
                     }
-                    Ok(Snapshot {
-                        facts: Err(error), ..
-                    }) => issues.push(
-                        Issue::new(error.kind, &file.label, error.message).at(error.location),
-                    ),
+                    Err(issue)
+                        if preview_source::javascript_extension(OsStr::new(&file.label))
+                            .is_some() =>
+                    {
+                        javascript_analysis.issues.push(issue);
+                    }
                     Err(issue) => issues.push(issue),
                 }
             }
@@ -846,15 +849,20 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     } else {
         Analysis::default()
     };
-    if include_dead_code && has_javascript && issues.is_empty() {
+    if include_dead_code
+        && has_javascript
+        && issues.is_empty()
+        && analysis.issues.is_empty()
+        && javascript_analysis.issues.is_empty()
+    {
         if path.is_file() {
-            issues.push(Issue::new(
+            javascript_analysis.issues.push(Issue::new(
                 "unsupported_js_input_scope",
                 &selected_paths[0],
                 "JavaScript and TypeScript file reachability requires scanning the package directory",
             ));
         } else {
-            javascript::analyze(&project, &js_modules, &mut analysis);
+            javascript::analyze(&project, &js_modules, &mut javascript_analysis);
         }
     }
     if let Some(mut runtime) = runtime {
@@ -905,7 +913,13 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             ));
         }
     }
-    let static_complete = issues.is_empty();
+    let python_complete = issues.is_empty();
+    let javascript_complete = python_complete && javascript_analysis.issues.is_empty();
+    if javascript_complete {
+        analysis.findings.append(&mut javascript_analysis.findings);
+        analysis.evidence.append(&mut javascript_analysis.evidence);
+    }
+    issues.append(&mut javascript_analysis.issues);
     if has_javascript && enable_quality && !config.ignores_rule(dependencies::RULE) {
         issues.push(Issue::new(
             "unsupported_npm_dependency_analysis",
@@ -956,7 +970,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         .iter()
         .map(|file| (file.path.as_str(), &file.facts))
         .collect();
-    if static_complete {
+    if python_complete {
         for mut finding in analysis.findings {
             if generated_sources.contains(&finding.file) {
                 continue;
@@ -1073,7 +1087,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 rule_id: javascript::RULE,
                 status: if !include_dead_code {
                     "not_run"
-                } else if static_complete {
+                } else if javascript_complete {
                     "complete"
                 } else {
                     "incomplete"

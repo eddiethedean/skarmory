@@ -5,8 +5,11 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{IdentifierReference, TSExternalModuleReference, TSImportType};
+use oxc_ast::ast::{
+    Expression, IdentifierReference, MemberExpression, TSExternalModuleReference, TSImportType,
+};
 use oxc_ast_visit::Visit;
+use oxc_ast_visit::walk::walk_member_expression;
 use oxc_parser::Parser;
 use oxc_span::{SourceType, Span};
 use serde::{Deserialize, Serialize};
@@ -27,6 +30,14 @@ const MANIFEST: &str = "package.json";
 // input that can create frames and reserve a stack independent of the caller.
 const MAX_PARSE_BYTES: usize = 16 * 1024;
 const PARSER_STACK_BYTES: usize = 64 * 1024 * 1024;
+const UNSUPPORTED_GLOBAL_LOADERS: &[&str] = &[
+    "require",
+    "module",
+    "Worker",
+    "SharedWorker",
+    "importScripts",
+    "eval",
+];
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Module {
@@ -74,7 +85,7 @@ pub(super) fn extract(
     };
     match cache {
         Some(cache) => cache.get_or_extract_variant(
-            &format!("phase03-js-v2/oxc-0.159.0/{extension}"),
+            &format!("phase03-js-v3/oxc-0.159.0/{extension}"),
             source,
             parse,
         ),
@@ -181,12 +192,24 @@ struct OtherLoaders {
 
 impl<'a> Visit<'a> for OtherLoaders {
     fn visit_identifier_reference(&mut self, item: &IdentifierReference<'a>) {
-        if matches!(
-            item.name.as_str(),
-            "require" | "module" | "Worker" | "SharedWorker" | "importScripts" | "eval"
-        ) {
+        if UNSUPPORTED_GLOBAL_LOADERS.contains(&item.name.as_str()) {
             self.first.get_or_insert(item.span);
         }
+    }
+
+    fn visit_member_expression(&mut self, item: &MemberExpression<'a>) {
+        if matches!(
+            item.object().get_inner_expression(),
+            Expression::Identifier(object)
+                if matches!(object.name.as_str(), "globalThis" | "self" | "window" | "global")
+        ) && let Some((span, name)) = item.static_property_info()
+            && name
+                .as_str()
+                .is_some_and(|name| UNSUPPORTED_GLOBAL_LOADERS.contains(&name))
+        {
+            self.first.get_or_insert(span);
+        }
+        walk_member_expression(self, item);
     }
 
     fn visit_ts_import_type(&mut self, item: &TSImportType<'a>) {

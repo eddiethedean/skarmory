@@ -225,19 +225,33 @@ fn marks_missing_ambiguous_or_unmodeled_inputs_incomplete() {
 }
 
 #[test]
-fn does_not_report_a_module_reached_through_commonjs_as_unused() {
+fn does_not_report_modules_reached_through_unsupported_loaders_as_unused() {
     let tree = tempfile::tempdir().unwrap();
     let root = tree.path();
     put(root, "package.json", r#"{"main":"main.js"}"#);
-    put(root, "main.js", "module.require('./live.js');\n");
     put(root, "live.js", "console.log('live');\n");
 
-    let report = scan(root, &["."], 2);
-    assert_eq!(
-        report["coverage"]["issues"][0]["kind"],
-        "unsupported_js_module_loading"
+    for source in [
+        "module.require('./live.js');\n",
+        "self.importScripts('./live.js');\n",
+        "new globalThis['Worker']('./live.js');\n",
+    ] {
+        put(root, "main.js", source);
+        let report = scan(root, &["."], 2);
+        assert_eq!(
+            report["coverage"]["issues"][0]["kind"],
+            "unsupported_js_module_loading"
+        );
+        assert!(findings(&report).is_empty());
+    }
+
+    put(
+        root,
+        "main.js",
+        "const local = { importScripts() {} }; local.importScripts();\n",
     );
-    assert!(findings(&report).is_empty());
+    let report = scan(root, &["."], 0);
+    assert_eq!(findings(&report), [("live.js", 80)]);
 }
 
 #[test]
@@ -291,4 +305,29 @@ fn cache_reuses_file_facts_and_refreshes_graph_after_source_and_manifest_edits()
     compare(&[("live.ts", 80)], 2);
     put(root, "package.json", r#"{"main":"live.ts"}"#);
     compare(&[("dead.js", 65), ("main.ts", 80)], 3);
+}
+
+#[test]
+fn incomplete_javascript_keeps_completed_python_findings() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(root, "app.py", "def definitely_unused():\n    return 42\n");
+
+    for (source, kind) in [
+        ("console.log('example');\n", "missing_js_entrypoint"),
+        ("export const broken = ;\n", "parse_error"),
+    ] {
+        put(root, "notes/demo.js", source);
+        let report = scan(root, &[".", "--confidence", "0", "--strict"], 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert_eq!(report["coverage"]["issues"][0]["kind"], kind);
+        assert_eq!(
+            report["analysis_summary"]["javascript_file_analysis"]["status"],
+            "incomplete"
+        );
+        assert!(findings(&report).is_empty());
+        let python = report["unused_functions"].as_array().unwrap();
+        assert_eq!(python.len(), 1);
+        assert_eq!(python[0]["name"], "definitely_unused");
+    }
 }
