@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use ruff_python_ast::comparable::ComparableStmt;
 use ruff_python_ast::{Alias, ModModule, Stmt};
 use ruff_text_size::Ranged;
 
@@ -25,6 +26,8 @@ pub const SAFE_IMPORT_ROOTS: &[&str] = &[
 pub struct EditPlan {
     /// Byte range to remove from the original source.
     pub removal: Range<usize>,
+    /// Byte range of the selected statement before editing.
+    pub statement: Range<usize>,
     pub import_roots: Vec<String>,
     pub anchor: String,
 }
@@ -45,6 +48,20 @@ pub fn validate_replacement(replacement: &str) -> Result<(), String> {
     parse_source(replacement)
         .map(|_| ())
         .map_err(|error| error.message)
+}
+
+/// Check that the selected statement did not reappear, ignoring locations and trivia.
+pub fn contains_statement(source: &str, anchor: &str) -> Result<bool, String> {
+    let (expected, _) = parse(anchor).map_err(|error| error.message)?;
+    let [statement] = expected.body.as_slice() else {
+        return Err("cleanup anchor must describe one statement".into());
+    };
+    let expected = ComparableStmt::from(statement);
+    let (actual, _) = parse(source).map_err(|error| error.message)?;
+    Ok(actual
+        .body
+        .iter()
+        .any(|statement| ComparableStmt::from(statement) == expected))
 }
 
 impl<'a> Source<'a> {
@@ -133,8 +150,8 @@ impl<'a> Source<'a> {
             _ => return Err("no deterministic cleanup edit supports this rule".into()),
         };
 
-        let statement = &module.body[index];
-        let anchor = source[range(statement)].to_owned();
+        let statement = range(&module.body[index]);
+        let anchor = source[statement.clone()].to_owned();
         let removal = match partial {
             Some(partial) => partial,
             None => {
@@ -143,11 +160,12 @@ impl<'a> Source<'a> {
                 {
                     return Err("removing the statement would change the module docstring".into());
                 }
-                whole_lines(source, range(statement))?
+                whole_lines(source, statement.clone())?
             }
         };
         Ok(EditPlan {
             removal,
+            statement,
             import_roots,
             anchor,
         })
@@ -276,7 +294,16 @@ fn whole_lines(source: &str, statement: Range<usize>) -> Result<Range<usize>, St
 mod tests {
     use std::ops::Range;
 
-    use super::{Source, validate_replacement};
+    use super::{Source, contains_statement, validate_replacement};
+
+    #[test]
+    fn statement_identity_ignores_shifts_and_trivia() {
+        let anchor = "def unused():\n    return 1";
+        assert!(
+            contains_statement("\n\ndef unused( ):  # comment\n    return (1)\n", anchor).unwrap()
+        );
+        assert!(!contains_statement("def unused():\n    return 2\n", anchor).unwrap());
+    }
 
     fn reconstruct(source: &str, removal: Range<usize>) -> String {
         let mut replacement = source.to_owned();

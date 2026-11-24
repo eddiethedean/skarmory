@@ -10,6 +10,19 @@ fn project(source: &str) -> tempfile::TempDir {
     project
 }
 
+fn skarmory(root: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
+    command
+        .current_dir(root)
+        .env_remove("SKYLOS_CONFIG_FILE")
+        .env_remove("SKYLOS_POLICY_BASE")
+        .env_remove("SKYLOS_SYNCED_POLICY_FILE")
+        .env_remove("DJANGO_SETTINGS_MODULE")
+        .env_remove("SKARMORY_TEST_CLEANUP_ACTION")
+        .env_remove("SKARMORY_TEST_CLEANUP_BINARY");
+    command
+}
+
 fn cleanup(root: &Path, args: &[&str], expected_exit: i32) -> Value {
     cleanup_with_check(root, args, expected_exit, None)
 }
@@ -20,15 +33,8 @@ fn cleanup_with_check(
     expected_exit: i32,
     check_action: Option<&str>,
 ) -> Value {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
+    let mut command = skarmory(root);
     command
-        .current_dir(root)
-        .env_remove("SKYLOS_CONFIG_FILE")
-        .env_remove("SKYLOS_POLICY_BASE")
-        .env_remove("SKYLOS_SYNCED_POLICY_FILE")
-        .env_remove("DJANGO_SETTINGS_MODULE")
-        .env_remove("SKARMORY_TEST_CLEANUP_ACTION")
-        .env_remove("SKARMORY_TEST_CLEANUP_BINARY")
         .args(["cleanup", ".", "--format", "json"])
         .args(args);
     if let Some(action) = check_action {
@@ -415,10 +421,10 @@ fn explicit_cleanup_check_fixture() {
     let Ok(action) = std::env::var("SKARMORY_TEST_CLEANUP_ACTION") else {
         return;
     };
-    let expected = if action == "partial" {
-        "import json\r\nprint('ready')\r\n"
-    } else {
-        "print('ready')\r\n"
+    let expected = match action.as_str() {
+        "partial" => "import json\r\nprint('ready')\r\n",
+        "new-dependency-review" => "\r\ndef existing():\r\n    return 7\r\n\r\nprint('ready')\r\n",
+        _ => "print('ready')\r\n",
     };
     assert_eq!(fs::read("app.py").unwrap(), expected.as_bytes());
     match action.as_str() {
@@ -427,18 +433,229 @@ fn explicit_cleanup_check_fixture() {
             fs::write("app.py", b"print('user change')\r\n").unwrap();
             std::process::exit(42);
         }
+        "restore-source" => {
+            fs::write("app.py", b"import math\r\nprint('ready')\r\n").unwrap();
+        }
+        "edit-source" => {
+            fs::write("app.py", b"print('user change')\r\n").unwrap();
+        }
+        "change-newlines" => fs::write("app.py", b"print('ready')\n").unwrap(),
+        "remove-source" => fs::remove_file("app.py").unwrap(),
         "change-policy" | "change-policy-and-fail" => {
             fs::write("pyproject.toml", "[tool.skylos]\nignore = [\"SKY-U002\"]\n").unwrap();
         }
         "add-provider" | "add-provider-and-fail" => {
             fs::write("math.py", "print('local provider')\n").unwrap();
         }
-        "pass" | "partial" => {}
+        "change-dependencies" | "change-dependencies-and-fail" => {
+            fs::write("requirements.txt", "flask\nrequests\n").unwrap();
+        }
+        "pass" | "partial" | "new-dependency-review" => {}
         _ => panic!("unknown fixture action {action}"),
     }
     if action.ends_with("-and-fail") {
         std::process::exit(42);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_returned_original_finding_fails_rescan_without_overwriting_the_source() {
+    let original = "import math\r\nprint('ready')\r\n";
+    let project = project(original);
+    let queue = cleanup(project.path(), &[], 0);
+    let id = field(task(&queue, "SKY-U002", "math"), "id");
+    let report = cleanup_with_check(
+        project.path(),
+        &["--task", id, "--apply", "--test-cmd", &check_command()],
+        1,
+        Some("restore-source"),
+    );
+    let execution = &report["execution"];
+    assert_eq!(execution["status"], "failed", "{execution}");
+    assert_eq!(execution["tests"]["status"], "passed", "{execution}");
+    assert_eq!(execution["rescan"]["status"], "failed", "{execution}");
+    assert_eq!(execution["rescan"]["original_present"], true, "{execution}");
+    assert_eq!(execution["rolled_back"], false, "{execution}");
+    assert_eq!(
+        fs::read(project.path().join("app.py")).unwrap(),
+        original.as_bytes()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_passing_check_that_edits_or_removes_the_target_preserves_the_user_change() {
+    let (_fixture, command) = junit_check_fixture();
+    for (action, expected) in [
+        ("edit-source", Some(b"print('user change')\r\n".as_slice())),
+        ("remove-source", None),
+    ] {
+        let project = project("import math\r\nprint('ready')\r\n");
+        fs::write(project.path().join("helper.py"), "print('untouched')\n").unwrap();
+        let queue = cleanup(project.path(), &[], 0);
+        let id = field(task(&queue, "SKY-U002", "math"), "id");
+        let report = cleanup_with_check(
+            project.path(),
+            &["--task", id, "--apply", "--test-cmd", &command],
+            2,
+            Some(action),
+        );
+        let execution = &report["execution"];
+        assert_eq!(execution["status"], "incomplete", "{execution}");
+        assert_eq!(execution["tests"]["status"], "passed", "{execution}");
+        assert_eq!(execution["tests"]["observed"], true, "{execution}");
+        assert_eq!(execution["rescan"]["status"], "incomplete", "{execution}");
+        assert_eq!(execution["rolled_back"], false, "{execution}");
+        match expected {
+            Some(bytes) => assert_eq!(fs::read(project.path().join("app.py")).unwrap(), bytes),
+            None => assert!(!project.path().join("app.py").exists()),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_passing_rescan_cannot_verify_changed_raw_source_bytes() {
+    let project = project("import math\r\nprint('ready')\r\n");
+    let queue = cleanup(project.path(), &[], 0);
+    let id = field(task(&queue, "SKY-U002", "math"), "id");
+    let (_fixture, command) = junit_check_fixture();
+    let report = cleanup_with_check(
+        project.path(),
+        &["--task", id, "--apply", "--test-cmd", &command],
+        2,
+        Some("change-newlines"),
+    );
+    let execution = &report["execution"];
+    assert_eq!(execution["status"], "incomplete", "{execution}");
+    assert_eq!(execution["tests"]["status"], "passed", "{execution}");
+    assert_eq!(execution["tests"]["observed"], true, "{execution}");
+    assert_eq!(execution["rescan"]["status"], "passed", "{execution}");
+    assert_eq!(execution["rescan"]["original_present"], false);
+    assert_eq!(execution["rolled_back"], false, "{execution}");
+    assert!(
+        execution["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| {
+                line.as_str()
+                    .is_some_and(|message| message.to_lowercase().contains("source changed"))
+            }),
+        "{execution}"
+    );
+    assert_eq!(
+        fs::read(project.path().join("app.py")).unwrap(),
+        b"print('ready')\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_changed_dependency_manifest_invalidates_validation_and_rollback_proof() {
+    let (_fixture, passing_command) = junit_check_fixture();
+    let failing_command = check_command();
+    for (action, command, exit, status, test_status) in [
+        (
+            "change-dependencies",
+            &passing_command,
+            2,
+            "incomplete",
+            "passed",
+        ),
+        (
+            "change-dependencies-and-fail",
+            &failing_command,
+            1,
+            "failed",
+            "failed",
+        ),
+    ] {
+        let project = project("import math\r\nprint('ready')\r\n");
+        fs::write(
+            project.path().join("pyproject.toml"),
+            "[tool.skylos]\nquality_enabled = true\n",
+        )
+        .unwrap();
+        let manifest = project.path().join("requirements.txt");
+        fs::write(&manifest, "flask\n").unwrap();
+        let queue = cleanup(project.path(), &[], 0);
+        let id = field(task(&queue, "SKY-U002", "math"), "id");
+        let report = cleanup_with_check(
+            project.path(),
+            &["--task", id, "--apply", "--test-cmd", command],
+            exit,
+            Some(action),
+        );
+        let execution = &report["execution"];
+        assert_eq!(execution["status"], status, "{execution}");
+        assert_eq!(execution["tests"]["status"], test_status, "{execution}");
+        assert_eq!(execution["rescan"]["status"], "incomplete", "{execution}");
+        assert_eq!(execution["rolled_back"], false, "{execution}");
+        assert_eq!(
+            fs::read(project.path().join("app.py")).unwrap(),
+            b"print('ready')\r\n"
+        );
+        assert_eq!(fs::read(manifest).unwrap(), b"flask\nrequests\n");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn medium_review_findings_and_shifted_dead_code_do_not_trigger_rollback() {
+    let project = project(concat!(
+        "def obsolete():\r\n    import requests\r\n    return requests.__version__\r\n",
+        "\r\ndef existing():\r\n    return 7\r\n\r\nprint('ready')\r\n",
+    ));
+    fs::write(
+        project.path().join("pyproject.toml"),
+        concat!(
+            "[project]\nname = 'app'\nversion = '1.0.0'\n",
+            "dependencies = ['flask', 'requests']\n[tool.skylos]\nquality_enabled = true\n",
+        ),
+    )
+    .unwrap();
+    let dependency_reviews = || -> Vec<String> {
+        let output = skarmory(project.path())
+            .args(["--profile", "skylos-0.3", "."])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["coverage"]["status"], "complete", "{report}");
+        report["quality"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                assert_eq!(row["rule_id"], "SKY-U005", "{row}");
+                assert_eq!(row["severity"], "MEDIUM", "{row}");
+                field(row, "name").to_owned()
+            })
+            .collect()
+    };
+    assert_eq!(dependency_reviews(), ["flask"]);
+    let queue = cleanup(project.path(), &[], 0);
+    let id = field(task(&queue, "SKY-U001", "obsolete"), "id");
+    let existing = task(&queue, "SKY-U001", "existing");
+    let (_fixture, command) = junit_check_fixture();
+    let report = cleanup_with_check(
+        project.path(),
+        &["--task", id, "--apply", "--test-cmd", &command],
+        0,
+        Some("new-dependency-review"),
+    );
+    let execution = &report["execution"];
+    assert_eq!(execution["status"], "verified", "{execution}");
+    assert_eq!(execution["rescan"]["status"], "passed", "{execution}");
+    assert_eq!(execution["rescan"]["new_findings"], serde_json::json!([]));
+    assert_eq!(execution["rolled_back"], false, "{execution}");
+    assert_eq!(dependency_reviews(), ["flask", "requests"]);
+    let after_queue = cleanup(project.path(), &[], 0);
+    let shifted = task(&after_queue, "SKY-U001", "existing");
+    assert_eq!(shifted["id"], existing["id"]);
+    assert_ne!(shifted["line"], existing["line"]);
 }
 
 #[cfg(unix)]

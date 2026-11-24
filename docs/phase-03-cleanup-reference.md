@@ -20,6 +20,10 @@ subprocesses and put fixture mutations at the validation boundary.
 | `test_cleanup_execution.py::test_complete_rescan_and_authorized_tests_are_required_for_verified`, `test_zero_exit_without_observed_tests_cannot_verify_a_cleanup`, `test_cleanup_workflow.py::test_authorized_passing_tests_and_same_scope_rescan_produce_verified_receipt` | `observed_checks_and_comparable_rescan_verify_the_edit` runs an explicit command that checks the applied source and emits a fresh JUnit receipt. `an_opaque_zero_exit_check_does_not_verify_the_edit` exercises the same rescan with successful execution and no observed test evidence. |
 | `test_cleanup_fstring_verification.py::test_deletion_only_verification_explains_its_coverage_limit`, `test_custom_junit_without_replacement_coverage_remains_unverified` | `observed_checks_and_comparable_rescan_verify_the_edit` checks the absence of edit coverage evidence is explicit and the deletion-only verified receipt explains its limit. `observed_tests_do_not_verify_a_same_line_import_rewrite` exercises a separate replacement fixture with a passing check and no coverage evidence for the changed line. |
 | `test_cleanup_execution.py::test_test_command_unavailable_is_incomplete_never_passed` | `an_unavailable_explicit_check_leaves_verification_incomplete` requests an unavailable executable and checks the incomplete test receipt and the successfully rescanned edit. |
+| `test_cleanup_execution.py::test_original_anchor_returning_during_rescan_is_not_verified` | `a_returned_original_finding_fails_rescan_without_overwriting_the_source` restores the selected statement before a real rescan. Skarmory reports the returned statement and preserves the restored source. |
+| `test_cleanup_execution.py::test_source_removed_after_rescan_preserves_the_incomplete_receipt` | `source_changed_after_comparison_preserves_passed_rescan_and_user_changes` removes or rewrites the file after a real rescan and comparison. Both receipts still pass, the overall execution is incomplete, and the intervening change is preserved. `a_passing_rescan_cannot_verify_changed_raw_source_bytes` exercises the final check with a real subprocess that changes the file's line endings. |
+| `test_cleanup_execution.py::test_new_high_risk_finding_rolls_back_but_existing_shift_does_not`, `test_comparator_ignores_advice_as_risk_but_preserves_identity_variants`, `test_medium_defects_and_evidence_changes_are_regressions`, `test_source_anchors_detect_new_risk_at_different_statement_even_if_totals_match` | Core comparator tests supply synthetic defect and review rows to the production report consumer. `medium_review_findings_and_shifted_dead_code_do_not_trigger_rollback` checks that native medium-severity dependency findings remain review items. Malformed external reports are outside this interface because cleanup consumes typed reports from the scanner. |
+| `test_cleanup_execution.py::test_incomplete_or_changed_scope_never_verifies` | The real configuration, provider, manifest, and source mutation tests exercise comparability. `a_changed_dependency_manifest_invalidates_validation_and_rollback_proof` additionally verifies that changing requirements during a passing or failing check preserves the manifest and prevents verification or rollback. |
 
 Run the ports with
 `cargo test --locked -p skarmory_cli --test phase03_cleanup`. Guarded source
@@ -37,6 +41,12 @@ were unchanged. The cases were `test_actual_analyzer_patch_roundtrip`,
 `test_failing_authorized_check_rolls_back_and_returns_failure`, and
 `test_authorized_passing_tests_and_same_scope_rescan_produce_verified_receipt`.
 The last case invoked real pytest through the explicit check boundary.
+
+The Phase 0.3 scanner supplies Python dead-code findings and optional
+dependency review findings. The synthetic comparator inputs exercise the
+pinned risk distinctions without claiming native coverage for later rule
+families. Full test inventory and release receipts remain part of the
+release gate.
 
 This mapping records scoped translations of assertions and boundaries.
 The pinned tests themselves remain in the reference checkout. The release

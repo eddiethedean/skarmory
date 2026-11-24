@@ -558,11 +558,15 @@ preview proof to bind the request to that preview. Guarded writes currently
 require Unix. The optional `--test-cmd` runs an explicitly supplied command
 without a shell. The CLI rescans with the same settings after applying an
 edit. A deletion-only patch can be verified when tests ran and the rescan
-confirms the original finding is gone. Replacements remain unverified
-without changed-line execution evidence. A failed command or a finding that
-survives the rescan triggers rollback when the edited file still has the
-exact bytes Skarmory wrote and the proof dependencies agree. Changed inputs
-or incomplete analysis are recorded in the execution receipt.
+confirms the original statement is gone and no new risk findings appeared.
+Replacements remain unverified without changed-line execution evidence. A
+failed command, a returned statement, or a newly introduced risk finding
+triggers rollback when the edited file still has the exact bytes Skarmory
+wrote and the proof dependencies agree. Skarmory checks the file again
+after comparing the scans. A late removal or rewrite leaves the rescan
+result intact and makes the overall execution incomplete. When project
+configuration enables dependency analysis, its inputs are included in the
+proof and its medium-severity unused dependency findings remain review work.
 
 Exit 0 indicates a queue, preview, or applied edit with a completed rescan.
 Exit 1 indicates failed validation. Exit 2 indicates an invalid request,

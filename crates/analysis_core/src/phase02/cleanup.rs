@@ -1,6 +1,9 @@
 //! Live Python cleanup planning, validation, and execution.
 
+mod comparison;
 mod execution;
+#[cfg(all(test, unix))]
+mod tests;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -9,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::Value;
-use similar::{DiffTag, TextDiff};
+use similar::TextDiff;
 use skarmory_python::cleanup;
 use walkdir::WalkDir;
 
@@ -80,6 +83,7 @@ struct Preview {
 
 struct PlannedEdit {
     removal: Range<usize>,
+    statement: Range<usize>,
     proof: String,
     import_roots: Vec<String>,
 }
@@ -124,10 +128,10 @@ impl Edit<'_> {
     }
 
     fn is_deletion_only(&self) -> bool {
-        TextDiff::from_lines(&self.source, &self.replacement)
-            .ops()
-            .iter()
-            .all(|op| matches!(op.tag(), DiffTag::Equal | DiffTag::Delete))
+        let source = self.source.as_bytes();
+        let removal = &self.plan.removal;
+        (removal.start == 0 || source[removal.start - 1] == b'\n')
+            && (removal.end == source.len() || source[removal.end - 1] == b'\n')
     }
 }
 
@@ -135,8 +139,24 @@ impl Edit<'_> {
 struct Rescan {
     status: &'static str,
     original_present: Option<bool>,
+    new_findings: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+impl Rescan {
+    fn compared(original_present: bool, new_findings: Vec<Value>) -> Self {
+        Self {
+            status: if original_present || !new_findings.is_empty() {
+                "failed"
+            } else {
+                "passed"
+            },
+            original_present: Some(original_present),
+            new_findings,
+            error: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -168,7 +188,6 @@ pub struct Outcome {
 
 struct Candidate {
     task: Task,
-    identity: String,
     edit: Option<PlannedEdit>,
 }
 
@@ -263,6 +282,7 @@ impl Scan {
                     hash_field(&mut proof, &(planned.removal.end as u64).to_le_bytes());
                     Ok::<_, String>(PlannedEdit {
                         removal: planned.removal,
+                        statement: planned.statement,
                         proof: proof.finalize().to_hex().to_string(),
                         import_roots: planned.import_roots,
                     })
@@ -278,11 +298,7 @@ impl Scan {
                         None
                     }
                 };
-                Candidate {
-                    task,
-                    identity: row.identity_name.clone(),
-                    edit,
-                }
+                Candidate { task, edit }
             })
             .collect()
     }
@@ -378,6 +394,7 @@ pub fn run(path: &Path, settings: &Settings) -> Result<Outcome, ConfigError> {
     let root = path.canonicalize().map_err(ConfigError::new)?;
     let options = Options {
         profile: Profile::SkylosPhase03,
+        enable_quality: None,
         config_file: settings.config_file.clone(),
         workers: settings.workers.max(1),
         cache_dir: settings.cache_dir.clone(),
@@ -449,14 +466,7 @@ pub fn run(path: &Path, settings: &Settings) -> Result<Outcome, ConfigError> {
                     "source or proof dependencies changed before apply",
                 ));
             }
-            let execution = apply(
-                &root,
-                &options,
-                &fresh.inputs,
-                candidate,
-                &edit,
-                check.as_ref(),
-            )?;
+            let execution = apply(&root, &options, &fresh, candidate, &edit, check.as_ref())?;
             exit_code = match execution.status {
                 "failed" => 1,
                 "incomplete" => 2,
@@ -478,7 +488,7 @@ pub fn run(path: &Path, settings: &Settings) -> Result<Outcome, ConfigError> {
 fn apply(
     root: &Path,
     options: &Options,
-    before: &Inputs,
+    before: &Scan,
     candidate: &Candidate,
     edit: &Edit<'_>,
     check: Option<&Check>,
@@ -491,20 +501,26 @@ fn apply(
         edit.replacement.as_bytes(),
     )?;
     let tests = check.map_or_else(CheckResult::skipped, |check| check.run(root));
+    let rescan = compare_rescan(root, before, candidate, edit, Scan::read(root, options));
+    Ok(finish_execution(root, candidate, edit, tests, rescan))
+}
+
+fn finish_execution(
+    root: &Path,
+    candidate: &Candidate,
+    edit: &Edit<'_>,
+    tests: CheckResult,
+    rescan: Rescan,
+) -> Execution {
+    let target = Path::new(&candidate.task.file);
     let mut result = Execution {
         status: "applied_unverified",
         applied: true,
         rolled_back: false,
         tests,
-        rescan: Rescan {
-            status: "skipped",
-            original_present: None,
-            error: None,
-        },
+        rescan,
         limitations: Vec::new(),
     };
-    let after = Scan::read(root, options);
-    result.rescan = verify(root, before, candidate, edit, after);
     result.status = match (
         result.rescan.status,
         result.tests.status,
@@ -513,9 +529,9 @@ fn apply(
         ("failed", _, _) | (_, "failed", _) => {
             if result.rescan.status == "incomplete" {
                 if let Some(error) = &result.rescan.error {
-                    result
-                        .limitations
-                        .push(format!("Rollback proof could not be revalidated: {error}"));
+                    result.limitations.push(format!(
+                        "Rollback was not applied: proof could not be revalidated: {error}"
+                    ));
                 }
             } else {
                 rollback(root, target, edit, &mut result);
@@ -523,6 +539,15 @@ fn apply(
             "failed"
         }
         ("incomplete", _, _) | (_, "incomplete", _) => "incomplete",
+        ("passed", _, _)
+            if !execution::read(root, target)
+                .is_ok_and(|bytes| bytes == edit.replacement.as_bytes()) =>
+        {
+            result
+                .limitations
+                .push("The source changed after the comparable rescan.".into());
+            "incomplete"
+        }
         ("passed", "passed", true) if edit.is_deletion_only() => {
             result
                 .limitations
@@ -538,12 +563,12 @@ fn apply(
         }
         _ => "applied_unverified",
     };
-    Ok(result)
+    result
 }
 
-fn verify(
+fn compare_rescan(
     root: &Path,
-    before: &Inputs,
+    before: &Scan,
     candidate: &Candidate,
     edit: &Edit<'_>,
     after: Result<Scan, ConfigError>,
@@ -551,14 +576,17 @@ fn verify(
     let incomplete = |error: String| Rescan {
         status: "incomplete",
         original_present: None,
+        new_findings: Vec::new(),
         error: Some(error),
     };
     let after = match after {
         Ok(after) => after,
         Err(error) => return incomplete(error.to_string()),
     };
-    if before.policy != after.inputs.policy {
-        return incomplete("configuration changed during cleanup validation".into());
+    if before.inputs.policy != after.inputs.policy {
+        return incomplete(
+            "configuration or other analysis inputs changed during cleanup validation".into(),
+        );
     }
     if !edit.plan.import_roots.is_empty()
         && let Err(error) =
@@ -569,29 +597,34 @@ fn verify(
     if !after.report.is_complete() {
         return incomplete("post-edit analysis has incomplete coverage".into());
     }
-    if !execution::read(root, Path::new(&candidate.task.file))
-        .is_ok_and(|bytes| bytes == edit.replacement.as_bytes())
-    {
-        return incomplete("source changed during cleanup validation".into());
-    }
     let target = Some(candidate.task.file.as_str());
-    if after.inputs.sources.get(&candidate.task.file) != Some(&normalize(&edit.replacement))
-        || before.fingerprint(target) != after.inputs.fingerprint(target)
-    {
+    if before.inputs.fingerprint(target) != after.inputs.fingerprint(target) {
         return incomplete(
             "source coverage or proof dependencies changed during cleanup validation".into(),
         );
     }
-    let original_present = after.report.categories.iter().any(|row| {
-        row.file == candidate.task.file
-            && row.rule_id == candidate.task.rule_id
-            && row.identity_name == candidate.identity
-    });
-    Rescan {
-        status: if original_present { "failed" } else { "passed" },
-        original_present: Some(original_present),
-        error: None,
+    let Some(source) = after.inputs.sources.get(&candidate.task.file) else {
+        return incomplete("source is missing from the cleanup rescan".into());
+    };
+    let original = &edit.source[edit.plan.statement.clone()];
+    match cleanup::contains_statement(source, original) {
+        Ok(true) => return Rescan::compared(true, Vec::new()),
+        Ok(false) => {}
+        Err(error) => return incomplete(error),
     }
+    if source != &normalize(&edit.replacement) {
+        return incomplete("source changed during cleanup validation".into());
+    }
+    let new_findings = comparison::new_risks(
+        &before.report,
+        &after.report,
+        &candidate.task.file,
+        &edit.source,
+        &edit.replacement,
+        &edit.plan.removal,
+        &edit.plan.statement,
+    );
+    Rescan::compared(false, new_findings)
 }
 
 fn rollback(root: &Path, target: &Path, edit: &Edit<'_>, result: &mut Execution) {

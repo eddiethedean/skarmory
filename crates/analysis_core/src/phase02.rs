@@ -1027,6 +1027,7 @@ fn scan_selected(
         issues.append(&mut metadata.issues);
         issues.extend(metadata.verify());
     }
+    let mut cleanup_dependency_sources = BTreeMap::new();
     let mut dependency_result = enable_quality.then(|| {
         dependencies::scan(
             path,
@@ -1035,9 +1036,23 @@ fn scan_selected(
             &config.selection,
             dependency_sources_complete,
             config.ignores_rule(dependencies::RULE),
-            diff_sources.as_deref_mut(),
+            diff_sources.as_deref_mut().or(cleanup_inputs
+                .is_some()
+                .then_some(&mut cleanup_dependency_sources)),
         )
     });
+    if let Some(inputs) = cleanup_inputs.as_deref_mut() {
+        inputs.policy.extend(
+            cleanup_dependency_sources
+                .into_iter()
+                .map(|(file, source)| {
+                    (
+                        preview_source::display(&path.join(file)),
+                        blake3::hash(source.as_bytes()),
+                    )
+                }),
+        );
+    }
     let snapshot_issues = project.verify(stamps);
     if !snapshot_issues.is_empty()
         && dependency_result.is_some()
