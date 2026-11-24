@@ -13,7 +13,9 @@ the [roadmap](docs/roadmap.md) and keep changes scoped to an explicit milestone.
 
 Rust owns the analysis pipeline. Python wrappers convert inputs and outputs;
 they should not grow a second analysis engine. Keep the native CLI usable
-without starting Python.
+without starting Python. Follow the [frontend crate boundaries](docs/language-frontends.md)
+when introducing a language. Validate its independent conformance gate, prior
+language regressions, and minimal/default feature builds.
 
 ## Validation
 
