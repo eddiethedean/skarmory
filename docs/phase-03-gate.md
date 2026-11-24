@@ -66,6 +66,11 @@ and CLI receipts. It runs the original upstream assertions with their markers
 in the frozen Skylos environment. Candidate runs select `skylos-0.3` and
 disable upstream expected-failure markers.
 
+The SDK shard also executes the pinned basic dead-code benchmark with
+the original scorer and staged fixtures. Both score reports are included in
+the receipt. Credit requires complete analysis, the labeled detections and live
+controls, the original timing limit, and verified candidate scan options.
+
 For SDK cases, the adapter forwards upstream scan options, checks the
 candidate interpreter version and architecture, and compares the installed
 package with the wheel. Runtime-evidence cases verify import, explicit

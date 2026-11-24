@@ -112,8 +112,8 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "$reference_python" -m pytest -p no:cacheprovid
 
 | Original SDK case | Pinned Skylos | Local Skarmory |
 | --- | --- | --- |
-| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-False]` | Passed | Blocked by incomplete coverage at `atexit.register`. |
-| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-True]` | Passed | Blocked by the same `unresolved_call` diagnostic. |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-False]` | Passed | Passed |
+| `test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-True]` | Passed | Passed |
 | `test_external_entry_and_callback_roots_keep_transitive_helpers_live[export-False]` | Passed | Passed |
 | `test_external_entry_and_callback_roots_keep_transitive_helpers_live[export-True]` | Passed | Passed |
 | `test_external_entry_and_callback_roots_keep_transitive_helpers_live[entrypoint-False]` | Passed | Passed |
@@ -125,5 +125,18 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "$reference_python" -m pytest -p no:cacheprovid
 The port preserves the original fixture creation and assertions, including the
 marker check that verifies `setup.py` does not execute. It verifies the
 effective grep setting in each case and checks trace disablement where the
-original test explicitly requests it. The two callback cases stay in the
-inventory and receive zero pass credit. [Callback coverage issue #118](https://github.com/eddiethedean/skarmory/issues/118)
+original test explicitly requests it. The dormant `eval(source)` case and both
+shutdown callback cases pass against the installed candidate SDK. [Callback coverage issue #118](https://github.com/eddiethedean/skarmory/issues/118)
+
+
+## Python benchmark candidate
+
+The installed-SDK shard runs the pinned `basic-unused-symbols` manifest case
+through Skylos's original scorer with default label mode. It checks the staged
+fixture bytes against the tracked tree, forwards confidence zero and enabled
+grep verification, and records the original score report from each analyzer.
+Skarmory completes the scan and matches all five unused and three live labels
+within the benchmark's five-second limit. The scorer records one additional
+unlabeled function finding from Skarmory, which default label mode permits.
+A `math.sqrt` call that can invoke a custom numeric conversion still reports
+incomplete coverage.

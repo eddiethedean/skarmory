@@ -4245,6 +4245,15 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "math.sqrt"
+                            && keywords.is_empty()
+                            && matches!(arguments.as_slice(), [argument]
+                                if self.identity(scope, argument, before, 0).is_builtin_scalar()) =>
+                    {
+                        // Exact built-in scalars cannot call user-defined numeric conversions.
+                    }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -8066,6 +8075,40 @@ async def unused():
                 && entry.kind == "local_namespace"
                 && entry.certainty == "possible"
         }));
+    }
+
+    #[test]
+    fn phase03_math_sqrt_requires_a_bounded_scalar_input() {
+        let scalar = [module(
+            "app.py",
+            "app",
+            "from math import sqrt as root\nRESULT = root(16)\n",
+        )];
+        let report = analyze_phase03(&scalar, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Variable), ["RESULT"]);
+
+        let custom = [module(
+            "app.py",
+            "app",
+            r#"import math
+
+class Custom:
+    def __float__(self):
+        return 16.0
+
+math.sqrt(Custom())
+"#,
+        )];
+        let report = analyze_phase03(&custom, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call"),
+            "{:?}",
+            report.issues
+        );
     }
 
     #[test]
