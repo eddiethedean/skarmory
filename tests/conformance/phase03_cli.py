@@ -1,4 +1,4 @@
-"""Bridge the pinned real-CLI reachability case to the candidate executable."""
+"""Bridge pinned real-CLI cases to the candidate executable."""
 
 import json
 import subprocess
@@ -9,6 +9,16 @@ CASE = (
     "test/test_reachability_integration_qa.py"
     "::test_real_cli_reports_dead_cycle_and_keeps_live_variant"
 )
+WORKFLOW_SOURCES = {"test/test_pr_impact.py", "test/test_cli_json_ci_format.py"}
+INVALID_IMPACT = (
+    "test/test_pr_impact.py::test_impact_rejects_missing_diff_or_partial_head"
+)
+INVALID_IMPACT_ARGS = {
+    f"{INVALID_IMPACT}[extra0]": ["--diff-mode", "impact"],
+    f"{INVALID_IMPACT}[extra1]": [
+        "--diff-mode", "impact", "--diff", "HEAD", "--diff-base", "HEAD",
+    ],
+}
 
 
 class RecursiveCaseCli:
@@ -51,3 +61,61 @@ class RecursiveCaseCli:
             ):
                 self.completed_sources.append(source)
         return completed
+
+
+class WorkflowCaseCli:
+    def __init__(self, binary, fixture, case_id):
+        self.binary = binary
+        self.fixture = fixture.resolve()
+        self.invalid_args = INVALID_IMPACT_ARGS.get(case_id)
+        self.invocations = 0
+        self.verified = 0
+
+    @property
+    def proved(self):
+        return self.invocations == self.verified > 0
+
+    def run(self):
+        self.invocations += 1
+        launcher, source, *args = sys.argv
+        source = Path(source)
+        if launcher != "skylos" or not source.is_absolute() or (
+            not source.resolve().is_relative_to(self.fixture)
+        ):
+            raise ValueError("pinned workflow CLI did not select its fixture")
+        output = None
+        if self.invalid_args is not None:
+            if args != self.invalid_args:
+                raise ValueError("pinned invalid impact invocation changed")
+        else:
+            for flag in ("--no-upload", "--no-provenance"):
+                if args.count(flag) != 1:
+                    raise ValueError(f"pinned workflow invocation requires {flag}")
+                args.remove(flag)
+            if "--output" in args:
+                output = Path(args[args.index("--output") + 1])
+                if not output.is_absolute() or not output.resolve().is_relative_to(self.fixture):
+                    raise ValueError("pinned workflow output escaped its fixture")
+
+        completed = subprocess.run(
+            [str(self.binary), str(source), "--profile", "skylos-0.3", *args],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+        if self.invalid_args is not None:
+            if completed.returncode == 2 and not completed.stdout and completed.stderr.strip():
+                self.verified += 1
+        elif completed.returncode in {0, 1, 2}:
+            report = json.loads(
+                completed.stdout if output is None else output.read_text(encoding="utf-8")
+            )
+            if (
+                report.get("profile") == "skylos-5.7.0-python-dead-code-phase03"
+                and report.get("selected_paths")
+                and "analysis_coverage" in report
+            ):
+                self.verified += 1
+
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        if completed.returncode:
+            raise SystemExit(completed.returncode)

@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The starter
-inventory assigns 25 cases to Phase 0.3 and defers six to later language
+inventory assigns 38 cases to Phase 0.3 and defers six to later language
 milestones. [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
 
@@ -77,8 +77,11 @@ candidate interpreter version and architecture, and compares the installed
 package with the wheel. Runtime-evidence cases verify import, explicit
 disablement, or rejection as appropriate. For the recursive CLI case, the
 adapter records the binary hash and verifies complete scans of both fixture
-states with the default grep verification. Both adapters check that the
-original assertion lines execute.
+states with the default grep verification. The CLI shard also runs the
+landed Git impact and real-scan JSON-CI cases using the original fixtures
+and options. It reads the native CLI's stdout and report files or verifies
+the CLI error for invalid impact invocations. The adapters require the
+original assertion lines to execute.
 
 For versions below 0.3, matching pull requests and manual workflow runs
 require the mapped SDK and CLI cases to pass and upload the full gate decision.

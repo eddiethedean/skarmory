@@ -359,6 +359,164 @@ variants = ["linux-x86_64-cp311-python-cli"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 
+# Run the pinned Git impact and real-scan JSON-CI tests through the native CLI.
+
+[[cases]]
+id = "test/test_pr_impact.py::test_removed_caller_is_introduced_outside_changed_lines"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:54", "test/test_pr_impact.py:55", "test/test_pr_impact.py:57", "test/test_pr_impact.py:58", "test/test_pr_impact.py:59", "test/test_pr_impact.py:60", "test/test_pr_impact.py:61"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:50-61."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_line_shift_does_not_reintroduce_existing_dead_code"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:68", "test/test_pr_impact.py:69", "test/test_pr_impact.py:70"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:64-70."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_incomplete_base_blocks_instead_of_claiming_all_findings_new"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:77", "test/test_pr_impact.py:78", "test/test_pr_impact.py:79", "test/test_pr_impact.py:80"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:73-80."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_incomplete_head_caller_does_not_claim_dependency_impact"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:95", "test/test_pr_impact.py:96", "test/test_pr_impact.py:97", "test/test_pr_impact.py:98"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:83-98."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_subdirectory_qualified_identity_is_stable"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:105", "test/test_pr_impact.py:106", "test/test_pr_impact.py:107"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:101-107."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_explicit_operator_config_applies_to_baseline_file_processing"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:128", "test/test_pr_impact.py:129", "test/test_pr_impact.py:130", "test/test_pr_impact.py:131"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:110-131."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_nongated_impact_uses_the_same_base_policy_for_head_and_baseline"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:147", "test/test_pr_impact.py:148", "test/test_pr_impact.py:149", "test/test_pr_impact.py:150"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:134-150."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_new_scan_directory_has_an_empty_baseline"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:228", "test/test_pr_impact.py:229", "test/test_pr_impact.py:230", "test/test_pr_impact.py:231"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:217-231."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_impact_rejects_missing_diff_or_partial_head[extra0]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:315"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:310-315."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_pr_impact.py::test_impact_rejects_missing_diff_or_partial_head[extra1]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_pr_impact.py"
+assertions = ["test/test_pr_impact.py:315"]
+prerequisites = ["test/test_pr_impact.py:26", "native-cli-workflow"]
+provenance = "Pinned test/test_pr_impact.py:20-27 creates the Git fixture. Changes are defined in test/test_pr_impact.py:310-315."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cli_json_ci_format.py::test_json_ci_real_scan_only_omits_top_level_bulk"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cli_json_ci_format.py"
+assertions = ["test/test_cli_json_ci_format.py:230", "test/test_cli_json_ci_format.py:231", "test/test_cli_json_ci_format.py:232", "test/test_cli_json_ci_format.py:233"]
+prerequisites = ["test/test_cli_json_ci_format.py:220", "native-cli-workflow"]
+provenance = "Pinned test/test_cli_json_ci_format.py:220 generates the Python source in the test's temporary directory."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cli_json_ci_format.py::test_json_ci_file_output_keeps_sarif"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cli_json_ci_format.py"
+assertions = ["test/test_cli_json_ci_format.py:251", "test/test_cli_json_ci_format.py:252", "test/test_cli_json_ci_format.py:258", "test/test_cli_json_ci_format.py:263"]
+prerequisites = ["test/test_cli_json_ci_format.py:241", "native-cli-workflow"]
+provenance = "Pinned test/test_cli_json_ci_format.py:241 generates the Python source in the test's temporary directory."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cli_json_ci_format.py::test_json_ci_incomplete_scan_keeps_exit_two"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cli_json_ci_format.py"
+assertions = ["test/test_cli_json_ci_format.py:274", "test/test_cli_json_ci_format.py:277", "test/test_cli_json_ci_format.py:278"]
+prerequisites = ["test/test_cli_json_ci_format.py:269", "native-cli-workflow"]
+provenance = "Pinned test/test_cli_json_ci_format.py:269 generates the Python source in the test's temporary directory."
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
 # Each loop checks every name in the pinned EXPECTED_DEAD or EXPECTED_ALIVE set.
 
 [[cases]]
