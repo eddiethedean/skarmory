@@ -1,7 +1,9 @@
 # Contributing to Skarmory
 
-Skarmory has a bounded [Python dead-code preview](docs/phase-01.md). Start with
-the [roadmap](docs/roadmap.md) and keep changes scoped to an explicit milestone.
+Skarmory 0.2.0 ships bounded [Python dead-code compatibility](docs/phase-02.md)
+with file-fact caching and a native CLI and Python SDK. Development on `main`
+targets [Phase 0.3](docs/phase-03.md). Start with the [roadmap](docs/roadmap.md)
+and keep changes scoped to an explicit milestone.
 
 ## Working on a change
 
@@ -13,7 +15,9 @@ the [roadmap](docs/roadmap.md) and keep changes scoped to an explicit milestone.
 
 Rust owns the analysis pipeline. Python wrappers convert inputs and outputs;
 they should not grow a second analysis engine. Keep the native CLI usable
-without starting Python.
+without starting Python. Follow the [frontend crate boundaries](docs/language-frontends.md)
+when introducing a language. Validate its independent conformance gate, prior
+language regressions, and minimal/default feature builds.
 
 ## Validation
 
