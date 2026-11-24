@@ -1,9 +1,12 @@
 # Phase 0.3 Python dead-code coverage expansion
 
-**Planned.** Phase 0.3 starts from the [Phase 0.2 profile](phase-02.md) and ships
-before [quality and secrets](roadmap.md#04-quality-and-secrets). Every in-scope Python dead-code
-test at the pinned [Skylos 5.7.0 revision](skylos-5.7.0-contract.md) must pass
-against Skarmory for Phase 0.3 to release. The inventory covers Python
+**In development.** Phase 0.3 starts from the [Phase 0.2 profile](phase-02.md)
+and ships before [quality and secrets](roadmap.md#04-quality-and-secrets).
+Published 0.2.0 packages do not support the `skylos-0.3` selector. The preview
+behaviors below describe source builds from `main`; the workstream and release
+criteria describe the target contract. Every in-scope Python dead-code test at
+the pinned [Skylos 5.7.0 revision](skylos-5.7.0-contract.md) must pass against
+Skarmory for Phase 0.3 to release. The inventory covers Python
 semantics, frameworks and workflows. Other language assertions and inseparable
 mixed-language cases are assigned to their [own milestones](language-frontends.md).
 The Phase 0.3 profile qualifies Python sources; existing non-Python preview work
@@ -24,10 +27,11 @@ is a discovery hint. For example, review individual cases in
 and classify other language cases by their owning milestone. For each mixed
 case, preserve independently separable Python assertions and defer assertions
 that require an unavailable language frontend. Record deferred cases without
-counting them as passes or failures for the Python release. Preserve the setup, expected results, and positive and negative
-controls that contribute to the dead-code contract. If a combined Python assertion depends on another rule or workflow, keep that
-dependency in the mapped case. Assign cases requiring other language frontends
-to the first milestone with all required languages.
+counting them as passes or failures for the Python release. Preserve the setup,
+expected results, and positive and negative controls that contribute to the
+dead-code contract. If a combined Python assertion depends on another rule or
+workflow, keep that dependency in the mapped case. Assign cases requiring
+other language frontends to the first milestone with all required languages.
 Count tests embedded in fixture projects when they independently assert analysis
 or workflow behavior. Otherwise, preserve them as inputs to the analysis case.
 
@@ -44,11 +48,13 @@ starting points for discovery and reference runs at the pinned checkout.
 Freeze a versioned manifest containing these fields before using pass counts
 to track implementation:
 
-- **Case ID** uses the pytest node ID with its parameter ID, full native test or subtest name,
-  or the benchmark manifest path and
-  case ID. Record the pinned source path and fixture provenance.
+- **Case ID** uses the pytest node ID with its parameter ID, full native test or
+  subtest name, or the benchmark manifest path and case ID. Record the pinned source path and fixture provenance.
 - **Scope** records the assertion being preserved, its required workstream,
-  and the reason for excluding any reviewed case outside the gate.
+  language dependencies, owning release milestone, and whether it is required
+  for Phase 0.3 or deferred. Assign inseparable mixed-language cases to the
+  first milestone with all required frontends. Record the reason for any
+  exclusion and preserve every independently separable Python assertion.
 - **Required variants** describe each platform, toolchain, optional dependency,
   or backend that the original assertion requires, along with any fixture
   capabilities the runner must verify. Use the upstream preconditions to define
@@ -78,16 +84,20 @@ to track implementation:
    xpass, or absent implementation blocks that case. An upstream-only run,
    mocked analysis result, or reviewed difference earns zero credit.
    [Pinned symlink control](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_trace_file_analyzer.py#L90-L103)
-3. Require the aggregated suite to pass before publication in the
-   [release workflow](../.github/workflows/release.yml). Join expected and
-   observed results by case ID and variant. Verify each result's release
+3. Require the aggregated Python-scoped suite to pass before publication in
+   the [release workflow](../.github/workflows/release.yml). Join expected and
+   observed required results by case ID and variant. Exclude deferred cases
+   from the required result set, pass counts, and blocker counts. Preserve
+   their IDs, prerequisites, and owning milestones for future gates. Verify each result's release
    candidate, test inventory, and applicable artifact identity before giving
    credit. Fail on missing, unexpected, duplicate, mismatched, or nonpassing
    results and on runner errors.
    Publish the inventory, port mapping, exact commands, locked environments,
    revision and artifact identities, and per-case results. Exercise rejection
    of a missing shard, skipped case, missing backend, silent fixture setup
-   failure, and result from another release candidate.
+   failure, and result from another release candidate. Verify that a missing or
+   failing deferred-language case cannot block or receive credit for Phase 0.3,
+   while a missing required Python result still blocks publication.
 
 ## Scope of the Python release inventory
 
@@ -95,6 +105,13 @@ Freeze the Python cases and variants for Phase 0.3. Preserve the complete
 reviewed inventory with owning phases for deferred non-Python cases. Future
 language prerequisites (including missing TypeScript fixture sources) are
 tracked in [language milestones](language-frontends.md).
+
+The default Python-only profile must select Python sources for analysis in a
+mixed repository. Compare a valid Python project with the same project plus
+unsupported or incomplete JavaScript/TypeScript sources. The Python findings
+and coverage must agree. An explicitly requested experimental frontend must
+report its own scope and incomplete coverage where applicable. This condition
+and deferred-case gate validation are tracked in [#41](https://github.com/eddiethedean/skarmory/issues/41).
 
 ## Scope and acceptance
 
