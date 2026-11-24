@@ -821,7 +821,7 @@ fn checked_path(path: &Path) -> Result<(PathBuf, Metadata), String> {
     Ok((resolved, metadata))
 }
 
-fn reject_symlink_components(base: &Path, requested: &Path) -> Result<(), String> {
+pub(super) fn reject_symlink_components(base: &Path, requested: &Path) -> Result<(), String> {
     let Ok(relative) = requested.strip_prefix(base) else {
         return Ok(());
     };

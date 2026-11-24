@@ -197,6 +197,26 @@ class SdkTests(unittest.TestCase):
             skylos.analyze(FIXTURES / "reachable", enable_quality=True)
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_unused_dependency_quality_opt_in(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "app.py").write_text("import yaml\n", encoding="utf-8")
+            (project / "requirements.txt").write_text("pyyaml\npyserial\n", encoding="utf-8")
+            options = {"profile": "skylos-0.3", "grep_verify": False}
+            default = json.loads(skylos.analyze(project, **options))
+            self.assertNotIn("quality", default)
+            result = json.loads(skylos.analyze(project, enable_quality=True, **options))
+            finding, = result["quality"]
+            self.assertEqual((finding["rule_id"], finding["name"], finding["line"]), ("SKY-U005", "pyserial", 2))
+            self.assertEqual(Path(finding["file"]), (project / "requirements.txt").resolve())
+            self.assertTrue(result["analysis_summary"]["unused_dependency_analysis"]["complete"])
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                result_cli = json.loads(subprocess.check_output([
+                    cli, str(project), "--profile", "skylos-0.3", "--no-grep-verify", "--quality", "--all-advice",
+                ]))
+                self.assertEqual(result_cli, result)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     def test_grep_verification_sdk_profiles_and_cache_edits(self):
         with TemporaryDirectory() as directory:
             project = Path(directory) / "project"
@@ -314,6 +334,76 @@ class SdkTests(unittest.TestCase):
                         self.assertIn("pkg.evaluate.retained_value", variables)
                     else:
                         self.assertNotIn("pkg.evaluate.retained_value", variables)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_bounded_receivers_allocators_and_lazy_tables(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            package = project / "pkg"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                "import importlib\n"
+                "_LAZY = {'work': 'pkg.provider'}\n"
+                "__all__ = ['work']\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n"
+                "        return getattr(importlib.import_module(_LAZY[name]), name)\n"
+                "    raise AttributeError(name)\n",
+                encoding="utf-8",
+            )
+            (package / "provider.py").write_text(
+                "def work():\n    return helper()\n"
+                "def helper():\n    return 1\n"
+                "def unused_provider():\n    return 2\n",
+                encoding="utf-8",
+            )
+            (project / "main.py").write_text(
+                "class Requested:\n"
+                "    def __new__(cls):\n"
+                "        return Actual()\n"
+                "    def deliver(self):\n"
+                "        return 0\n"
+                "class Actual:\n"
+                "    def deliver(self):\n"
+                "        return 1\n"
+                "Requested().deliver()\n"
+                "class Parent:\n"
+                "    def run(self):\n"
+                "        return self.step()\n"
+                "    def step(self):\n"
+                "        return 0\n"
+                "class Child(Parent):\n"
+                "    def step(self):\n"
+                "        return 1\n"
+                "Child().run()\n"
+                "class First:\n"
+                "    def act(self):\n"
+                "        return 1\n"
+                "class Second:\n"
+                "    def act(self):\n"
+                "        return 2\n"
+                "receiver = First() if choose else Second()\n"
+                "receiver.act()\n",
+                encoding="utf-8",
+            )
+
+            report = json.loads(skylos.analyze(
+                project, conf=0, profile="skylos-0.3", grep_verify=False, trace_file=False,
+            ))
+            self.assertEqual(report["coverage"]["status"], "complete", report)
+            unused = {finding["full_name"] for finding in report["unused_functions"]}
+            self.assertIn("main.Requested.deliver", unused)
+            self.assertIn("main.Parent.step", unused)
+            self.assertIn("pkg.provider.unused_provider", unused)
+            for retained in (
+                "main.Actual.deliver",
+                "main.Child.step",
+                "main.First.act",
+                "main.Second.act",
+                "pkg.provider.work",
+                "pkg.provider.helper",
+            ):
+                self.assertNotIn(retained, unused)
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     def test_phase03_trace_selection_and_cli_parity(self):

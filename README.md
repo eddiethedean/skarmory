@@ -42,6 +42,13 @@ Run the Skylos profile from the root of your Python project.
 skarmory --profile skylos . --json
 ```
 
+The Phase 0.3 profile can also check unused Python runtime dependencies.
+See the [supported declarations and coverage](docs/phase-03.md#unused-python-dependencies).
+
+```sh
+skarmory --profile skylos-0.3 --quality . --json
+```
+
 The compatibility API returns a JSON string.
 
 ```python

@@ -16,9 +16,13 @@ use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
+mod fastapi;
+mod frameworks;
+
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
 const MAX_PYTEST_REQUEST_STATES: usize = 16_384;
+const MAX_CONDITIONAL_STATES: usize = 4_096;
 const END: Location = Location {
     line: usize::MAX,
     column: usize::MAX,
@@ -32,12 +36,23 @@ type Object = (usize, usize, usize);
 enum Value {
     Callable(Invocation),
     Instance(SymbolId),
+    Alternatives(Vec<Value>),
+    ReceiverParameter(SymbolId),
+    ReceiverMethod(SymbolId, String),
     Coroutine(Invocation),
     ScheduledTask,
     Module(usize),
     Provider(String),
     Object(Object, ObjectKind),
-    Method(Object, String),
+    Method(Object, ObjectKind, String),
+    DjangoInclude(Object),
+    DjangoPattern(Box<Value>),
+    DjangoViewFactory(SymbolId),
+    DjangoView(SymbolId),
+    DjangoSignal,
+    DjangoSignalConnect,
+    DjangoReceiver(frameworks::DjangoReceiver),
+    FastapiDependency(Option<SymbolId>),
     Executor,
     Submit,
     Process(Box<Value>),
@@ -60,12 +75,32 @@ enum Value {
 }
 
 impl Value {
+    fn alternatives(values: Vec<Self>) -> Self {
+        fn flatten(value: Value, flattened: &mut Vec<Value>) {
+            match value {
+                Value::Alternatives(values) => {
+                    for value in values {
+                        flatten(value, flattened);
+                    }
+                }
+                value => flattened.push(value),
+            }
+        }
+
+        let mut flattened = Vec::new();
+        for value in values {
+            flatten(value, &mut flattened);
+        }
+        Self::Alternatives(flattened)
+    }
+
     fn contains_unknown(&self) -> bool {
         match self {
             Self::Unknown => true,
             Self::Sequence(values) | Self::Mapping(values) => {
                 values.iter().any(Self::contains_unknown)
             }
+            Self::Alternatives(values) => values.iter().any(Self::contains_unknown),
             _ => false,
         }
     }
@@ -76,6 +111,7 @@ impl Value {
             Self::Sequence(values) | Self::Mapping(values) => {
                 values.iter().any(Self::may_contain_namespace)
             }
+            Self::Alternatives(values) => values.iter().any(Self::may_contain_namespace),
             _ => false,
         }
     }
@@ -144,6 +180,31 @@ impl Receiver {
 enum ObjectKind {
     App,
     Router,
+    FlaskApp,
+    FlaskBlueprint,
+    CeleryApp,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FrameworkClassRole {
+    Unittest,
+    UnittestAsync,
+    DjangoAppConfig,
+    DjangoCommand,
+    DjangoView,
+    DjangoModel,
+    DjangoSignal,
+    DjangoAdmin,
+    CeleryTask,
+    SqlAlchemyModel,
+    PydanticModel,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum DjangoSettings {
+    Unset,
+    Module(String),
+    Unknown,
 }
 
 struct Scope<'a> {
@@ -164,7 +225,10 @@ struct Scope<'a> {
     class_bodies: Vec<ScopeId>,
     activated_apps: Vec<Object>,
     mounts: Vec<(Object, Object)>,
-    routes: Vec<(Object, SymbolId)>,
+    routes: Vec<(Object, SymbolId, &'static str)>,
+    django_settings: DjangoSettings,
+    starts_django: Vec<frameworks::DjangoStartup>,
+    django_signals: Vec<frameworks::DjangoSignalRegistration>,
 }
 
 struct NamespaceRead {
@@ -205,10 +269,26 @@ struct ClassInvocation {
     receiver: Receiver,
 }
 
+#[derive(Clone)]
+struct ReceiverCall {
+    scope: ScopeId,
+    parameter: SymbolId,
+    member: String,
+    at: Location,
+}
+
 struct DirectArguments {
     caller: ScopeId,
     at: Location,
     values: BTreeMap<String, Value>,
+}
+
+struct CallArguments<'a> {
+    scope: ScopeId,
+    before: Location,
+    at: Location,
+    positional: &'a [Expression],
+    keywords: &'a [(String, Expression)],
 }
 
 struct Export {
@@ -229,7 +309,7 @@ struct PytestFixture {
     autouse: bool,
 }
 
-struct PytestRegistration {
+struct CallableBinding {
     target: SymbolId,
     bindings: Vec<SymbolId>,
 }
@@ -237,8 +317,13 @@ struct PytestRegistration {
 type PytestNames<'a> = BTreeMap<&'a str, Vec<SymbolId>>;
 
 struct PytestFixtureChoices {
-    alternatives: Vec<PytestRegistration>,
+    alternatives: Vec<CallableBinding>,
     may_be_absent: bool,
+}
+
+struct PytestFixtureRequests<'a> {
+    tests: &'a [(CallableBinding, bool)],
+    certain_case: bool,
 }
 
 struct LazyBranch<'a> {
@@ -297,7 +382,12 @@ enum SubmoduleAttachment {
 
 #[cfg(test)]
 fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None)
+    analyze_with_verification(files, entrypoints, None, None, None, false, None)
+}
+
+#[cfg(test)]
+fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
+    analyze_with_verification(files, entrypoints, None, None, None, true, None)
 }
 
 pub(super) fn analyze_with_verification(
@@ -306,6 +396,8 @@ pub(super) fn analyze_with_verification(
     verification: Option<&grep_verification::Snapshot>,
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
     runtime: Option<&runtime_evidence::Snapshot>,
+    phase03: bool,
+    django_settings: Option<&std::ffi::OsStr>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
@@ -318,10 +410,17 @@ pub(super) fn analyze_with_verification(
         namespace_exports: BTreeMap::new(),
         direct: BTreeSet::new(),
         conditional: BTreeMap::new(),
+        conditional_groups: BTreeMap::new(),
+        next_conditional_group: 0,
+        branch_depth: 0,
         dormant_classes: BTreeSet::new(),
         subclassed: BTreeSet::new(),
         instance_receivers: BTreeMap::new(),
         class_invocations: Vec::new(),
+        method_receivers: BTreeMap::new(),
+        receiver_calls: Vec::new(),
+        resolved_receiver_calls: BTreeSet::new(),
+        receiver_call_issues: BTreeSet::new(),
         issues: Vec::new(),
         scope_issues: Vec::new(),
         probing_identity: false,
@@ -338,6 +437,23 @@ pub(super) fn analyze_with_verification(
         has_length_hooks: false,
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
+        phase03,
+        framework_lifecycle: Vec::new(),
+        framework_roots: Vec::new(),
+        framework_fields: BTreeSet::new(),
+        fastapi_dependency_issues: Vec::new(),
+        fastapi: fastapi::Fastapi::default(),
+        django_roots: BTreeSet::new(),
+        django_startup_scopes: BTreeSet::new(),
+        django_registration_issues: Vec::new(),
+        initial_django_settings: django_settings.map_or(DjangoSettings::Unset, |value| {
+            value.to_str().map_or(DjangoSettings::Unknown, |value| {
+                DjangoSettings::Module(value.to_owned())
+            })
+        }),
+        unittest_classes: BTreeMap::new(),
+        pytest_plugins: Vec::new(),
+        pytest_unittest_cases: BTreeMap::new(),
     };
     for (file, source) in files.iter().enumerate() {
         graph.push_scope(file, None, None, &source.facts.body);
@@ -374,8 +490,14 @@ pub(super) fn analyze_with_verification(
         let body = graph.scopes[scope].body;
         graph.suite(scope, body);
     }
+    if phase03 {
+        graph.index_fastapi_mounts();
+        graph.collect_phase03_frameworks();
+    }
+    graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
     let callbacks = graph.initialization_callbacks();
+    graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
     let Some(initialization_edges) = graph.acyclic_initialization_edges(&callbacks) else {
         graph.issues.push(Issue::new(
@@ -393,6 +515,9 @@ pub(super) fn analyze_with_verification(
         graph.retain_package_entrypoints(package_entrypoints, &initialization_edges);
     }
     roots.extend(graph.test_edges());
+    if phase03 {
+        roots.extend(graph.phase03_framework_edges());
+    }
     // A dormant consumer must not consume another scope's export traversal.
     for exports in std::mem::take(&mut graph.namespace_exports).into_values() {
         graph.retain_exports(exports, &initialization_edges, "possible");
@@ -420,10 +545,17 @@ struct Graph<'a> {
     namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
+    conditional_groups: BTreeMap<SymbolId, Vec<(usize, bool)>>,
+    next_conditional_group: usize,
+    branch_depth: usize,
     dormant_classes: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
     class_invocations: Vec<ClassInvocation>,
+    method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    receiver_calls: Vec<ReceiverCall>,
+    resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
+    receiver_call_issues: BTreeSet<usize>,
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     probing_identity: bool,
@@ -440,6 +572,19 @@ struct Graph<'a> {
     has_length_hooks: bool,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
+    phase03: bool,
+    framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
+    framework_roots: Vec<Edge>,
+    framework_fields: BTreeSet<SymbolId>,
+    fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
+    fastapi: fastapi::Fastapi,
+    django_roots: BTreeSet<Object>,
+    django_startup_scopes: BTreeSet<ScopeId>,
+    django_registration_issues: Vec<(Object, Issue)>,
+    initial_django_settings: DjangoSettings,
+    unittest_classes: BTreeMap<SymbolId, FrameworkClassRole>,
+    pytest_plugins: Vec<ScopeId>,
+    pytest_unittest_cases: BTreeMap<ScopeId, Vec<(PytestNames<'a>, bool)>>,
 }
 
 impl<'a> Graph<'a> {
@@ -470,6 +615,9 @@ impl<'a> Graph<'a> {
             activated_apps: Vec::new(),
             mounts: Vec::new(),
             routes: Vec::new(),
+            django_settings: self.initial_django_settings.clone(),
+            starts_django: Vec::new(),
+            django_signals: Vec::new(),
         });
         index
     }
@@ -548,11 +696,13 @@ impl<'a> Graph<'a> {
                             self.index(scope, otherwise);
                         }
                         None => {
+                            let group = self.next_conditional_group;
+                            self.next_conditional_group += 1;
                             self.index(scope, body);
-                            self.mark_conditional(scope, first_symbol, body);
+                            self.mark_conditional(scope, first_symbol, body, group, true);
                             let first_symbol = self.symbols.len();
                             self.index(scope, otherwise);
-                            self.mark_conditional(scope, first_symbol, otherwise);
+                            self.mark_conditional(scope, first_symbol, otherwise, group, false);
                         }
                     }
                 }
@@ -617,11 +767,22 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn mark_conditional(&mut self, scope: ScopeId, first_symbol: usize, body: &[Statement]) {
+    fn mark_conditional(
+        &mut self,
+        scope: ScopeId,
+        first_symbol: usize,
+        body: &[Statement],
+        group: usize,
+        branch: bool,
+    ) {
         let Some(first) = body.first() else { return };
         let end = suite_end(body);
         for id in first_symbol..self.symbols.len() {
             if self.symbols[id].scope == scope {
+                self.conditional_groups
+                    .entry(id)
+                    .or_default()
+                    .push((group, branch));
                 self.conditional
                     .entry(id)
                     .or_default()
@@ -1015,10 +1176,11 @@ impl<'a> Graph<'a> {
         import: &Import,
     ) -> Option<LazyBranch<'a>> {
         let source = self.scopes[source_scope].file;
-        if let Some(&id) =
-            self.by_location
-                .get(&(source_scope, import.local.at.line, import.local.at.column))
-        {
+        let binding = self
+            .by_location
+            .get(&(source_scope, import.local.at.line, import.local.at.column))
+            .copied();
+        if let Some(id) = binding {
             // A selected lazy branch evaluates its imports in the caller's
             // execution, even though their bindings belong to the hook.
             self.scopes[scope].evaluated_imports.push(id);
@@ -1065,14 +1227,26 @@ impl<'a> Graph<'a> {
         }
         // Package self-imports can read the bindings already established at
         // this statement. Sibling submodule imports also need no final parent state.
+        let local_initializer = binding.filter(|id| {
+            self.phase03
+                && scope != source
+                && scope == source_scope
+                && !self.conditional.contains_key(id)
+        });
         if let Some(target) = module_file
             && before.is_none()
             && !(child.is_some() && within_package(own_module, module))
         {
             self.scopes[scope].imports.push(target);
+            if let Some(id) = local_initializer {
+                self.scopes[scope].initializer_imports.push((id, target));
+            }
         }
         if let Some(child) = child {
             self.scopes[scope].imports.push(child);
+            if let Some(id) = local_initializer {
+                self.scopes[scope].initializer_imports.push((id, child));
+            }
         }
         // Importing a dotted module can also execute its package initializers.
         let mut has_selected_parent = false;
@@ -1182,18 +1356,23 @@ impl<'a> Graph<'a> {
         value
     }
 
-    fn synchronous_calls(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> {
-        self.scopes[scope].edges.iter().filter_map(|edge| {
-            if matches!(
+    fn synchronous_calls(
+        &self,
+        scope: ScopeId,
+        include_verification: bool,
+    ) -> impl Iterator<Item = ScopeId> {
+        self.scopes[scope].edges.iter().filter_map(move |edge| {
+            if (matches!(
                 edge.kind,
                 "direct_call"
                     | "constructor"
                     | "decorator"
                     | "subclass_hook"
+                    | "pydantic_schema_build"
                     | "truth_test"
                     | "length_call"
-                    | "grep_dynamic_call"
-            ) && let Binding::Definition(_, body) = self.symbols[edge.target].binding
+            ) || include_verification && edge.kind == "grep_dynamic_call")
+                && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
                 Some(body)
             } else {
@@ -1227,7 +1406,7 @@ impl<'a> Graph<'a> {
                 while let Some(scope) = pending.pop() {
                     if reached.insert(scope) {
                         pending.extend(&self.scopes[scope].class_bodies);
-                        pending.extend(self.synchronous_calls(scope));
+                        pending.extend(self.synchronous_calls(scope, true));
                     }
                 }
             }
@@ -1286,7 +1465,7 @@ impl<'a> Graph<'a> {
                 .chain(&scope.class_bodies)
                 .chain(&callbacks[id])
                 .copied()
-                .chain(self.synchronous_calls(id))
+                .chain(self.synchronous_calls(id, true))
             {
                 incoming[target].push(id);
                 outgoing[id].push(target);
@@ -1344,28 +1523,98 @@ impl<'a> Graph<'a> {
     }
 
     fn binding(&mut self, id: SymbolId, before: Location, depth: usize) -> Value {
-        let symbol = &self.symbols[id];
+        let scope = self.symbols[id].scope;
+        let at = self.symbols[id].name.at;
         if depth >= MAX_BINDING_CHAIN {
             self.issue(
-                self.scopes[symbol.scope].file,
-                symbol.name.at,
+                self.scopes[scope].file,
+                at,
                 "analysis_limit",
                 "binding resolution limit exceeded",
             );
             return Value::Unknown;
         }
         self.read.insert(id);
-        let scope = symbol.scope;
         if self.binding_depends_on_branch(id, before) {
+            if let Some(value) = self.finite_conditional_value(id, before, depth + 1) {
+                return value;
+            }
             self.scope_issue(
                 scope,
-                symbol.name.at,
+                at,
                 "ambiguous_binding",
                 "a required binding depends on an unresolved branch",
             );
             return Value::Unknown;
         }
         self.binding_value(id, depth)
+    }
+
+    fn finite_conditional_value(
+        &mut self,
+        id: SymbolId,
+        before: Location,
+        depth: usize,
+    ) -> Option<Value> {
+        let symbol = &self.symbols[id];
+        let candidates = self.scopes[symbol.scope]
+            .names
+            .get(symbol.name.text.as_str())?;
+        let mut eligible = Vec::new();
+        for &candidate in candidates {
+            if position(self.symbols[candidate].name.at) >= position(before) {
+                break;
+            }
+            eligible.push(candidate);
+        }
+        if !self.conditional_groups.contains_key(&id) {
+            return None;
+        }
+        if let Some(fallback) = eligible
+            .iter()
+            .rposition(|candidate| !self.conditional_groups.contains_key(candidate))
+        {
+            eligible.drain(..fallback);
+        }
+        let groups = eligible
+            .iter()
+            .filter_map(|candidate| self.conditional_groups.get(candidate))
+            .flatten()
+            .map(|(group, _)| *group)
+            .collect::<BTreeSet<_>>();
+        let group_bits = groups
+            .into_iter()
+            .enumerate()
+            .map(|(bit, group)| (group, bit))
+            .collect::<BTreeMap<_, _>>();
+        let states = 1usize.checked_shl(group_bits.len() as u32)?;
+        if states > MAX_CONDITIONAL_STATES {
+            return None;
+        }
+        let mut selected = BTreeSet::new();
+        for state in 0..states {
+            let candidate = eligible.iter().rev().copied().find(|candidate| {
+                self.conditional_groups
+                    .get(candidate)
+                    .is_none_or(|conditions| {
+                        conditions.iter().all(|(group, branch)| {
+                            let bit = group_bits[group];
+                            ((state >> bit) & 1 == 1) == *branch
+                        })
+                    })
+            })?;
+            selected.insert(candidate);
+        }
+        let mut values = Vec::new();
+        for candidate in selected {
+            self.read.insert(candidate);
+            let value = self.binding_value(candidate, depth + 1);
+            if value.contains_unknown() {
+                return None;
+            }
+            values.push(value);
+        }
+        Some(Value::alternatives(values))
     }
 
     fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
@@ -1379,10 +1628,12 @@ impl<'a> Graph<'a> {
             }
             Binding::Variable(None, _) => Value::Unknown,
             Binding::Parameter => {
-                if let Some(&class) = self.instance_receivers.get(&id)
-                    && !self.subclassed.contains(&class)
-                {
-                    return Value::Instance(class);
+                if let Some(&class) = self.instance_receivers.get(&id) {
+                    return if self.subclassed.contains(&class) {
+                        Value::ReceiverParameter(id)
+                    } else {
+                        Value::Instance(class)
+                    };
                 }
                 Value::Unknown
             }
@@ -1811,6 +2062,38 @@ impl<'a> Graph<'a> {
             if !otherwise.is_empty() {
                 break;
             }
+            if let ExpressionKind::Membership {
+                element,
+                container,
+                contains: true,
+            } = &test.kind
+                && matches!(&element.kind, ExpressionKind::Name(name) if name == &parameter.text)
+                && let ExpressionKind::Name(mapping) = &container.kind
+                && let Some(table) = self.lexical(scope, mapping, statement.at)
+                && !self.binding_depends_on_branch(table, statement.at)
+                && let Binding::Variable(
+                    Some(Expression {
+                        kind: ExpressionKind::Dictionary(items),
+                        ..
+                    }),
+                    _,
+                ) = self.symbols[table].binding
+            {
+                for pair in items.as_chunks::<2>().0 {
+                    let ExpressionKind::Text(text) = &pair[0].kind else {
+                        return LazyMember::Unknown;
+                    };
+                    if let Some(result) = visit(
+                        text,
+                        scope,
+                        body,
+                        parameter_id.map(|id| (id, text.as_str())),
+                    ) {
+                        return result;
+                    }
+                }
+                continue;
+            }
             let ExpressionKind::Compare {
                 left,
                 right,
@@ -1875,6 +2158,15 @@ impl<'a> Graph<'a> {
         depth: usize,
     ) -> Value {
         match base {
+            Value::Alternatives(values) => Value::alternatives(
+                values
+                    .into_iter()
+                    .map(|value| self.member(value, name, access, depth + 1))
+                    .collect(),
+            ),
+            Value::ReceiverParameter(parameter) => {
+                Value::ReceiverMethod(parameter, name.to_owned())
+            }
             Value::Module(file) => self.module_member_at(
                 &self.files[file].module,
                 name,
@@ -1897,6 +2189,16 @@ impl<'a> Graph<'a> {
                 let member = self
                     .class_member(class, name, depth)
                     .unwrap_or(Value::Unknown);
+                if matches!(&member, Value::Provider(provider) if provider == "django.views.View.as_view")
+                    && matches!(base, Value::Callable(_))
+                {
+                    return Value::DjangoViewFactory(class);
+                }
+                if matches!(member, Value::DjangoSignalConnect)
+                    && matches!(base, Value::Callable(_))
+                {
+                    return Value::Unknown;
+                }
                 if let Value::Callable(invocation) = member
                     && self.receiver_parameter(invocation.target).is_some()
                 {
@@ -1909,7 +2211,8 @@ impl<'a> Graph<'a> {
                     member
                 }
             }
-            Value::Object(object, _) => Value::Method(object, name.into()),
+            Value::DjangoSignal if name == "connect" => Value::DjangoSignalConnect,
+            Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
             _ => Value::Unknown,
@@ -1917,14 +2220,30 @@ impl<'a> Graph<'a> {
     }
 
     fn record_class_reference(&mut self, scope: ScopeId, base: &Value) {
-        if let Value::Callable(invocation) = base
-            && self.is_class(invocation.target)
-        {
-            self.edge(scope, invocation.target, "class_reference", "certain");
+        match base {
+            Value::Callable(invocation) if self.is_class(invocation.target) => {
+                self.edge(scope, invocation.target, "class_reference", "certain");
+            }
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.record_class_reference(scope, value);
+                }
+            }
+            _ => {}
         }
     }
 
     fn comparison_may_call_method(&mut self, left: &Value, right: &Value, equal: bool) -> bool {
+        if let Value::Alternatives(values) = left {
+            return values
+                .iter()
+                .any(|value| self.comparison_may_call_method(value, right, equal));
+        }
+        if let Value::Alternatives(values) = right {
+            return values
+                .iter()
+                .any(|value| self.comparison_may_call_method(left, value, equal));
+        }
         // Sequence equality tests corresponding elements, and unequal
         // lengths short-circuit even when the outer operation is !=.
         if let (Value::Sequence(left), Value::Sequence(right)) = (left, right) {
@@ -2053,6 +2372,29 @@ impl<'a> Graph<'a> {
                 {
                     None
                 }
+                Value::Provider(base) if self.phase03 && framework_managed_base(&base) => {
+                    match (framework_class_provider(&base), name) {
+                        (_, "__init_subclass__")
+                        | (
+                            Some(
+                                FrameworkClassRole::PydanticModel
+                                | FrameworkClassRole::DjangoSignal,
+                            ),
+                            "__init__" | "__new__",
+                        ) => None,
+                        (
+                            Some(FrameworkClassRole::PydanticModel),
+                            "model_dump" | "model_dump_json" | "model_validate",
+                        ) => Some(Value::Provider(format!("pydantic.BaseModel.{name}"))),
+                        (Some(FrameworkClassRole::DjangoView), "as_view") => {
+                            Some(Value::Provider("django.views.View.as_view".into()))
+                        }
+                        (Some(FrameworkClassRole::DjangoSignal), "connect") => {
+                            Some(Value::DjangoSignalConnect)
+                        }
+                        _ => Some(Value::Unknown),
+                    }
+                }
                 _ => Some(Value::Unknown),
             },
             _ => Some(Value::Unknown),
@@ -2064,7 +2406,12 @@ impl<'a> Graph<'a> {
             Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
                 self.class_member(id, "__init_subclass__", 0)
             }
-            Value::Provider(name) if builtin_noop_subclass_hook(&name) => None,
+            Value::Provider(name)
+                if builtin_noop_subclass_hook(&name)
+                    || self.phase03 && framework_managed_base(&name) =>
+            {
+                None
+            }
             _ => Some(Value::Unknown),
         };
         match hook {
@@ -2135,6 +2482,7 @@ impl<'a> Graph<'a> {
                 expression.kind,
                 ExpressionKind::Await(_)
                     | ExpressionKind::OrderingComparison { .. }
+                    | ExpressionKind::Addition(_)
                     | ExpressionKind::Operands(_)
             )
         {
@@ -2205,6 +2553,7 @@ impl<'a> Graph<'a> {
                             | "str"
                             | "int"
                             | "bool"
+                            | "open"
                             | "object"
                             | "list"
                             | "tuple"
@@ -2248,13 +2597,27 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => match recurse(self, function) {
-                Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
-                    // Only default allocation proves which class the expression returns.
-                    if self.class_member(id, "__new__", depth + 1).is_none() {
-                        Value::Instance(id)
-                    } else {
-                        Value::Unknown
+                Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
+                    Value::DjangoView(class)
+                }
+                Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => self
+                    .allocation_class(id, depth + 1)
+                    .map_or(Value::Unknown, Value::Instance),
+                Value::Alternatives(values) => {
+                    let mut instances = Vec::new();
+                    for value in values {
+                        let Value::Callable(Invocation { target: id, .. }) = value else {
+                            return Value::Unknown;
+                        };
+                        if !self.is_class(id) {
+                            return Value::Unknown;
+                        }
+                        let Some(class) = self.allocation_class(id, depth + 1) else {
+                            return Value::Unknown;
+                        };
+                        instances.push(Value::Instance(class));
                     }
+                    Value::alternatives(instances)
                 }
                 Value::Callable(invocation) if matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine) => {
                     Value::Coroutine(
@@ -2264,6 +2627,9 @@ impl<'a> Graph<'a> {
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
                     .map_or(Value::Unknown, |(value, _)| value),
+                Value::Provider(name) if name == "builtins.open" => {
+                    Value::Provider("builtins.open.result".into())
+                }
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
                 Value::Provider(name)
                     if name == "builtins.object" && arguments.is_empty() && keywords.is_empty() =>
@@ -2453,6 +2819,118 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::Provider(name)
+                    if self.phase03
+                        && matches!(name.as_str(), "flask.Flask" | "flask.app.Flask") =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::FlaskApp,
+                    )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(
+                            name.as_str(),
+                            "flask.Blueprint" | "flask.blueprints.Blueprint"
+                        ) =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::FlaskBlueprint,
+                    )
+                }
+                Value::Provider(name) if self.phase03 && name == "celery.Celery" => Value::Object(
+                    (
+                        self.scopes[scope].file,
+                        expression.at.line,
+                        expression.at.column,
+                    ),
+                    ObjectKind::CeleryApp,
+                ),
+                Value::Provider(name) if self.phase03 && is_django_signal_constructor(&name) => {
+                    if registration_arguments(arguments, keywords, ["use_caching"]).is_some() {
+                        Value::DjangoSignal
+                    } else {
+                        Value::Unknown
+                    }
+                }
+                Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
+                    Value::DjangoReceiver(
+                        self.django_receiver(scope, arguments, keywords, before, depth),
+                    )
+                }
+                Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
+                    let module = match (arguments.as_slice(), keywords.as_slice()) {
+                        ([module], []) => Some(module),
+                        ([], [(name, module)]) if name == "arg" => Some(module),
+                        _ => None,
+                    };
+                    match module.map(|value| recurse(self, value)) {
+                        Some(Value::Text(module)) => self
+                            .modules
+                            .get(module.as_str())
+                            .copied()
+                            .map(|file| Value::DjangoInclude(framework_module(file)))
+                            .unwrap_or(Value::Unknown),
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(name.as_str(), "django.urls.path" | "django.urls.re_path") =>
+                {
+                    let Some(slots) = registration_arguments(
+                        arguments,
+                        keywords,
+                        ["route", "view", "kwargs", "name"],
+                    ) else {
+                        return Value::DjangoPattern(Box::new(Value::Unknown));
+                    };
+                    let callback = match slots {
+                        [Some(route), Some(callback), kwargs, name]
+                            if matches!(recurse(self, route), Value::Text(_))
+                                && kwargs.is_none_or(|value| {
+                                    matches!(recurse(self, value), Value::Mapping(_))
+                                })
+                                && name.is_none_or(|value| {
+                                    matches!(recurse(self, value), Value::Text(_))
+                                }) =>
+                        {
+                            Some(callback)
+                        }
+                        _ => None,
+                    };
+                    Value::DjangoPattern(Box::new(
+                        callback.map_or(Value::Unknown, |value| recurse(self, value)),
+                    ))
+                }
+                Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listens_for" => {
+                    Value::Provider("sqlalchemy.event.listens_for.callback".into())
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(name.as_str(), "fastapi.Depends" | "fastapi.Security") =>
+                {
+                    let dependency = arguments.first().or_else(|| {
+                        keywords
+                            .iter()
+                            .find(|(name, _)| name == "dependency")
+                            .map(|(_, value)| value)
+                    });
+                    Value::FastapiDependency(match dependency.map(|value| recurse(self, value)) {
+                        Some(Value::Callable(invocation)) => Some(invocation.target),
+                        _ => None,
+                    })
+                }
+                Value::Provider(name)
                     if matches!(
                         name.as_str(),
                         "concurrent.futures.ThreadPoolExecutor"
@@ -2473,7 +2951,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
             ExpressionKind::Scalar => Value::Scalar,
-            ExpressionKind::Operands(operands) => {
+            ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
                     && operands
                         .iter()
@@ -2489,6 +2967,57 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Dictionary(items) => {
                 Value::Mapping(items.iter().map(|expr| recurse(self, expr)).collect())
+            }
+            ExpressionKind::Subscript { value, index } => {
+                let value = recurse(self, value);
+                let index = recurse(self, index);
+                match (value, index) {
+                    (Value::Mapping(items), Value::Text(index)) => items
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .rev()
+                        .find_map(|pair| match &pair[0] {
+                            Value::Text(key) if key == &index => Some(pair[1].clone()),
+                            _ => None,
+                        })
+                        .unwrap_or(Value::Unknown),
+                    _ => Value::Unknown,
+                }
+            }
+            ExpressionKind::Conditional {
+                test,
+                body,
+                otherwise,
+            } => match recurse(self, test) {
+                Value::Bool(true) => recurse(self, body),
+                Value::Bool(false) => recurse(self, otherwise),
+                _ => {
+                    let values = vec![recurse(self, body), recurse(self, otherwise)];
+                    if values.iter().any(Value::contains_unknown) {
+                        Value::Unknown
+                    } else {
+                        Value::alternatives(values)
+                    }
+                }
+            },
+            ExpressionKind::Membership {
+                element,
+                container,
+                contains,
+            } => {
+                let element = recurse(self, element);
+                let container = recurse(self, container);
+                match (element, container) {
+                    (Value::Text(element), Value::Mapping(items)) => {
+                        let found =
+                            items.as_chunks::<2>().0.iter().any(
+                                |pair| matches!(&pair[0], Value::Text(key) if key == &element),
+                            );
+                        Value::Bool(found == *contains)
+                    }
+                    _ => Value::Unknown,
+                }
             }
             ExpressionKind::Compare {
                 left,
@@ -2580,6 +3109,14 @@ impl<'a> Graph<'a> {
             (false, _) => (kind, certainty),
         };
         let owner = self.scopes[self.symbols[invocation.target].scope].owner;
+        if let Some(class) = invocation.receiver.supplied()
+            && self.receiver_parameter(invocation.target).is_some()
+        {
+            self.method_receivers
+                .entry(invocation.target)
+                .or_default()
+                .insert(class);
+        }
         if matches!(invocation.receiver, Receiver::Ordinary)
             || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner)
         {
@@ -2636,10 +3173,80 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn resolve_receiver_calls(&mut self) {
+        loop {
+            let before = self.resolved_receiver_calls.len();
+            for index in 0..self.receiver_calls.len() {
+                let call = self.receiver_calls[index].clone();
+                let Some(owner) = self.scopes[self.symbols[call.parameter].scope].owner else {
+                    continue;
+                };
+                let receivers = self
+                    .method_receivers
+                    .get(&owner)
+                    .cloned()
+                    .unwrap_or_default();
+                let certainty = if receivers.len() == 1 {
+                    "certain"
+                } else {
+                    "possible"
+                };
+                for class in receivers {
+                    if !self.resolved_receiver_calls.insert((index, class)) {
+                        continue;
+                    }
+                    match self.class_member(class, &call.member, 0) {
+                        Some(Value::Callable(invocation)) => self.invoke(
+                            call.scope,
+                            invocation.bind_receiver(Receiver::Bound(class)),
+                            "direct_call",
+                            certainty,
+                            call.at,
+                        ),
+                        _ => {
+                            if self.receiver_call_issues.insert(index) {
+                                self.scope_issue(
+                                    call.scope,
+                                    call.at,
+                                    "unresolved_call",
+                                    "receiver method dispatch is outside the bounded class hierarchy",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            if self.resolved_receiver_calls.len() == before {
+                break;
+            }
+        }
+    }
+
+    fn report_unbound_receiver_calls(&mut self, reach: &Reachability) {
+        let resolved: BTreeSet<_> = self
+            .resolved_receiver_calls
+            .iter()
+            .chain(&reach.resolved_django_receiver_calls)
+            .map(|&(index, _)| index)
+            .collect();
+        for (index, call) in self.receiver_calls.iter().enumerate() {
+            if reach.scopes.contains(&call.scope) && !resolved.contains(&index) {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_call",
+                        &self.files[self.scopes[call.scope].file].path,
+                        "receiver type is outside the bounded invocation model",
+                    )
+                    .at(call.at),
+                );
+            }
+        }
+    }
+
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
             Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
-            Value::Sequence(values) | Value::Mapping(values) => {
+            Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
                 for value in values {
                     self.expose(scope, value, kind, at);
                 }
@@ -2700,12 +3307,14 @@ impl<'a> Graph<'a> {
                     at,
                 );
             }
-            self.scope_issue(
-                scope,
-                at,
-                "unresolved_constructor",
-                "allocation result is outside the bounded class model",
-            );
+            if self.allocation_class(class, 0).is_none() {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_constructor",
+                    "allocation result is outside the bounded class model",
+                );
+            }
             return;
         }
 
@@ -2724,6 +3333,34 @@ impl<'a> Graph<'a> {
                 "unresolved_constructor",
                 "constructor dispatch is outside the bounded class hierarchy",
             ),
+        }
+    }
+
+    fn allocation_class(&mut self, class: SymbolId, depth: usize) -> Option<SymbolId> {
+        let Some(allocator) = self.class_member(class, "__new__", depth + 1) else {
+            return Some(class);
+        };
+        let Value::Callable(invocation) = allocator else {
+            return None;
+        };
+        let Binding::Definition(definition, body) = self.symbols[invocation.target].binding else {
+            return None;
+        };
+        let [
+            Statement {
+                kind: StatementKind::Return(Some(value)),
+                ..
+            },
+        ] = definition.body.as_slice()
+        else {
+            return None;
+        };
+        if definition.kind != DefinitionKind::Function || !definition.decorators.is_empty() {
+            return None;
+        }
+        match self.identity(body, value, END, depth + 2) {
+            Value::Instance(actual) => Some(actual),
+            _ => None,
         }
     }
 
@@ -2766,6 +3403,38 @@ impl<'a> Graph<'a> {
         self.walk_expression(scope, expr, before, false);
     }
 
+    fn is_module_getattr_parameter(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Name(name) = &expression.kind else {
+            return false;
+        };
+        let Some(parameter) = self.lexical(scope, name, before) else {
+            return false;
+        };
+        let Some(owner) = self.scopes[scope].owner else {
+            return false;
+        };
+        matches!(self.symbols[parameter].binding, Binding::Parameter)
+            && self.symbols[parameter].scope == scope
+            && self.symbols[owner].name.text == "__getattr__"
+            && self.scopes[self.symbols[owner].scope].owner.is_none()
+    }
+
+    fn has_literal_mapping_keys(value: &Value) -> bool {
+        let Value::Mapping(items) = value else {
+            return false;
+        };
+        items
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|pair| matches!(pair[0], Value::Text(_) | Value::Bool(_) | Value::Scalar))
+    }
+
     fn walk_if_test(
         &mut self,
         scope: ScopeId,
@@ -2801,6 +3470,12 @@ impl<'a> Graph<'a> {
 
     fn record_truth_test(&mut self, scope: ScopeId, test: &Expression, value: &Value) {
         match value {
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.record_truth_test(scope, test, value);
+                }
+                return;
+            }
             Value::Instance(class) => {
                 // Fall back to length only after proving that __bool__ is absent.
                 let Some(hook) = self
@@ -2832,6 +3507,12 @@ impl<'a> Graph<'a> {
 
     fn record_length_call(&mut self, scope: ScopeId, value: Value, at: Location) {
         match value {
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.record_length_call(scope, value, at);
+                }
+                return;
+            }
             Value::Instance(class) => {
                 if let Some(hook) = self.class_member(class, "__len__", 0)
                     && self.invoke_instance_hook(scope, class, hook, "length_call", at)
@@ -3008,40 +3689,55 @@ impl<'a> Graph<'a> {
                 let callee = self.identity(scope, function, before, 0);
                 match callee {
                     Value::Callable(invocation) => {
-                        let id = invocation.target;
-                        if !invocation.verified {
-                            self.direct.insert(id);
-                        }
-                        self.record_direct_arguments(
-                            scope, id, before, expr.at, arguments, keywords,
-                        );
-                        if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
-                        {
-                            let invocation = self.with_explicit_receiver(
-                                invocation,
-                                arguments,
+                        self.call_invocation(
+                            invocation,
+                            CallArguments {
+                                scope,
+                                before,
+                                at: expr.at,
+                                positional: arguments,
                                 keywords,
-                                |graph, value| graph.identity(scope, value, before, 0),
-                            );
-                            self.invoke(scope, invocation, "direct_call", "certain", expr.at);
-                        }
-                        if self.is_class(id) {
-                            let (kind, certainty) = if invocation.verified {
-                                ("grep_dynamic_call", "possible")
+                            },
+                            "certain",
+                        );
+                    }
+                    Value::Alternatives(values) => {
+                        let mut resolved = false;
+                        let mut unresolved = false;
+                        for value in values {
+                            if let Value::Callable(invocation) = value {
+                                resolved = true;
+                                self.call_invocation(
+                                    invocation,
+                                    CallArguments {
+                                        scope,
+                                        before,
+                                        at: expr.at,
+                                        positional: arguments,
+                                        keywords,
+                                    },
+                                    "possible",
+                                );
                             } else {
-                                ("constructor", "certain")
-                            };
-                            self.constructor(scope, id, kind, certainty, expr.at);
+                                unresolved = true;
+                            }
                         }
-                        // Callback parameter substitution is bounded by retaining the
-                        // finite supplied values even if the callee dispatches dynamically.
-                        for argument in arguments
-                            .iter()
-                            .chain(keywords.iter().map(|(_, value)| value))
-                        {
-                            let value = self.identity(scope, argument, before, 0);
-                            self.expose(scope, value, "passed_callable", argument.at);
+                        if !resolved || unresolved {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "one or more finite call targets are outside the bounded model",
+                            );
                         }
+                    }
+                    Value::ReceiverMethod(parameter, member) => {
+                        self.receiver_calls.push(ReceiverCall {
+                            scope,
+                            parameter,
+                            member,
+                            at: expr.at,
+                        });
                     }
                     Value::Provider(name)
                         if matches!(name.as_str(), "builtins.locals" | "builtins.vars") =>
@@ -3099,7 +3795,9 @@ impl<'a> Graph<'a> {
                             "process target could not be bounded",
                         ),
                     },
-                    Value::Method(parent, method) if method == "include_router" => {
+                    Value::Method(parent, ObjectKind::App | ObjectKind::Router, method)
+                        if method == "include_router" =>
+                    {
                         let target = arguments.first().or_else(|| {
                             keywords
                                 .iter()
@@ -3110,7 +3808,20 @@ impl<'a> Graph<'a> {
                             && let Value::Object(child, ObjectKind::Router) =
                                 self.identity(scope, target, before, 0)
                         {
-                            self.scopes[scope].mounts.push((parent, child));
+                            if self.phase03 {
+                                self.fastapi_mount(
+                                    parent,
+                                    child,
+                                    fastapi::Site {
+                                        scope,
+                                        at: expr.at,
+                                        before,
+                                    },
+                                    keywords,
+                                );
+                            } else {
+                                self.scopes[scope].mounts.push((parent, child));
+                            }
                         } else {
                             self.scope_issue(
                                 scope,
@@ -3119,6 +3830,276 @@ impl<'a> Graph<'a> {
                                 "router identity could not be resolved",
                             );
                         }
+                    }
+                    Value::Method(
+                        parent,
+                        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint,
+                        method,
+                    ) if self.phase03 && method == "register_blueprint" => {
+                        let target = arguments.first().or_else(|| {
+                            keywords
+                                .iter()
+                                .find(|(name, _)| name == "blueprint")
+                                .map(|(_, value)| value)
+                        });
+                        if let Some(target) = target
+                            && let Value::Object(child, ObjectKind::FlaskBlueprint) =
+                                self.identity(scope, target, before, 0)
+                        {
+                            self.scopes[scope].mounts.push((parent, child));
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_registration",
+                                "Flask blueprint identity could not be resolved",
+                            );
+                        }
+                    }
+                    Value::Method(parent, kind, method)
+                        if self.phase03 && is_imperative_registration(kind, &method) =>
+                    {
+                        let target = callback_argument(&method, arguments, keywords);
+                        match target.map(|target| self.identity(scope, target, before, 0)) {
+                            Some(Value::Callable(invocation)) => {
+                                if matches!(kind, ObjectKind::App | ObjectKind::Router) {
+                                    self.fastapi_route(
+                                        parent,
+                                        fastapi::Site {
+                                            scope,
+                                            at: expr.at,
+                                            before,
+                                        },
+                                        invocation.target,
+                                        keywords,
+                                    );
+                                } else {
+                                    self.scopes[scope].routes.push((
+                                        parent,
+                                        invocation.target,
+                                        framework_registration_kind(kind),
+                                    ));
+                                }
+                            }
+                            _ => self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_registration",
+                                "framework callback identity could not be resolved",
+                            ),
+                        }
+                    }
+                    Value::DjangoSignalConnect => {
+                        self.connect_django_signal(
+                            scope, arguments, keywords, before, expr.at, false,
+                        );
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name.strip_suffix(".connect").is_some_and(is_django_signal) =>
+                    {
+                        self.connect_django_signal(
+                            scope, arguments, keywords, before, expr.at, true,
+                        );
+                    }
+                    Value::DjangoReceiver(signal) => {
+                        let callback = registration_arguments(arguments, keywords, ["func"])
+                            .and_then(|[callback]| callback)
+                            .map(|target| self.identity(scope, target, before, 0));
+                        self.record_django_signal(scope, signal, callback, expr.at);
+                    }
+                    Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listen" => {
+                        let callback = arguments.get(2).or_else(|| {
+                            keywords
+                                .iter()
+                                .find(|(name, _)| name == "fn")
+                                .map(|(_, value)| value)
+                        });
+                        self.activate_argument(
+                            scope,
+                            callback,
+                            before,
+                            "sqlalchemy_listener",
+                            expr.at,
+                        );
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && name == "sqlalchemy.event.listens_for.callback" =>
+                    {
+                        self.activate_argument(
+                            scope,
+                            arguments.first(),
+                            before,
+                            "sqlalchemy_listener",
+                            expr.at,
+                        );
+                    }
+                    Value::Provider(name) if self.phase03 && name == "os.environ.setdefault" => {
+                        if let [key, settings] = arguments.as_slice()
+                            && keywords.is_empty()
+                            && matches!(self.identity(scope, key, before, 0),
+                                Value::Text(key) if key == "DJANGO_SETTINGS_MODULE")
+                        {
+                            if self.scopes[scope].django_settings == DjangoSettings::Unset {
+                                self.scopes[scope].django_settings =
+                                    match self.identity(scope, settings, before, 0) {
+                                        Value::Text(settings) => DjangoSettings::Module(settings),
+                                        _ => DjangoSettings::Unknown,
+                                    };
+                            }
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "environment update is outside the bounded Django startup model",
+                            );
+                        }
+                    }
+                    Value::DjangoViewFactory(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name)
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "django.setup"
+                                    | "django.core.wsgi.get_wsgi_application"
+                                    | "django.core.asgi.get_asgi_application"
+                                    | "django.core.management.execute_from_command_line"
+                            ) =>
+                    {
+                        let mut settings = match &self.scopes[scope].django_settings {
+                            DjangoSettings::Module(module) => Some(module.clone()),
+                            DjangoSettings::Unset | DjangoSettings::Unknown => None,
+                        };
+                        let commands = if name == "django.core.management.execute_from_command_line"
+                        {
+                            let argv = arguments.first().or_else(|| {
+                                keywords
+                                    .iter()
+                                    .find(|(name, _)| name == "argv")
+                                    .map(|(_, value)| value)
+                            });
+                            match argv.map(|value| self.identity(scope, value, before, 0)) {
+                                Some(Value::Sequence(values)) => {
+                                    match django_management_settings(&values) {
+                                        DjangoSettings::Unset => {}
+                                        DjangoSettings::Module(module) => settings = Some(module),
+                                        DjangoSettings::Unknown => settings = None,
+                                    }
+                                    match values.get(1) {
+                                        Some(Value::Text(command)) if !command.starts_with('-') => {
+                                            frameworks::DjangoCommands::Selected(command.clone())
+                                        }
+                                        Some(Value::Text(_)) | None => {
+                                            frameworks::DjangoCommands::None
+                                        }
+                                        _ => frameworks::DjangoCommands::Available,
+                                    }
+                                }
+                                _ => frameworks::DjangoCommands::Available,
+                            }
+                        } else {
+                            frameworks::DjangoCommands::None
+                        };
+                        self.scopes[scope]
+                            .starts_django
+                            .push(frameworks::DjangoStartup {
+                                at: expr.at,
+                                settings,
+                                requires_urlconf: matches!(
+                                    name.as_str(),
+                                    "django.core.wsgi.get_wsgi_application"
+                                        | "django.core.asgi.get_asgi_application"
+                                ),
+                                commands,
+                            });
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "fastapi.FastAPI" | "fastapi.applications.FastAPI"
+                            ) =>
+                    {
+                        let mut defaults = Vec::new();
+                        for (keyword, value) in keywords {
+                            if matches!(
+                                keyword.as_str(),
+                                "dependencies"
+                                    | "lifespan"
+                                    | "on_startup"
+                                    | "on_shutdown"
+                                    | "exception_handlers"
+                            ) {
+                                let value = self.identity(scope, value, before, 0);
+                                if keyword == "dependencies"
+                                    && let Value::Sequence(dependencies) = &value
+                                {
+                                    defaults.extend(dependencies.iter().filter_map(|dependency| {
+                                        match dependency {
+                                            Value::FastapiDependency(target) => *target,
+                                            _ => None,
+                                        }
+                                    }));
+                                }
+                                if !self.activate_framework_value(scope, value, "fastapi_lifecycle")
+                                {
+                                    self.scope_issue(
+                                        scope,
+                                        expr.at,
+                                        "unresolved_registration",
+                                        "FastAPI lifecycle callback could not be resolved",
+                                    );
+                                }
+                            }
+                        }
+                        let Value::Object(object, ObjectKind::App) =
+                            self.identity(scope, expr, before, 0)
+                        else {
+                            unreachable!()
+                        };
+                        self.fastapi_app(object, scope, defaults);
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "fastapi.APIRouter" | "fastapi.routing.APIRouter"
+                            ) =>
+                    {
+                        if let Value::Object(object, ObjectKind::Router) =
+                            self.identity(scope, expr, before, 0)
+                        {
+                            self.fastapi_router_defaults(
+                                object,
+                                fastapi::Site {
+                                    scope,
+                                    at: expr.at,
+                                    before,
+                                },
+                                keywords,
+                            );
+                        }
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && name == "django.urls.register_converter" =>
+                    {
+                        let target = arguments.first().or_else(|| {
+                            keywords
+                                .iter()
+                                .find(|(name, _)| name == "converter")
+                                .map(|(_, value)| value)
+                        });
+                        let value = target.map_or(Value::Unknown, |target| {
+                            self.identity(scope, target, before, 0)
+                        });
+                        self.register_protocol_class(
+                            scope,
+                            value,
+                            &["to_python", "to_url"],
+                            "django_path_converter",
+                            expr.at,
+                        );
                     }
                     Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
                         match self.verification_member(scope, arguments, keywords, before, 0) {
@@ -3148,7 +4129,7 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
-                    Value::Provider(name) if is_known_call(&name) => {
+                    Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
                             && let Some((&read, _)) = row.namespace_reads.last_key_value()
@@ -3158,8 +4139,11 @@ impl<'a> Graph<'a> {
                             // including any reads that refreshed its input.
                             row.namespace_copy_cutoffs.insert(position(expr.at), read);
                         }
-                        if let Value::Object(object, ObjectKind::App) =
-                            self.identity(scope, expr, before, 0)
+                        if let Value::Object(object, kind) = self.identity(scope, expr, before, 0)
+                            && matches!(
+                                kind,
+                                ObjectKind::App | ObjectKind::FlaskApp | ObjectKind::CeleryApp
+                            )
                         {
                             self.scopes[scope].activated_apps.push(object);
                         }
@@ -3250,9 +4234,60 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
+            | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => {
                 for item in values {
                     self.walk(scope, item, before);
+                }
+            }
+            ExpressionKind::Subscript { value, index } => {
+                self.walk(scope, value, before);
+                self.walk(scope, index, before);
+                let mapping = self.identity(scope, value, before, 0);
+                let key = self.identity(scope, index, before, 0);
+                if !Self::has_literal_mapping_keys(&mapping)
+                    || !(matches!(key, Value::Text(_) | Value::Bool(_) | Value::Scalar)
+                        || self.is_module_getattr_parameter(scope, index, before))
+                {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unresolved_subscript",
+                        "subscript dispatch is outside the bounded literal mapping model",
+                    );
+                }
+            }
+            ExpressionKind::Conditional {
+                test,
+                body,
+                otherwise,
+            } => match self.walk_if_test(scope, test, before) {
+                Some(true) => self.walk(scope, body, before),
+                Some(false) => self.walk(scope, otherwise, before),
+                None => {
+                    self.branch_depth += 1;
+                    self.walk(scope, body, before);
+                    self.walk(scope, otherwise, before);
+                    self.branch_depth -= 1;
+                }
+            },
+            ExpressionKind::Membership {
+                element, container, ..
+            } => {
+                self.walk(scope, element, before);
+                self.walk(scope, container, before);
+                let mapping = self.identity(scope, container, before, 0);
+                let key = self.identity(scope, element, before, 0);
+                if !Self::has_literal_mapping_keys(&mapping)
+                    || !(matches!(key, Value::Text(_) | Value::Bool(_) | Value::Scalar)
+                        || self.is_module_getattr_parameter(scope, element, before))
+                {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unresolved_membership",
+                        "membership dispatch is outside the bounded literal mapping model",
+                    );
                 }
             }
             ExpressionKind::Boolean { and, values } => {
@@ -3269,6 +4304,51 @@ impl<'a> Graph<'a> {
                 self.record_class_reference(scope, &value);
             }
             _ => {}
+        }
+    }
+
+    fn call_invocation(
+        &mut self,
+        invocation: Invocation,
+        call: CallArguments<'_>,
+        certainty: &'static str,
+    ) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        let id = invocation.target;
+        if !invocation.verified {
+            self.direct.insert(id);
+        }
+        self.record_direct_arguments(scope, id, before, at, positional, keywords);
+        if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
+        {
+            let invocation =
+                self.with_explicit_receiver(invocation, positional, keywords, |graph, value| {
+                    graph.identity(scope, value, before, 0)
+                });
+            self.invoke(scope, invocation, "direct_call", certainty, at);
+        }
+        if self.is_class(id) {
+            let (kind, certainty) = if invocation.verified {
+                ("grep_dynamic_call", "possible")
+            } else {
+                ("constructor", certainty)
+            };
+            self.constructor(scope, id, kind, certainty, at);
+        }
+        // Callback parameter substitution is bounded by retaining the finite
+        // supplied values even if the callee dispatches dynamically.
+        for argument in positional
+            .iter()
+            .chain(keywords.iter().map(|(_, value)| value))
+        {
+            let value = self.identity(scope, argument, before, 0);
+            self.expose(scope, value, "passed_callable", argument.at);
         }
     }
 
@@ -3373,6 +4453,84 @@ impl<'a> Graph<'a> {
         self.activate_callback(scope, target, kind, at);
     }
 
+    fn activate_framework_value(
+        &mut self,
+        scope: ScopeId,
+        value: Value,
+        kind: &'static str,
+    ) -> bool {
+        match value {
+            Value::Callable(invocation) => {
+                self.edge(scope, invocation.target, kind, "certain");
+                true
+            }
+            Value::FastapiDependency(Some(target)) => {
+                self.fastapi_dependency_edge(scope, target);
+                true
+            }
+            Value::Sequence(values) | Value::Alternatives(values) => {
+                let mut resolved = true;
+                for value in values {
+                    resolved &= self.activate_framework_value(scope, value, kind);
+                }
+                resolved
+            }
+            Value::Mapping(entries) => {
+                let mut resolved = true;
+                for value in entries.into_iter().skip(1).step_by(2) {
+                    resolved &= self.activate_framework_value(scope, value, kind);
+                }
+                resolved
+            }
+            _ => false,
+        }
+    }
+
+    fn record_fastapi_dependency(
+        &mut self,
+        scope: ScopeId,
+        owner: SymbolId,
+        before: Location,
+        expression: &Expression,
+    ) {
+        match self.probe_identity(scope, expression, before) {
+            Value::FastapiDependency(Some(target)) => {
+                self.fastapi_parameter_dependency(owner, target);
+            }
+            Value::FastapiDependency(None) => self.fastapi_dependency_issues.push((
+                owner,
+                Issue::new(
+                    "unresolved_registration",
+                    &self.files[self.scopes[scope].file].path,
+                    "FastAPI parameter dependency could not be resolved",
+                )
+                .at(expression.at),
+            )),
+            _ => {}
+        }
+    }
+
+    fn fastapi_annotation_metadata<'expr>(
+        &mut self,
+        scope: ScopeId,
+        before: Location,
+        annotation: &'expr Expression,
+    ) -> &'expr [Expression] {
+        // The frontend lowers subscription and tuple annotations into nested
+        // operand groups. Resolve the generic's binding before using metadata.
+        if let ExpressionKind::Operands(parts) = &annotation.kind
+            && let [generic, arguments] = parts.as_slice()
+            && matches!(self.probe_identity(scope, generic, before), Value::Provider(provider)
+                if matches!(provider.as_str(), "typing.Annotated" | "typing_extensions.Annotated"))
+            && let ExpressionKind::Operands(arguments) = &arguments.kind
+            && let Some((_, metadata)) = arguments.split_first()
+        {
+            metadata
+        } else {
+            &[]
+        }
+    }
+
     fn activate_callback(
         &mut self,
         scope: ScopeId,
@@ -3466,7 +4624,9 @@ impl<'a> Graph<'a> {
                 .facts
                 .postponed_annotations;
         match &expr.kind {
-            ExpressionKind::Operands(values) | ExpressionKind::Sequence(values) => {
+            ExpressionKind::Addition(values)
+            | ExpressionKind::Operands(values)
+            | ExpressionKind::Sequence(values) => {
                 for reference in values {
                     self.annotation(scope, reference, before, evaluated);
                 }
@@ -3514,11 +4674,24 @@ impl<'a> Graph<'a> {
                     if definition.kind == DefinitionKind::Class {
                         self.scopes[scope].class_bodies.push(definition_scope);
                     }
-                    for annotation in &definition.annotations {
+                    for (index, annotation) in definition.annotations.iter().enumerate() {
                         self.annotation(scope, annotation, at, true);
+                        if self.phase03
+                            && index < definition.parameter_annotation_count
+                            && !self.files[self.scopes[scope].file]
+                                .facts
+                                .postponed_annotations
+                        {
+                            for meta in self.fastapi_annotation_metadata(scope, at, annotation) {
+                                self.record_fastapi_dependency(scope, target, at, meta);
+                            }
+                        }
                     }
                     for expression in &definition.defaults {
                         self.walk(scope, expression, at);
+                        if self.phase03 {
+                            self.record_fastapi_dependency(scope, target, at, expression);
+                        }
                     }
                     for base in &definition.bases {
                         self.walk(scope, base, at);
@@ -3592,12 +4765,25 @@ impl<'a> Graph<'a> {
                             self.suite(scope, otherwise)
                         }
                         None => {
+                            let django_before = self.scopes[scope].django_settings.clone();
+                            self.branch_depth += 1;
                             let body_stops = self.suite(scope, body);
+                            let django_body = std::mem::replace(
+                                &mut self.scopes[scope].django_settings,
+                                django_before,
+                            );
                             let excluded_branch = self.scopes[scope].namespace_exclusions.len();
                             self.scopes[scope]
                                 .namespace_exclusions
                                 .extend(namespace_span(body));
                             let otherwise_stops = self.suite(scope, otherwise);
+                            self.branch_depth -= 1;
+                            let django_other = &mut self.scopes[scope].django_settings;
+                            if otherwise_stops || *django_other == django_body {
+                                *django_other = django_body;
+                            } else if !body_stops {
+                                *django_other = DjangoSettings::Unknown;
+                            }
                             if !body_stops && !body.is_empty() {
                                 self.scopes[scope]
                                     .namespace_exclusions
@@ -3665,8 +4851,86 @@ impl<'a> Graph<'a> {
             self.walk(scope, value, before);
         }
         match self.identity(scope, function, before, 0) {
-            Value::Method(object, name) if is_route(&name) => {
-                self.scopes[scope].routes.push((object, target))
+            Value::Method(object, kind, name) if is_route(kind, &name, self.phase03) => {
+                if self.phase03 && matches!(kind, ObjectKind::App | ObjectKind::Router) {
+                    self.fastapi_route(
+                        object,
+                        fastapi::Site {
+                            scope,
+                            at: decorator.at,
+                            before,
+                        },
+                        target,
+                        keywords,
+                    );
+                } else {
+                    self.scopes[scope].routes.push((
+                        object,
+                        target,
+                        framework_registration_kind(kind),
+                    ));
+                }
+            }
+            Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
+                let signal = self.django_receiver(scope, args, keywords, before, 0);
+                self.record_django_signal(
+                    scope,
+                    signal,
+                    Some(Value::Callable(Invocation::ordinary(target))),
+                    decorator.at,
+                );
+            }
+            Value::DjangoReceiver(signal)
+                if !matches!(decorator.kind, ExpressionKind::Call { .. }) =>
+            {
+                self.record_django_signal(
+                    scope,
+                    signal,
+                    Some(Value::Callable(Invocation::ordinary(target))),
+                    decorator.at,
+                );
+            }
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
+                        "sqlalchemy.event.listens_for" | "celery.shared_task"
+                    ) =>
+            {
+                let kind = match name.as_str() {
+                    "sqlalchemy.event.listens_for" => "sqlalchemy_listener",
+                    "celery.shared_task" => "celery_task",
+                    _ => unreachable!(),
+                };
+                self.edge(scope, target, kind, "certain");
+            }
+            Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
+                        "pydantic.computed_field"
+                            | "pydantic.field_validator"
+                            | "pydantic.model_validator"
+                            | "pydantic.root_validator"
+                            | "pydantic.validator"
+                            | "pydantic.field_serializer"
+                            | "pydantic.model_serializer"
+                            | "sqlalchemy.ext.hybrid.hybrid_property"
+                    ) =>
+            {
+                if let Some(owner) = self.scopes[scope].owner
+                    && self.is_class(owner)
+                    && (name == "sqlalchemy.ext.hybrid.hybrid_property"
+                        || self.framework_class_role(owner, &mut BTreeSet::new(), 0)
+                            == Some(FrameworkClassRole::PydanticModel))
+                {
+                    self.framework_lifecycle
+                        .push((owner, target, "framework_lifecycle"));
+                }
+            }
+            Value::Provider(name) if self.phase03 && name == "django.contrib.admin.register" => {
+                self.edge(scope, target, "django_admin_registration", "certain");
             }
             Value::Provider(name) if name == "pytest.fixture" => {
                 let registered_name = if let Some((_, expression)) =
@@ -3731,6 +4995,13 @@ impl<'a> Graph<'a> {
                     name.as_str(),
                     "builtins.staticmethod" | "builtins.classmethod"
                 ) => {}
+            Value::Provider(name)
+                if self.phase03
+                    && name == "builtins.property"
+                    && let Some(owner) = self.scopes[scope].owner
+                    && self.is_class(owner)
+                    && self.framework_class_role(owner, &mut BTreeSet::new(), 0)
+                        == Some(FrameworkClassRole::PydanticModel) => {}
             _ => self.scope_issue(
                 scope,
                 decorator.at,
@@ -3825,6 +5096,11 @@ impl<'a> Graph<'a> {
             && !self.fixtures.contains_key(&id)
     }
 
+    fn is_coroutine(&self, id: SymbolId) -> bool {
+        matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+            if definition.kind == DefinitionKind::Coroutine)
+    }
+
     fn is_pytest_file(&self, file: usize) -> bool {
         let filename = self.files[file].path.rsplit('/').next().unwrap_or_default();
         filename.starts_with("test_") || filename.ends_with("_test.py")
@@ -3839,14 +5115,14 @@ impl<'a> Graph<'a> {
         &bindings[first..]
     }
 
-    fn pytest_target(&self, id: SymbolId) -> Option<PytestRegistration> {
+    fn probe_callable_binding(&self, id: SymbolId) -> Option<CallableBinding> {
         let mut bindings = Vec::new();
         let Value::Callable(Invocation { target, .. }) =
             self.pytest_binding(id, None, &mut bindings, 0)?
         else {
             return None;
         };
-        Some(PytestRegistration { target, bindings })
+        Some(CallableBinding { target, bindings })
     }
 
     // Collect identity evidence without marking unrelated namespace entries
@@ -3968,7 +5244,7 @@ impl<'a> Graph<'a> {
         &self,
         names: &PytestNames<'a>,
         prefix: &str,
-    ) -> Vec<(PytestRegistration, bool)> {
+    ) -> Vec<(CallableBinding, bool)> {
         names
             .iter()
             .filter(|(name, _)| name.starts_with(prefix))
@@ -3976,7 +5252,8 @@ impl<'a> Graph<'a> {
                 let candidates = self.effective_bindings(bindings);
                 candidates.iter().filter_map(move |id| {
                     let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
-                    self.pytest_target(*id).map(|target| (target, certain))
+                    self.probe_callable_binding(*id)
+                        .map(|target| (target, certain))
                 })
             })
             .collect()
@@ -4003,7 +5280,28 @@ impl<'a> Graph<'a> {
             let namespaces: Vec<_> = ancestors.chain(std::iter::once(file)).collect();
             let module_tests = self.pytest_registrations(&self.scopes[file].names, "test_");
             self.record_pytest_tests(file, &namespaces, None, module_tests, &mut roots);
+            if !self.fixtures.is_empty()
+                && let Some(cases) = self.pytest_unittest_cases.remove(&file)
+            {
+                for (names, certain_case) in cases {
+                    // pytest runs autouse fixtures for unittest cases but does
+                    // not inject fixtures through unittest method parameters.
+                    self.collect_pytest_fixtures(
+                        file,
+                        &namespaces,
+                        Some(&names),
+                        PytestFixtureRequests {
+                            tests: &[],
+                            certain_case,
+                        },
+                        &mut roots,
+                    );
+                }
+            }
             for (class, collected) in self.pytest_registrations(&self.scopes[file].names, "Test") {
+                if self.phase03 && self.unittest_classes.contains_key(&class.target) {
+                    continue;
+                }
                 let Some((names, eligible)) = self.pytest_class_names(class.target) else {
                     continue;
                 };
@@ -4036,7 +5334,7 @@ impl<'a> Graph<'a> {
         file: usize,
         namespaces: &[ScopeId],
         class: Option<&PytestNames<'a>>,
-        tests: Vec<(PytestRegistration, bool)>,
+        tests: Vec<(CallableBinding, bool)>,
         roots: &mut BTreeMap<SymbolId, bool>,
     ) {
         let tests: Vec<_> = tests
@@ -4054,7 +5352,16 @@ impl<'a> Graph<'a> {
             self.read.extend(&test.bindings);
         }
         if !self.fixtures.is_empty() {
-            self.collect_pytest_fixtures(file, namespaces, class, &tests, roots);
+            self.collect_pytest_fixtures(
+                file,
+                namespaces,
+                class,
+                PytestFixtureRequests {
+                    tests: &tests,
+                    certain_case: tests.iter().any(|(_, certain)| *certain),
+                },
+                roots,
+            );
         }
     }
 
@@ -4063,16 +5370,23 @@ impl<'a> Graph<'a> {
         file: usize,
         namespaces: &[ScopeId],
         class: Option<&PytestNames<'a>>,
-        tests: &[(PytestRegistration, bool)],
+        requests: PytestFixtureRequests<'_>,
         roots: &mut BTreeMap<SymbolId, bool>,
     ) {
         // Register from outermost to innermost. Pytest requests an autouse
         // fixture by name, so a closer override can satisfy that request too.
         let mut registrations = BTreeMap::<String, Vec<PytestFixtureChoices>>::new();
-        for names in namespaces
+        for (plugin, names) in self
+            .pytest_plugins
             .iter()
-            .map(|&scope| &self.scopes[scope].names)
-            .chain(class)
+            .filter(|scope| !namespaces.contains(scope))
+            .map(|&scope| (true, &self.scopes[scope].names))
+            .chain(
+                namespaces
+                    .iter()
+                    .map(|&scope| (false, &self.scopes[scope].names)),
+            )
+            .chain(class.map(|names| (false, names)))
         {
             for (&alias, bindings) in names {
                 // Keep possible conditional bindings at the same precedence.
@@ -4080,7 +5394,7 @@ impl<'a> Graph<'a> {
                 let candidates = self.effective_bindings(bindings);
                 let has_unconditional_binding = !self.conditional.contains_key(&candidates[0]);
                 for &binding in candidates.iter().rev() {
-                    if let Some(resolved) = self.pytest_target(binding)
+                    if let Some(resolved) = self.probe_callable_binding(binding)
                         && let Some(fixture) = self.fixtures.get(&resolved.target)
                     {
                         let name = fixture.name.as_deref().unwrap_or(alias);
@@ -4090,13 +5404,19 @@ impl<'a> Graph<'a> {
                 for (name, alternatives) in alternatives {
                     let may_be_absent =
                         !has_unconditional_binding || alternatives.len() != candidates.len();
-                    registrations
-                        .entry(name.into())
-                        .or_default()
-                        .push(PytestFixtureChoices {
+                    let choices = registrations.entry(name.into()).or_default();
+                    // A local fixture can shadow globally registered plugins.
+                    // Keep competing plugin bindings possible when their load order
+                    // is not established by collection.
+                    if plugin && let Some(choice) = choices.last_mut() {
+                        choice.alternatives.extend(alternatives);
+                        choice.may_be_absent &= may_be_absent;
+                    } else {
+                        choices.push(PytestFixtureChoices {
                             alternatives,
                             may_be_absent,
                         });
+                    }
                 }
             }
         }
@@ -4118,11 +5438,11 @@ impl<'a> Graph<'a> {
                 pending.push((
                     name.as_str(),
                     BTreeMap::new(),
-                    certain && tests.iter().any(|(_, certain)| *certain),
+                    certain && requests.certain_case,
                 ));
             }
         }
-        for (test, certain) in tests {
+        for (test, certain) in requests.tests {
             let Binding::Definition(definition, _) = self.symbols[test.target].binding else {
                 continue;
             };
@@ -4295,7 +5615,9 @@ impl<'a> Graph<'a> {
                     values.extend(copy.keywords.into_values());
                     values
                 }
-                Value::Sequence(items) | Value::Mapping(items) => items,
+                Value::Sequence(items) | Value::Mapping(items) | Value::Alternatives(items) => {
+                    items
+                }
                 Value::Unknown | Value::OpaqueNamespace => {
                     self.scope_issue(
                         scope,
@@ -5064,7 +6386,7 @@ impl<'a> Graph<'a> {
     }
 
     fn traverse(
-        &self,
+        &mut self,
         reach: &mut Reachability,
         mut pending: VecDeque<Edge>,
         class_bodies: &BTreeSet<ScopeId>,
@@ -5076,12 +6398,30 @@ impl<'a> Graph<'a> {
                 reach.scopes.len(),
                 reach.active_objects.len(),
                 reach.symbols.len(),
+                reach.django_setup_scopes.len(),
+                reach.django_signal_modules.len(),
             );
             while let Some(edge) = pending.pop_front() {
                 if !verification && is_verification_edge(edge.kind) {
                     continue;
                 }
                 let certainty = if possible { "possible" } else { edge.certainty };
+                if matches!(edge.kind, "fastapi_registration" | "fastapi_dependency")
+                    && reach.fastapi_callbacks.insert(edge.target)
+                {
+                    pending.extend(self.fastapi_parameter_dependencies(edge.target).iter().map(
+                        |&target| Edge {
+                            target,
+                            kind: "fastapi_dependency",
+                            certainty,
+                        },
+                    ));
+                }
+                if edge.kind == "fastapi_dependency"
+                    && let Some(effects) = self.fastapi_constructor_effects(edge.target)
+                {
+                    self.open_fastapi_effects(effects, reach, &mut pending);
+                }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
                 reach.symbols.insert(edge.target);
                 if edge.kind == "type_reference" {
@@ -5111,14 +6451,34 @@ impl<'a> Graph<'a> {
                         reach.active_objects.insert(child);
                     }
                 }
-                for &(object, target) in &scope.routes {
-                    if reach.active_objects.contains(&object) && !reach.symbols.contains(&target) {
+                for &(object, target, kind) in &scope.routes {
+                    if reach.active_objects.contains(&object)
+                        && if self.phase03 {
+                            !reach.has_evidence(target, kind)
+                        } else {
+                            !reach.symbols.contains(&target)
+                        }
+                    {
                         pending.push_back(Edge {
                             target,
-                            kind: "fastapi_registration",
+                            kind,
                             certainty: "certain",
                         });
                     }
+                }
+            }
+            if self.phase03 {
+                self.activate_django_signals(reach, &mut pending, verification, possible);
+                self.activate_fastapi(reach, &mut pending);
+                self.resolve_django_receiver_calls(reach, &mut pending);
+            }
+            for &(owner, target, kind) in &self.framework_lifecycle {
+                if reach.symbols.contains(&owner) && !reach.has_evidence(target, kind) {
+                    pending.push_back(Edge {
+                        target,
+                        kind,
+                        certainty: "certain",
+                    });
                 }
             }
             if pending.is_empty()
@@ -5127,6 +6487,8 @@ impl<'a> Graph<'a> {
                         reach.scopes.len(),
                         reach.active_objects.len(),
                         reach.symbols.len(),
+                        reach.django_setup_scopes.len(),
+                        reach.django_signal_modules.len(),
                     )
             {
                 return true;
@@ -5289,6 +6651,26 @@ impl<'a> Graph<'a> {
         if !baseline_converged {
             self.issues.push(framework_limit());
         }
+        self.report_unbound_receiver_calls(&reach);
+        self.issues
+            .extend(
+                self.fastapi_dependency_issues
+                    .drain(..)
+                    .filter_map(|(target, issue)| {
+                        reach.fastapi_callbacks.contains(&target).then_some(issue)
+                    }),
+            );
+        self.report_fastapi_coverage(&reach);
+        if self.phase03 {
+            self.report_django_startup_coverage(&reach);
+        }
+        self.issues.extend(
+            self.django_registration_issues
+                .drain(..)
+                .filter_map(|(object, issue)| {
+                    reach.active_objects.contains(&object).then_some(issue)
+                }),
+        );
         let Reachability {
             scopes: reachable_scopes,
             symbols: reachable_symbols,
@@ -5406,7 +6788,13 @@ impl<'a> Graph<'a> {
                 Binding::Import(_) if !self.read.contains(&id) => {
                     (Category::Import, "SKY-U002", 100, "binding_is_unread")
                 }
-                Binding::Variable(_, _) if !self.read.contains(&id) => {
+                Binding::Variable(_, _)
+                    if !self.read.contains(&id)
+                        && !(self.framework_fields.contains(&id)
+                            && scope
+                                .owner
+                                .is_some_and(|owner| reachable_symbols.contains(&owner))) =>
+                {
                     let confidence = match scope.owner {
                         Some(owner) if self.is_class(owner) => 80,
                         None => 90,
@@ -5515,7 +6903,22 @@ struct Reachability {
     scopes: BTreeSet<ScopeId>,
     symbols: BTreeSet<SymbolId>,
     active_objects: BTreeSet<Object>,
+    django_setup_scopes: BTreeSet<ScopeId>,
+    django_signal_modules: BTreeSet<usize>,
+    django_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    resolved_django_receiver_calls: BTreeSet<(usize, SymbolId)>,
+    fastapi_callbacks: BTreeSet<SymbolId>,
+    unordered_fastapi_mounts: BTreeSet<usize>,
+    version_sensitive_fastapi_mounts: BTreeSet<usize>,
+    fastapi_limited: bool,
     evidence: BTreeSet<(SymbolId, &'static str, &'static str)>,
+}
+
+impl Reachability {
+    fn has_evidence(&self, target: SymbolId, kind: &'static str) -> bool {
+        self.evidence.contains(&(target, kind, "certain"))
+            || self.evidence.contains(&(target, kind, "possible"))
+    }
 }
 
 #[derive(Default)]
@@ -5636,11 +7039,23 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::Boolean { values, .. }
+            | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),
             ExpressionKind::Compare { left, right, .. }
             | ExpressionKind::OrderingComparison { left, right } => {
                 expressions.extend([left.as_ref(), right.as_ref()]);
             }
+            ExpressionKind::Subscript { value, index } => {
+                expressions.extend([value.as_ref(), index.as_ref()]);
+            }
+            ExpressionKind::Conditional {
+                test,
+                body,
+                otherwise,
+            } => expressions.extend([test.as_ref(), body.as_ref(), otherwise.as_ref()]),
+            ExpressionKind::Membership {
+                element, container, ..
+            } => expressions.extend([element.as_ref(), container.as_ref()]),
             ExpressionKind::Text(_) | ExpressionKind::Bool(_) | ExpressionKind::Scalar => {}
         }
     }
@@ -5763,26 +7178,88 @@ fn is_identity_decorator(definition: &Definition) -> bool {
     })), .. }] if name == &parameter.text)
 }
 
-fn is_route(name: &str) -> bool {
-    matches!(
+fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
+    let http = matches!(
         name,
-        "get"
-            | "post"
-            | "put"
-            | "delete"
-            | "patch"
-            | "head"
-            | "options"
-            | "trace"
-            | "api_route"
-            | "route"
-            | "websocket"
-            | "websocket_route"
-    )
+        "get" | "post" | "put" | "delete" | "patch" | "head" | "options" | "trace"
+    );
+    match kind {
+        ObjectKind::App | ObjectKind::Router => {
+            http || matches!(
+                name,
+                "api_route" | "route" | "websocket" | "websocket_route"
+            ) || phase03 && matches!(name, "exception_handler" | "on_event")
+        }
+        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => {
+            http || matches!(
+                name,
+                "route"
+                    | "before_request"
+                    | "after_request"
+                    | "teardown_request"
+                    | "errorhandler"
+                    | "context_processor"
+            ) || matches!(kind, ObjectKind::FlaskBlueprint)
+                && matches!(
+                    name,
+                    "before_app_request"
+                        | "after_app_request"
+                        | "teardown_app_request"
+                        | "app_context_processor"
+                        | "app_errorhandler"
+                )
+        }
+        ObjectKind::CeleryApp => name == "task",
+    }
 }
 
-fn is_known_call(name: &str) -> bool {
+fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
+    match kind {
+        ObjectKind::App | ObjectKind::Router => {
+            matches!(
+                method,
+                "add_api_route" | "add_api_websocket_route" | "add_route" | "add_websocket_route"
+            ) || matches!(kind, ObjectKind::App) && method == "add_exception_handler"
+        }
+        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => method == "add_url_rule",
+        ObjectKind::CeleryApp => false,
+    }
+}
+
+fn is_known_call(name: &str, phase03: bool) -> bool {
     name.starts_with("builtins.")
+        || phase03
+            && (name.starts_with("pydantic.BaseModel.")
+                || is_django_signal_constructor(name)
+                || is_django_receiver(name)
+                || matches!(
+                    name,
+                    "flask.Flask"
+                        | "flask.app.Flask"
+                        | "flask.Blueprint"
+                        | "flask.blueprints.Blueprint"
+                        | "celery.Celery"
+                        | "fastapi.Depends"
+                        | "fastapi.Security"
+                        | "django.urls.path"
+                        | "django.urls.re_path"
+                        | "django.urls.include"
+                        | "django.urls.register_converter"
+                        | "django.setup"
+                        | "django.core.wsgi.get_wsgi_application"
+                        | "django.core.asgi.get_asgi_application"
+                        | "django.core.management.execute_from_command_line"
+                        | "sqlalchemy.event.listen"
+                        | "sqlalchemy.event.listens_for"
+                        | "sqlalchemy.event.listens_for.callback"
+                        | "sqlalchemy.orm.mapped_column"
+                        | "django.http.HttpResponse"
+                        | "django.http.response.HttpResponse"
+                        | "django.http.HttpResponseBadRequest"
+                        | "django.http.HttpResponseForbidden"
+                        | "django.http.HttpResponseNotFound"
+                        | "django.http.HttpResponseServerError"
+                ))
         || matches!(
             name,
             "fastapi.FastAPI"
@@ -5792,7 +7269,137 @@ fn is_known_call(name: &str) -> bool {
                 | "concurrent.futures.ThreadPoolExecutor"
                 | "concurrent.futures.ProcessPoolExecutor"
                 | "multiprocessing.Process"
+                | "setuptools.setup"
+                | "distutils.core.setup"
         )
+}
+
+fn framework_module(file: usize) -> Object {
+    (file, 0, 0)
+}
+
+fn django_loaded_module(file: usize) -> Object {
+    (file, 0, 1)
+}
+
+fn django_management_settings(argv: &[Value]) -> DjangoSettings {
+    // Django parses global options after the executable and subcommand before
+    // consulting INSTALLED_APPS. The last settings option wins.
+    let mut arguments = argv.iter().skip(2);
+    let mut module = "";
+    while let Some(argument) = arguments.next() {
+        let Value::Text(option) = argument else {
+            return DjangoSettings::Unknown;
+        };
+        match option.as_str() {
+            "--" => break,
+            "--settings" => match arguments.next() {
+                Some(Value::Text(value)) if !value.starts_with('-') => module = value,
+                _ => return DjangoSettings::Unknown,
+            },
+            _ => {
+                if let Some(value) = option.strip_prefix("--settings=") {
+                    module = value;
+                }
+            }
+        }
+    }
+    if module.is_empty() {
+        DjangoSettings::Unset
+    } else {
+        DjangoSettings::Module(module.to_owned())
+    }
+}
+
+fn is_django_signal(provider: &str) -> bool {
+    matches!(
+        provider,
+        "django.core.signals.request_started"
+            | "django.core.signals.request_finished"
+            | "django.core.signals.got_request_exception"
+            | "django.core.signals.setting_changed"
+            | "django.test.signals.setting_changed"
+            | "django.test.signals.template_rendered"
+    ) || provider
+        .strip_prefix("django.db.models.signals.")
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "pre_init"
+                    | "post_init"
+                    | "pre_save"
+                    | "post_save"
+                    | "pre_delete"
+                    | "post_delete"
+                    | "m2m_changed"
+                    | "class_prepared"
+                    | "pre_migrate"
+                    | "post_migrate"
+            )
+        })
+}
+
+fn is_django_signal_constructor(provider: &str) -> bool {
+    matches!(
+        provider,
+        "django.dispatch.Signal" | "django.dispatch.dispatcher.Signal"
+    )
+}
+
+fn is_django_receiver(provider: &str) -> bool {
+    matches!(
+        provider,
+        "django.dispatch.receiver" | "django.dispatch.dispatcher.receiver"
+    )
+}
+
+fn framework_registration_kind(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::App | ObjectKind::Router => "fastapi_registration",
+        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => "flask_registration",
+        ObjectKind::CeleryApp => "celery_task",
+    }
+}
+
+fn callback_argument<'a>(
+    method: &str,
+    arguments: &'a [Expression],
+    keywords: &'a [(String, Expression)],
+) -> Option<&'a Expression> {
+    let (position, names): (usize, &[&str]) = match method {
+        "add_url_rule" => (2, &["view_func"]),
+        "add_api_route" | "add_api_websocket_route" => (1, &["endpoint"]),
+        "add_route" | "add_websocket_route" => (1, &["endpoint"]),
+        "add_exception_handler" => (1, &["handler"]),
+        _ => return None,
+    };
+    arguments.get(position).or_else(|| {
+        keywords
+            .iter()
+            .find(|(name, _)| names.contains(&name.as_str()))
+            .map(|(_, value)| value)
+    })
+}
+
+fn registration_arguments<'a, const N: usize>(
+    positional: &'a [Expression],
+    keywords: &'a [(String, Expression)],
+    names: [&str; N],
+) -> Option<[Option<&'a Expression>; N]> {
+    if positional.len() > N {
+        return None;
+    }
+    let mut slots = [None; N];
+    for (slot, value) in slots.iter_mut().zip(positional) {
+        *slot = Some(value);
+    }
+    for (name, value) in keywords {
+        let index = names.iter().position(|key| key == name)?;
+        if slots[index].replace(value).is_some() {
+            return None;
+        }
+    }
+    Some(slots)
 }
 
 fn builtin_noop_subclass_hook(name: &str) -> bool {
@@ -5814,6 +7421,42 @@ fn builtin_noop_subclass_hook(name: &str) -> bool {
             | "builtins.TypeError"
             | "builtins.Exception"
     )
+}
+
+fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
+    match name {
+        "unittest.TestCase" | "unittest.case.TestCase" => Some(FrameworkClassRole::Unittest),
+        "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
+            Some(FrameworkClassRole::UnittestAsync)
+        }
+        "django.apps.AppConfig" | "django.apps.config.AppConfig" => {
+            Some(FrameworkClassRole::DjangoAppConfig)
+        }
+        "django.core.management.base.BaseCommand" => Some(FrameworkClassRole::DjangoCommand),
+        "django.views.View" | "django.views.generic.View" | "django.views.generic.base.View" => {
+            Some(FrameworkClassRole::DjangoView)
+        }
+        "django.db.models.Model" | "django.db.models.base.Model" => {
+            Some(FrameworkClassRole::DjangoModel)
+        }
+        name if is_django_signal_constructor(name) => Some(FrameworkClassRole::DjangoSignal),
+        "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
+            Some(FrameworkClassRole::DjangoAdmin)
+        }
+        "celery.Task" | "celery.app.task.Task" => Some(FrameworkClassRole::CeleryTask),
+        "sqlalchemy.orm.DeclarativeBase" | "sqlalchemy.orm.decl_api.DeclarativeBase" => {
+            Some(FrameworkClassRole::SqlAlchemyModel)
+        }
+        "pydantic.BaseModel"
+        | "pydantic.main.BaseModel"
+        | "pydantic_settings.BaseSettings"
+        | "pydantic_settings.main.BaseSettings" => Some(FrameworkClassRole::PydanticModel),
+        _ => None,
+    }
+}
+
+fn framework_managed_base(name: &str) -> bool {
+    framework_class_provider(name).is_some()
 }
 
 #[cfg(test)]
@@ -6560,6 +8203,93 @@ _unbound()
     }
 
     #[test]
+    fn resolves_literal_lazy_import_tables() {
+        let files = [
+            module(
+                "pkg/__init__.py",
+                "pkg",
+                "import importlib\n_LAZY = {'work': 'pkg.worker'}\n__all__ = ['work']\ndef __getattr__(name):\n    if name in _LAZY:\n        return getattr(importlib.import_module(_LAZY[name]), name)\n    raise AttributeError(name)\n",
+            ),
+            module(
+                "pkg/worker.py",
+                "pkg.worker",
+                "def work():\n    return helper()\ndef helper():\n    return 1\ndef unused():\n    return 2\n",
+            ),
+        ];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        assert!(result.evidence.iter().any(|evidence| {
+            evidence.full_name == "pkg.worker.work" && evidence.kind == "public_export"
+        }));
+
+        let duplicate = analyze(
+            &[
+                module(
+                    "pkg/__init__.py",
+                    "pkg",
+                    "import importlib\n_LAZY = {'work': 'pkg.retired', 'work': 'pkg.worker'}\n__all__ = ['work']\ndef __getattr__(name):\n    if name in _LAZY:\n        return getattr(importlib.import_module(_LAZY[name]), name)\n    raise AttributeError(name)\n",
+                ),
+                module("pkg/worker.py", "pkg.worker", "def work():\n    return 1\n"),
+                module(
+                    "pkg/retired.py",
+                    "pkg.retired",
+                    "def work():\n    return 2\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(duplicate.issues.is_empty(), "{:?}", duplicate.issues);
+        assert_eq!(names(&duplicate, Category::Function), ["work"]);
+        assert!(duplicate.evidence.iter().any(|evidence| {
+            evidence.full_name == "pkg.worker.work" && evidence.kind == "public_export"
+        }));
+
+        let opaque = analyze(
+            &[
+                module(
+                    "pkg/__init__.py",
+                    "pkg",
+                    "import importlib\ndef build_table():\n    return {'work': 'pkg.worker'}\n_LAZY = build_table()\n__all__ = ['work']\ndef __getattr__(name):\n    if name in _LAZY:\n        return getattr(importlib.import_module(_LAZY[name]), name)\n    raise AttributeError(name)\n",
+                ),
+                module(
+                    "pkg/worker.py",
+                    "pkg.worker",
+                    "def work():\n    return helper()\ndef helper():\n    return 1\ndef unused():\n    return 2\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            opaque
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_lazy_export"),
+            "{:?}",
+            opaque.issues
+        );
+    }
+
+    #[test]
+    fn arbitrary_subscript_and_membership_dispatch_remain_incomplete() {
+        let result = analyze(
+            &[module(
+                "main.py",
+                "main",
+                "def inspect(values, key):\n    return values[key], key in values\ninspect(object(), object())\n",
+            )],
+            &[],
+        );
+        for kind in ["unresolved_subscript", "unresolved_membership"] {
+            assert!(
+                result.issues.iter().any(|issue| issue.kind == kind),
+                "missing {kind}: {:?}",
+                result.issues
+            );
+        }
+    }
+
+    #[test]
     fn unknown_dispatch_blocks_reachable_but_not_dormant_code() {
         let source = "def go(callback):\n    callback()\n";
         let dormant = analyze(&[module("main.py", "main", source)], &[]);
@@ -6602,15 +8332,18 @@ _unbound()
     }
 
     #[test]
-    fn conditional_shadowing_cannot_prove_the_previous_target_unused() {
+    fn conditional_shadowing_retains_previous_and_new_targets() {
         let source = "def old():\n    pass\ndef new():\n    pass\nhandler = old\nif flag:\n    handler = new\nhandler()\n";
         let result = analyze(&[module("main.py", "main", source)], &[]);
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.kind == "ambiguous_binding")
-        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(names(&result, Category::Function).is_empty());
+        for target in ["main.old", "main.new"] {
+            assert!(result.evidence.iter().any(|evidence| {
+                evidence.full_name == target
+                    && evidence.kind == "direct_call"
+                    && evidence.certainty == "possible"
+            }));
+        }
     }
 
     #[test]
@@ -6714,6 +8447,183 @@ _unbound()
     }
 
     #[test]
+    fn custom_allocator_can_return_a_different_selected_class() {
+        let files = [module(
+            "main.py",
+            "main",
+            "class Requested:\n    def __new__(cls):\n        return Actual()\n    def deliver(self):\n        return 0\nclass Actual:\n    def deliver(self):\n        return 1\nRequested().deliver()\n",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["deliver"]);
+        assert!(result.evidence.iter().any(|evidence| {
+            evidence.full_name == "main.Actual.deliver" && evidence.kind == "direct_call"
+        }));
+
+        let opaque = analyze(
+            &[module(
+                "main.py",
+                "main",
+                "from external import allocate\nclass Requested:\n    def __new__(cls):\n        return allocate()\nRequested()\n",
+            )],
+            &[],
+        );
+        assert!(
+            opaque
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_constructor"),
+            "{:?}",
+            opaque.issues
+        );
+    }
+
+    #[test]
+    fn inherited_method_dispatches_to_the_selected_child_override() {
+        let files = [module(
+            "main.py",
+            "main",
+            "def finish_child_work():\n    return 1\nclass Parent:\n    def run(self):\n        return self.step()\n    def step(self):\n        return 0\nclass Child(Parent):\n    def step(self):\n        return finish_child_work()\nChild().run()\n",
+        )];
+        let result = analyze(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["step"]);
+        for target in [
+            "main.Parent.run",
+            "main.Child.step",
+            "main.finish_child_work",
+        ] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|evidence| evidence.full_name == target),
+                "missing evidence for {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn finite_receiver_branch_join_retains_each_selected_method() {
+        let classes = "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\n";
+        for usage in [
+            "if choose:\n    receiver = First()\nelse:\n    receiver = Second()\nreceiver.run()\n",
+            "receiver = First() if choose else Second()\nreceiver.run()\n",
+        ] {
+            let files = [module("main.py", "main", &format!("{classes}{usage}"))];
+            let result = analyze(&files, &[]);
+            assert!(result.issues.is_empty(), "{usage}\n{:?}", result.issues);
+            assert!(names(&result, Category::Function).is_empty());
+            for target in ["main.First.run", "main.Second.run"] {
+                assert!(result.evidence.iter().any(|evidence| {
+                    evidence.full_name == target
+                        && evidence.kind == "direct_call"
+                        && evidence.certainty == "possible"
+                }));
+            }
+        }
+
+        let known = analyze(
+            &[module(
+                "main.py",
+                "main",
+                &format!("{classes}receiver = First() if True else Second()\nreceiver.run()\n"),
+            )],
+            &[],
+        );
+        assert!(known.issues.is_empty(), "{:?}", known.issues);
+        assert_eq!(names(&known, Category::Function), ["run"]);
+        assert!(known.evidence.iter().any(|evidence| {
+            evidence.full_name == "main.First.run" && evidence.kind == "direct_call"
+        }));
+    }
+
+    #[test]
+    fn finite_constructor_alias_retains_each_selected_method() {
+        let result = analyze(
+            &[module(
+                "main.py",
+                "main",
+                "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\ndef unused():\n    return 3\nFactory = First if choose else Second\nreceiver = Factory()\nreceiver.run()\n",
+            )],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        for target in ["main.First.run", "main.Second.run"] {
+            assert!(result.evidence.iter().any(|evidence| {
+                evidence.full_name == target
+                    && evidence.kind == "direct_call"
+                    && evidence.certainty == "possible"
+            }));
+        }
+    }
+
+    #[test]
+    fn nested_finite_receiver_paths_retain_every_selected_method() {
+        let classes = "class First:\n    def run(self):\n        return 1\nclass Second:\n    def run(self):\n        return 2\nclass Third:\n    def run(self):\n        return 3\ndef unused():\n    return 4\n";
+        for usage in [
+            "receiver = Third()\nif outer:\n    if inner:\n        receiver = First()\nelse:\n    receiver = Second()\nreceiver.run()\n",
+            "receiver = (First() if inner else Second()) if outer else Third()\nreceiver.run()\n",
+        ] {
+            let result = analyze(
+                &[module("main.py", "main", &format!("{classes}{usage}"))],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{usage}\n{:?}", result.issues);
+            assert_eq!(names(&result, Category::Function), ["unused"]);
+            for target in ["main.First.run", "main.Second.run", "main.Third.run"] {
+                assert!(result.evidence.iter().any(|evidence| {
+                    evidence.full_name == target
+                        && evidence.kind == "direct_call"
+                        && evidence.certainty == "possible"
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn conditional_state_limit_remains_incomplete() {
+        let mut source =
+            "class Target:\n    def run(self):\n        return 1\nreceiver = Target()\n".to_owned();
+        for index in 0..13 {
+            source.push_str(&format!("if choice_{index}:\n    receiver = Target()\n"));
+        }
+        source.push_str("receiver.run()\n");
+
+        let result = analyze(&[module("main.py", "main", &source)], &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "ambiguous_binding"),
+            "{:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn finite_conditional_export_retains_each_possible_target() {
+        let result = analyze(
+            &[module(
+                "pkg/__init__.py",
+                "pkg",
+                "__all__ = ['exported']\ndef first():\n    return 1\ndef second():\n    return 2\ndef unused():\n    return 3\nexported = first if choose else second\n",
+            )],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["unused"]);
+        for target in ["pkg.first", "pkg.second"] {
+            assert!(result.evidence.iter().any(|evidence| {
+                evidence.full_name == target
+                    && evidence.kind == "public_export"
+                    && evidence.certainty == "possible"
+            }));
+        }
+    }
+
+    #[test]
     fn instance_dispatch_uses_the_first_positional_parameter() {
         let source = "\
 def finish_setup():
@@ -6796,10 +8706,6 @@ print(Status.default)
                 "unresolved_constructor",
             ),
             (
-                "class Base:\n    def __init__(self):\n        self.hook()\n    def hook(self):\n        pass\nclass Child(Base):\n    def hook(self):\n        pass\nChild()\n",
-                "unresolved_call",
-            ),
-            (
                 "def getter():\n    return 1\nclass Base:\n    @property\n    def value(self):\n        return getter()\nclass Child(Base):\n    pass\nprint(Child().value)\n",
                 "unresolved_decorator",
             ),
@@ -6834,5 +8740,491 @@ print(Status.default)
                 .any(|evidence| evidence.full_name == "test_app.resource"
                     && evidence.kind == "pytest_root")
         );
+    }
+
+    #[test]
+    fn phase03_activates_registered_flask_blueprints_only() {
+        let files = [
+            module(
+                "routes.py",
+                "routes",
+                "from flask import Blueprint\nactive = Blueprint('active', __name__)\ndormant = Blueprint('dormant', __name__)\n@active.route('/')\ndef served():\n    return helper()\n@dormant.route('/')\ndef parked():\n    return 0\ndef helper():\n    return 1\n",
+            ),
+            module(
+                "app.py",
+                "app",
+                "from flask import Flask\nfrom routes import active\napp = Flask(__name__)\napp.register_blueprint(active)\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["parked"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "routes.served" && entry.kind == "flask_registration"
+        }));
+    }
+
+    #[test]
+    fn phase03_selects_the_configured_django_urlconf() {
+        let files = [
+            module("settings.py", "settings", "ROOT_URLCONF = 'project.urls'\n"),
+            module(
+                "project/urls.py",
+                "project.urls",
+                "from django.urls import include, path\nfrom views import active\nimport signals\nurlpatterns = [path('', active), path('nested/', include('child_urls'))]\n",
+            ),
+            module(
+                "child_urls.py",
+                "child_urls",
+                "from django.urls import path\nfrom django.views import View\nclass Child(View):\n    def get(self, request):\n        return 1\nurlpatterns = [path('', Child.as_view())]\n",
+            ),
+            module(
+                "signals.py",
+                "signals",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef loaded(sender):\n    return 1\n",
+            ),
+            module(
+                "dormant_signals.py",
+                "dormant_signals",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef unimported(sender):\n    return 1\n",
+            ),
+            module(
+                "unused_urls.py",
+                "unused_urls",
+                "from django.urls import path\nfrom views import dormant\nurlpatterns = [path('', dormant)]\n",
+            ),
+            module(
+                "views.py",
+                "views",
+                "def active(request):\n    return helper()\ndef dormant(request):\n    return 0\ndef helper():\n    return 1\n",
+            ),
+            module(
+                "manage.py",
+                "manage",
+                "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["dormant", "unimported"]
+        );
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "views.active" && entry.kind == "django_registration"
+        }));
+        assert!(
+            result.evidence.iter().any(|entry| {
+                entry.full_name == "signals.loaded" && entry.kind == "django_signal"
+            })
+        );
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "child_urls.Child.get" && entry.kind == "framework_lifecycle"
+        }));
+    }
+
+    #[test]
+    fn phase03_loads_django_appconfig_only_for_installed_apps() {
+        let files = [
+            module(
+                "settings.py",
+                "settings",
+                "INSTALLED_APPS = ['demo.apps.Selected', 'automatic']\n",
+            ),
+            module("demo/__init__.py", "demo", ""),
+            module("automatic/__init__.py", "automatic", ""),
+            module(
+                "demo/apps.py",
+                "demo.apps",
+                "from django.apps import AppConfig\nclass Base(AppConfig):\n    def ready(self):\n        import demo.signals\nclass Selected(Base):\n    name = 'demo'\nclass Dormant(AppConfig):\n    name = 'demo'\n    def ready(self):\n        parked()\ndef parked():\n    pass\n",
+            ),
+            module(
+                "automatic/apps.py",
+                "automatic.apps",
+                "from django.apps import AppConfig\nclass Selected(AppConfig):\n    name = 'automatic'\n    default = True\n    def ready(self):\n        loaded()\nclass Dormant(AppConfig):\n    name = 'automatic'\n    def ready(self):\n        parked()\ndef loaded():\n    pass\ndef parked():\n    pass\n",
+            ),
+            module(
+                "demo/signals.py",
+                "demo.signals",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef on_save(sender):\n    return sender\n",
+            ),
+            module(
+                "main.py",
+                "main",
+                "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Class), ["Dormant", "Dormant"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "demo.apps.Base.ready" && entry.kind == "django_app_config"
+        }));
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "automatic.apps.Selected.ready" && entry.kind == "django_app_config"
+        }));
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "demo.signals.on_save" && entry.kind == "django_signal"
+        }));
+    }
+
+    #[test]
+    fn phase03_discovers_django_commands_from_the_selected_launcher_and_apps() {
+        for (argv, expected) in [
+            (
+                "",
+                &[
+                    "demo.management.commands.sync.Command.handle",
+                    "demo.management.commands.audit.Command.handle",
+                ][..],
+            ),
+            (
+                "['manage.py', 'sync']",
+                &["demo.management.commands.sync.Command.handle"][..],
+            ),
+            ("['manage.py']", &[][..]),
+        ] {
+            let files = [
+                module(
+                    "settings.py",
+                    "settings",
+                    "INSTALLED_APPS = ['demo', 'other']\n",
+                ),
+                module("demo/__init__.py", "demo", ""),
+                module("other/__init__.py", "other", ""),
+                module(
+                    "manage.py",
+                    "manage",
+                    &format!(
+                        "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line({argv})\n"
+                    ),
+                ),
+            ];
+            let command_source = "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self):\n        return helper()\ndef helper():\n    return 0\n";
+            let files: Vec<_> = files
+                .into_iter()
+                .chain(
+                    [
+                        (
+                            "demo/management/commands/sync.py",
+                            "demo.management.commands.sync",
+                        ),
+                        (
+                            "demo/management/commands/audit.py",
+                            "demo.management.commands.audit",
+                        ),
+                        (
+                            "demo/management/commands/_private.py",
+                            "demo.management.commands._private",
+                        ),
+                        (
+                            "other/management/commands/sync.py",
+                            "other.management.commands.sync",
+                        ),
+                        (
+                            "uninstalled/management/commands/sync.py",
+                            "uninstalled.management.commands.sync",
+                        ),
+                    ]
+                    .map(|(path, name)| module(path, name, command_source)),
+                )
+                .collect();
+            let result = analyze_phase03(&files, &[]);
+            assert!(result.issues.is_empty(), "{argv}: {:?}", result.issues);
+            let found: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|entry| {
+                    entry.kind == "django_command" && entry.full_name.ends_with(".handle")
+                })
+                .map(|entry| entry.full_name.as_str())
+                .collect();
+            assert_eq!(found, expected.iter().copied().collect(), "{argv}");
+        }
+    }
+
+    #[test]
+    fn phase03_reports_unresolved_django_installation() {
+        let settings = module(
+            "settings.py",
+            "settings",
+            "INSTALLED_APPS = ['demo.apps.Unknown']\n",
+        );
+        let startup = module(
+            "main.py",
+            "main",
+            "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+        );
+        let result = analyze_phase03(&[settings, startup], &[]);
+        assert!(
+            result.issues.iter().any(|issue| {
+                issue.path == "settings.py"
+                    && issue.kind == "unresolved_registration"
+                    && issue.message.contains("INSTALLED_APPS")
+            }),
+            "{:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn phase03_flask_lookalike_does_not_register_and_unknown_blueprint_is_incomplete() {
+        let lookalike = module(
+            "fake.py",
+            "fake",
+            "def route(handler):\n    return handler\n@route\ndef parked():\n    return 1\n",
+        );
+        let result = analyze_phase03(&[lookalike], &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["parked"]);
+
+        let web = module(
+            "web.py",
+            "web",
+            "from flask import Flask\napp = Flask(__name__)\napp.register_blueprint(selected_blueprint)\n",
+        );
+        let result = analyze_phase03(&[web], &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+    }
+
+    #[test]
+    fn phase03_standalone_django_registrations_report_unknown_activation() {
+        let urls = module(
+            "urls.py",
+            "urls",
+            "from django.urls import path\ndef endpoint(request):\n    return 1\nurlpatterns = [path('', endpoint)]\n",
+        );
+        let signals = module(
+            "signals.py",
+            "signals",
+            "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef on_save(sender):\n    return 1\n",
+        );
+        let result = analyze_phase03(&[urls, signals], &[]);
+        for path in ["urls.py", "signals.py"] {
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| { issue.path == path && issue.kind == "unresolved_registration" }),
+                "{:?}",
+                result.issues
+            );
+        }
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|event| matches!(event.kind, "django_registration" | "django_signal"))
+        );
+    }
+
+    #[test]
+    fn phase03_django_startup_requires_a_reachable_launcher() {
+        for launch in ["", "\napplication = create_app()\n"] {
+            let files = [
+                module("settings.py", "settings", "ROOT_URLCONF = 'urls'\n"),
+                module(
+                    "urls.py",
+                    "urls",
+                    "from django.urls import path\nimport signals\ndef home(request):\n    return None\nurlpatterns = [path('', home)]\n",
+                ),
+                module(
+                    "signals.py",
+                    "signals",
+                    "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef save(sender):\n    return sender\n",
+                ),
+                module(
+                    "server.py",
+                    "server",
+                    &format!(
+                        "def create_app():\n    import os\n    from django.core.asgi import get_asgi_application\n    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n    return get_asgi_application()\n{launch}"
+                    ),
+                ),
+            ];
+            let result = analyze_phase03(&files, &[]);
+            if launch.is_empty() {
+                for path in ["urls.py", "signals.py"] {
+                    assert!(
+                        result.issues.iter().any(|issue| {
+                            issue.path == path && issue.kind == "unresolved_registration"
+                        }),
+                        "{:?}",
+                        result.issues
+                    );
+                }
+                assert!(!result.evidence.iter().any(|entry| {
+                    matches!(entry.kind, "django_registration" | "django_signal")
+                }));
+            } else {
+                assert!(result.issues.is_empty(), "{:?}", result.issues);
+                for (name, kind) in [
+                    ("urls.home", "django_registration"),
+                    ("signals.save", "django_signal"),
+                ] {
+                    assert!(
+                        result
+                            .evidence
+                            .iter()
+                            .any(|entry| { entry.full_name == name && entry.kind == kind })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn phase03_fastapi_dependencies_need_an_active_route() {
+        let files = [module(
+            "example.py",
+            "example",
+            "from fastapi import FastAPI, APIRouter, Depends\napp = FastAPI()\ndormant = APIRouter()\ndef active():\n    return object()\ndef inactive():\n    return object()\n@app.get('/')\ndef endpoint(dep=Depends(active)):\n    return 1\n@dormant.get('/')\ndef parked(dep=Depends(inactive)):\n    return 1\n",
+        )];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["inactive", "parked"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "example.active" && entry.kind == "fastapi_dependency"
+        }));
+    }
+
+    #[test]
+    fn phase03_fastapi_reevaluates_postponed_dependencies_at_the_outer_mount() {
+        let files = [module(
+            "web.py",
+            "web",
+            "from __future__ import annotations\nfrom typing import Annotated\nfrom fastapi import APIRouter, Depends, FastAPI\nrouter = APIRouter()\nparent = APIRouter()\ndef initial():\n    return 1\nselected = initial\n@router.get('/')\ndef endpoint(value: Annotated[int, Depends(selected)]):\n    return value\ndef intermediate():\n    return 2\nselected = intermediate\nparent.include_router(router)\ndef final():\n    return 3\nselected = final\napp = FastAPI()\napp.include_router(parent)\n",
+        )];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["initial", "intermediate"]
+        );
+        assert!(
+            result.evidence.iter().any(|entry| {
+                entry.full_name == "web.final" && entry.kind == "fastapi_dependency"
+            })
+        );
+    }
+
+    #[test]
+    fn phase03_reports_version_sensitive_fastapi_dependency_selection() {
+        let file = module(
+            "web.py",
+            "web",
+            "from __future__ import annotations\nfrom typing import Annotated\nfrom fastapi import APIRouter, Depends, FastAPI\nrouter = APIRouter()\ndef initial():\n    return 1\nselected = initial\n@router.get('/')\ndef endpoint(value: Annotated[int, Depends(selected)]):\n    return value\nfirst_app = FastAPI()\nfirst_app.include_router(router)\ndef replacement():\n    return 2\nselected = replacement\nsecond_app = FastAPI()\nsecond_app.include_router(router)\n",
+        );
+        let result = analyze_phase03(&[file], &[]);
+        assert!(
+            result.issues.iter().any(|issue| {
+                issue.kind == "unresolved_registration"
+                    && issue.message.contains("framework versions")
+            }),
+            "{:?}",
+            result.issues
+        );
+        assert!(!result.evidence.iter().any(|entry| {
+            entry.full_name == "web.initial" && entry.kind == "fastapi_dependency"
+        }));
+    }
+
+    #[test]
+    fn phase03_fastapi_mixed_registration_preserves_evidence_and_incomplete_coverage() {
+        let files = [module(
+            "example.py",
+            "example",
+            "from fastapi import Depends, FastAPI\nfrom external import opaque\ndef known():\n    return 1\napp = FastAPI(dependencies=[Depends(known), Depends(opaque)])\n",
+        )];
+        let result = analyze_phase03(&files, &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "example.known" && entry.kind == "fastapi_dependency"
+        }));
+    }
+
+    #[test]
+    fn phase03_models_tasks_listeners_and_pydantic_lifecycle() {
+        let files = [
+            module(
+                "tasks.py",
+                "tasks",
+                "from celery import Celery\napp = Celery('jobs')\n@app.task\ndef queued():\n    return task_helper()\ndef task_helper():\n    return 1\ndef dormant_task():\n    return 0\n",
+            ),
+            module(
+                "listeners.py",
+                "listeners",
+                "from sqlalchemy import event\nclass Engine: pass\n@event.listens_for(Engine, 'connect')\ndef connected(dbapi, record):\n    return None\ndef disconnected(dbapi, record):\n    return None\n",
+            ),
+            module(
+                "models.py",
+                "models",
+                "from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\n    def model_post_init(self, context):\n        return None\nclass Draft(BaseModel):\n    name: str\nUser(name='Ada')\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["disconnected", "dormant_task"]
+        );
+        assert_eq!(names(&result, Category::Class), ["Draft"]);
+        for target in [
+            "tasks.queued",
+            "listeners.connected",
+            "models.User.model_post_init",
+        ] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.full_name == target),
+                "missing framework evidence for {target}: {:?}",
+                result.evidence
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_discovers_unittest_and_pytest_plugin_hooks() {
+        let files = [
+            module(
+                "test_case.py",
+                "test_case",
+                "import unittest\npytest_plugins = ['plugin']\nclass Example(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls):\n        return None\n    def test_value(self):\n        assert True\ndef setUpModule():\n    return None\ndef helper():\n    return None\n",
+            ),
+            module(
+                "plugin.py",
+                "plugin",
+                "import pytest\ndef pytest_addhooks(pluginmanager):\n    return pluginmanager\ndef serialize(value):\n    return str(value)\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["helper", "serialize"]);
+        for target in [
+            "test_case.Example.setUpClass",
+            "test_case.Example.test_value",
+            "test_case.setUpModule",
+            "plugin.pytest_addhooks",
+        ] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.full_name == target),
+                "missing discovery evidence for {target}: {:?}",
+                result.evidence
+            );
+        }
     }
 }

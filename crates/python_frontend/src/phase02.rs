@@ -73,6 +73,7 @@ pub struct Definition {
     pub simple_positional_parameters: bool,
     pub defaults: Vec<Expression>,
     pub annotations: Vec<Expression>,
+    pub parameter_annotation_count: usize,
     pub bases: Vec<Expression>,
 }
 
@@ -119,6 +120,20 @@ pub enum ExpressionKind {
     Scalar,
     Sequence(Vec<Expression>),
     Dictionary(Vec<Expression>),
+    Subscript {
+        value: Box<Expression>,
+        index: Box<Expression>,
+    },
+    Conditional {
+        test: Box<Expression>,
+        body: Box<Expression>,
+        otherwise: Box<Expression>,
+    },
+    Membership {
+        element: Box<Expression>,
+        container: Box<Expression>,
+        contains: bool,
+    },
     Compare {
         left: Box<Expression>,
         right: Box<Expression>,
@@ -135,6 +150,7 @@ pub enum ExpressionKind {
     },
     Not(Box<Expression>),
     Await(Box<Expression>),
+    Addition(Vec<Expression>),
     Operands(Vec<Expression>),
 }
 
@@ -450,6 +466,7 @@ impl Lowering<'_> {
                             annotations.push(self.annotation(annotation, next)?);
                         }
                     }
+                    let parameter_annotation_count = annotations.len();
                     if let Some(returns) = &node.returns {
                         annotations.push(self.annotation(returns, next)?);
                     }
@@ -499,6 +516,7 @@ impl Lowering<'_> {
                             .map(expression)
                             .collect::<Result<_, _>>()?,
                         annotations,
+                        parameter_annotation_count,
                         bases: Vec::new(),
                     })
                 }
@@ -525,6 +543,7 @@ impl Lowering<'_> {
                         simple_positional_parameters: false,
                         defaults: Vec::new(),
                         annotations: Vec::new(),
+                        parameter_annotation_count: 0,
                         bases: node
                             .arguments
                             .as_ref()
@@ -692,6 +711,24 @@ impl Lowering<'_> {
                     .flat_map(|item| item.key.iter().chain(std::iter::once(&item.value)));
                 ExpressionKind::Dictionary(values.map(lower).collect::<Result<_, _>>()?)
             }
+            Expr::Subscript(node) => ExpressionKind::Subscript {
+                value: Box::new(lower(&node.value)?),
+                index: Box::new(lower(&node.slice)?),
+            },
+            Expr::If(node) => ExpressionKind::Conditional {
+                test: Box::new(lower(&node.test)?),
+                body: Box::new(lower(&node.body)?),
+                otherwise: Box::new(lower(&node.orelse)?),
+            },
+            Expr::Compare(node)
+                if node.ops.len() == 1 && matches!(node.ops[0], CmpOp::In | CmpOp::NotIn) =>
+            {
+                ExpressionKind::Membership {
+                    element: Box::new(lower(&node.left)?),
+                    container: Box::new(lower(&node.comparators[0])?),
+                    contains: node.ops[0] == CmpOp::In,
+                }
+            }
             Expr::Compare(node)
                 if node.ops.len() == 1
                     && matches!(
@@ -723,6 +760,9 @@ impl Lowering<'_> {
                 ExpressionKind::Not(Box::new(lower(&node.operand)?))
             }
             Expr::UnaryOp(node) => ExpressionKind::Operands(vec![lower(&node.operand)?]),
+            Expr::BinOp(node) if node.op == ruff_python_ast::Operator::Add => {
+                ExpressionKind::Addition(vec![lower(&node.left)?, lower(&node.right)?])
+            }
             Expr::BinOp(node) => {
                 ExpressionKind::Operands(vec![lower(&node.left)?, lower(&node.right)?])
             }

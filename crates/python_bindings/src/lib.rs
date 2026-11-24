@@ -26,6 +26,8 @@ struct Options {
 #[pyo3(from_item_all)]
 struct SkylosOptions {
     phase03: bool,
+    #[pyo3(default)]
+    enable_quality: bool,
     config_file: Option<PathBuf>,
     exclude_folders: Vec<String>,
     skip_generated: bool,
@@ -106,6 +108,7 @@ fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResul
         generated_keep_paths: options.generated_keep_paths,
         confidence: Some(options.confidence),
         all_advice: options.all_advice,
+        enable_quality: Some(options.enable_quality),
         workers: options.workers,
         cache_dir: options.cache_dir,
         grep_verify: options.grep_verify,

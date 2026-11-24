@@ -228,109 +228,23 @@ impl Snapshot {
         local_setuptools: bool,
         local_distutils: bool,
     ) {
-        let setup_import = |import: &Import| {
-            let module = import.module.as_str();
-            let local_provider = match module {
-                "setuptools" => local_setuptools,
-                "distutils" | "distutils.core" => local_distutils,
-                _ => false,
-            };
-            match (import.level, module, import.member.as_deref()) {
-                _ if local_provider => SetupValue::Unknown,
-                (0, "setuptools" | "distutils.core", Some("setup")) => SetupValue::Setup,
-                (0, "setuptools" | "distutils.core", None) if !import.exposes_top_level => {
-                    SetupValue::SetupModule
-                }
-                (0, "distutils" | "distutils.core", None) => SetupValue::Distutils,
-                _ => SetupValue::Unknown,
-            }
-        };
-        let mut bindings = BTreeMap::new();
-        let mut unmodeled_effect = None;
-        let mut declared_entries = Vec::new();
-        for statement in &facts.body {
-            match &statement.kind {
-                StatementKind::Import(import) => {
-                    bindings.insert(import.local.text.as_str(), setup_import(import));
-                }
-                StatementKind::Assign {
-                    names,
-                    value,
-                    annotation,
-                } => {
-                    if value
-                        .iter()
-                        .chain(annotation)
-                        .any(|value| !setup_expression_is_static(value, &bindings))
-                    {
-                        unmodeled_effect.get_or_insert(statement.at.line);
-                    }
-                    let value = if names.len() == 1 {
-                        value
-                            .as_ref()
-                            .map_or(SetupValue::Unknown, |value| setup_value(value, &bindings))
-                    } else {
-                        SetupValue::Unknown
-                    };
-                    for name in names {
-                        bindings.insert(name.text.as_str(), value.clone());
-                    }
-                }
-                StatementKind::Define(definition) => {
-                    if !definition.decorators.is_empty()
-                        || !definition.defaults.is_empty()
-                        || !definition.annotations.is_empty()
-                        || !definition.bases.is_empty()
-                    {
-                        unmodeled_effect.get_or_insert(statement.at.line);
-                    }
-                    bindings.insert(definition.name.text.as_str(), SetupValue::Unknown);
-                }
-                StatementKind::Evaluate(Expression {
-                    kind:
-                        ExpressionKind::Call {
-                            function,
-                            arguments,
-                            keywords,
-                        },
-                    ..
-                }) if matches!(setup_value(function, &bindings), SetupValue::Setup) => {
-                    if arguments
-                        .iter()
-                        .chain(keywords.iter().map(|(_, value)| value))
-                        .any(|value| !setup_expression_is_static(value, &bindings))
-                    {
-                        unmodeled_effect.get_or_insert(statement.at.line);
-                    }
-                    if let Some((_, value)) =
-                        keywords.iter().find(|(name, _)| name == "entry_points")
-                    {
-                        declared_entries.push((setup_value(value, &bindings), statement.at.line));
-                    }
-                }
-                StatementKind::Evaluate(value) if setup_expression_is_static(value, &bindings) => {}
-                _ => {
-                    unmodeled_effect.get_or_insert(statement.at.line);
-                }
-            }
-        }
-        if let Some(line) = unmodeled_effect
-            && facts.body.iter().any(mentions_setup_entry_points)
-            && has_setup_import(&facts.body, &|import| {
-                !matches!(setup_import(import), SetupValue::Unknown)
-            })
+        let declarations = setup_declarations(facts, local_setuptools, local_distutils, false);
+        if let Some(line) = declarations.opaque_line
+            && declares_setup_keyword(&facts.body, "entry_points")
         {
             self.invalid("setup.py", Some(line));
             return;
         }
-        for (value, line) in declared_entries {
-            match value {
-                SetupValue::Mapping(groups) => {
-                    for value in groups.values().cloned() {
-                        self.read_setup_values(value, line);
+        for call in declarations.calls {
+            if let Some(value) = call.values.get("entry_points") {
+                match value {
+                    SetupValue::Mapping(groups) => {
+                        for value in groups.values().cloned() {
+                            self.read_setup_values(value, call.line);
+                        }
                     }
+                    value => self.read_setup_values(value.clone(), call.line),
                 }
-                value => self.read_setup_values(value, line),
             }
         }
     }
@@ -403,11 +317,187 @@ impl Snapshot {
     }
 }
 
+pub(super) struct SetupDeclarations<'a> {
+    pub(super) calls: Vec<SetupCall<'a>>,
+    pub(super) opaque_line: Option<usize>,
+}
+
+pub(super) struct SetupCall<'a> {
+    pub(super) line: usize,
+    pub(super) values: BTreeMap<&'a str, SetupValue<'a>>,
+}
+
+pub(super) fn setup_declarations(
+    facts: &ModuleFacts,
+    local_setuptools: bool,
+    local_distutils: bool,
+    run_as_script: bool,
+) -> SetupDeclarations<'_> {
+    let setup_import = |import: &Import| {
+        let module = import.module.as_str();
+        let local_provider = match module {
+            "setuptools" => local_setuptools,
+            "distutils" | "distutils.core" => local_distutils,
+            _ => false,
+        };
+        match (import.level, module, import.member.as_deref()) {
+            _ if local_provider => SetupValue::Unknown,
+            (0, "setuptools" | "distutils.core", Some("setup")) => SetupValue::Setup,
+            (0, "setuptools", Some("find_packages" | "find_namespace_packages"))
+                if run_as_script =>
+            {
+                SetupValue::PackageFinder
+            }
+            (0, "setuptools", None) if run_as_script => SetupValue::Setuptools,
+            (0, "setuptools" | "distutils.core", None) if !import.exposes_top_level => {
+                SetupValue::SetupModule
+            }
+            (0, "distutils" | "distutils.core", None) => SetupValue::Distutils,
+            _ => SetupValue::Unknown,
+        }
+    };
+    let mut bindings = BTreeMap::new();
+    let mut unmodeled_effect = None;
+    let mut calls = Vec::new();
+    let mut statements: Vec<_> = facts.body.iter().rev().collect();
+    while let Some(statement) = statements.pop() {
+        match &statement.kind {
+            StatementKind::If {
+                test,
+                body,
+                otherwise,
+            } if run_as_script => {
+                let selected = match &test.kind {
+                    ExpressionKind::Bool(value) => Some(*value),
+                    ExpressionKind::Compare {
+                        left,
+                        right,
+                        equal,
+                        identity: false,
+                    } if is_main_comparison(left, right) || is_main_comparison(right, left) => {
+                        Some(*equal)
+                    }
+                    _ => None,
+                };
+                match selected {
+                    Some(true) => statements.extend(body.iter().rev()),
+                    Some(false) => statements.extend(otherwise.iter().rev()),
+                    None => {
+                        unmodeled_effect.get_or_insert(statement.at.line);
+                    }
+                }
+            }
+            StatementKind::Import(import) => {
+                bindings.insert(import.local.text.as_str(), setup_import(import));
+            }
+            StatementKind::Assign {
+                names,
+                value,
+                annotation,
+            } => {
+                if value
+                    .iter()
+                    .chain(annotation)
+                    .any(|value| !setup_expression_is_static(value, &bindings))
+                {
+                    unmodeled_effect.get_or_insert(statement.at.line);
+                }
+                let value = if names.len() == 1 {
+                    value
+                        .as_ref()
+                        .map_or(SetupValue::Unknown, |value| setup_value(value, &bindings))
+                } else {
+                    SetupValue::Unknown
+                };
+                for name in names {
+                    bindings.insert(name.text.as_str(), value.clone());
+                }
+            }
+            StatementKind::Define(definition) => {
+                if !definition.decorators.is_empty()
+                    || !definition.defaults.is_empty()
+                    || !definition.annotations.is_empty()
+                    || !definition.bases.is_empty()
+                {
+                    unmodeled_effect.get_or_insert(statement.at.line);
+                }
+                bindings.insert(definition.name.text.as_str(), SetupValue::Unknown);
+            }
+            StatementKind::Evaluate(Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    },
+                ..
+            }) if matches!(setup_value(function, &bindings), SetupValue::Setup) => {
+                if arguments
+                    .iter()
+                    .chain(keywords.iter().map(|(_, value)| value))
+                    .any(|value| !setup_expression_is_static(value, &bindings))
+                {
+                    unmodeled_effect.get_or_insert(statement.at.line);
+                }
+                calls.push(SetupCall {
+                    line: statement.at.line,
+                    values: keywords
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), setup_value(value, &bindings)))
+                        .collect(),
+                });
+            }
+            StatementKind::Evaluate(Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    },
+                ..
+            }) if arguments.is_empty()
+                && keywords.is_empty()
+                && matches!(&function.kind,
+                    ExpressionKind::Member(open, name)
+                        if name == "close"
+                            && matches!(&open.kind,
+                                ExpressionKind::Call { function, .. }
+                                    if matches!(&function.kind,
+                                        ExpressionKind::Name(name)
+                                            if name == "open" && !bindings.contains_key("open")))) =>
+                {}
+            StatementKind::Evaluate(value) if setup_expression_is_static(value, &bindings) => {}
+            _ => {
+                unmodeled_effect.get_or_insert(statement.at.line);
+            }
+        }
+    }
+    let opaque_line = unmodeled_effect.filter(|_| {
+        has_setup_import(&facts.body, &|import| {
+            matches!(
+                setup_import(import),
+                SetupValue::Setup
+                    | SetupValue::SetupModule
+                    | SetupValue::Distutils
+                    | SetupValue::Setuptools
+            )
+        })
+    });
+    SetupDeclarations { calls, opaque_line }
+}
+
+fn is_main_comparison(name: &Expression, literal: &Expression) -> bool {
+    matches!(&name.kind, ExpressionKind::Name(name) if name == "__name__")
+        && matches!(&literal.kind, ExpressionKind::Text(value) if value == "__main__")
+}
+
 #[derive(Clone)]
-enum SetupValue<'a> {
+pub(super) enum SetupValue<'a> {
     Setup,
     SetupModule,
     Distutils,
+    Setuptools,
+    PackageFinder,
     Text(&'a str, usize),
     Sequence(Rc<[SetupValue<'a>]>),
     Mapping(Rc<BTreeMap<&'a str, SetupValue<'a>>>),
@@ -435,27 +525,22 @@ fn has_setup_import(body: &[Statement], is_setup_import: &impl Fn(&Import) -> bo
     })
 }
 
-fn mentions_setup_entry_points(statement: &Statement) -> bool {
-    match &statement.kind {
+pub(super) fn declares_setup_keyword(body: &[Statement], keyword: &str) -> bool {
+    body.iter().any(|statement| match &statement.kind {
         StatementKind::Evaluate(value)
         | StatementKind::Assign {
             value: Some(value), ..
         } => {
             matches!(&value.kind, ExpressionKind::Call { keywords, .. }
-                if keywords.iter().any(|(name, _)| name == "entry_points"))
+                if keywords.iter().any(|(name, _)| name == keyword))
         }
-        StatementKind::Define(definition) => {
-            definition.body.iter().any(mentions_setup_entry_points)
-        }
+        StatementKind::Define(definition) => declares_setup_keyword(&definition.body, keyword),
         StatementKind::If {
             body, otherwise, ..
-        } => body
-            .iter()
-            .chain(otherwise.iter())
-            .any(mentions_setup_entry_points),
-        StatementKind::With { body, .. } => body.iter().any(mentions_setup_entry_points),
+        } => declares_setup_keyword(body, keyword) || declares_setup_keyword(otherwise, keyword),
+        StatementKind::With { body, .. } => declares_setup_keyword(body, keyword),
         _ => false,
-    }
+    })
 }
 
 fn setup_expression_is_static(
@@ -470,6 +555,24 @@ fn setup_expression_is_static(
         ExpressionKind::Sequence(values) | ExpressionKind::Dictionary(values) => values
             .iter()
             .all(|value| setup_expression_is_static(value, bindings)),
+        ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } if matches!(setup_value(function, bindings), SetupValue::PackageFinder) => {
+            // Package discovery can evaluate directory and pattern arguments.
+            // Only accept arguments proven to contain plain strings.
+            arguments
+                .iter()
+                .chain(keywords.iter().map(|(_, value)| value))
+                .all(|value| match setup_value(value, bindings) {
+                    SetupValue::Text(..) => true,
+                    SetupValue::Sequence(items) => items
+                        .iter()
+                        .all(|item| matches!(item, SetupValue::Text(..))),
+                    _ => false,
+                })
+        }
         ExpressionKind::Call {
             function,
             arguments,
@@ -495,7 +598,10 @@ fn setup_value<'a>(
             .cloned()
             .unwrap_or(SetupValue::Unknown),
         ExpressionKind::Member(base, name) => match (setup_value(base, bindings), name.as_str()) {
-            (SetupValue::SetupModule, "setup") => SetupValue::Setup,
+            (SetupValue::SetupModule | SetupValue::Setuptools, "setup") => SetupValue::Setup,
+            (SetupValue::Setuptools, "find_packages" | "find_namespace_packages") => {
+                SetupValue::PackageFinder
+            }
             (SetupValue::Distutils, "core") => SetupValue::SetupModule,
             _ => SetupValue::Unknown,
         },
@@ -509,6 +615,19 @@ fn setup_value<'a>(
                 })
                 .collect(),
         ),
+        ExpressionKind::Addition(values) => {
+            let [left, right] = values.as_slice() else {
+                return SetupValue::Unknown;
+            };
+            match (setup_value(left, bindings), setup_value(right, bindings)) {
+                (SetupValue::Sequence(left), SetupValue::Sequence(right))
+                    if left.len().saturating_add(right.len()) <= 4096 =>
+                {
+                    SetupValue::Sequence(left.iter().chain(right.iter()).cloned().collect())
+                }
+                _ => SetupValue::Unknown,
+            }
+        }
         ExpressionKind::Dictionary(values) => {
             let mut groups = BTreeMap::new();
             for pair in values.as_chunks::<2>().0 {
@@ -722,16 +841,28 @@ mod tests {
             class Checker:\n    pass\n",
         );
         let selected_setup = scan(root, &options()).unwrap();
-        assert!(!selected_setup.is_complete());
         assert!(
-            selected_setup
-                .coverage
-                .issues
-                .iter()
-                .any(|issue| issue.path == "setup.py" && issue.kind == "unresolved_call"),
+            selected_setup.is_complete(),
             "{}",
             selected_setup.to_json().unwrap()
         );
+        let selected_diagnostics = diagnostic_names(&selected_setup);
+        for name in ["tool.cli.run_a", "tool.cli.run_b", "tool.cli.Checker"] {
+            assert!(!selected_diagnostics.contains(name));
+        }
+        assert!(selected_diagnostics.contains("tool.cli.retired"));
+        let selected_json: serde_json::Value =
+            serde_json::from_str(&selected_setup.to_json().unwrap()).unwrap();
+        assert!(
+            selected_json["analysis_summary"]["dead_code_liveness"]["rescued"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["full_name"] == "tool.cli.run_a" && row["reason"] == "package_entrypoint"
+                })
+        );
+        assert!(!marker.exists());
         let runtime_sources = Options {
             excludes: vec!["setup.py".into()],
             ..options()
