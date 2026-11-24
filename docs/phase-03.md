@@ -1,10 +1,13 @@
-# Phase 0.3 dead-code coverage expansion
+# Phase 0.3 Python dead-code coverage expansion
 
 **Planned.** Phase 0.3 starts from the [Phase 0.2 profile](phase-02.md) and ships
-before [quality and secrets](roadmap.md#04-quality-and-secrets). Every dead-code
+before [quality and secrets](roadmap.md#04-quality-and-secrets). Every in-scope Python dead-code
 test at the pinned [Skylos 5.7.0 revision](skylos-5.7.0-contract.md) must pass
-against Skarmory for Phase 0.3 to release. The test inventory determines the
-minimum scope across languages, framework models, and workflows.
+against Skarmory for Phase 0.3 to release. The inventory covers Python
+semantics, frameworks and workflows. Other language assertions and inseparable
+mixed-language cases are assigned to their [own milestones](language-frontends.md).
+The Phase 0.3 profile qualifies Python sources; existing non-Python preview work
+must be isolated from the Python release gate and default Python scan scope.
 
 ## Required upstream test gate
 
@@ -18,11 +21,13 @@ analysis facts that determine liveness, and workflow assertions that depend
 on a dead-code result or its coverage. A fixture's language or a test's filename
 is a discovery hint. For example, review individual cases in
 `test/test_requirements_includes_and_unused_deps.py` for `SKY-U005` versus SCA,
-and in `test/test_kotlin.py` for symbol and entry-point behavior versus
-unrelated rules. For each mixed case, record which assertions are independently
-separable. Preserve the setup, expected results, and positive and negative
-controls that contribute to the dead-code contract. If a combined assertion
-depends on another rule or workflow, keep that dependency in the mapped case.
+and classify other language cases by their owning milestone. For each mixed
+case, preserve independently separable Python assertions and defer assertions
+that require an unavailable language frontend. Record deferred cases without
+counting them as passes or failures for the Python release. Preserve the setup, expected results, and positive and negative
+controls that contribute to the dead-code contract. If a combined Python assertion depends on another rule or workflow, keep that
+dependency in the mapped case. Assign cases requiring other language frontends
+to the first milestone with all required languages.
 Count tests embedded in fixture projects when they independently assert analysis
 or workflow behavior. Otherwise, preserve them as inputs to the analysis case.
 
@@ -32,16 +37,15 @@ starting points for discovery and reference runs at the pinned checkout.
 
 | Source | Discovery and environment |
 | --- | --- |
-| Python tests in `test/` | Start with `python -m pytest --collect-only -q test/`. Review collection against tracked test sources, then collect in each environment needed by the cases. Include the Dart grammar extra, the source-built Go engine and host standard library, and the Python and `skylos_fast` reference paths where asserted. |
-| Go engine native tests | From `skylos/engines/go`, start with `go list ./...` and `go test -list . ./...`. Use `go test -json` execution records to enumerate table-driven subtests, including those in `internal/symbols/reachability_test.go`. Review package scope across symbols, source selection, and output. |
+| Python tests in `test/` | Start with `python -m pytest --collect-only -q test/`. Review collection against tracked test sources, then collect in each environment needed by the cases. Include the Python and `skylos_fast` reference paths where asserted. |
 | Corpus and deterministic benchmarks | Review `corpus/manifest.json` with `python scripts/corpus_ci.py --manifest corpus/manifest.json --json`. Use `python scripts/dead_code_benchmark.py --manifest PATH --json` for the default and adversarial dead-code manifests. Review deterministic assertions in the other benchmark runners separately. Record each case's original assertion mode and any external fixture revision it depends on. |
 | Tests outside default collection | Search tracked paths, runner configurations, and CI for additional suites. Review `rust/` with `cargo test --locked --manifest-path rust/Cargo.toml -- --list` and report-contract assertions under `editors/vscode/test/` using `npm test --prefix editors/vscode`. Record the runner and applicable cases, or the reason for excluding a reviewed suite. |
 
 Freeze a versioned manifest containing these fields before using pass counts
 to track implementation:
 
-- **Case ID** uses the pytest node ID with its parameter ID, the Go module,
-  package, and full test or subtest name, or the benchmark manifest path and
+- **Case ID** uses the pytest node ID with its parameter ID, full native test or subtest name,
+  or the benchmark manifest path and
   case ID. Record the pinned source path and fixture provenance.
 - **Scope** records the assertion being preserved, its required workstream,
   and the reason for excluding any reviewed case outside the gate.
@@ -85,56 +89,12 @@ to track implementation:
    of a missing shard, skipped case, missing backend, silent fixture setup
    failure, and result from another release candidate.
 
-### Missing TypeScript fixtures
+## Scope of the Python release inventory
 
-The pinned checkout omits both fixtures. A focused reference run skipped these
-four cases in `test/test_typescript_expanded.py`.
-
-| Missing path | Blocked case IDs within the test module |
-| --- | --- |
-| `manual/mixed_repo/hard_benchmark.ts` | `TestHardBenchmark::test_all_dead_detected`, `TestHardBenchmark::test_no_false_positives` |
-| `manual/mixed_repo/realistic_benchmark.ts` | `TestRealisticBenchmark::test_all_dead_detected`, `TestRealisticBenchmark::test_no_false_positives` |
-
-A search of public Skylos branch and tag history, the 5.7.0 release assets,
-and the published 5.7.0 source distribution and wheels found neither fixture.
-Keep all four cases blocked until the original sources are recovered and
-their provenance, content hashes, and license are verified.
-[Pinned TypeScript tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_typescript_expanded.py#L2211-L2324) ·
-[Fixture tracking issue #45](https://github.com/eddiethedean/skarmory/issues/45)
-
-The source audit identifies where to start collection. The frozen case
-inventory and Skarmory-backed execution results are Phase 0.3 deliverables.
-
-## JavaScript and TypeScript file reachability
-
-The `skylos-0.3` profile supports `SKY-E003` for a single package scanned
-from its root directory. It reads the root `package.json` main entry and
-follows local static ECMAScript imports and re-exports, including type-only
-imports. It accepts exact source paths and unique extensionless file or
-`index` matches among selected JavaScript and TypeScript sources. For a
-TypeScript importer, a `.js`, `.jsx`, or `.mjs` specifier prefers a matching
-TypeScript source before the emitted JavaScript file. Disconnected files,
-including groups that only import each other, appear in `unused_files`.
-The report records reached modules in `dead_code_evidence` and applies the
-project rule ignore and first-line `// skylos: ignore[SKY-E003]` directive.
-
-The CLI and installed Python SDK use the same Rust graph. Cached scans reuse
-file-local parser facts and rebuild the graph from the current sources and
-package manifest. The `javascript_file_analysis` summary identifies the rule,
-its supported scope, and its coverage status.
-
-Missing, excluded, or ambiguous import targets make the file analysis
-incomplete. File-scoped scans, bare package imports, CommonJS and dynamic
-loading, declaration files, and detected alternative project configuration
-also produce incomplete coverage. JavaScript parsing and reachability gaps
-keep the overall report incomplete and preserve findings from completed Python
-analysis. The parser accepts up to 16 KiB of source per file in this slice.
-Larger inputs produce an explicit analysis-limit diagnostic. If JavaScript and
-TypeScript sources exceed the space left in the shared snapshot budget, the
-file graph is incomplete and Python analysis can still use its admitted inputs.
-Package exports, workspace and `tsconfig` resolution, package scripts, browser
-and component assets, binding and export analysis, and npm dependency
-analysis remain part of [#45](https://github.com/eddiethedean/skarmory/issues/45).
+Freeze the Python cases and variants for Phase 0.3. Preserve the complete
+reviewed inventory with owning phases for deferred non-Python cases. Future
+language prerequisites (including missing TypeScript fixture sources) are
+tracked in [language milestones](language-frontends.md).
 
 ## Scope and acceptance
 
@@ -143,12 +103,10 @@ analysis remain part of [#45](https://github.com/eddiethedean/skarmory/issues/45
 | Python resolution | Extend bounded receiver and constructor dispatch, literal lazy exports, and statically declared plugin entry points. Resolve only targets supported by the selected sources and configuration. | Retain live definitions reached through aliases, constructors, exports, and registration. Report unused controls beside them. Retain finite possible targets with evidence. Mark coverage incomplete when custom import hooks, opaque exports, or dynamic loading leave an unbounded target set that affects non-use. | [#42](https://github.com/eddiethedean/skarmory/issues/42) |
 | Python frameworks and test discovery | Extend pytest and FastAPI coverage from Phase 0.2. Model Django URL configurations and view registration, Flask routes and blueprints, and the additional framework contracts required by the inventory. The corpus already includes Django signals and management commands, Celery tasks, SQLAlchemy models and listeners, Pydantic lifecycle hooks, and unittest discovery. | Test active registrations, inactive modules and blueprints, and unrelated decorators with the same names. Surface unresolved registrations that could affect a non-use finding. | [#43](https://github.com/eddiethedean/skarmory/issues/43) |
 | Unused Python dependencies | Implement `SKY-U005` for direct runtime declarations in `pyproject.toml`, requirements files, `setup.cfg`, and statically readable `setup.py`. Follow bounded requirements includes and recover declarations from supported source manifests referenced by compiled locks. Resolve usage through imports, framework and tool configuration, and statically identifiable command invocations. | Test nested includes, generated locks, and exact setuptools declaration lines. Cover import names that differ from distribution names, production, test and type-checking use, and configuration-only and command-only use. Keep build requirements, extras, constraints, and transitive pins outside the pinned runtime findings. An install command alone supplies no usage evidence. Abstain when unresolved inputs or dynamic uses prevent a reliable finding. | [#44](https://github.com/eddiethedean/skarmory/issues/44) |
-| JavaScript and TypeScript | Build a native module graph for JS/TS imports, re-exports, and entry points required by the suite. Cover unused symbols, files (`SKY-E003`), unnecessary exports (`SKY-E004`), unused enum members (`SKY-U007`), and unused declared npm dependencies (`SKY-U005`). Account for component and asset references where asserted, including browser scripts and named handlers referenced by Vue templates. | Cover live public exports, unreachable file groups, re-export chains, type-only imports, and inline and project-level enum suppressions. Specify supported package and `tsconfig.json` resolution before implementation. Report missing entry points or unresolved imports that affect reachability. Verify npm imports and package-script use, unused controls, and incomplete coverage for file-scoped scans. | [#45](https://github.com/eddiethedean/skarmory/issues/45) |
-| Other upstream-tested frontends | Implement the dead-code behavior required by the full inventory. The pinned sources include cases for Go, Rust, Swift, PHP, C#, Java, C++, Kotlin, Dart, Ruby, and Robot Framework. Record required build metadata, package boundaries, and cross-language references for each frontend. | Verify each frontend's live and unused controls, uncertain resolutions, and mixed-language cases. Include Java service and JavaFX/FXML entry points and C++ same-name symbol identity, call chains, and address-taken callbacks. Derive the final frontend and toolchain list from the upstream inventory. | [#46](https://github.com/eddiethedean/skarmory/issues/46) |
 | Grep verification | Search selected sources and supported configuration with a bounded verifier. Record textual matches as possible-use evidence with their locations and resolved symbol owners. Apply the profile defaults below. | Cover lookalike names, comments, strings, and supported dynamic references. Verify that a retained root reached from configuration keeps its reachable callees, including with a warm verifier cache. An empty search or an exhausted budget cannot establish non-use. | [#47](https://github.com/eddiethedean/skarmory/issues/47) |
 | Runtime evidence | Import trace and coverage artifacts. Verify revision, source fingerprints, and observed locations for native evidence, and handle legacy trace inputs under the compatibility policy below. Offer explicitly requested Python collection through a separate integration. | Cover fresh, stale, malformed, mismatched, and legacy inputs. Unobserved execution cannot establish non-use. Static CLI scans remain independent of Python and execute no target code. | [#48](https://github.com/eddiethedean/skarmory/issues/48) |
 | Git diff, baselines, and gates | Build findings from the full selected head snapshot before changed-line filtering. Compare complete base and head analyses for impact mode, including changes to unchanged code. Add versioned baselines and a configurable dead-code gate. | Remove a caller while leaving its callee unchanged. Check stable identity across line shifts, already-dead symbols, incomplete base and head snapshots, and stale baselines. Test strict and non-strict verdicts independently of scan coverage. | [#49](https://github.com/eddiethedean/skarmory/issues/49) |
-| Dead-code cleanup | Produce a review queue and read-only patch previews for eligible findings. Implement explicitly requested edit application and rollback where required by upstream tests. Define effects and applicability per transformation and attach a source fingerprint to each preview. | Cover a safe preview, an import or definition with observable effects, and source changes after the scan. Revalidate the fingerprint before applying a patch. Exercise the pinned TypeScript preview, apply, and rollback tests. | [#50](https://github.com/eddiethedean/skarmory/issues/50) |
+| Dead-code cleanup | Produce a review queue and read-only patch previews for eligible findings. Implement explicitly requested edit application and rollback where required by upstream tests. Define effects and applicability per transformation and attach a source fingerprint to each preview. | Cover a safe preview, an import or definition with observable effects, and source changes after the scan. Revalidate the fingerprint before applying a patch. Exercise pinned Python cleanup assertions; defer TypeScript-specific cases to Phase 0.7. | [#50](https://github.com/eddiethedean/skarmory/issues/50) |
 
 ### Unused Python dependencies
 
@@ -210,11 +168,7 @@ exemptions.
 · [Pinned mapping references](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/core/python_distributions.py)
 · [Pinned no-location case](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_vibe_rules.py#L786-L806)
 
-Record how the mixed npm integration assertions for `SKY-Q408` and `SKY-Q409`
-are handled under the [upstream test gate](#required-upstream-test-gate).
-General quality rules, security analysis, and reusable developer integrations
-have their own milestones.
-[Pinned npm and enum integration tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_project_gap_integration.py#L33-L63)
+Non-Python dependency and mixed npm integration assertions are assigned to Phase 0.7.
 
 ## Shared analysis and interface contracts
 
@@ -511,13 +465,10 @@ preserves each upstream case's inputs and omitted options.
 ## Rust crate candidates
 
 These versions record the research baseline. Select and lock dependencies after
-the pinned test inventory establishes which capabilities each frontend needs.
+the pinned Python test inventory establishes which capabilities are required.
 
 | Workstream | Candidate | What to verify before adoption |
 | --- | --- | --- |
-| JavaScript and TypeScript | Use `oxc_parser`, `oxc_semantic`, `oxc_allocator`, and `oxc_span` at `0.159.0` for parsing and binding. Use `oxc_resolver` `11.24.3` for Node resolution and `tsconfig` paths. | Check package exports, re-exports, type-only imports, and enum member identity against pinned fixtures. Keep package-script evidence, project-wide reachability, and coverage reporting in Skarmory. [Parser](https://oxc.rs/docs/guide/usage/parser.html), [semantic analysis](https://docs.rs/oxc_semantic/0.159.0/oxc_semantic/), [resolver](https://docs.rs/oxc_resolver/11.24.3/oxc_resolver/) |
-| Other frontends | Start with `tree-sitter` `0.27.2` and individually pinned, compiled-in grammars. The smoke test covered `tree-sitter-go` `0.25.0`, `tree-sitter-c-sharp` `0.24.0`, and `tree-sitter-dart-orchard` `0.7.1`. Check grammar candidates for Rust, Swift, PHP, Java, C++, Ruby, Kotlin, and Robot Framework where the inventory requires them. | Verify grammar compatibility, syntax error handling, and source spans on pinned fixtures. Qualify grammar and native scanner licensing and packaging. Establish a build and distribution path for the Robot grammar. Skarmory owns language-specific symbol extraction and reachability. [Tree-sitter](https://docs.rs/tree-sitter/0.27.2/tree_sitter/), [Dart grammar](https://docs.rs/crate/tree-sitter-dart-orchard/0.7.1), [Robot grammar candidate](https://github.com/Hubro/tree-sitter-robot) |
-| Go and Rust semantics | Start with syntax-derived facts. Compare a narrowly scoped `go/types` fact adapter and an isolated `ra_ap_hir` `0.0.363` pilot if the pinned tests require richer facts. | Run pinned Go tests that exercise type identity and generics, and Rust fixtures that require semantic resolution. Measure what each approach adds to build time and binary size. Qualify how any adapter would ship and keep static scans free of target-code execution. [Pinned Go tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/engines/go/internal/symbols/reachability_test.go), [`go/types`](https://pkg.go.dev/go/types), [`ra_ap_hir`](https://docs.rs/ra_ap_hir/0.0.363/ra_ap_hir/) |
 | Python dependencies | Keep the Ruff AST and existing `toml` dependency. The Python rule uses `pep508_rs` `0.9.2` to parse requirement specifiers, extras, and markers. Evaluate `uv-requirements-txt` `0.0.101` if pinned fixtures warrant a fuller requirements parser. | Keep static setuptools and command interpretation, bounded requirements traversal, declaration provenance, and evidence-to-distribution mapping in Skarmory. Compare the fuller parser's dependency footprint and offline behavior. [`pep508_rs`](https://docs.rs/pep508_rs/0.9.2/pep508_rs/), [`uv-requirements-txt`](https://docs.rs/crate/uv-requirements-txt/0.0.101) |
 | Grep verification | Evaluate `aho-corasick` `1.1.5`, already in the lockfile as a transitive dependency, for bounded multi-literal matching. | Verify identifier boundaries and original source offsets. Apply symbol ownership, search budgets, and possible-use classification in Skarmory. [`aho-corasick`](https://docs.rs/aho-corasick/1.1.5/aho_corasick/) |
 | Git diff and gates | Evaluate `gix` `0.90.0` with default features disabled and `sha1`, `status`, `blob-diff`, and `revision` enabled. | Check merge bases, staged and unstaged changes, rename behavior, and changed-line filtering against fixtures. The smoke test only checked repository opening and `HEAD` lookup. [`gix` features](https://docs.rs/crate/gix/0.90.0/features) |
@@ -526,28 +477,24 @@ the pinned test inventory establishes which capabilities each frontend needs.
 
 ### Smoke-test results and adoption checks
 
-An isolated Cargo project passed five tests with Rust `1.98.1` on
-`aarch64-apple-darwin` using an offline build and a locked dependency graph. It
-parsed and bound TypeScript, resolved a `tsconfig` path alias, loaded the Go,
-C#, and Dart grammars on one runtime, checked Git `HEAD` and parsed a PEP 508
-requirement, and verified literal match offsets and unified diff output. The
-initial Git build failed with `status` and `blob-diff` alone. The passing build
-enabled `sha1` and `revision` as well.
+An isolated Cargo project passed the relevant Git, requirement-parsing, literal
+match, and diff smoke tests with Rust 1.98.1 on aarch64-apple-darwin. The related
+language grammar research is retained in [language milestones](language-frontends.md).
 
 Before adoption, run the relevant pinned fixtures, verify the minimum Rust
 version and builds across supported targets, and measure the native CLI and
 Python package size impact. Review licenses, including those of native grammar
 sources, and update third-party notices when adding locked dependencies. Verify
 installed native CLI and SDK entry points, and keep static scans independent of
-the Python interpreter and grammar downloads. The smoke tests provide local
-integration evidence. Phase 0.3 compatibility requires the complete upstream gate.
+the Python interpreter and grammar downloads. The smoke tests provide local integration evidence. Phase 0.3 compatibility
+requires the complete Python-scoped gate.
 
 ## Implementation order
 
 | Step | Exit evidence |
 | --- | --- |
 | 1. Inventory and runner | Reviewed case and variant manifest, pinned reference results, and an initial Skarmory ledger that shows gaps. Prove a port at each relevant layer before scaling the harness. Freeze independent holdouts before using them to evaluate the implementations. |
-| 2. Python and frontend foundations | Port the Python resolution and framework cases, then the dependency checks. Qualify Go and Rust semantic approaches early and build the JS/TS and other required frontends as separate slices. For each frontend, demonstrate an entry point, a retained symbol or file, an unused counterpart, an incomplete control, and equivalence after an edit to a dependency. |
+| 2. Python analysis | Port the Python resolution and framework cases, then the dependency checks. Demonstrate a retained symbol, an unused counterpart, an incomplete control, and equivalence after an edit to a dependency. |
 | 3. Verification and reporting | Pass grep and runtime evidence cases with distinct provenance and retention decisions. Verify changed-line filtering, snapshot comparisons, baselines, and gates once finding identity is stable across the edits the contracts support. Show that deleting the final caller exposes the unchanged callee in impact mode only after both scans complete. |
 | 4. Cleanup | Pass read-only previews and the pinned apply and rollback cases after finding identity, edit eligibility, and source fingerprints are verified. Test a changed source or proof dependency and a failed explicit validation check. |
 | 5. Release | Publish the reconciled upstream ledger, independent controls, reviewed differences, feature matrix, and install evidence for the native CLI, SDK wheels, and SDK rebuilt from the source distribution. |
@@ -567,8 +514,8 @@ integration evidence. Phase 0.3 compatibility requires the complete upstream gat
   warm, and edited caches. Check findings, locations, evidence, uncertainty,
   and coverage. Edits must include source changes, graph root changes, and
   changes to configuration or supplied runtime evidence.
-- Check that incomplete analysis remains visible in reports and gates across
-  languages and after filtering. Check freshness for verified runtime evidence
+- Check that incomplete analysis remains visible in reports and gates within
+  the Python scan scope and after filtering. Check freshness for verified runtime evidence
   and explicit provenance for legacy retention in the compatibility profile.
   Verify that cleanup previews leave the analyzed sources intact.
 - Record timing and memory for matched, completed workloads using the
