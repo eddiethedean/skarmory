@@ -18,6 +18,7 @@ def analyze(
     generated_keep_paths: Sequence[str] | None = None,
     all_advice: bool = True,
     enable_quality: bool = False,
+    experimental_javascript: bool = False,
     grep_verify: bool | None = None,
     grep_cache: bool = False,
     trace_file: SourcePath | Literal[False] | None = None,
@@ -37,13 +38,16 @@ def analyze(
     default. Pass a path relative to the project root or False to disable
     the corresponding input. The report keeps runtime provenance and
     rejected evidence separate from static coverage.
-    Phase 0.3 also checks unused JavaScript and TypeScript files in a bounded
-    package graph rooted at the package.json main entry.
+    Phase 0.3 scans Python by default. Pass `experimental_javascript=True`
+    to also check unused JavaScript and TypeScript files in a bounded package
+    graph rooted at the package.json main entry.
     Pass `enable_quality=True` in Phase 0.3 to check unused Python dependencies.
     """
     if profile not in ("skylos", "skylos-0.3"):
         raise ValueError("profile must be skylos or skylos-0.3")
     phase03 = profile == "skylos-0.3"
+    if not phase03 and experimental_javascript:
+        raise TypeError("experimental JavaScript analysis requires profile='skylos-0.3'")
     if not phase03 and enable_quality:
         raise TypeError("quality scanning requires profile='skylos-0.3'")
     if not phase03 and (grep_verify or grep_cache):
@@ -70,6 +74,7 @@ def analyze(
         fspath(path),
         {
             "phase03": phase03,
+            "experimental_javascript": experimental_javascript,
             "enable_quality": enable_quality,
             "config_file": fspath(config_file) if config_file is not None else None,
             "exclude_folders": exclude_folders if exclude_folders is not None else (),

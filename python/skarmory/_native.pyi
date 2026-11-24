@@ -19,6 +19,7 @@ class _ScanOptions(TypedDict):
 
 class _SkylosOptions(TypedDict):
     phase03: bool
+    experimental_javascript: bool
     enable_quality: bool
     config_file: str | None
     exclude_folders: Sequence[str]

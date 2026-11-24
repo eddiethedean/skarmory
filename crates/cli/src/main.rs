@@ -32,7 +32,7 @@ enum Policy {
 #[command(about = "Analyze source code for dead code.")]
 #[command(after_help = "JSON goes to stdout by default. Incomplete analysis exits with 2.")]
 struct Cli {
-    /// Source file or project directory. JavaScript and TypeScript file reachability requires a package directory.
+    /// Python source file or project directory.
     #[arg(value_name = "PATH")]
     path: PathBuf,
 
@@ -140,6 +140,10 @@ struct SkylosArgs {
     /// Enable the Phase 0.3 Python unused-dependency quality rule.
     #[arg(long)]
     quality: bool,
+
+    /// Opt into experimental JavaScript and TypeScript analysis of a package directory.
+    #[arg(long, conflicts_with = "select")]
+    experimental_javascript: bool,
 
     /// Report only the selected Phase 0.3 rule.
     #[arg(
@@ -282,6 +286,7 @@ fn write_skylos_report(
     }
     let options = phase02::Options {
         profile,
+        experimental_javascript: args.experimental_javascript,
         config_file: args.config_file,
         excludes: args.excludes,
         generated_keep_paths: args.includes.clone(),

@@ -15,6 +15,7 @@ BASELINE = (
     / "tests/conformance/baselines/skylos-5.7.0.toml"
 )
 SCHEMA_VERSION = 1
+MILESTONE = "0.3"
 RESULT_STATUSES = {
     "passed", "failed", "xfailed", "xpassed", "skipped", "blocked", "error",
 }
@@ -48,7 +49,7 @@ def string_list(record, field, *, required=False, unique=False):
     return values
 
 
-def indexed_records(records, key):
+def indexed_records(records, key, *, deferred_ids=()):
     if not isinstance(records, list):
         raise ValueError(f"expected a list of records with {key}")
     indexed = {}
@@ -56,6 +57,8 @@ def indexed_records(records, key):
         if not isinstance(record, dict):
             raise ValueError(f"expected a record with {key}")
         identity = require_string(record, key)
+        if identity in deferred_ids:
+            continue
         if identity in indexed:
             raise ValueError(f"duplicate {key} {identity!r}")
         indexed[identity] = record
@@ -137,10 +140,16 @@ def read_inventory(path):
         if variant["layer"] not in {"engine", "cli", "sdk", "consumer"}:
             raise ValueError(f"unknown layer for {variant['id']}")
 
-    expected = {variant: {} for variant in variants}
+    by_variant = {variant: {} for variant in variants}
     for case_id, case in cases.items():
         for field in ("source", "provenance"):
             require_string(case, field)
+        milestone = require_string(case, "milestone")
+        if not re.fullmatch(r"0\.(?:[3-9]|1[0-8])", milestone):
+            raise ValueError(f"{case_id}: unknown owning milestone {milestone!r}")
+        languages = string_list(case, "languages", required=True, unique=True)
+        if milestone == MILESTONE and languages != ["python"]:
+            raise ValueError(f"{case_id}: Phase 0.3 only accepts Python cases")
         if not isinstance(case.get("port"), str):
             raise ValueError(f"{case_id}: port must be a string")
         if "blocker" in case:
@@ -160,9 +169,16 @@ def read_inventory(path):
         for variant in string_list(case, "variants", required=True, unique=True):
             if variant not in variants:
                 raise ValueError(f"{case_id}: unknown variant {variant!r}")
-            expected[variant][case_id] = case
-    if unused := [variant for variant, required in expected.items() if not required]:
-        raise ValueError(f"variants without required cases: {', '.join(unused)}")
+            by_variant[variant][case_id] = case
+    if unused := [variant for variant, mapped in by_variant.items() if not mapped]:
+        raise ValueError(f"variants without inventory cases: {', '.join(unused)}")
+    expected = {}
+    for variant, mapped in by_variant.items():
+        required = {case_id: case for case_id, case in mapped.items() if case["milestone"] == MILESTONE}
+        if required:
+            expected[variant] = required
+    if not expected:
+        raise ValueError("inventory must include required Phase 0.3 Python cases")
     return inventory, hashlib.sha256(raw).hexdigest(), variants, expected
 
 
@@ -234,7 +250,7 @@ def verify_result(result, case):
     return reasons
 
 
-def verify_ledger(ledger, identity, cases, errors):
+def verify_ledger(ledger, identity, cases, deferred_ids, errors):
     variant = ledger["variant"]
     for field, expected in identity.items():
         if ledger.get(field) != expected:
@@ -248,7 +264,7 @@ def verify_ledger(ledger, identity, cases, errors):
     try:
         string_list(ledger, "reference_command", required=True)
         string_list(ledger, "candidate_command", required=True)
-        results = indexed_records(ledger.get("results"), "case_id")
+        results = indexed_records(ledger.get("results"), "case_id", deferred_ids=deferred_ids)
     except ValueError as error:
         errors.append(f"{variant}: {error}")
         return {}
@@ -264,6 +280,7 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
         "status": "blocked",
         "errors": [],
         "cases": [],
+        "deferred_cases": [],
         "artifacts": {},
         "fixtures": {},
         "ledgers": [],
@@ -279,13 +296,29 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
     report["reference_revision"] = inventory["reference_revision"]
     report["inventory_sha256"] = inventory_hash
     report["inventory_complete"] = inventory["inventory_complete"]
-    report["fixtures"] = verify_fixtures(inventory.get("fixtures", []), fixture_root)
+    required_fixtures = {
+        fixture for cases in expected.values() for case in cases.values()
+        for fixture in case.get("fixtures", [])
+    }
+    report["fixtures"] = verify_fixtures(
+        [fixture for fixture in inventory.get("fixtures", []) if fixture["path"] in required_fixtures],
+        fixture_root,
+    )
+    deferred_by_variant = {variant: set() for variant in variants}
+    for case in inventory["cases"]:
+        if case["milestone"] != MILESTONE:
+            report["deferred_cases"].append(case)
+            for variant in case["variants"]:
+                deferred_by_variant[variant].add(case["id"])
     if not inventory["inventory_complete"]:
         errors.append("the case and variant inventory is not complete")
 
-    roles = {variant["artifact"] for variant in variants.values()}
+    roles = {variants[variant]["artifact"] for variant in expected}
+    deferred_roles = {variant["artifact"] for variant in variants.values()} - roles
     for item in artifact_inputs:
         role, separator, raw_path = item.partition("=")
+        if role in deferred_roles:
+            continue
         if not separator or not raw_path or role not in roles:
             errors.append(f"unknown or malformed candidate artifact input {item!r}")
             continue
@@ -298,7 +331,11 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
         except OSError as error:
             errors.append(f"{role}: {error}")
 
-    ledgers = load_ledgers(ledger_paths, errors)
+    deferred_variants = variants.keys() - expected.keys()
+    ledgers = [
+        ledger for ledger in load_ledgers(ledger_paths, errors)
+        if ledger["variant"] not in deferred_variants
+    ]
     report["ledgers"] = ledgers
     counts = Counter(ledger["variant"] for ledger in ledgers)
     by_variant = {ledger["variant"]: ledger for ledger in ledgers}
@@ -323,7 +360,9 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
                 "environment": variant["environment"],
                 "artifact_sha256": artifact.get("sha256"),
             }
-            results = verify_ledger(by_variant[variant_id], identity, cases, variant_errors)
+            results = verify_ledger(
+                by_variant[variant_id], identity, cases, deferred_by_variant[variant_id], variant_errors,
+            )
         errors.extend(variant_errors)
 
         for case_id, case in cases.items():

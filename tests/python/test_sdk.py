@@ -457,6 +457,10 @@ class SdkTests(unittest.TestCase):
     def test_phase03_javascript_file_reachability_and_cli_parity(self):
         with TemporaryDirectory() as directory:
             project = Path(directory)
+            (project / "app.py").write_text("def unused():\n    return 1\n", encoding="utf-8")
+            baseline = json.loads(skylos.analyze(project, profile="skylos-0.3", conf=0))
+            self.assertEqual(baseline["coverage"]["status"], "complete")
+            self.assertEqual(baseline["unused_functions"][0]["name"], "unused")
             for name, text in (
                 ("package.json", '{"main":"main.ts"}'),
                 ("main.ts", "import './barrel.ts';"),
@@ -473,7 +477,11 @@ class SdkTests(unittest.TestCase):
                 with self.subTest(status=status):
                     if status == "incomplete":
                         (project / "provider.ts").unlink()
-                    report = json.loads(skylos.analyze(project, profile="skylos-0.3"))
+                    default = json.loads(skylos.analyze(project, profile="skylos-0.3", conf=0))
+                    self.assertEqual(default, baseline)
+                    report = json.loads(skylos.analyze(
+                        project, profile="skylos-0.3", experimental_javascript=True,
+                    ))
                     self.assertEqual(report["coverage"]["status"], status)
                     self.assertEqual(
                         [(row["file"], row["rule_id"]) for row in report["unused_files"]],
@@ -482,7 +490,7 @@ class SdkTests(unittest.TestCase):
                     if cli := os.environ.get("SKARMORY_TEST_CLI"):
                         output = subprocess.run([
                             cli, project, "--profile", "skylos-0.3", "--all-advice",
-                            "--include-generated", "--confidence", "60",
+                            "--experimental-javascript", "--include-generated", "--confidence", "60",
                         ], capture_output=True)
                         self.assertEqual(output.returncode, exit_code, output.stderr)
                         self.assertEqual(report, json.loads(output.stdout))

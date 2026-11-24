@@ -11,11 +11,16 @@ fn put(root: &Path, path: &str, text: &str) {
 }
 
 fn scan(root: &Path, args: &[&str], code: i32) -> Value {
+    scan_phase03(root, args, code, true)
+}
+
+fn scan_phase03(root: &Path, args: &[&str], code: i32, experimental: bool) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
         .current_dir(root)
         .env_remove("SKYLOS_CONFIG_FILE")
         .env_remove("DJANGO_SETTINGS_MODULE")
         .args(["--profile", "skylos-0.3"])
+        .args(experimental.then_some("--experimental-javascript"))
         .args(args)
         .output()
         .unwrap();
@@ -398,6 +403,56 @@ fn cache_reuses_file_facts_and_refreshes_graph_after_source_and_manifest_edits()
     compare(&[("live.ts", 80)], 2);
     put(root, "package.json", r#"{"main":"live.ts"}"#);
     compare(&[("dead.js", 65), ("main.ts", 80)], 3);
+}
+
+#[test]
+fn default_scan_is_python_only_in_a_mixed_repository() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(
+        root,
+        "app.py",
+        "from helper import live\ndef unused():\n    return 2\nprint(live())\n",
+    );
+    put(root, "helper.py", "def live():\n    return 1\n");
+    let args = [".", "--confidence", "0", "--strict"];
+    let baseline = scan_phase03(root, &args, 1, false);
+    assert_eq!(baseline["coverage"]["status"], "complete");
+    assert_eq!(baseline["unused_functions"][0]["name"], "unused");
+    assert_eq!(
+        baseline["analysis_summary"]["languages"],
+        json!({"Python": 2})
+    );
+
+    put(root, "broken.js", "export const broken = ; // unused()\n");
+    put(root, "broken.ts", "export const broken: = ;\n");
+    assert_eq!(scan_phase03(root, &args, 1, false), baseline);
+
+    let cache = tempfile::tempdir().unwrap();
+    let cache = cache.path().to_str().unwrap();
+    for (workers, hits) in [("1", 0), ("4", 2)] {
+        let mut cached_args = args.to_vec();
+        cached_args.extend(["--workers", workers, "--cache-dir", cache]);
+        let mut cached = scan_phase03(root, &cached_args, 1, false);
+        let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(cached, baseline);
+    }
+
+    let experimental = scan(root, &args, 2);
+    assert_eq!(experimental["coverage"]["status"], "incomplete");
+    assert_eq!(
+        experimental["analysis_summary"]["languages"],
+        json!({"Python": 2, "JavaScript": 1, "TypeScript": 1})
+    );
+    assert_eq!(
+        experimental["analysis_summary"]["javascript_file_analysis"]["status"],
+        "incomplete"
+    );
+    assert_eq!(
+        experimental["unused_functions"],
+        baseline["unused_functions"]
+    );
 }
 
 #[test]

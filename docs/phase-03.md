@@ -117,6 +117,9 @@ unsupported or incomplete JavaScript/TypeScript sources. The Python findings
 and coverage must agree. An explicitly requested experimental frontend must
 report its own scope and incomplete coverage where applicable. This condition
 and deferred-case gate validation are tracked in [#41](https://github.com/eddiethedean/skarmory/issues/41).
+The bounded JS/TS preview is available with `--experimental-javascript` or
+`analyze(..., profile="skylos-0.3", experimental_javascript=True)`. Its
+scope and limits are recorded in the [language plan](language-frontends.md#existing-javascript-and-typescript-preview-in-main).
 
 ## Scope and acceptance
 

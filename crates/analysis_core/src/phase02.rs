@@ -33,6 +33,7 @@ pub enum Profile {
 #[derive(Clone, Debug)]
 pub struct Options {
     pub profile: Profile,
+    pub experimental_javascript: bool,
     pub grep_verify: Option<bool>,
     /// None uses the Phase 0.3 compatibility configuration.
     pub enable_quality: Option<bool>,
@@ -56,6 +57,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             profile: Profile::default(),
+            experimental_javascript: false,
             grep_verify: None,
             enable_quality: Some(false),
             quality_only: false,
@@ -640,6 +642,11 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         options.enable_quality.unwrap_or(config.quality_enabled) || options.quality_only;
     let include_dead_code = !options.quality_only;
     let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
+    if options.experimental_javascript && !(phase03 && include_dead_code) {
+        return Err(ConfigError::new(
+            "experimental JavaScript and TypeScript analysis requires a skylos-0.3 dead-code scan",
+        ));
+    }
     if enable_quality && !phase03 {
         return Err(ConfigError::new(
             "quality scanning requires the skylos-0.3 profile",
@@ -671,7 +678,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         &roots,
         FileEntry::None,
         Some(&config.selection),
-        phase03 && include_dead_code,
+        options.experimental_javascript,
     );
     let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
         BTreeMap::new()
