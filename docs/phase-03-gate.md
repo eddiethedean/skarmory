@@ -30,6 +30,15 @@ receipt records the failure location in `reference_failed_assertion` and
 the preceding completed assertions in `reference_assertions`. The candidate
 must pass the original assertions with the upstream marker disabled.
 
+The TypeScript benchmark cases also declare their original fixture paths.
+Use `--fixture-root` to check the files at those paths. The gate reports
+missing inputs, unreviewed provenance, and content that differs from the
+reviewed SHA-256. Once an original is recovered, record its provenance,
+license, and SHA-256 in the inventory. The receipt must identify those
+fixture hashes and pass the unchanged assertions against both analyzers.
+The four TypeScript cases stay blocked until the source evidence and execution
+results are available. [Fixture issue #45](https://github.com/eddiethedean/skarmory/issues/45)
+
 For a local check, use the same artifact file that the runner tested and
 provide its receipt. Repeat `--artifact` and `--ledger` for additional
 variant evidence.
@@ -39,6 +48,7 @@ python scripts/check_dead_code_gate.py \
   --inventory tests/conformance/phase03-inventory.toml \
   --candidate-revision "$(git rev-parse HEAD)" \
   --artifact "sdk=/path/to/candidate.whl" \
+  --fixture-root /path/to/pinned-skylos \
   --ledger /path/to/sdk-receipt.json \
   --report gate.json
 ```
