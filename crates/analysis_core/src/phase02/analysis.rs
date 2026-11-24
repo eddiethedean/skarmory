@@ -6414,74 +6414,14 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
-                    Value::Provider(name) if self.phase03 && gin::is_config_loader(&name) => {
-                        self.gin_config_call(CallArguments { scope, at: expr.at, before, positional: arguments, keywords });
-                    }
-                    Value::Provider(name) if self.phase03 && wagtail::is_snippet_registrar(&name)
-                        && arguments.len() == 1
-                        && matches!(keywords.as_slice(), [(key, _)] if key == "viewset") => {
-                        self.register_wagtail_snippet(CallArguments {
-                            scope, at: expr.at, before, positional: arguments, keywords,
-                        });
-                    }
-                    Value::Provider(name) if self.phase03 && gin::is_stop_after_attempt(&name)
-                        && gin::supported_stop_arguments(arguments, keywords) => {}
-                    Value::Provider(name) if self.phase03 && traitlets::is_text_trait(&name)
-                        && self.traitlets_text_declaration(CallArguments {
-                            scope, before, at: expr.at, positional: arguments, keywords,
-                        }) => {}
-                    Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
-                        if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
-                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
-                        }
-                    }
-                    Value::Provider(name) if self.phase03 && starlette::is_constructor(&name) => {
-                        if !arguments.is_empty() || !keywords.is_empty() {
-                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Starlette constructor arguments are outside the bounded model");
-                        }
-                    }
-                    Value::Provider(name) if self.phase03 && aiohttp::is_route_table(&name) => {
-                        if !arguments.is_empty() || !keywords.is_empty() {
-                            self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
-                        }
-                    }
-                    Value::Provider(name) if self.phase03 && mcp_tools::is_server_provider(&name) => {
-                        if !matches!(self.mcp_server(scope, expr.at, arguments, keywords), Value::McpServer(_)) {
-                            self.scope_issue(scope, expr.at, "unresolved_constructor", "FastMCP server arguments are outside the bounded model");
-                        }
-                    }
-                    Value::Provider(name) if self.phase03 && drf::is_method_field(&name) => {
-                        if drf::method_field_name(arguments, keywords).is_none() {
-                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF method field requires an omitted or literal callback name");
-                        }
-                    }
-                    Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
-                        if self.drf_field_writable(scope, before, arguments, keywords).is_none() {
-                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF serializer field arguments are outside the bounded model");
-                        }
-                    }
                     Value::Provider(name)
-                        if self.phase03 && name == "pathlib.Path"
-                            && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
-                    Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
-                    Value::Provider(name) if self.phase03 && name == "json.dumps"
-                        && arguments.len() == 1 && keywords.is_empty()
-                        && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
-                    Value::Provider(name) if self.phase03 && is_flask_login_constructor(&name)
-                        && self.flask_constructor_changed(ObjectKind::FlaskLoginManager, (scope, before)) =>
+                        if self.phase03
+                            && name == "math.sqrt"
+                            && keywords.is_empty()
+                            && matches!(arguments.as_slice(), [argument]
+                                if self.identity(scope, argument, before, 0).is_builtin_scalar()) =>
                     {
-                        if arguments.is_empty() && keywords.is_empty()
-                            && let Some((allocator, _)) = self.flask_login_allocation(scope, before)
-                        {
-                            self.invoke(scope, allocator, "flask_login_allocator", "certain", expr.at);
-                        } else {
-                            self.scope_issue(
-                                scope,
-                                expr.at,
-                                "unresolved_constructor",
-                                "Flask-Login allocator cannot be resolved",
-                            );
-                        }
+                        // Exact built-in scalars cannot call user-defined numeric conversions.
                     }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         if self.phase03 && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
@@ -14790,6 +14730,40 @@ async def unused():
                 && entry.kind == "local_namespace"
                 && entry.certainty == "possible"
         }));
+    }
+
+    #[test]
+    fn phase03_math_sqrt_requires_a_bounded_scalar_input() {
+        let scalar = [module(
+            "app.py",
+            "app",
+            "from math import sqrt as root\nRESULT = root(16)\n",
+        )];
+        let report = analyze_phase03(&scalar, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Variable), ["RESULT"]);
+
+        let custom = [module(
+            "app.py",
+            "app",
+            r#"import math
+
+class Custom:
+    def __float__(self):
+        return 16.0
+
+math.sqrt(Custom())
+"#,
+        )];
+        let report = analyze_phase03(&custom, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call"),
+            "{:?}",
+            report.issues
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-"""Run original pinned pytest cases against Skylos and candidate artifacts."""
+"""Run pinned pytest and benchmark cases against Skylos and candidate artifacts."""
 
 import argparse
 import ast
@@ -15,6 +15,9 @@ from phase03_cli import CASE as CLI_CASE
 from phase03_cli import RecursiveCaseCli
 
 PORT = "tests/conformance/run_phase03_seed.py"
+BENCHMARK_SOURCE = "benchmarks/dead_code/manifest.json"
+BENCHMARK_ID = "basic-unused-symbols"
+BENCHMARK_CASE = f"{BENCHMARK_SOURCE}::{BENCHMARK_ID}"
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
 
@@ -137,10 +140,98 @@ class AssertionTrace:
         return self
 
 
+def benchmark_assertions(summary, assertions):
+    cases = summary["cases"]
+    if len(cases) != 1 or cases[0]["id"] != BENCHMARK_ID or summary["skipped_cases"]:
+        raise ValueError("the original benchmark case did not run exactly once")
+    result = cases[0]
+    complete = result["scored"] and result["analysis_status"] == "complete"
+    passed = (
+        complete,
+        complete and result["true_positives"] == 5 and result["false_negatives"] == 0,
+        complete and result["true_negatives"] == 3 and result["false_positives"] == 0,
+        complete and result["elapsed_seconds"] <= 5.0,
+    )
+    reached = [label for label, verified in zip(assertions, passed, strict=True) if verified]
+    return result, reached
+
+
+def run_basic_benchmark(args, case):
+    from unittest.mock import patch
+
+    from skylos.benchmarks import dead_code
+
+    original = dead_code.analyze
+    fixture = "benchmarks/dead_code/fixtures/basic_unused_symbols"
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "-z", "--", fixture], cwd=args.upstream,
+    ).decode("utf-8").split("\0")
+    expected = {
+        Path(name).relative_to(fixture).as_posix(): (args.upstream / name).read_bytes()
+        for name in tracked if name
+    }
+    if not expected:
+        raise ValueError("the benchmark's pinned fixture tree is empty or missing")
+
+    candidate = args.mode == "candidate"
+    calls = 0
+    prerequisites = dict.fromkeys(case["prerequisites"], "blocked")
+
+    def analyze(path, **options):
+        nonlocal calls
+        calls += 1
+        folder = Path(path)
+        actual = {
+            item.relative_to(folder).as_posix(): item.read_bytes()
+            for item in folder.rglob("*") if item.is_file()
+        }
+        if actual != expected:
+            raise ValueError("the staged benchmark inputs differ from the tracked fixtures")
+        if options != {
+            "conf": 0, "enable_quality": False, "enable_danger": False,
+            "enable_secrets": False, "grep_verify": True,
+        }:
+            raise ValueError("the pinned benchmark options changed")
+        prerequisites["tracked fixture tree available"] = "passed"
+        if not candidate:
+            return original(path, **options)
+        # The Skarmory SDK has no danger or secrets options. Both are disabled.
+        del options["enable_danger"], options["enable_secrets"]
+        raw = scan_candidate(args.sdk_python, path, options)
+        report = json.loads(raw)
+        prerequisites["installed-sdk"] = "passed"
+        if report["analysis_summary"]["grep_verify"]["enabled"] is True:
+            prerequisites["grep-verification"] = "passed"
+        if set(report["selected_paths"]) != expected.keys():
+            prerequisites["tracked fixture tree available"] = "blocked"
+        if report["confidence_threshold"] == 0:
+            prerequisites["confidence=0"] = "passed"
+        return raw
+
+    with patch.object(dead_code, "analyze", analyze):
+        summary = dead_code.run_manifest(
+            args.upstream / BENCHMARK_SOURCE, selected_cases={BENCHMARK_ID},
+            scanner="skylos", strict_labels=False,
+        )
+    if calls != 1:
+        raise ValueError("the original benchmark must analyze the fixture exactly once")
+    result, reached = benchmark_assertions(summary, case["assertions"])
+    passed = not summary["failure_count"] and reached == case["assertions"]
+    if candidate:
+        passed = passed and all(value == "passed" for value in prerequisites.values())
+    return {
+        "status": "passed" if passed else "failed",
+        "assertions": reached,
+        "prerequisites": prerequisites,
+        "benchmark": result,
+    }
+
+
 def pytest_worker(args):
     import pytest
 
     _, _, variant, cases = port_cases(args)
+    benchmark = cases.pop(BENCHMARK_CASE, None)
     sys.path.insert(0, str(args.upstream))
     sys.modules["skylos_fast"] = None
     from skylos.core.fast import FAST_AVAILABLE
@@ -254,7 +345,7 @@ def pytest_worker(args):
     pytest_args = ["-q", "-p", "no:cacheprovider", *cases]
     if args.mode == "candidate":
         pytest_args.insert(0, "--runxfail")
-    status = pytest.main(pytest_args, plugins=[capture])
+    status = pytest.main(pytest_args, plugins=[capture]) if cases else 0
     report = {}
     for key, case in cases.items():
         lines = capture.lines.get(key, set())
@@ -291,8 +382,12 @@ def pytest_worker(args):
             "failed_assertion": capture.failed_assertions.get(key),
             "prerequisites": prerequisites,
         }
+    if benchmark is not None:
+        report[BENCHMARK_CASE] = run_basic_benchmark(args, benchmark)
     args.output.write_text(json.dumps(report), encoding="utf-8")
-    return int(status)
+    return int(status) or int(
+        benchmark is not None and report[BENCHMARK_CASE]["status"] != "passed"
+    )
 
 
 def write_receipt(args):
@@ -341,7 +436,7 @@ def write_receipt(args):
                         )
                     run = subprocess.run(command, cwd=args.upstream, env=env, timeout=180, check=False)
                     if run.returncode not in {0, 1}:
-                        raise ValueError(f"{mode} pytest runner exited {run.returncode}")
+                        raise ValueError(f"{mode} conformance runner exited {run.returncode}")
                     reports[mode] = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     errors.append(f"{mode}: {error}")
@@ -354,7 +449,7 @@ def write_receipt(args):
         candidate = reports.get("candidate", {}).get(case_id, {})
         if reference.get("status") == "passed" and reference["assertions"] != case["assertions"]:
             errors.append(f"{case_id}: reference passed before all mapped assertions ran")
-        results.append({
+        result = {
             "case_id": case_id,
             "reference_status": reference.get("status", "error"),
             "reference_assertions": reference.get("assertions", []),
@@ -364,7 +459,13 @@ def write_receipt(args):
             "prerequisites": candidate.get(
                 "prerequisites", dict.fromkeys(case["prerequisites"], "blocked")
             ),
-        })
+        }
+        if case_id == BENCHMARK_CASE:
+            result["benchmark"] = {
+                "reference": reference.get("benchmark"),
+                "candidate": candidate.get("benchmark"),
+            }
+        results.append(result)
     receipt = {
         "schema_version": 1,
         "reference_revision": revision,

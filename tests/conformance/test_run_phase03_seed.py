@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from run_phase03_seed import (
     AssertionTrace,
+    benchmark_assertions,
     check_candidate_wheel,
     environment,
     scan_candidate,
@@ -42,6 +43,36 @@ class AssertionTraceTests(unittest.TestCase):
                 finally:
                     sys.settrace(previous)
                 self.assertEqual(trace.completed & {first, last}, expected)
+
+
+class BenchmarkEvidenceTests(unittest.TestCase):
+    def test_rejects_missing_scoring_expectations_and_overruns(self):
+        labels = ["coverage", "unused", "live", "budget"]
+        case = {
+            "id": "basic-unused-symbols",
+            "scored": True,
+            "analysis_status": "complete",
+            "true_positives": 5,
+            "false_negatives": 0,
+            "true_negatives": 3,
+            "false_positives": 0,
+            "elapsed_seconds": 0.4,
+        }
+        for changes, expected in (
+            ({}, labels),
+            ({"analysis_status": "incomplete"}, []),
+            ({"scored": False}, []),
+            ({"true_positives": 4, "false_negatives": 1}, ["coverage", "live", "budget"]),
+            ({"true_negatives": 2, "false_positives": 1}, ["coverage", "unused", "budget"]),
+            ({"elapsed_seconds": 5.1}, ["coverage", "unused", "live"]),
+        ):
+            with self.subTest(changes=changes):
+                _, reached = benchmark_assertions(
+                    {"cases": [{**case, **changes}], "skipped_cases": []}, labels,
+                )
+                self.assertEqual(reached, expected)
+        with self.assertRaisesRegex(ValueError, "did not run exactly once"):
+            benchmark_assertions({"cases": [], "skipped_cases": [case]}, labels)
 
 
 class CandidateWheelTests(unittest.TestCase):
