@@ -865,7 +865,7 @@ impl<'a> Graph<'a> {
                 if row.owner.is_some()
                     && !class
                     && (row.names.contains_key(name)
-                        || (check_dormant_declarations || matches!(name, "locals" | "vars"))
+                        || (check_dormant_declarations || self.is_namespace_builtin(name))
                             && suite_binds_name(row.body, name))
                 {
                     // A lexical declaration can shadow an outer binding even
@@ -2515,7 +2515,7 @@ impl<'a> Graph<'a> {
                         return Value::Text(text.to_owned());
                     }
                     let binding_scope = self.symbols[id].scope;
-                    let before = if binding_scope == scope {
+                    let binding_before = if binding_scope == scope {
                         before
                     } else {
                         if self.scopes[binding_scope].names[name.as_str()].len() > 1 {
@@ -2525,7 +2525,21 @@ impl<'a> Graph<'a> {
                         }
                         END
                     };
-                    let value = self.binding(id, before, depth + 1);
+                    let value = self.binding(id, binding_before, depth + 1);
+                    if self.phase03
+                        && !lazy
+                        && binding_scope != scope
+                        && matches!(&value, Value::Provider(provider)
+                            if matches!(provider.as_str(), "builtins" | "builtins.eval" | "builtins.exec"))
+                        && matches!(
+                            self.lexical_binding(scope, name, before, true),
+                            LexicalBinding::UnboundLocal
+                        )
+                    {
+                        // A dormant local declaration can shadow an imported
+                        // builtin, even when the alias has a different name.
+                        return Value::Unknown;
+                    }
                     if let ValueEvaluation::Lazy {
                         execution_scope: Some(caller),
                         ..
@@ -2535,7 +2549,7 @@ impl<'a> Graph<'a> {
                     }
                     return value;
                 }
-                if matches!(name.as_str(), "locals" | "vars") {
+                if self.is_namespace_builtin(name) {
                     return match binding {
                         LexicalBinding::Missing => Value::Provider(format!("builtins.{name}")),
                         _ => Value::Unknown,
@@ -3592,7 +3606,11 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn read_local_namespace(&mut self, scope: ScopeId, before: Location, at: Location) {
+    fn is_namespace_builtin(&self, name: &str) -> bool {
+        matches!(name, "locals" | "vars") || self.phase03 && matches!(name, "eval" | "exec")
+    }
+
+    fn local_namespace_bindings(&self, scope: ScopeId, before: Location) -> Vec<SymbolId> {
         let row = &self.scopes[scope];
         let visible = |id: SymbolId| {
             let symbol = &self.symbols[id];
@@ -3618,6 +3636,11 @@ impl<'a> Graph<'a> {
             row.namespace_captures
                 .get_or_init(|| self.namespace_captures(scope)),
         );
+        bindings
+    }
+
+    fn read_local_namespace(&mut self, scope: ScopeId, before: Location, at: Location) {
+        let bindings = self.local_namespace_bindings(scope, before);
         self.read.extend(bindings.iter().copied());
         let row = &mut self.scopes[scope];
         row.namespace_reads.insert(
@@ -3756,6 +3779,16 @@ impl<'a> Graph<'a> {
                     Value::Provider(name)
                         if matches!(name.as_str(), "builtins.eval" | "builtins.exec") =>
                     {
+                        if self.phase03
+                            && arguments.len() == 1
+                            && keywords.is_empty()
+                            && self.in_function(scope)
+                        {
+                            // An unread-local finding concerns the function's own
+                            // body, even if no project root reaches that body.
+                            let bindings = self.local_namespace_bindings(scope, before);
+                            self.read.extend(bindings);
+                        }
                         self.scope_issue(
                             scope,
                             expr.at,
@@ -8029,6 +8062,91 @@ _unbound()
                 ("unresolved_call", Some(17))
             ]
             .into()
+        );
+    }
+
+    #[test]
+    fn phase03_opaque_evaluation_can_read_locals_in_dormant_functions() {
+        for (import, expression) in [
+            ("", "eval(source)"),
+            (
+                "from builtins import eval as evaluate_text",
+                "evaluate_text(source)",
+            ),
+            ("import builtins as tools", "tools.exec(source)"),
+        ] {
+            let body = format!(
+                "{import}
+
+def evaluate(source):
+    retained_value = object()
+    return {expression}
+
+def ordinary():
+    forgotten_value = object()
+"
+            );
+            let dormant = analyze_phase03(&[module("pkg/__init__.py", "pkg", &body)], &[]);
+            assert!(dormant.issues.is_empty(), "{:?}", dormant.issues);
+            assert_eq!(names(&dormant, Category::Variable), ["forgotten_value"]);
+            assert!(names(&dormant, Category::Function).contains(&"evaluate"));
+
+            let reached = format!(
+                "{body}
+__all__ = ['evaluate']
+"
+            );
+            let active = analyze_phase03(&[module("pkg/__init__.py", "pkg", &reached)], &[]);
+            assert!(
+                active
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"
+                        && issue
+                            .message
+                            .contains("can execute code outside the bounded model")),
+                "{:?}",
+                active.issues
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_opaque_namespace_reads_require_an_unshadowed_builtin_and_default_namespace() {
+        let files = [module(
+            "pkg/__init__.py",
+            "pkg",
+            r#"from builtins import eval as evaluate_text
+import builtins as tools
+
+def evaluate(source):
+    def eval(value):
+        return value
+    shadowed = object()
+    return eval(source)
+
+def shadowed_alias(source):
+    if False:
+        evaluate_text = print
+    unread_alias = object()
+    return evaluate_text(source)
+
+def shadowed_module(source):
+    if False:
+        tools = object()
+    unread_module = object()
+    return tools.exec(source)
+
+def explicit(source):
+    forgotten = object()
+    return exec(source, {})
+"#,
+        )];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Variable),
+            ["forgotten", "shadowed", "unread_alias", "unread_module"]
         );
     }
 

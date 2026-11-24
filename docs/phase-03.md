@@ -337,9 +337,14 @@ checks and provable truth tests can read the namespace without exposing its
 values. Shadowed names use ordinary call resolution.
 Object-argument `vars` and module and class namespace reads remain outside this
 model. [#42](https://github.com/eddiethedean/skarmory/issues/42)
-Reachable calls resolved to `builtins.eval` or `builtins.exec`, including
-imported aliases, report incomplete coverage and withhold unused findings.
-The analyzer does not evaluate their arguments as Python code. [#78](https://github.com/eddiethedean/skarmory/issues/78)
+In the Phase 0.3 profile, a one-argument call to the resolved built-in
+`eval()` or `exec()` within a function treats the local bindings visible
+at the call site as possibly read, including in dormant function bodies.
+In both Skylos profiles, reachable calls still report incomplete coverage
+and withhold unused findings because the text can execute outside the
+bounded model. Static analysis leaves the supplied text unevaluated.
+[#41](https://github.com/eddiethedean/skarmory/issues/41) ·
+[#78](https://github.com/eddiethedean/skarmory/issues/78)
 
 ### Grep verification preview
 
