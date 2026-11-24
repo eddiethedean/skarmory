@@ -6,11 +6,13 @@ use std::path::{Component, Path, PathBuf};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Expression, IdentifierReference, MemberExpression, TSExternalModuleReference, TSImportType,
+    Argument, CallExpression, Expression, IdentifierReference, ImportMeta, MemberExpression,
+    TSExternalModuleReference, TSImportType,
 };
 use oxc_ast_visit::Visit;
-use oxc_ast_visit::walk::walk_member_expression;
+use oxc_ast_visit::walk::{walk_call_expression, walk_member_expression};
 use oxc_parser::Parser;
+use oxc_semantic::{Scoping, SemanticBuilder};
 use oxc_span::{SourceType, Span};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,7 +87,7 @@ pub(super) fn extract(
     };
     match cache {
         Some(cache) => cache.get_or_extract_variant(
-            &format!("phase03-js-v3/oxc-0.159.0/{extension}"),
+            &format!("phase03-js-v4/oxc-0.159.0/{extension}"),
             source,
             parse,
         ),
@@ -122,16 +124,14 @@ fn parse(source: &str, source_type: SourceType) -> Result<Module, FrontendError>
         message: "only static ECMAScript import and re-export declarations are supported".into(),
         location: locate(span.start as usize),
     };
-    if let Some(span) = parsed
-        .module_record
-        .dynamic_imports
-        .first()
-        .map(|item| item.span)
-        .or_else(|| parsed.module_record.import_metas.first().copied())
-    {
-        return Err(unsupported(span));
+    if let Some(item) = parsed.module_record.dynamic_imports.first() {
+        return Err(unsupported(item.span));
     }
-    let mut loaders = OtherLoaders::default();
+    let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
+    let mut loaders = OtherLoaders {
+        scoping: semantic.scoping(),
+        first: None,
+    };
     loaders.visit_program(&parsed.program);
     if let Some(span) = loaders.first {
         return Err(unsupported(span));
@@ -185,31 +185,94 @@ fn parse(source: &str, source_type: SourceType) -> Result<Module, FrontendError>
     })
 }
 
-#[derive(Default)]
-struct OtherLoaders {
+struct OtherLoaders<'s> {
+    scoping: &'s Scoping,
     first: Option<Span>,
 }
 
-impl<'a> Visit<'a> for OtherLoaders {
+impl OtherLoaders<'_> {
+    fn is_ambient(&self, item: &IdentifierReference<'_>) -> bool {
+        item.reference_id
+            .get()
+            .and_then(|id| self.scoping.get_reference(id).symbol_id())
+            .is_none_or(|id| self.scoping.symbol_flags(id).is_ambient())
+    }
+
+    fn is_global_object(&self, object: &Expression<'_>) -> bool {
+        matches!(
+            object.get_inner_expression(),
+            Expression::Identifier(item)
+                if matches!(item.name.as_str(), "globalThis" | "self" | "window" | "global")
+                    && self.is_ambient(item)
+        )
+    }
+
+    fn is_node_process(&self, object: &Expression<'_>) -> bool {
+        match object.get_inner_expression() {
+            Expression::Identifier(item) => item.name == "process" && self.is_ambient(item),
+            member => member.as_member_expression().is_some_and(|member| {
+                member.static_property_name().and_then(|name| name.as_str()) == Some("process")
+                    && self.is_global_object(member.object())
+            }),
+        }
+    }
+
+    fn is_node_main_module(&self, object: &Expression<'_>) -> bool {
+        object
+            .get_inner_expression()
+            .as_member_expression()
+            .is_some_and(|member| {
+                member.static_property_name().and_then(|name| name.as_str()) == Some("mainModule")
+                    && self.is_node_process(member.object())
+            })
+    }
+}
+
+impl<'a> Visit<'a> for OtherLoaders<'_> {
     fn visit_identifier_reference(&mut self, item: &IdentifierReference<'a>) {
-        if UNSUPPORTED_GLOBAL_LOADERS.contains(&item.name.as_str()) {
+        if UNSUPPORTED_GLOBAL_LOADERS.contains(&item.name.as_str()) && self.is_ambient(item) {
             self.first.get_or_insert(item.span);
         }
     }
 
     fn visit_member_expression(&mut self, item: &MemberExpression<'a>) {
-        if matches!(
-            item.object().get_inner_expression(),
-            Expression::Identifier(object)
-                if matches!(object.name.as_str(), "globalThis" | "self" | "window" | "global")
-        ) && let Some((span, name)) = item.static_property_info()
-            && name
-                .as_str()
-                .is_some_and(|name| UNSUPPORTED_GLOBAL_LOADERS.contains(&name))
+        if let Some((span, property)) = item.static_property_info()
+            && let Some(property) = property.as_str()
+        {
+            let object = item.object();
+            // The entry guard reads a boolean and cannot introduce a module edge.
+            if property == "main"
+                && matches!(object.without_parentheses(), Expression::ImportMeta(_))
+            {
+                return;
+            }
+            if (UNSUPPORTED_GLOBAL_LOADERS.contains(&property) && self.is_global_object(object))
+                || (property == "require" && self.is_node_main_module(object))
+            {
+                self.first.get_or_insert(span);
+            }
+        }
+        walk_member_expression(self, item);
+    }
+
+    fn visit_call_expression(&mut self, item: &CallExpression<'a>) {
+        if let Some(callee) = item.callee.get_inner_expression().as_member_expression()
+            && let Some((span, property)) = callee.static_property_info()
+            && property.as_str() == Some("getBuiltinModule")
+            && self.is_node_process(callee.object())
+            && !matches!(
+                item.arguments.first(),
+                Some(Argument::StringLiteral(module))
+                    if module.value.as_str().is_some_and(|name| !matches!(name, "module" | "node:module"))
+            )
         {
             self.first.get_or_insert(span);
         }
-        walk_member_expression(self, item);
+        walk_call_expression(self, item);
+    }
+
+    fn visit_import_meta(&mut self, item: &ImportMeta) {
+        self.first.get_or_insert(item.span);
     }
 
     fn visit_ts_import_type(&mut self, item: &TSImportType<'a>) {
@@ -258,7 +321,7 @@ pub(super) fn analyze(
         .iter()
         .map(|item| Path::new(&item.path))
         .collect();
-    let entry = resolve(&paths, &excluded, Path::new(""), &main);
+    let entry = resolve(&paths, &excluded, Path::new(""), &main, false);
     if entry.is_none() {
         analysis.issues.push(Issue::new(
             "unresolved_js_entrypoint",
@@ -269,14 +332,17 @@ pub(super) fn analyze(
     let mut edges = BTreeMap::new();
     let mut imported = BTreeSet::new();
     for (file, module) in modules {
-        let parent = Path::new(file)
-            .parent()
-            .expect("selected file has a parent");
+        let importer = Path::new(file);
+        let parent = importer.parent().expect("selected file has a parent");
+        let typescript = matches!(
+            preview_source::javascript_extension(importer.as_os_str()),
+            Some("ts" | "tsx" | "mts")
+        );
         let mut outgoing = Vec::new();
         for request in &module.requests {
             let specifier = &request.specifier;
             let target = if specifier.starts_with("./") || specifier.starts_with("../") {
-                resolve(&paths, &excluded, parent, specifier)
+                resolve(&paths, &excluded, parent, specifier, typescript)
             } else {
                 None
             };
@@ -403,6 +469,7 @@ fn resolve<'a>(
     excluded: &BTreeSet<&Path>,
     base: &Path,
     request: &str,
+    typescript: bool,
 ) -> Option<&'a str> {
     if request.contains(['\\', ':', '?', '#']) {
         return None;
@@ -414,6 +481,21 @@ fn resolve<'a>(
             Component::CurDir => {}
             Component::ParentDir if path.pop() => {}
             _ => return None,
+        }
+    }
+    if typescript {
+        let source_extensions: &[&str] =
+            match preview_source::javascript_extension(path.as_os_str()) {
+                Some("js") => &["ts", "tsx", "d.ts"],
+                Some("jsx") => &["tsx", "ts", "d.ts"],
+                Some("mjs") => &["mts", "d.mts"],
+                _ => &[],
+            };
+        for extension in source_extensions {
+            if let Some(file) = paths.get(&path.with_extension(extension)) {
+                // A known but excluded source cannot be replaced by its emitted file.
+                return *file;
+            }
         }
     }
     if let Some(file) = paths.get(path.as_path()) {

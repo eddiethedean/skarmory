@@ -64,6 +64,11 @@ pub(super) enum LookupError {
     Ambiguous,
 }
 
+pub(super) struct ProjectWork<T> {
+    pub files: Vec<Option<FileWork<T>>>,
+    pub javascript_budget_issue: Option<Issue>,
+}
+
 pub(super) struct FileWork<T> {
     pub result: Result<T, Issue>,
     pub read_ns: u128,
@@ -542,14 +547,18 @@ impl Project {
         workers: usize,
         extract: impl Fn(&str) -> T + Sync,
     ) -> Result<Vec<FileWork<T>>, Issue> {
-        self.map_file_sources(workers, |_, source| extract(source))
+        let work = self.map_file_sources(workers, |_, source| extract(source))?;
+        if let Some(issue) = work.javascript_budget_issue {
+            return Err(issue);
+        }
+        Ok(work.files.into_iter().flatten().collect())
     }
 
     pub(super) fn map_file_sources<T: Send>(
         &self,
         workers: usize,
         extract: impl Fn(&SourceFile, &str) -> T + Sync,
-    ) -> Result<Vec<FileWork<T>>, Issue> {
+    ) -> Result<ProjectWork<T>, Issue> {
         if workers == 0 {
             return Err(Issue::new("worker_budget", ".", "workers must be positive"));
         }
@@ -560,41 +569,66 @@ impl Project {
                 format!("source discovery exceeded {MAX_SELECTED_FILES} selected files"),
             ));
         }
-        // Reserve a file's full read allowance when its metadata was unavailable.
-        let snapshot_bytes = self
-            .files
-            .iter()
-            .map(|file| {
-                file.discovered
-                    .as_ref()
-                    .map_or(source::MAX_SOURCE_BYTES, |stamp| {
-                        stamp.len.min(source::MAX_SOURCE_BYTES)
-                    })
-            })
-            .sum::<u64>();
-        if snapshot_bytes > MAX_SNAPSHOT_BYTES {
+        let mut python_bytes = 0;
+        let mut python_count = 0;
+        let mut javascript_bytes = 0;
+        for file in &self.files {
+            // Reserve a file's full read allowance when its metadata was unavailable.
+            let bytes = file
+                .discovered
+                .as_ref()
+                .map_or(source::MAX_SOURCE_BYTES, |stamp| {
+                    stamp.len.min(source::MAX_SOURCE_BYTES)
+                });
+            if file.is_javascript() {
+                javascript_bytes += bytes;
+            } else {
+                python_bytes += bytes;
+                python_count += 1;
+            }
+        }
+        if python_bytes > MAX_SNAPSHOT_BYTES {
             return Err(Issue::new(
                 "analysis_limit",
                 ".",
                 "selected sources exceed the 32 MiB snapshot budget",
             ));
         }
-        let capacity = std::thread::available_parallelism().map_or(1, usize::from);
-        let requested = workers.min(self.files.len());
-        let Some(reservation) = WorkerReservation::acquire(&RESERVED_WORKERS, requested, capacity)
-        else {
-            return Ok(self.files.iter().map(|file| file.work(&extract)).collect());
+        // Keep the combined read bound while preserving the Python work that
+        // fits it. An incomplete JavaScript snapshot cannot support a file graph.
+        let javascript_over_budget = javascript_bytes > MAX_SNAPSHOT_BYTES - python_bytes;
+        let admitted = if javascript_over_budget {
+            python_count
+        } else {
+            self.files.len()
         };
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(reservation.count)
-            .build()
-            .map_err(|error| Issue::new("worker_error", ".", error))?;
-        Ok(pool.install(|| {
-            self.files
-                .par_iter()
-                .map(|file| file.work(&extract))
-                .collect()
-        }))
+        let run = |file: &SourceFile| {
+            (!javascript_over_budget || !file.is_javascript()).then(|| file.work(&extract))
+        };
+
+        let capacity = std::thread::available_parallelism().map_or(1, usize::from);
+        let requested = workers.min(admitted);
+        let files = if let Some(reservation) =
+            WorkerReservation::acquire(&RESERVED_WORKERS, requested, capacity)
+        {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(reservation.count)
+                .build()
+                .map_err(|error| Issue::new("worker_error", ".", error))?;
+            pool.install(|| self.files.par_iter().map(run).collect())
+        } else {
+            self.files.iter().map(run).collect()
+        };
+        Ok(ProjectWork {
+            files,
+            javascript_budget_issue: javascript_over_budget.then(|| {
+                Issue::new(
+                    "analysis_limit",
+                    ".",
+                    "selected JavaScript and TypeScript sources exceed the space left in the 32 MiB snapshot budget",
+                )
+            }),
+        })
     }
 
     pub(super) fn verify(&self, stamps: impl IntoIterator<Item = Option<Stamp>>) -> Vec<Issue> {
@@ -796,6 +830,10 @@ impl Drop for WorkerReservation<'_> {
 }
 
 impl SourceFile {
+    fn is_javascript(&self) -> bool {
+        javascript_extension(self.path.as_os_str()).is_some()
+    }
+
     pub(super) fn directory(&self) -> &Path {
         self.path.parent().expect("absolute Python source path")
     }

@@ -93,6 +93,23 @@ dev = ["dev-only"]
 }
 
 #[test]
+fn selecting_python_dependencies_does_not_analyze_javascript_assets() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(root, "app.py", "print('hello')\n");
+    put(root, "requirements.txt", "unused-one\n");
+    let args = [".", "--select", "SKY-U005"];
+    let python_only = scan(root, &args, 0);
+    assert_eq!(findings(&python_only), [("unused-one", 1)]);
+    assert_eq!(python_only["coverage"]["status"], "complete");
+
+    for asset in ["console.log('asset');\n", "export const broken = ;\n"] {
+        put(root, "static/asset.js", asset);
+        assert_eq!(scan(root, &args, 0), python_only);
+    }
+}
+
+#[test]
 fn quality_selection_in_cli_configuration_enables_the_rule() {
     let tree = tempfile::tempdir().unwrap();
     let root = tree.path();

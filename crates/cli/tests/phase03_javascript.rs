@@ -46,6 +46,54 @@ fn findings(report: &Value) -> Vec<(&str, u64)> {
 }
 
 #[test]
+fn typescript_imports_prefer_source_over_emitted_javascript() {
+    for (source, emitted) in [("ts", "js"), ("tsx", "jsx"), ("mts", "mjs")] {
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path();
+        let source_path = format!("provider.{source}");
+        let emitted_path = format!("provider.{emitted}");
+        let import = format!("import {{ live }} from './{emitted_path}';\nconsole.log(live);\n");
+
+        put(
+            root,
+            "package.json",
+            r#"{"main":"main.ts","type":"module"}"#,
+        );
+        put(root, "main.ts", &import);
+        put(root, &source_path, "export const live: number = 1;\n");
+        put(root, &emitted_path, "export const live = 1;\n");
+        put(root, "unused.ts", "export const unused = 0;\n");
+
+        let report = scan(root, &["."], 0);
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(
+            findings(&report),
+            [(emitted_path.as_str(), 80), ("unused.ts", 80)]
+        );
+        let report = scan(root, &[".", "--exclude", &source_path], 2);
+        assert_eq!(
+            report["coverage"]["issues"][0]["kind"],
+            "unresolved_js_import"
+        );
+        assert!(findings(&report).is_empty());
+
+        put(
+            root,
+            "package.json",
+            r#"{"main":"main.js","type":"module"}"#,
+        );
+        fs::remove_file(root.join("main.ts")).unwrap();
+        put(root, "main.js", &import);
+        let report = scan(root, &["."], 0);
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(
+            findings(&report),
+            [(source_path.as_str(), 80), ("unused.ts", 80)]
+        );
+    }
+}
+
+#[test]
 fn reaches_reexport_and_type_providers_but_reports_a_disconnected_cycle() {
     let tree = tempfile::tempdir().unwrap();
     let root = tree.path();
@@ -208,7 +256,7 @@ fn marks_missing_ambiguous_or_unmodeled_inputs_incomplete() {
         "unsupported_js_project_context"
     );
     fs::remove_file(root.join("tsconfig.json")).unwrap();
-    let report = scan(root, &[".", "--select", "SKY-U005"], 2);
+    let report = scan(root, &[".", "--quality"], 2);
     assert_eq!(
         report["coverage"]["issues"]
             .as_array()
@@ -220,7 +268,7 @@ fn marks_missing_ambiguous_or_unmodeled_inputs_incomplete() {
     );
     assert_eq!(
         report["analysis_summary"]["javascript_file_analysis"]["status"],
-        "not_run"
+        "complete"
     );
 }
 
@@ -235,6 +283,10 @@ fn does_not_report_modules_reached_through_unsupported_loaders_as_unused() {
         "module.require('./live.js');\n",
         "self.importScripts('./live.js');\n",
         "new globalThis['Worker']('./live.js');\n",
+        "process.mainModule.require('./live.js');\n",
+        "const { createRequire } = process.getBuiltinModule('node:module');\nconst load = createRequire(__filename);\nload('./live.js');\n",
+        "process.getBuiltinModule(process.argv[2]).createRequire(__filename)('./live.js');\n",
+        "function run(require) { return require(); }\nrequire('./live.js');\n",
     ] {
         put(root, "main.js", source);
         let report = scan(root, &["."], 2);
@@ -252,6 +304,47 @@ fn does_not_report_modules_reached_through_unsupported_loaders_as_unused() {
     );
     let report = scan(root, &["."], 0);
     assert_eq!(findings(&report), [("live.js", 80)]);
+}
+
+#[test]
+fn keeps_static_coverage_for_local_loader_names_and_import_meta_main() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(
+        root,
+        "package.json",
+        r#"{"main":"main.mjs","type":"module"}"#,
+    );
+    put(root, "live.mjs", "export class Worker {}\n");
+    put(root, "dead.mjs", "export const dead = 0;\n");
+
+    const IMPORT_WORKER: &str = "import { Worker } from './live.mjs';\n";
+    for use_site in [
+        "new Worker();\n",
+        "const module = { id: 1 }; console.log(module.id);\n",
+        "const process = { getBuiltinModule() {} }; process.getBuiltinModule();\n",
+        "console.log(process.getBuiltinModule('node:fs'));\n",
+        "const self = { importScripts() {} }; self.importScripts();\n",
+        "if (import.meta.main) console.log('main');\n",
+        "if (import.meta['main']) console.log('main');\n",
+    ] {
+        put(root, "main.mjs", &format!("{IMPORT_WORKER}{use_site}"));
+        let report = scan(root, &["."], 0);
+        assert_eq!(report["coverage"]["status"], "complete");
+        assert_eq!(findings(&report), [("dead.mjs", 80)]);
+    }
+
+    put(
+        root,
+        "main.mjs",
+        "if (import.meta.main) console.log(import.meta.resolve('./live.mjs'));\n",
+    );
+    let report = scan(root, &["."], 2);
+    assert_eq!(
+        report["coverage"]["issues"][0]["kind"],
+        "unsupported_js_module_loading"
+    );
+    assert!(findings(&report).is_empty());
 }
 
 #[test]
@@ -330,4 +423,44 @@ fn incomplete_javascript_keeps_completed_python_findings() {
         assert_eq!(python.len(), 1);
         assert_eq!(python[0]["name"], "definitely_unused");
     }
+}
+
+#[test]
+fn oversized_javascript_snapshots_preserve_python_findings() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(root, "app.py", "def unused():\n    return 42\n");
+    let bundle = format!("/*{}*/\n", " ".repeat(1024 * 1024 - 5));
+    for index in 0..33 {
+        put(root, &format!("static/chunk-{index}.js"), &bundle);
+    }
+
+    let report = scan(root, &[".", "--confidence", "0", "--no-grep-verify"], 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert_eq!(report["coverage"]["selected_files"], 34);
+    assert_eq!(report["coverage"]["extracted_files"], 1);
+    assert_eq!(report["coverage"]["issues"][0]["kind"], "analysis_limit");
+    assert_eq!(
+        report["analysis_summary"]["javascript_file_analysis"]["status"],
+        "incomplete"
+    );
+    assert!(findings(&report).is_empty());
+    let python = report["unused_functions"].as_array().unwrap();
+    assert_eq!(python.len(), 1);
+    assert_eq!(python[0]["name"], "unused");
+    assert_eq!(
+        report,
+        scan(
+            root,
+            &[
+                ".",
+                "--confidence",
+                "0",
+                "--no-grep-verify",
+                "--workers",
+                "4"
+            ],
+            2,
+        )
+    );
 }

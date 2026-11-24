@@ -671,7 +671,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         &roots,
         FileEntry::None,
         Some(&config.selection),
-        phase03,
+        phase03 && include_dead_code,
     );
     let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
         BTreeMap::new()
@@ -723,9 +723,16 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         })
     }) {
         Ok(work) => {
-            for (file, work) in project.files.iter().zip(work) {
-                stamps.push(work.stamp);
+            javascript_analysis
+                .issues
+                .extend(work.javascript_budget_issue);
+            for (file, work) in project.files.iter().zip(work.files) {
                 selected_paths.push(file.label.clone());
+                let Some(work) = work else {
+                    stamps.push(None);
+                    continue;
+                };
+                stamps.push(work.stamp);
                 match work.result.and_then(|snapshot| snapshot) {
                     Ok(Snapshot {
                         facts,
@@ -1085,9 +1092,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             languages,
             javascript_file_analysis: has_javascript.then_some(JavaScriptFileAnalysis {
                 rule_id: javascript::RULE,
-                status: if !include_dead_code {
-                    "not_run"
-                } else if javascript_complete {
+                status: if javascript_complete {
                     "complete"
                 } else {
                     "incomplete"
