@@ -73,6 +73,7 @@ pub struct Definition {
     pub simple_positional_parameters: bool,
     pub defaults: Vec<Expression>,
     pub annotations: Vec<Expression>,
+    pub parameter_annotation_count: usize,
     pub bases: Vec<Expression>,
 }
 
@@ -464,6 +465,7 @@ impl Lowering<'_> {
                             annotations.push(self.annotation(annotation, next)?);
                         }
                     }
+                    let parameter_annotation_count = annotations.len();
                     if let Some(returns) = &node.returns {
                         annotations.push(self.annotation(returns, next)?);
                     }
@@ -513,6 +515,7 @@ impl Lowering<'_> {
                             .map(expression)
                             .collect::<Result<_, _>>()?,
                         annotations,
+                        parameter_annotation_count,
                         bases: Vec::new(),
                     })
                 }
@@ -539,6 +542,7 @@ impl Lowering<'_> {
                         simple_positional_parameters: false,
                         defaults: Vec::new(),
                         annotations: Vec::new(),
+                        parameter_annotation_count: 0,
                         bases: node
                             .arguments
                             .as_ref()

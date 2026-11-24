@@ -166,6 +166,61 @@ guard when its operands have bounded scalar behavior. Comparisons that could
 invoke a selected class hook report incomplete coverage when reached. This
 supports the pinned recursive-group and caller-edit cases. [#52](https://github.com/eddiethedean/skarmory/issues/52)
 
+### Bounded Python framework discovery
+
+The `skylos-0.3` profile uses resolved imports for the framework identities in
+these models. A selected Flask app can register route and request callbacks
+directly or mount a blueprint. Blueprint callbacks require the mount to be
+reached. FastAPI supports imperative endpoint registration and literal
+`Depends` or `Security` dependencies in defaults, `Annotated` parameters, and
+route and router registration options. FastAPI versions before 0.137 copy routes
+at inclusion. Newer versions retain the router and can expose routes added
+later. The analyzer reports incomplete coverage when either model can select
+different routes or postponed dependencies, or when ordering across scopes
+cannot be determined. It retains constructors of resolved class dependencies.
+[FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
+
+Django URL discovery follows a reachable, recognized launcher. The settings
+module comes from a literal `--settings` option in a management launcher, the
+scan process's `DJANGO_SETTINGS_MODULE`, or the first literal default set in
+the launcher's scope, in that order. It resolves
+the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
+`path` and `re_path` registrations, and literal `include` modules. Registered
+class-based views reach their effective `setup()` hook. Signal
+registrations through selected built-in signal providers follow imports
+from the startup, settings and active URL modules. Unresolved URL registrations
+in active URL modules produce coverage diagnostics. Recognized URL patterns
+and signal registrations report incomplete coverage when no Django startup
+is reached.
+
+For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
+application modules, their models modules, and the `ready()` hook of a resolved
+AppConfig. It accepts explicit config class paths and resolves default selection
+in a local `apps.py`. A management launcher exposes local `BaseCommand`
+subclasses named `Command` in the installed apps' public
+`management/commands` modules. Earlier installed apps take precedence when
+command names collide. A literal argument list limits discovery to the chosen
+command. An unresolved app or command export produces incomplete coverage.
+
+The profile also recognizes selected Celery task registrations, SQLAlchemy
+listeners, Pydantic model hooks, unittest test and lifecycle methods through
+effective class bindings, and pytest hooks and fixtures through selected
+conftest modules or literal `pytest_plugins` declarations. pytest autouse fixtures
+also apply to unittest cases collected by pytest. A reachable eager Pydantic
+model declaration can execute its core-schema hook during class creation.
+These are bounded models under
+[#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
+suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
+Additional Django command dispatch and FastAPI dependency patterns still need
+coverage.
+
+The pinned `django-urlpatterns`, `pytest-plugin-hooks`, and
+`python-unittest-lifecycle` corpus cases currently diverge. They require
+retention in standalone fixtures without a selected launcher, an active
+pytest plugin, or a discovered unittest test method, respectively. The
+unittest fixture also expects a test-only path whitelist. The reviewed
+inventory must account for these differences before qualification.
+
 ### Bounded Python receivers and lazy imports
 
 Ordinary constructors and instance methods use the first positional
