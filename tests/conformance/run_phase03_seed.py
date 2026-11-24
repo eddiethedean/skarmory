@@ -103,8 +103,8 @@ def port_cases(args):
     from check_dead_code_gate import read_inventory
 
     inventory, digest, variants, expected = read_inventory(args.inventory)
-    if args.variant not in variants:
-        raise ValueError(f"unknown inventory variant: {args.variant}")
+    if args.variant not in expected:
+        raise ValueError(f"not a required Phase 0.3 variant: {args.variant}")
     variant = variants[args.variant]
     layer = variant["layer"]
     if layer not in {"sdk", "cli"} or variant["backend"] != "python":

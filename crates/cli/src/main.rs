@@ -41,7 +41,7 @@ enum Policy {
     after_help = "JSON goes to stdout by default. Incomplete analysis exits with 2.\nUse 'skarmory cleanup --help' to review Python cleanup tasks."
 )]
 struct Cli {
-    /// Source file or project directory. JavaScript and TypeScript file reachability requires a package directory.
+    /// Python source file or project directory.
     #[arg(value_name = "PATH")]
     path: PathBuf,
 
@@ -154,49 +154,16 @@ struct SkylosArgs {
     #[arg(long)]
     quality: bool,
 
-    /// Select Phase 0.3 rule IDs. Repeat or separate multiple IDs with commas.
-    #[arg(long, value_delimiter = ',', value_name = "RULE")]
-    select: Vec<String>,
+    /// Opt into experimental JavaScript and TypeScript analysis of a package directory.
+    #[arg(long, conflicts_with = "select")]
+    experimental_javascript: bool,
 
-    /// Set the minimum displayed finding severity in Phase 0.3.
-    #[arg(long, value_name = "LEVEL")]
-    severity: Option<String>,
-
-    /// Report findings on working-tree lines changed from the Git merge base.
-    #[arg(long, value_name = "REF", num_args = 0..=1, default_missing_value = "auto", conflicts_with = "diff_base")]
-    diff: Option<String>,
-
-    /// Report findings in working-tree files changed from the Git merge base.
-    #[arg(long, value_name = "REF", conflicts_with = "diff_mode")]
-    diff_base: Option<String>,
-
-    /// Include newly unused symbols anywhere in the project in impact mode.
-    #[arg(long, value_enum, requires = "diff")]
-    diff_mode: Option<DiffMode>,
-
-    /// Suppress existing dead code from a versioned baseline.
-    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = ".skylos/baseline.json", conflicts_with = "baseline_ref")]
-    baseline: Option<PathBuf>,
-
-    /// Use the project baseline committed at this Git revision.
-    #[arg(long, value_name = "REF")]
-    baseline_ref: Option<String>,
-
-    /// Record dead-code findings from a complete, unfiltered scan.
-    #[arg(long, value_name = "PATH")]
-    write_baseline: Option<PathBuf>,
-
-    /// Evaluate the configured Phase 0.3 dead-code gate.
-    #[arg(long)]
-    gate: bool,
-
-    /// Require complete Phase 0.3 coverage for the gate.
-    #[arg(long)]
-    require_complete: bool,
-
-    /// Return success for an evaluated gate failure while retaining its verdict.
-    #[arg(long, requires = "gate")]
-    force: bool,
+    /// Report only the selected Phase 0.3 rule.
+    #[arg(
+        long, value_parser = ["SKY-U005"], ignore_case = true, value_name = "RULE",
+        conflicts_with_all = ["trace_file", "coverage_file"],
+    )]
+    select: Option<String>,
 
     /// Disable grep verification in the Skylos compatibility profile.
     #[arg(long = "no-grep-verify")]
@@ -413,6 +380,7 @@ fn write_skylos_report(
     }
     let options = phase02::Options {
         profile,
+        experimental_javascript: args.experimental_javascript,
         config_file: args.config_file,
         dependency_search_paths: args.dependency_search_paths,
         excludes: args.excludes,

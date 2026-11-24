@@ -86,8 +86,11 @@ suites outside that collection root.
 | `TestFunctionReachabilityUsesObjectsAndLiveOwners/unrooted_recursion_and_mutual_calls` | Go JSON event `pass` at the subtest level |
 | `benchmarks/dead_code/manifest.json::basic-unused-symbols` | Complete and scored. Five unused detections and three live controls matched. Default label mode, zero failures. |
 
-The missing-fixture cases remain blocked under [#45](https://github.com/eddiethedean/skarmory/issues/45).
-The mixed npm case retains its combined assertion and both coverage checks.
+The four missing-fixture cases and the npm case belong to Phase 0.7.
+The npm case uses a TypeScript-only fixture and retains all three of its
+assertions. The Go subtest belongs to Phase 0.9.
+[Phase 0.7 issue #45](https://github.com/eddiethedean/skarmory/issues/45) ·
+[Phase 0.9 issue #131](https://github.com/eddiethedean/skarmory/issues/131)
 See the [upstream test gate](phase-03.md#required-upstream-test-gate) for the
 remaining inventory and release evidence requirements.
 

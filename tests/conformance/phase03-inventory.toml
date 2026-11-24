@@ -57,6 +57,8 @@ path = "manual/mixed_repo/realistic_benchmark.ts"
 
 [[cases]]
 id = "test/test_closure_reachability.py::test_creating_a_nested_function_does_not_execute_its_body[none-False]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_closure_reachability.py"
 assertions = ["test/test_closure_reachability.py:24", "test/test_closure_reachability.py:58"]
 prerequisites = ["test/test_closure_reachability.py:15", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
@@ -67,6 +69,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_closure_reachability.py::test_creating_a_nested_function_does_not_execute_its_body[none-True]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_closure_reachability.py"
 assertions = ["test/test_closure_reachability.py:24", "test/test_closure_reachability.py:58"]
 prerequisites = ["test/test_closure_reachability.py:15", "installed-sdk", "grep-verification", "runtime-trace-disabled"]
@@ -77,6 +81,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_closure_reachability.py::test_creating_a_nested_function_does_not_execute_its_body[outer-False]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_closure_reachability.py"
 assertions = ["test/test_closure_reachability.py:24", "test/test_closure_reachability.py:58"]
 prerequisites = ["test/test_closure_reachability.py:15", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
@@ -87,6 +93,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_closure_reachability.py::test_creating_a_nested_function_does_not_execute_its_body[outer-True]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_closure_reachability.py"
 assertions = ["test/test_closure_reachability.py:24", "test/test_closure_reachability.py:58"]
 prerequisites = ["test/test_closure_reachability.py:15", "installed-sdk", "grep-verification", "runtime-trace-disabled"]
@@ -97,6 +105,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_closure_reachability.py::test_creating_a_nested_function_does_not_execute_its_body[inner-False]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_closure_reachability.py"
 assertions = ["test/test_closure_reachability.py:24", "test/test_closure_reachability.py:58"]
 prerequisites = ["test/test_closure_reachability.py:15", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
@@ -107,6 +117,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_closure_reachability.py::test_creating_a_nested_function_does_not_execute_its_body[inner-True]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_closure_reachability.py"
 assertions = ["test/test_closure_reachability.py:24", "test/test_closure_reachability.py:58"]
 prerequisites = ["test/test_closure_reachability.py:15", "installed-sdk", "grep-verification", "runtime-trace-disabled"]
@@ -120,6 +132,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_package_local_exports.py::test_module_all_does_not_export_a_function_local_with_the_same_name"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_package_local_exports.py"
 assertions = ["test/test_package_local_exports.py:80", "test/test_package_local_exports.py:81"]
 reference_xfail = "test/test_package_local_exports.py:80"
@@ -133,6 +147,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_package_local_exports.py::test_package_dynamic_local_namespace_stays_live[locals()]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_package_local_exports.py"
 assertions = ["test/test_package_local_exports.py:138"]
 prerequisites = ["installed-sdk", "grep-verification"]
@@ -143,6 +159,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_package_local_exports.py::test_package_dynamic_local_namespace_stays_live[vars()]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_package_local_exports.py"
 assertions = ["test/test_package_local_exports.py:138"]
 prerequisites = ["installed-sdk", "grep-verification"]
@@ -153,6 +171,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_package_local_exports.py::test_package_dynamic_local_namespace_stays_live[eval(source)]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_package_local_exports.py"
 assertions = ["test/test_package_local_exports.py:138"]
 prerequisites = ["installed-sdk", "grep-verification"]
@@ -164,6 +184,8 @@ omitted_assertions = []
 # The declared root and its transitive helper are absent from unused functions.
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-False]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_reachability_integration_qa.py"
 assertions = ["test/test_reachability_integration_qa.py:150", "test/test_reachability_integration_qa.py:151"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
@@ -174,6 +196,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_external_entry_and_callback_roots_keep_transitive_helpers_live[callback-True]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_reachability_integration_qa.py"
 assertions = ["test/test_reachability_integration_qa.py:150", "test/test_reachability_integration_qa.py:151"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
@@ -184,6 +208,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_external_entry_and_callback_roots_keep_transitive_helpers_live[export-False]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_reachability_integration_qa.py"
 assertions = ["test/test_reachability_integration_qa.py:150", "test/test_reachability_integration_qa.py:151"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
@@ -194,6 +220,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_external_entry_and_callback_roots_keep_transitive_helpers_live[export-True]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_reachability_integration_qa.py"
 assertions = ["test/test_reachability_integration_qa.py:150", "test/test_reachability_integration_qa.py:151"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
@@ -204,6 +232,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_external_entry_and_callback_roots_keep_transitive_helpers_live[entrypoint-False]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_reachability_integration_qa.py"
 assertions = ["test/test_reachability_integration_qa.py:150", "test/test_reachability_integration_qa.py:151"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
@@ -214,6 +244,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_external_entry_and_callback_roots_keep_transitive_helpers_live[entrypoint-True]"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_reachability_integration_qa.py"
 assertions = ["test/test_reachability_integration_qa.py:150", "test/test_reachability_integration_qa.py:151"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
@@ -225,6 +257,8 @@ omitted_assertions = []
 # Retain Flake8, formatter, and Poetry targets and their public members. Report the unused controls, including a same-name function.
 [[cases]]
 id = "test/test_dead_code_liveness.py::test_plugin_entry_point_groups_are_live"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_dead_code_liveness.py"
 assertions = ["test/test_dead_code_liveness.py:610", "test/test_dead_code_liveness.py:611"]
 prerequisites = ["test/test_dead_code_liveness.py:15", "installed-sdk", "grep-verification-disabled"]
@@ -236,6 +270,8 @@ omitted_assertions = []
 # Retain registered commands and plugin classes. Report the retired command and prove setup.py did not execute.
 [[cases]]
 id = "test/test_dead_code_liveness.py::test_setup_py_and_setup_cfg_entry_points_are_read_without_running_setup"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_dead_code_liveness.py"
 assertions = ["test/test_dead_code_liveness.py:681", "test/test_dead_code_liveness.py:682", "test/test_dead_code_liveness.py:683"]
 prerequisites = ["test/test_dead_code_liveness.py:15", "installed-sdk", "grep-verification-disabled"]
@@ -247,6 +283,8 @@ omitted_assertions = []
 # Retain the target declared in project.gui-scripts.
 [[cases]]
 id = "test/test_analyzer.py::TestAnalyze::test_pyproject_gui_script_entrypoint_is_not_reported_dead"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_analyzer.py"
 assertions = ["test/test_analyzer.py:2642"]
 prerequisites = ["test/test_analyzer.py:2636", "installed-sdk", "grep-verification-disabled"]
@@ -260,6 +298,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_trace_file_analyzer.py::test_analyzer_trace_file_loads_only_explicit_path"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_trace_file_analyzer.py"
 assertions = ["test/test_trace_file_analyzer.py:61", "test/test_trace_file_analyzer.py:62", "test/test_trace_file_analyzer.py:63"]
 prerequisites = ["test/test_trace_file_analyzer.py:42", "installed-sdk", "runtime-trace-import"]
@@ -270,6 +310,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_trace_file_analyzer.py::test_analyzer_trace_file_false_ignores_project_root_trace"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_trace_file_analyzer.py"
 assertions = ["test/test_trace_file_analyzer.py:75", "test/test_trace_file_analyzer.py:76"]
 prerequisites = ["test/test_trace_file_analyzer.py:42", "installed-sdk", "runtime-trace-disabled"]
@@ -280,6 +322,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_trace_file_analyzer.py::test_analyzer_default_trace_file_preserves_legacy_root_trace"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_trace_file_analyzer.py"
 assertions = ["test/test_trace_file_analyzer.py:86", "test/test_trace_file_analyzer.py:87"]
 prerequisites = ["test/test_trace_file_analyzer.py:42", "installed-sdk", "runtime-trace-import"]
@@ -290,6 +334,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_trace_file_analyzer.py::test_analyzer_default_trace_file_rejects_symlink"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_trace_file_analyzer.py"
 assertions = ["test/test_trace_file_analyzer.py:102", "test/test_trace_file_analyzer.py:103"]
 prerequisites = ["test/test_trace_file_analyzer.py:42", "test/test_trace_file_analyzer.py:95", "installed-sdk", "runtime-trace-rejected"]
@@ -303,6 +349,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_real_cli_reports_dead_cycle_and_keeps_live_variant"
+milestone = "0.3"
+languages = ["python"]
 source = "test/test_reachability_integration_qa.py"
 assertions = ["test/test_reachability_integration_qa.py:254", "test/test_reachability_integration_qa.py:256"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "native-cli-control-pair"]
@@ -315,6 +363,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_typescript_expanded.py::TestHardBenchmark::test_all_dead_detected"
+milestone = "0.7"
+languages = ["typescript"]
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2221"]
 fixtures = ["manual/mixed_repo/hard_benchmark.ts"]
@@ -326,6 +376,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_typescript_expanded.py::TestHardBenchmark::test_no_false_positives"
+milestone = "0.7"
+languages = ["typescript"]
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2225"]
 fixtures = ["manual/mixed_repo/hard_benchmark.ts"]
@@ -337,6 +389,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_typescript_expanded.py::TestRealisticBenchmark::test_all_dead_detected"
+milestone = "0.7"
+languages = ["typescript"]
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2320"]
 fixtures = ["manual/mixed_repo/realistic_benchmark.ts"]
@@ -348,6 +402,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_typescript_expanded.py::TestRealisticBenchmark::test_no_false_positives"
+milestone = "0.7"
+languages = ["typescript"]
 source = "test/test_typescript_expanded.py"
 assertions = ["test/test_typescript_expanded.py:2324"]
 fixtures = ["manual/mixed_repo/realistic_benchmark.ts"]
@@ -362,6 +418,8 @@ omitted_assertions = []
 
 [[cases]]
 id = "test/test_project_gap_integration.py::test_npm_usage_reports_findings_and_rule_coverage"
+milestone = "0.7"
+languages = ["typescript"]
 source = "test/test_project_gap_integration.py"
 assertions = ["test/test_project_gap_integration.py:37", "test/test_project_gap_integration.py:38", "test/test_project_gap_integration.py:39"]
 prerequisites = ["installed-sdk", "TypeScript frontend and npm dependency analysis", "combined SKY-U005, SKY-Q408, and SKY-Q409 behavior", "copy the full tracked fixture tree"]
@@ -376,6 +434,8 @@ blocker = "Required npm and companion assertion behavior is pending (#45)"
 
 [[cases]]
 id = "skylos/engines/go/internal/symbols::TestFunctionReachabilityUsesObjectsAndLiveOwners/unrooted_recursion_and_mutual_calls"
+milestone = "0.9"
+languages = ["go"]
 source = "skylos/engines/go/internal/symbols/reachability_test.go"
 assertions = ["skylos/engines/go/internal/symbols/reachability_test.go:195", "skylos/engines/go/internal/symbols/reachability_test.go:203", "skylos/engines/go/internal/symbols/reachability_test.go:208"]
 prerequisites = ["Go engine semantics", "Go 1.22 with host standard library", "temporary main.go and go.mod creation"]
@@ -383,12 +443,14 @@ provenance = "main.go generated by skylos/engines/go/internal/symbols/reachabili
 variants = ["linux-x86_64-native-go-engine"]
 port = ""
 omitted_assertions = []
-blocker = "Required Go engine facts are pending (#46)"
+blocker = "Required Go engine facts are pending (#131)"
 
 # Original default scoring with simple symbol identity and strict_labels=false.
 
 [[cases]]
 id = "benchmarks/dead_code/manifest.json::basic-unused-symbols"
+milestone = "0.3"
+languages = ["python"]
 source = "benchmarks/dead_code/manifest.json"
 assertions = ["complete analysis before grading", "app.py unused: import json, function unused_helper, class UnusedWorker, variables UNUSED_SETTING and RESULT", "app.py used: function used_helper, class UsedWorker, variable USED_SETTING", "max_seconds: 5.0"]
 prerequisites = ["installed-sdk", "grep-verification", "confidence=0", "tracked fixture tree available"]

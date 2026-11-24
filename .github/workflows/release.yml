@@ -405,20 +405,21 @@ jobs:
           fi
 
           # Preview the mapped shard without changing the recorded release verdict.
-          python - <<'PY'
+          PYTHONPATH=scripts python - <<'PY'
           import json
           import os
           from pathlib import Path
-          import tomllib
 
-          inventory = tomllib.loads(Path("tests/conformance/phase03-inventory.toml").read_text())
+          from check_dead_code_gate import read_inventory
+
+          _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
           report = json.loads(Path("phase03-evidence/gate.json").read_text())
           for layer in ("SDK", "CLI"):
               variant = os.environ[f"DEAD_CODE_{layer}_VARIANT"]
               expected = {
-                  case["id"]
-                  for case in inventory["cases"]
-                  if variant in case["variants"] and case["port"] == "tests/conformance/run_phase03_seed.py"
+                  case_id
+                  for case_id, case in required.get(variant, {}).items()
+                  if case["port"] == "tests/conformance/run_phase03_seed.py"
               }
               passed = {
                   case["case_id"]

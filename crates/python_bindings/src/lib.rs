@@ -27,6 +27,8 @@ struct Options {
 struct SkylosOptions {
     phase03: bool,
     #[pyo3(default)]
+    experimental_javascript: bool,
+    #[pyo3(default)]
     enable_quality: bool,
     #[pyo3(default)]
     dependency_search_paths: Vec<PathBuf>,
@@ -174,6 +176,7 @@ fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResul
         } else {
             phase02::Profile::SkylosPhase02
         },
+        experimental_javascript: options.experimental_javascript,
         config_file: options.config_file,
         dependency_search_paths: options.dependency_search_paths,
         excludes: options.exclude_folders,
