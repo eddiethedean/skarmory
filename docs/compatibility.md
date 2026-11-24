@@ -5,7 +5,7 @@ Status: specification. See the [Phase 0 inventory](skylos-5.7.0-contract.md) and
 The [Phase 0.2 scope](phase-02.md) defines the implemented subset,
 compatibility entry points, and release evidence. The [Phase 0.3 plan](phase-03.md)
 extends dead-code coverage and adds verification and reporting workflows.
-Passing the [full pinned dead-code test suite](phase-03.md#required-upstream-test-gate)
+Passing the [full pinned Python dead-code test suite](phase-03.md#required-upstream-test-gate)
 against Skarmory is mandatory for that release.
 
 ## Frozen reference
@@ -17,7 +17,7 @@ against Skarmory is mandatory for that release.
 | Source revision | `87978e69adf91b3811e97b00c40aa39d7937cd94` |
 | Release date | November 19, 2026 |
 | Initial scope | Explicitly inventoried local static Python dead-code behavior |
-| Later scope | Expanded dead-code analysis, then declared quality, secrets, security, and general workflow contracts |
+| Later scope | Expanded Python dead-code analysis, declared quality, secrets, security and workflows, followed by dedicated language frontend milestones |
 
 The source revision is the reference for reproducible tests. Website documentation
 can describe newer or unreleased features; disagreements must be resolved through
@@ -42,8 +42,8 @@ The conformance matrix must include the following surfaces:
 | --- | --- | --- |
 | Source discovery | Paths, exclusions, generated files, package roots, encoding and failure behavior | Phase 0 / 0.2 |
 | Python dead-code findings | Categories, resolved symbol identity, locations, dispositions, evidence | 0.2 for the initial subset and 0.3 for expanded resolution and unused dependencies |
-| JavaScript and TypeScript dead code | Declared module resolution, entry points, unused files and symbols, unnecessary exports, unused npm dependencies, and coverage | 0.3 |
-| Other upstream-tested frontends | Dead-code behavior asserted by the pinned suite, including mixed-language cases and required backends | 0.3 |
+| JavaScript and TypeScript dead code | Declared module resolution, entry points, unused files and symbols, unnecessary exports, unused npm dependencies, and coverage | 0.7 |
+| Other upstream-tested frontends | Dead-code behavior asserted by the pinned suite, including mixed-language cases and required backends | [0.8–0.18](language-frontends.md) |
 | Confidence | Scoring order, caps, thresholds, category-specific visibility | 0.2 |
 | Framework use | Identity, registration, activation, lifecycle and callback contracts | 0.2 for initial pytest and FastAPI models and 0.3 for expanded framework coverage |
 | Configuration | Discovery, inheritance, explicit configuration, environment inputs, precedence | 0.2 |
@@ -216,7 +216,7 @@ For each declared surface:
 5. Benchmarks use matched supported work and report any incomplete run separately.
 6. User documentation names the unsupported and experimental cases.
 
-Phase 0.3 adds the [full upstream dead-code test gate](phase-03.md#required-upstream-test-gate)
+Phase 0.3 adds the [Python-scoped upstream dead-code test gate](phase-03.md#required-upstream-test-gate)
 to these requirements. A recorded difference cannot waive a failed upstream
 dead-code assertion for that release.
 
