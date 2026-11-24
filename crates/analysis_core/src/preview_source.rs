@@ -844,7 +844,7 @@ fn normalized(path: &Path) -> PathBuf {
     }
 }
 
-fn display(path: &Path) -> String {
+pub(super) fn display(path: &Path) -> String {
     if path.as_os_str().is_empty() {
         return ".".into();
     }

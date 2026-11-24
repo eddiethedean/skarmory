@@ -17,6 +17,20 @@ class _ScanOptions(TypedDict):
     cache_dir: str | None
     grep_verify: bool
 
+class _WorkflowOptions(TypedDict):
+    diff: str | None
+    diff_mode: Literal["lines", "files", "impact"]
+    baseline: str | None
+    baseline_ref: str | None
+    write_baseline: str | None
+    rules: Sequence[str]
+    severity: Literal["low", "medium", "high", "critical"] | None
+    gate: bool
+    strict: bool
+    require_complete: bool
+    force: bool
+    compact: bool
+
 class _SkylosOptions(TypedDict):
     phase03: bool
     enable_quality: bool
@@ -33,6 +47,7 @@ class _SkylosOptions(TypedDict):
     trace_disabled: bool
     coverage_file: str | None
     coverage_disabled: bool
+    workflow: _WorkflowOptions | None
 
 def analyze(path: str) -> str: ...
 def scan(path: str, options: _ScanOptions) -> str: ...

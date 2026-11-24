@@ -436,28 +436,78 @@ artifacts through Rust and run independently of that collection step.
 
 [Pinned trace inputs](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_trace_file_analyzer.py) · [Pinned coverage database cases](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_implicit_refs.py#L181-L232)
 
-### Other planned compatibility policies
+### Dead-code diff, baselines, and gates
 
-Explicitly select the Phase 0.3 Skylos contract in the CLI and SDK to apply the
-policies below. Keep existing Phase 0.2 invocations and defaults valid. The
-conformance harness selects the contract at the entry-point boundary and
-preserves each upstream case's inputs and omitted options.
+Select `--profile skylos-0.3` in the CLI or `profile="skylos-0.3"` in
+`skarmory.compat.skylos.analyze`. The CLI uses the local Git executable for
+revision and tree data. Static workflows run independently of Python and
+read raw Git objects without running checkout filters or repository code.
 
-- **Coverage and verdict.** In impact mode, evaluate base and head under the
-  same effective comparison policy, including the pinned use of base policy
-  and explicit operator configuration. Return an incomplete comparison when
-  either analysis is incomplete and omit introduced status. Under the
-  compatibility gate, a non-strict verdict may pass when the pinned policy
-  allows a partial scan. Report partial coverage separately, with its warnings
-  and unchecked scope. Required completeness and strict mode block on missing
-  coverage. Preserve native incomplete-analysis reporting and exit behavior.
-  [Pinned impact tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_pr_impact.py#L50-L98) ·
-  [Pinned coverage tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_coverage_gaps.py#L277-L325)
-- **Dead-code reporting.** Track rule selection, severity and filtering policy,
-  and JSON-CI preservation of findings, coverage, and per-finding evidence with
-  the diff and gate workstream. Port tests at the layer that computes each
-  policy decision or report field. [#49](https://github.com/eddiethedean/skarmory/issues/49) ·
-  [Pinned JSON-CI tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_cli_json_ci_format.py#L86-L113)
+```sh
+skarmory . --profile skylos-0.3 --diff HEAD --format json-ci
+skarmory . --profile skylos-0.3 --diff origin/main --diff-mode impact --strict
+skarmory . --profile skylos-0.3 --write-baseline .skylos/baseline.json
+skarmory . --profile skylos-0.3 --baseline-ref origin/main --gate --require-complete
+```
+
+- `--diff REF` analyzes the entire selected project directory, then displays
+  findings on added or modified head lines. `--diff-base REF` displays findings
+  anywhere in changed files. Both compare working-tree content with the merge
+  base of `REF` and `HEAD`. This covers committed, staged, unstaged, and
+  non-ignored untracked sources. Omitted `REF` uses `GITHUB_BASE_REF` on
+  `origin`, then the `origin/HEAD` symbolic ref, then `origin/main`.
+- `--diff-mode impact` also reports newly unused symbols on unchanged lines.
+  Both scans use policy from the base tree, including nested configuration, the
+  same explicit operator configuration and flags, and the same expiry date.
+  An unchanged finding is matched by rule, relative path, and scoped binding
+  identity. A move to a different path can be introduced. Impact uses static
+  analysis and disables implicit runtime artifacts on both sides. Supplying
+  an explicit runtime artifact with impact is an invocation error.
+- `analysis_summary.pr_impact` reports base and head coverage independently.
+  Either incomplete snapshot prevents introduced annotations. Git paths
+  must be portable, UTF-8 paths. Impact accepts internal relative symlinks
+  when the platform can recreate them. External links, submodules, unavailable
+  blobs, more than 20,000 entries, a blob over 2 MiB, or a snapshot over
+  128 MiB make the base comparison incomplete. Very large changed-line
+  comparisons report a work limit.
+- `--write-baseline PATH` records a complete, unfiltered scan using Skarmory
+  baseline schema 1. `--baseline` reads `.skylos/baseline.json`. Supply a
+  different path immediately after the flag to use that file. Relative
+  baseline input paths are resolved from the project, and relative output
+  paths from the working directory. `--baseline-ref REF` reads the default
+  baseline file from that revision. The receipt reports matches and stale
+  entries, including findings fixed since capture when the current scan is
+  complete. An unavailable or unsupported baseline leaves findings visible
+  and exits 2.
+- `--gate` uses `[tool.skylos.gate]` in `pyproject.toml` or `[gate]` in a
+  standalone config. A configured gate with a Git diff uses the base policy
+  and any explicit operator configuration. `max_dead_code` defaults to unlimited and `max_quality`
+  to 10 for the opt-in dependency rule. `--strict` or `strict = true` for the
+  configured gate fails on any finding and requires complete coverage.
+  `--require-complete` or `[tool.skylos.gate.coverage] require_complete = true`
+  also requires complete coverage. The compatibility gate can evaluate
+  selected file or grep gaps under non-strict policy. Its verdict, the actual
+  scan coverage, and the unchecked files and analysis scope are separate.
+  Gate exit codes are 0 for pass, 1 for failure, and 2 for incomplete analysis.
+  `--gate --force` can override exit 1 and keeps the failed verdict visible.
+  The native profile retains its incomplete-scan exit 2.
+- `--select` accepts repeated or comma-separated IDs, case-insensitively.
+  Supported IDs are `SKY-U001` through `SKY-U006` and `SKY-E002`.
+  `SKY-U005` enables the opt-in dependency rule. Minimum `--severity` filters
+  the listing after gate evaluation. Dead-code diagnostics default to low
+  severity independently of confidence. `--format json-ci` omits the two
+  top-level symbol inventories and preserves analysis errors, coverage,
+  gate verdict, summary counts, findings, and individual finding evidence.
+
+The SDK returns a JSON string. Its workflow keywords are `diff`, `diff_mode`
+(`lines`, `files`, or `impact`), `baseline` (a path or `True`),
+`baseline_ref`, `write_baseline`, `select`, `severity`, `gate`, `strict`,
+`require_complete`, `force`, and `output_format`. The gate reports its
+`exit_code` in JSON.
+
+See the [pinned workflow assertion mapping](phase-03-workflow-reference.md)
+for the native report and policy entry points and remaining release scope.
+[#49](https://github.com/eddiethedean/skarmory/issues/49) · [#41](https://github.com/eddiethedean/skarmory/issues/41)
 
 ## Rust crate candidates
 
@@ -471,7 +521,7 @@ the pinned test inventory establishes which capabilities each frontend needs.
 | Go and Rust semantics | Start with syntax-derived facts. Compare a narrowly scoped `go/types` fact adapter and an isolated `ra_ap_hir` `0.0.363` pilot if the pinned tests require richer facts. | Run pinned Go tests that exercise type identity and generics, and Rust fixtures that require semantic resolution. Measure what each approach adds to build time and binary size. Qualify how any adapter would ship and keep static scans free of target-code execution. [Pinned Go tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/engines/go/internal/symbols/reachability_test.go), [`go/types`](https://pkg.go.dev/go/types), [`ra_ap_hir`](https://docs.rs/ra_ap_hir/0.0.363/ra_ap_hir/) |
 | Python dependencies | Keep the Ruff AST and existing `toml` dependency. The Python rule uses `pep508_rs` `0.9.2` to parse requirement specifiers, extras, and markers. Evaluate `uv-requirements-txt` `0.0.101` if pinned fixtures warrant a fuller requirements parser. | Keep static setuptools and command interpretation, bounded requirements traversal, declaration provenance, and evidence-to-distribution mapping in Skarmory. Compare the fuller parser's dependency footprint and offline behavior. [`pep508_rs`](https://docs.rs/pep508_rs/0.9.2/pep508_rs/), [`uv-requirements-txt`](https://docs.rs/crate/uv-requirements-txt/0.0.101) |
 | Grep verification | Evaluate `aho-corasick` `1.1.5`, already in the lockfile as a transitive dependency, for bounded multi-literal matching. | Verify identifier boundaries and original source offsets. Apply symbol ownership, search budgets, and possible-use classification in Skarmory. [`aho-corasick`](https://docs.rs/aho-corasick/1.1.5/aho_corasick/) |
-| Git diff and gates | Evaluate `gix` `0.90.0` with default features disabled and `sha1`, `status`, `blob-diff`, and `revision` enabled. | Check merge bases, staged and unstaged changes, rename behavior, and changed-line filtering against fixtures. The smoke test only checked repository opening and `HEAD` lookup. [`gix` features](https://docs.rs/crate/gix/0.90.0/features) |
+| Git diff and gates | Use Git plumbing for merge bases, tree paths, and raw blobs. Use `similar` `3.2.1` for bounded diffs over the source text used by the analyzer. | The native CLI fixtures cover the full selected head, working-tree edits, and analyzer behavior across diverging snapshots. |
 | Cleanup | Use `similar` `3.2.1` for unified diff previews. Reuse `blake3` for source fingerprints and `tempfile` for staging. | Keep edit eligibility, source revalidation, and apply and rollback behavior in Skarmory. Cover read-only previews and stale patches with the pinned fixtures. [`similar`](https://docs.rs/similar/3.2.1/similar/) |
 | Runtime evidence | Start with existing `serde_json` for artifact ingestion and the Python integration for explicit collection and export. Evaluate `rusqlite` if the pinned tests require direct native reads of `.coverage` files. | Check artifact provenance and stale evidence. If SQLite is required, qualify the supported coverage database schema versions and distribution impact. [Coverage database schema](https://coverage.readthedocs.io/en/latest/dbschema.html), [`rusqlite`](https://github.com/rusqlite/rusqlite) |
 

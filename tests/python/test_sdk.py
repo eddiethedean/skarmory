@@ -454,6 +454,59 @@ class SdkTests(unittest.TestCase):
                 skylos.analyze(project, trace_file=Path("other.json"))
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_git_impact_baseline_gate_and_json_ci(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "app.py").write_text(
+                "def legacy():\n    return 1\n\ndef old():\n    return 2\n",
+                encoding="utf-8",
+            )
+            caller = project / "caller.py"
+            caller.write_text("from app import legacy\nlegacy()\n", encoding="utf-8")
+            for args in (
+                ["init", "-q"],
+                ["add", "."],
+                ["commit", "-qm", "Initial"],
+            ):
+                subprocess.run(
+                    [
+                        "git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
+                        "-c", "commit.gpgsign=false", *args,
+                    ],
+                    cwd=project, check=True, capture_output=True,
+                )
+
+            options = {"profile": "skylos-0.3", "grep_verify": False}
+            baseline = project / ".skylos" / "baseline.json"
+            saved = json.loads(skylos.analyze(project, write_baseline=baseline, **options))
+            self.assertEqual(saved["analysis_summary"]["baseline"]["status"], "written")
+            caller.write_text("print('done')\n", encoding="utf-8")
+
+            report = json.loads(skylos.analyze(
+                project, diff="HEAD", diff_mode="impact", strict=True,
+                baseline=True, output_format="json-ci", **options,
+            ))
+            self.assertEqual([row["name"] for row in report["unused_functions"]], ["legacy"])
+            self.assertEqual(report["unused_functions"][0]["change_status"], "introduced")
+            self.assertTrue(report["unused_functions"][0]["dead_code_evidence"])
+            self.assertEqual(report["gate"]["exit_code"], 1)
+            self.assertEqual(report["analysis_summary"]["baseline"]["matched_count"], 1)
+            self.assertNotIn("definitions", report)
+            self.assertNotIn("dead_code_evidence", report)
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                result = subprocess.run(
+                    [
+                        cli, project, "--profile", "skylos-0.3", "--no-grep-verify",
+                        "--include-generated", "--all-advice", "--confidence", "60",
+                        "--diff", "HEAD", "--diff-mode", "impact", "--strict",
+                        "--baseline", "--format", "json-ci",
+                    ],
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(report, json.loads(result.stdout))
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     @unittest.skipUnless(os.name == "posix", "requires POSIX symlink creation")
     def test_phase03_default_trace_rejects_symlink(self):
         with TemporaryDirectory() as directory:

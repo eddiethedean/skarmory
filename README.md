@@ -198,8 +198,9 @@ PYTHONPATH=python python -m unittest discover -s tests/python -v
 
 - [Phase 0.2](docs/phase-02.md) describes the Skylos profile and
   opt-in module-fact cache.
-- [Phase 0.3](docs/phase-03.md) plans expanded dead-code coverage, verification,
-  and workflows.
+- [Phase 0.3](docs/phase-03.md) tracks expanded dead-code coverage and
+  verification. The development profile includes
+  [Git diff, impact, baselines, and gates](docs/phase-03.md#dead-code-diff-baselines-and-gates).
 - [Contributing](CONTRIBUTING.md) covers development, testing, and publishing.
 - [Architecture](docs/architecture.md) describes the Rust engine and Python SDK.
 - [Roadmap](docs/roadmap.md) lists milestones and release gates.
