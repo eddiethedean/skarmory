@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
@@ -9,6 +10,17 @@ fn scan(project: &Path) -> Value {
 }
 
 fn scan_with_settings(project: &Path, settings: Option<&str>, cache: Option<&Path>) -> Value {
+    let report = scan_with_exit(project, settings, cache, 0);
+    assert_eq!(report["coverage"]["status"], "complete", "{report}");
+    report
+}
+
+fn scan_with_exit(
+    project: &Path,
+    settings: Option<&str>,
+    cache: Option<&Path>,
+    code: i32,
+) -> Value {
     fs::write(project.join(".skylos.toml"), "root = true\n").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
     command.env_remove("DJANGO_SETTINGS_MODULE");
@@ -34,14 +46,12 @@ fn scan_with_settings(project: &Path, settings: Option<&str>, cache: Option<&Pat
         .unwrap();
     assert_eq!(
         output.status.code(),
-        Some(0),
+        Some(code),
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["coverage"]["status"], "complete", "{report}");
-    report
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
@@ -174,7 +184,28 @@ parent.include_router(router, dependencies=[Depends(nested_guard)])
 app.include_router(parent, dependencies=[Depends(mount_guard)])
 empty = APIRouter()
 app.include_router(empty, dependencies=[Depends(empty_guard)])
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["routes.dormant_guard", "routes.parked", "web.empty_guard",],
+        "{report}"
+    );
+    for hits in [0, 2] {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(cached, report);
+    }
 
+    let mut web = fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("web.py"))
+        .unwrap();
+    web.write_all(
+        br#"
 def late_dependency():
     return 1
 
@@ -185,20 +216,25 @@ router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
 "#,
     )
     .unwrap();
-    let report = scan(root);
-    assert_eq!(
-        findings(&report, "unused_functions"),
-        [
-            "routes.dormant_guard",
-            "routes.parked",
-            "web.empty_guard",
-            "web.late",
-            "web.late_dependency"
-        ],
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration"
+                    && issue["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("framework versions")
+            }),
         "{report}"
     );
-    for hits in [0, 2] {
-        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    for hits in [1, 2] {
+        let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
         let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
         assert_eq!(stats["hits"], hits);
         assert_eq!(cached, report);
@@ -365,7 +401,7 @@ application = get_wsgi_application()
         .unwrap();
         fs::write(
             root.join(format!("{name}_urls.py")),
-            "from django.urls import path\ndef home(request):\n    return 1\nurlpatterns = [path('', home)]\n",
+            format!("# {name} URLconf\nfrom django.urls import path\ndef home(request):\n    return 1\nurlpatterns = [path('', home)]\n"),
         ).unwrap();
     }
     for (override_, unused, hits) in [

@@ -6857,6 +6857,7 @@ struct Reachability {
     active_objects: BTreeSet<Object>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     unordered_fastapi_mounts: BTreeSet<usize>,
+    version_sensitive_fastapi_mounts: BTreeSet<usize>,
     fastapi_limited: bool,
     evidence: BTreeSet<(SymbolId, &'static str, &'static str)>,
 }
@@ -8948,6 +8949,27 @@ print(Status.default)
                 entry.full_name == "web.final" && entry.kind == "fastapi_dependency"
             })
         );
+    }
+
+    #[test]
+    fn phase03_reports_version_sensitive_fastapi_dependency_selection() {
+        let file = module(
+            "web.py",
+            "web",
+            "from __future__ import annotations\nfrom typing import Annotated\nfrom fastapi import APIRouter, Depends, FastAPI\nrouter = APIRouter()\ndef initial():\n    return 1\nselected = initial\n@router.get('/')\ndef endpoint(value: Annotated[int, Depends(selected)]):\n    return value\nfirst_app = FastAPI()\nfirst_app.include_router(router)\ndef replacement():\n    return 2\nselected = replacement\nsecond_app = FastAPI()\nsecond_app.include_router(router)\n",
+        );
+        let result = analyze_phase03(&[file], &[]);
+        assert!(
+            result.issues.iter().any(|issue| {
+                issue.kind == "unresolved_registration"
+                    && issue.message.contains("framework versions")
+            }),
+            "{:?}",
+            result.issues
+        );
+        assert!(!result.evidence.iter().any(|entry| {
+            entry.full_name == "web.initial" && entry.kind == "fastapi_dependency"
+        }));
     }
 
     #[test]

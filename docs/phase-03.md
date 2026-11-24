@@ -173,12 +173,12 @@ these models. A selected Flask app can register route and request callbacks
 directly or mount a blueprint. Blueprint callbacks require the mount to be
 reached. FastAPI supports imperative endpoint registration and literal
 `Depends` or `Security` dependencies in defaults, `Annotated` parameters, and
-route and router registration options. A mount copies the routes available at
-its registration site, including already completed module imports. Unresolved
-ordering across scopes reports incomplete coverage. The analyzer resolves
-postponed parameter annotations at direct registration or when the route is
-copied into the serving app, and retains the constructor of a selected class
-dependency.
+route and router registration options. FastAPI versions before 0.137 copy routes
+at inclusion. Newer versions retain the router and can expose routes added
+later. The analyzer reports incomplete coverage when either model can select
+different routes or postponed dependencies, or when ordering across scopes
+cannot be determined. It retains constructors of resolved class dependencies.
+[FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
 
 Django URL discovery follows a recognized launcher and the scan process's
 `DJANGO_SETTINGS_MODULE`, or the first literal default set in the launcher's
