@@ -77,10 +77,24 @@ impl FactCache {
         source: &str,
         extract: impl FnOnce(&str) -> Result<T, E>,
     ) -> Result<T, E> {
+        self.get_or_extract_variant("", source, extract)
+    }
+
+    pub(crate) fn get_or_extract_variant<T: Serialize + DeserializeOwned, E>(
+        &self,
+        variant: &str,
+        source: &str,
+        extract: impl FnOnce(&str) -> Result<T, E>,
+    ) -> Result<T, E> {
         let mut hasher = Hasher::new();
         hasher.update(b"skarmory-source-facts-v1\0");
         hasher.update(self.namespace.as_bytes());
         hasher.update(b"\0");
+        if !variant.is_empty() {
+            hasher.update(b"\0");
+            hasher.update(variant.as_bytes());
+            hasher.update(b"\0");
+        }
         // Extraction consumes normalized UTF-8. Equivalent BOM and newline
         // representations have the same facts and normalized locations.
         hasher.update(source.as_bytes());

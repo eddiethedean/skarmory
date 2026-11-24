@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, FileType, Metadata};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,7 @@ pub(super) struct Project {
     files_by_path: BTreeMap<PathBuf, usize>,
     directories: BTreeMap<PathBuf, DirectoryEntries>,
     ambiguous: BTreeSet<usize>,
+    include_javascript: bool,
 }
 
 pub(super) struct SourceFile {
@@ -85,9 +86,10 @@ type DirectoryEntries = BTreeSet<(OsString, SeenEntry)>;
 enum SeenEntry {
     Directory,
     LinkedDirectory,
-    PythonFile,
-    LinkedPython,
-    OtherPython,
+    SourceFile,
+    LinkedSource,
+    OtherSource,
+    JavaScriptContext,
 }
 
 impl Stamp {
@@ -124,6 +126,16 @@ pub(super) fn discover_filtered(
     entry: FileEntry<'_>,
     selection: Option<&Selection>,
 ) -> Project {
+    discover_sources(path, roots, entry, selection, false)
+}
+
+pub(super) fn discover_sources(
+    path: &Path,
+    roots: &[PathBuf],
+    entry: FileEntry<'_>,
+    selection: Option<&Selection>,
+    include_javascript: bool,
+) -> Project {
     let mut project = Project {
         files: Vec::new(),
         roots: Vec::new(),
@@ -136,6 +148,7 @@ pub(super) fn discover_filtered(
         files_by_path: BTreeMap::new(),
         directories: BTreeMap::new(),
         ambiguous: BTreeSet::new(),
+        include_javascript,
     };
     let path = normalized(path);
     let (input, metadata) = match checked_path(&path) {
@@ -147,12 +160,19 @@ pub(super) fn discover_filtered(
             return project;
         }
     };
-    let input_file = metadata.is_file() && input.file_name().is_some_and(source::is_python);
+    let input_file = metadata.is_file()
+        && input
+            .file_name()
+            .is_some_and(|name| project.is_source(name));
     if !input_file && !metadata.is_dir() {
         project.issues.push(Issue::new(
             "discovery_error",
             &display(&path),
-            "expected a directory or a regular .py file",
+            if include_javascript {
+                "expected a directory or a regular Python, JavaScript, or TypeScript file"
+            } else {
+                "expected a directory or a regular .py file"
+            },
         ));
         return project;
     }
@@ -318,7 +338,7 @@ impl Project {
             };
             let path = entry.path();
             let kind = entry.file_type();
-            let seen = seen_entry(path, kind);
+            let seen = seen_entry(path, kind, self.include_javascript);
             if entry.depth() > 0
                 && let Some(seen) = seen
                 && let Some(parent) = path
@@ -331,7 +351,7 @@ impl Project {
                 && let Some(selection) = selection
                 && let label = self.label(path)
                 && let Some(reason) = selection.exclusion(&label)
-                && (kind.is_dir() || source::is_python(entry.file_name()))
+                && (kind.is_dir() || self.is_source(entry.file_name()))
                 && (!kind.is_dir() || !selection.may_include_children(&label))
             {
                 self.exclusions.push(Exclusion {
@@ -357,7 +377,7 @@ impl Project {
                         path: self.label(path),
                         reason: "symlink_directory",
                     });
-                } else if source::is_python(entry.file_name()) {
+                } else if self.is_source(entry.file_name()) {
                     let stamp = entry.metadata().ok().map(|metadata| Stamp::new(&metadata));
                     selected.insert(path.to_owned(), stamp);
                 }
@@ -378,7 +398,7 @@ impl Project {
                     continue;
                 }
                 self.directories.entry(path.to_owned()).or_default();
-            } else if source::is_python(entry.file_name()) {
+            } else if self.is_source(entry.file_name()) {
                 let stamp = match entry.metadata() {
                     Ok(metadata) => Some(Stamp::new(&metadata)),
                     Err(error) => {
@@ -401,6 +421,13 @@ impl Project {
             .collect::<Vec<_>>();
         for index in 0..self.files.len() {
             let file = &self.files[index];
+            if file
+                .path
+                .file_name()
+                .is_some_and(|name| !source::is_python(name))
+            {
+                continue;
+            }
             let mut namespace = false;
             let mut name = None;
             for root in &lookup_roots {
@@ -585,7 +612,9 @@ impl Project {
             }
         }
         for (directory, entries) in &self.directories {
-            if !read_directory_entries(directory).is_ok_and(|current| current == *entries) {
+            if !read_directory_entries(directory, self.include_javascript)
+                .is_ok_and(|current| current == *entries)
+            {
                 issues.push(Issue::new(
                     "source_changed",
                     &self.label(directory),
@@ -607,29 +636,109 @@ impl Project {
     pub(super) fn label(&self, path: &Path) -> String {
         display(path.strip_prefix(&self.base).unwrap_or(path))
     }
+    fn is_source(&self, name: &OsStr) -> bool {
+        is_source(name, self.include_javascript)
+    }
+
+    pub(super) fn javascript_context(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.discovered_paths(|name, _| is_javascript_context(name))
+    }
+
+    pub(super) fn javascript_sources(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.discovered_paths(|name, kind| {
+            javascript_extension(name).is_some()
+                && matches!(
+                    kind,
+                    SeenEntry::SourceFile | SeenEntry::LinkedSource | SeenEntry::OtherSource
+                )
+        })
+    }
+
+    fn discovered_paths(
+        &self,
+        matches: fn(&OsStr, SeenEntry) -> bool,
+    ) -> impl Iterator<Item = PathBuf> + '_ {
+        self.directories
+            .iter()
+            .flat_map(move |(directory, entries)| {
+                entries
+                    .iter()
+                    .filter(move |(name, kind)| matches(name, *kind))
+                    .map(|(name, _)| directory.join(name))
+            })
+    }
 }
 
-/// Record entries that can affect Python source selection or a directory exclusion.
-fn seen_entry(path: &Path, kind: FileType) -> Option<SeenEntry> {
-    let is_python = path.file_name().is_some_and(source::is_python);
+fn is_source(name: &OsStr, include_javascript: bool) -> bool {
+    source::is_python(name) || (include_javascript && javascript_extension(name).is_some())
+}
+
+pub(super) fn javascript_extension(name: &OsStr) -> Option<&'static str> {
+    match Path::new(name).extension()?.to_str()? {
+        "js" => Some("js"),
+        "jsx" => Some("jsx"),
+        "mjs" => Some("mjs"),
+        "cjs" => Some("cjs"),
+        "ts" => Some("ts"),
+        "tsx" => Some("tsx"),
+        "mts" => Some("mts"),
+        "cts" => Some("cts"),
+        _ => None,
+    }
+}
+
+fn is_javascript_context(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        matches!(name, "package.json" | "tsconfig.json" | "jsconfig.json")
+            || (name.starts_with("tsconfig.") && name.ends_with(".json"))
+            || Path::new(name).extension().is_some_and(|extension| {
+                matches!(
+                    extension.to_str(),
+                    Some("html" | "htm" | "vue" | "svelte" | "astro" | "mdx")
+                )
+            })
+            || [
+                "vite.config.",
+                "webpack.config.",
+                "rollup.config.",
+                "next.config.",
+                "astro.config.",
+                "svelte.config.",
+                "nuxt.config.",
+            ]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    })
+}
+
+/// Record entries that can affect source selection or JavaScript reachability.
+fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<SeenEntry> {
+    let name = path.file_name()?;
+    let is_source = is_source(name, include_javascript);
+    if !kind.is_dir() && include_javascript && is_javascript_context(name) {
+        return Some(SeenEntry::JavaScriptContext);
+    }
     if kind.is_symlink() {
         if fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
             Some(SeenEntry::LinkedDirectory)
         } else {
-            is_python.then_some(SeenEntry::LinkedPython)
+            is_source.then_some(SeenEntry::LinkedSource)
         }
     } else if kind.is_dir() {
         Some(SeenEntry::Directory)
-    } else if !is_python {
+    } else if !is_source {
         None
     } else if kind.is_file() {
-        Some(SeenEntry::PythonFile)
+        Some(SeenEntry::SourceFile)
     } else {
-        Some(SeenEntry::OtherPython)
+        Some(SeenEntry::OtherSource)
     }
 }
 
-fn read_directory_entries(directory: &Path) -> std::io::Result<DirectoryEntries> {
+fn read_directory_entries(
+    directory: &Path,
+    include_javascript: bool,
+) -> std::io::Result<DirectoryEntries> {
     // Directory timestamps can settle after enumeration on Windows. Verify the
     // source universe by comparing entry names and kinds without rereading sources.
     fn require_directory(directory: &Path) -> std::io::Result<()> {
@@ -648,7 +757,7 @@ fn read_directory_entries(directory: &Path) -> std::io::Result<DirectoryEntries>
     let mut entries = DirectoryEntries::new();
     for child in fs::read_dir(directory)? {
         let child = child?;
-        if let Some(kind) = seen_entry(&child.path(), child.file_type()?) {
+        if let Some(kind) = seen_entry(&child.path(), child.file_type()?, include_javascript) {
             entries.insert((child.file_name(), kind));
         }
     }
