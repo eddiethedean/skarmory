@@ -487,9 +487,14 @@ skarmory . --profile skylos-0.3 --baseline-ref origin/main --gate --require-comp
   Either incomplete snapshot prevents introduced annotations. Git paths
   must be portable, UTF-8 paths. Impact accepts internal relative symlinks
   when the platform can recreate them. External links, submodules, unavailable
-  blobs, more than 20,000 entries, a blob over 2 MiB, or a snapshot over
-  128 MiB make the base comparison incomplete. Very large changed-line
-  comparisons report a work limit.
+  blobs, more than 20,000 entries, or a snapshot over 128 MiB make the base
+  comparison incomplete. Regular blobs over 2 MiB with a recognized binary
+  asset extension (`.bin`, `.bmp`, `.gif`, `.ico`, `.jpeg`, `.jpg`, `.pdf`,
+  `.png`, `.tif`, `.tiff`, `.webp`, or `.zip`) are excluded from the base snapshot
+  and counted in `pr_impact.omitted.oversize_non_source`. The 2 MiB limit
+  continues to block other oversized inputs, including recognized configuration
+  files with asset extensions. Very large changed-line comparisons report a
+  work limit.
 - `--write-baseline PATH` records Python dead-code findings from a complete,
   unfiltered scan using Skarmory baseline schema 1. `--baseline` reads
   `.skylos/baseline.json`. Supply a

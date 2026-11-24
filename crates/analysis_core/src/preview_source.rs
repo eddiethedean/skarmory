@@ -721,7 +721,7 @@ pub(super) fn javascript_extension(name: &OsStr) -> Option<&'static str> {
     }
 }
 
-fn is_javascript_context(name: &OsStr) -> bool {
+pub(super) fn is_javascript_context(name: &OsStr) -> bool {
     name.to_str().is_some_and(|name| {
         matches!(name, "package.json" | "tsconfig.json" | "jsconfig.json")
             || (name.starts_with("tsconfig.") && name.ends_with(".json"))

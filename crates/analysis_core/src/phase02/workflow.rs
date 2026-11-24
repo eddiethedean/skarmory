@@ -295,6 +295,8 @@ pub(super) struct Impact {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
     base_commit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    omitted: Option<BTreeMap<&'static str, usize>>,
     base: SnapshotCoverage,
     head: SnapshotCoverage,
     introduced_count: usize,
@@ -454,8 +456,9 @@ fn scan_impact(
     let date = OffsetDateTime::now_utc().date();
     let explicit = config::explicit_policy(&options)?;
 
+    let mut omitted = 0;
     let compare = (|| {
-        repository.materialize(base, &root)?;
+        omitted = repository.materialize(base, &root)?;
         preview_source::reject_symlink_components(&root, &base_path).map_err(ConfigError::new)?;
         fs::create_dir_all(&base_path).map_err(ConfigError::new)?;
         let policy = config::Policy {
@@ -486,6 +489,7 @@ fn scan_impact(
         status: "incomplete",
         reason: None,
         base_commit: base.commit.clone(),
+        omitted: (omitted > 0).then(|| BTreeMap::from([("oversize_non_source", omitted)])),
         base: match &compare {
             Ok(base_report) => SnapshotCoverage::from_report(base_report),
             Err(error) => SnapshotCoverage::unavailable(ConfigError::new(error)),

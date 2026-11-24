@@ -585,6 +585,97 @@ fn snapshots_use_raw_blobs_without_invoking_clean_or_smudge_filters() {
 }
 
 #[test]
+fn impact_omits_oversized_assets_outside_analysis_scope() {
+    let root = project(&[
+        (
+            "app.py",
+            "def legacy():\n    return 7\n\ndef already_dead():\n    return 8\n",
+        ),
+        ("caller.py", "from app import legacy\nlegacy()\n"),
+    ]);
+    let assets = root.path().join("docs/media");
+    fs::create_dir_all(&assets).unwrap();
+    let oversized = vec![0; 2 * 1024 * 1024 + 1];
+    fs::write(assets.join("logo.PNG"), &oversized).unwrap();
+    fs::write(assets.join("fixture.bin"), &oversized).unwrap();
+    commit(root.path());
+    fs::write(root.path().join("caller.py"), "print('done')\n").unwrap();
+
+    let report = scan(
+        root.path(),
+        &["--diff", "HEAD", "--diff-mode", "impact", "--strict"],
+        1,
+    );
+    assert_eq!(names(&report, "unused_functions"), ["legacy"]);
+    assert_eq!(report["unused_functions"][0]["change_status"], "introduced");
+    let receipt = &report["analysis_summary"]["pr_impact"];
+    assert_eq!(receipt["status"], "complete");
+    assert_eq!(receipt["base"]["status"], "complete");
+    assert_eq!(receipt["head"]["status"], "complete");
+    assert_eq!(
+        receipt["omitted"],
+        serde_json::json!({"oversize_non_source": 2})
+    );
+}
+
+#[test]
+fn impact_preserves_the_blob_limit_for_analysis_inputs() {
+    let oversized = vec![b' '; 2 * 1024 * 1024 + 1];
+    for input in ["app.py", "routes.yaml", "vite.config.png", "Dockerfile.png"] {
+        let root = project(&[("entry.py", "print('entry')\n")]);
+        let input = root.path().join(input);
+        fs::write(&input, &oversized).unwrap();
+        commit(root.path());
+        fs::remove_file(input).unwrap();
+
+        let report = scan(
+            root.path(),
+            &["--diff", "HEAD", "--diff-mode", "impact", "--strict"],
+            2,
+        );
+        let receipt = &report["analysis_summary"]["pr_impact"];
+        assert_eq!(receipt["reason"], "base_analysis_incomplete");
+        assert_eq!(receipt["base"]["status"], "incomplete");
+        assert_eq!(receipt["head"]["status"], "complete");
+        assert!(receipt.get("omitted").is_none());
+    }
+}
+
+#[test]
+fn an_omitted_asset_required_by_dependency_analysis_leaves_impact_incomplete() {
+    let root = project(&[
+        ("app.py", "def old():\n    return 1\n"),
+        ("caller.py", "from app import old\nold()\n"),
+        ("requirements.txt", "-r dependencies.bin\n"),
+    ]);
+    let dependency_input = root.path().join("dependencies.bin");
+    fs::write(&dependency_input, vec![b' '; 2 * 1024 * 1024 + 1]).unwrap();
+    commit(root.path());
+    fs::remove_file(dependency_input).unwrap();
+    fs::write(root.path().join("requirements.txt"), "requests\n").unwrap();
+    fs::write(root.path().join("caller.py"), "print('done')\n").unwrap();
+
+    let report = scan(
+        root.path(),
+        &[
+            "--diff",
+            "HEAD",
+            "--diff-mode",
+            "impact",
+            "--quality",
+            "--strict",
+        ],
+        2,
+    );
+    let receipt = &report["analysis_summary"]["pr_impact"];
+    assert_eq!(receipt["reason"], "base_analysis_incomplete");
+    assert_eq!(receipt["base"]["status"], "incomplete");
+    assert_eq!(receipt["head"]["status"], "complete");
+    assert_eq!(receipt["introduced_count"], 0);
+    assert!(items(&report, "unused_functions").is_empty());
+}
+
+#[test]
 fn impact_requires_the_full_head_comparison_mode() {
     let root = project(&[("app.py", "print(1)\n")]);
     assert!(scan(root.path(), &["--diff-mode", "impact"], 2).is_null());

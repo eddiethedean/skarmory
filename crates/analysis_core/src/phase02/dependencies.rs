@@ -2,7 +2,7 @@
 
 mod manifests;
 mod usage;
-pub(super) use usage::Evidence;
+pub(super) use usage::{Evidence, is_command_file};
 
 use std::collections::BTreeMap;
 use std::fs;

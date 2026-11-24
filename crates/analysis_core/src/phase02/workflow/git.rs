@@ -5,6 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use super::ConfigError;
+use crate::phase02::dependencies;
+use crate::preview_source;
 
 const MAX_TREE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FILES: usize = 20_000;
@@ -265,26 +267,30 @@ impl Repository {
         )
     }
 
-    pub(super) fn materialize(&self, base: &Base, root: &Path) -> Result<(), ConfigError> {
+    pub(super) fn materialize(&self, base: &Base, root: &Path) -> Result<usize, ConfigError> {
+        let mut omitted = 0;
+        let entries = base.entries.iter().filter_map(|(name, entry)| {
+            if entry.kind == Kind::File && entry.size > MAX_BLOB_BYTES && is_opaque_asset(name) {
+                omitted += 1;
+                None
+            } else {
+                Some((name.as_str(), entry))
+            }
+        });
         let mut links = Vec::new();
-        self.blobs(
-            base.entries
-                .iter()
-                .map(|(name, entry)| (name.as_str(), entry)),
-            |name, entry, bytes| {
-                let path = root.join(name);
-                fs::create_dir_all(path.parent().expect("Git entry has parent"))
+        self.blobs(entries, |name, entry, bytes| {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().expect("Git entry has parent"))
+                .map_err(ConfigError::new)?;
+            if entry.kind == Kind::Link {
+                links.push((name.to_owned(), bytes));
+            } else {
+                File::create_new(path)
+                    .and_then(|mut file| file.write_all(&bytes))
                     .map_err(ConfigError::new)?;
-                if entry.kind == Kind::Link {
-                    links.push((name.to_owned(), bytes));
-                } else {
-                    File::create_new(path)
-                        .and_then(|mut file| file.write_all(&bytes))
-                        .map_err(ConfigError::new)?;
-                }
-                Ok(())
-            },
-        )?;
+            }
+            Ok(())
+        })?;
         // Resolve relative targets lexically inside the private tree. Reject
         // traversing a symlink before '..', which would change that meaning.
         let linked: BTreeSet<_> = links.iter().map(|(name, _)| Path::new(name)).collect();
@@ -293,8 +299,25 @@ impl Repository {
             let target = link_target(Path::new(name), target, &linked)?;
             create_link(&root.join(target), &root.join(name))?;
         }
-        Ok(())
+        Ok(omitted)
     }
+}
+
+fn is_opaque_asset(name: &str) -> bool {
+    let path = Path::new(name);
+    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+        return false;
+    };
+    let filename = path.file_name().expect("Git entry has a filename");
+    // Unknown extensions can hold liveness inputs. Even asset extensions
+    // can occur on explicitly recognized project configuration files.
+    [
+        "bin", "bmp", "gif", "ico", "jpeg", "jpg", "pdf", "png", "tif", "tiff", "webp", "zip",
+    ]
+    .iter()
+    .any(|asset| extension.eq_ignore_ascii_case(asset))
+        && !preview_source::is_javascript_context(filename)
+        && !dependencies::is_command_file(path)
 }
 
 pub(super) fn safe_path(path: &str) -> bool {
