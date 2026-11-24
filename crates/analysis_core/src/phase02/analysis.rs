@@ -424,6 +424,7 @@ pub(super) fn analyze_with_verification(
         issues: Vec::new(),
         scope_issues: Vec::new(),
         probing_identity: false,
+        check_dormant_declarations: false,
         nested_lazy_imports: Vec::new(),
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
@@ -559,6 +560,7 @@ struct Graph<'a> {
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     probing_identity: bool,
+    check_dormant_declarations: bool,
     nested_lazy_imports: Vec<(ScopeId, &'a [Statement])>,
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
@@ -2454,6 +2456,39 @@ impl<'a> Graph<'a> {
         self.expression_value(scope, expression, before, depth, ValueEvaluation::Identity)
     }
 
+    fn identity_with_dormant_declarations(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Value {
+        let previous = std::mem::replace(&mut self.check_dormant_declarations, true);
+        let value = self.identity(scope, expression, before, depth);
+        self.check_dormant_declarations = previous;
+        value
+    }
+
+    fn call_target_identity(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Value {
+        let value = self.identity(scope, expression, before, depth);
+        if self.phase03
+            && !self.check_dormant_declarations
+            && matches!(&value, Value::Provider(name) if name == "atexit.register")
+        {
+            // Dormant assignments still determine Python's lexical scopes.
+            // Recheck the provider through any local or module aliases.
+            self.identity_with_dormant_declarations(scope, expression, before, depth)
+        } else {
+            value
+        }
+    }
+
     fn expression_value(
         &mut self,
         scope: ScopeId,
@@ -2500,8 +2535,23 @@ impl<'a> Graph<'a> {
         match &expression.kind {
             ExpressionKind::Name(name) => {
                 let lazy = matches!(evaluation, ValueEvaluation::Lazy { .. });
-                let binding = self.lexical_binding(scope, name, before, lazy);
-                if lazy && matches!(binding, LexicalBinding::UnboundLocal) {
+                let binding = self.lexical_binding(
+                    scope,
+                    name,
+                    before,
+                    lazy || self.check_dormant_declarations,
+                );
+                if (lazy || self.check_dormant_declarations)
+                    && matches!(binding, LexicalBinding::UnboundLocal)
+                {
+                    if self.check_dormant_declarations {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unbound_local",
+                            format!("{name} has no active local binding"),
+                        );
+                    }
                     return Value::Unknown;
                 }
                 if let LexicalBinding::Found(id) = binding {
@@ -2596,7 +2646,7 @@ impl<'a> Graph<'a> {
                 function,
                 arguments,
                 keywords,
-            } => match recurse(self, function) {
+            } => match self.call_target_identity(scope, function, before, depth + 1) {
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
                 }
@@ -2631,6 +2681,12 @@ impl<'a> Graph<'a> {
                     Value::Provider("builtins.open.result".into())
                 }
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
+                Value::Provider(name) if self.phase03 && name == "atexit.register" => {
+                    // register returns the same callable it receives.
+                    arguments.first().map_or(Value::Unknown, |argument| {
+                        self.identity_with_dormant_declarations(scope, argument, before, depth + 1)
+                    })
+                }
                 Value::Provider(name)
                     if name == "builtins.object" && arguments.is_empty() && keywords.is_empty() =>
                 {
@@ -3686,7 +3742,7 @@ impl<'a> Graph<'a> {
                 {
                     self.walk(scope, expr, before);
                 }
-                let callee = self.identity(scope, function, before, 0);
+                let callee = self.call_target_identity(scope, function, before, 0);
                 match callee {
                     Value::Callable(invocation) => {
                         self.call_invocation(
@@ -3779,6 +3835,15 @@ impl<'a> Graph<'a> {
                             "scheduled_coroutine",
                             expr.at,
                         );
+                    }
+                    Value::Provider(name) if self.phase03 && name == "atexit.register" => {
+                        self.register_atexit(CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        });
                     }
                     Value::Submit => {
                         self.activate_submission(scope, before, expr.at, arguments, keywords);
@@ -4404,6 +4469,57 @@ impl<'a> Graph<'a> {
         Some(values)
     }
 
+    fn register_atexit(&mut self, call: CallArguments<'_>) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        if let Some((callback, forwarded)) = positional.split_first() {
+            let callback = self.identity_with_dormant_declarations(scope, callback, before, 0);
+            if self.retain_atexit_callback(scope, callback, at) {
+                for argument in forwarded
+                    .iter()
+                    .chain(keywords.iter().map(|(_, value)| value))
+                {
+                    let value = self.identity_with_dormant_declarations(scope, argument, before, 0);
+                    self.expose(scope, value, "atexit_argument", argument.at);
+                }
+                return;
+            }
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_callback",
+            "atexit.register requires a bounded synchronous callback as its first positional argument",
+        );
+    }
+
+    fn retain_atexit_callback(&mut self, scope: ScopeId, value: Value, at: Location) -> bool {
+        match value {
+            Value::Callable(invocation)
+                if !invocation.verified
+                    && !matches!(invocation.receiver, Receiver::Explicit(_))
+                    && matches!(self.symbols[invocation.target].binding,
+                        Binding::Definition(definition, _) if definition.kind == DefinitionKind::Function) =>
+            {
+                self.invoke(scope, invocation, "atexit_registration", "possible", at);
+                true
+            }
+            Value::Alternatives(values) => {
+                let mut resolved = true;
+                for value in values {
+                    resolved &= self.retain_atexit_callback(scope, value, at);
+                }
+                resolved
+            }
+            _ => false,
+        }
+    }
+
     fn activate_submission(
         &mut self,
         scope: ScopeId,
@@ -4850,7 +4966,7 @@ impl<'a> Graph<'a> {
         for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
             self.walk(scope, value, before);
         }
-        match self.identity(scope, function, before, 0) {
+        match self.call_target_identity(scope, function, before, 0) {
             Value::Method(object, kind, name) if is_route(kind, &name, self.phase03) => {
                 if self.phase03 && matches!(kind, ObjectKind::App | ObjectKind::Router) {
                     self.fastapi_route(
@@ -4903,6 +5019,26 @@ impl<'a> Graph<'a> {
                     _ => unreachable!(),
                 };
                 self.edge(scope, target, kind, "certain");
+            }
+            Value::Provider(name) if self.phase03 && name == "atexit.register" => {
+                if !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && self.scopes[scope]
+                        .owner
+                        .is_none_or(|owner| !self.is_class(owner))
+                    && self.retain_atexit_callback(
+                        scope,
+                        Value::Callable(Invocation::ordinary(target)),
+                        decorator.at,
+                    )
+                {
+                    return true;
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_decorator",
+                    "atexit.register decorator requires a bounded synchronous function",
+                );
             }
             Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
             Value::Provider(name)
@@ -6402,7 +6538,9 @@ impl<'a> Graph<'a> {
                 reach.django_signal_modules.len(),
             );
             while let Some(edge) = pending.pop_front() {
-                if !verification && is_verification_edge(edge.kind) {
+                if !verification && is_verification_edge(edge.kind)
+                    || !possible && is_atexit_edge(edge.kind)
+                {
                     continue;
                 }
                 let certainty = if possible { "possible" } else { edge.certainty };
@@ -6497,6 +6635,30 @@ impl<'a> Graph<'a> {
         false
     }
 
+    fn traverse_with_atexit(
+        &mut self,
+        reach: &mut Reachability,
+        pending: VecDeque<Edge>,
+        class_bodies: &BTreeSet<ScopeId>,
+    ) -> bool {
+        if !self.traverse(reach, pending, class_bodies, false, false) {
+            return false;
+        }
+        if !self.phase03 {
+            return true;
+        }
+        // Keep established routes into a callback's body. Shutdown-only
+        // paths and their descendants contribute possible evidence.
+        let pending: VecDeque<_> = reach
+            .scopes
+            .iter()
+            .flat_map(|&scope| &self.scopes[scope].edges)
+            .filter(|edge| is_atexit_edge(edge.kind))
+            .copied()
+            .collect();
+        pending.is_empty() || self.traverse(reach, pending, class_bodies, false, true)
+    }
+
     fn verification_edges(
         &self,
         reach: &Reachability,
@@ -6586,17 +6748,11 @@ impl<'a> Graph<'a> {
                 .copied()
                 .filter(|edge| !is_runtime_execution_edge(edge.kind))
                 .collect();
-            if self.traverse(
-                &mut static_only,
-                static_pending,
-                &class_bodies,
-                false,
-                false,
-            ) {
+            if self.traverse_with_atexit(&mut static_only, static_pending, &class_bodies) {
                 static_reach = Some(static_only);
             }
         }
-        let baseline_converged = self.traverse(&mut reach, pending, &class_bodies, false, false);
+        let baseline_converged = self.traverse_with_atexit(&mut reach, pending, &class_bodies);
         if !possible_runtime_roots.is_empty()
             && !self.traverse(
                 &mut reach,
@@ -7224,6 +7380,10 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => method == "add_url_rule",
         ObjectKind::CeleryApp => false,
     }
+}
+
+fn is_atexit_edge(kind: &str) -> bool {
+    matches!(kind, "atexit_registration" | "atexit_argument")
 }
 
 fn is_known_call(name: &str, phase03: bool) -> bool {
