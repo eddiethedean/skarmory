@@ -657,7 +657,7 @@ fn dockerfile(name: &str) -> bool {
             .any(|suffix| name.ends_with(suffix))
 }
 
-fn is_command_file(path: &Path) -> bool {
+pub(in crate::phase02) fn is_command_file(path: &Path) -> bool {
     let name = file_name(path);
     dockerfile(name)
         || name == "Makefile"

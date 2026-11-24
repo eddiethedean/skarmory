@@ -22,6 +22,7 @@ rayon.workspace = true
 rusqlite = { version = "=0.43.0", features = ["bundled"], default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+similar = "=3.2.1"
 shlex = "=2.0.1"
 skarmory_python.workspace = true
 stacker = "=0.1.25"

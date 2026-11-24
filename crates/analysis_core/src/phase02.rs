@@ -22,6 +22,7 @@ mod javascript;
 mod package_entrypoints;
 mod runtime_evidence;
 pub use runtime_evidence::Input as EvidenceInput;
+pub mod workflow;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Profile {
@@ -123,6 +124,7 @@ struct Finding {
     category: Category,
     name: String,
     full_name: String,
+    identity_name: String,
     file: String,
     line: usize,
     column: usize,
@@ -142,6 +144,7 @@ struct Evidence {
 
 #[derive(Default)]
 struct Analysis {
+    definitions: BTreeMap<String, DefinitionContext>,
     findings: Vec<Finding>,
     evidence: Vec<Evidence>,
     issues: Vec<Issue>,
@@ -150,6 +153,16 @@ struct Analysis {
     rescued_count: usize,
     runtime_evidence: Vec<runtime_evidence::Evidence>,
     runtime_evidence_issues: Vec<Issue>,
+}
+
+#[derive(Debug, Serialize)]
+struct DefinitionContext {
+    name: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    file: String,
+    line: usize,
+    column: usize,
 }
 
 struct AnalyzedFile {
@@ -186,6 +199,14 @@ struct Diagnostic {
     rule_id: &'static str,
     reason: String,
     dead_code_disposition: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dead_code_classification: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    change_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report_scope: Option<&'static str>,
+    #[serde(skip)]
+    identity_name: String,
     dead_code_evidence: Vec<DecisionEvidence>,
     #[serde(skip)]
     sarif_column: Option<usize>,
@@ -235,6 +256,10 @@ impl Diagnostic {
             rule_id: finding.rule_id,
             reason,
             dead_code_disposition: disposition,
+            dead_code_classification: None,
+            change_status: None,
+            report_scope: None,
+            identity_name: finding.identity_name,
             dead_code_evidence: vec![DecisionEvidence {
                 kind: finding.reason,
                 role: "supports_dead",
@@ -273,6 +298,19 @@ impl Categories {
         }
     }
 
+    fn retain(&mut self, mut keep: impl FnMut(&mut Diagnostic) -> bool) {
+        for group in [
+            &mut self.unused_functions,
+            &mut self.unused_classes,
+            &mut self.unused_imports,
+            &mut self.unused_variables,
+            &mut self.unused_parameters,
+            &mut self.unused_files,
+        ] {
+            group.retain_mut(&mut keep);
+        }
+    }
+
     fn iter(&self) -> impl Iterator<Item = &Diagnostic> {
         [
             &self.unused_functions,
@@ -301,6 +339,12 @@ struct Summary {
     dead_code_liveness: Option<LivenessSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     unused_dependency_analysis: Option<dependencies::Receipt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dead_code_evidence: Option<workflow::EvidenceSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pr_impact: Option<workflow::Impact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline: Option<workflow::BaselineSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -417,7 +461,10 @@ pub struct Report {
     coverage: Coverage,
     analysis_errors: Vec<Value>,
     analysis_summary: Summary,
-    dead_code_evidence: RetainedEvidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dead_code_evidence: Option<RetainedEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    definitions: Option<BTreeMap<String, DefinitionContext>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     grep_verification_evidence: Vec<VerificationEvidence>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -433,6 +480,12 @@ pub struct Report {
     whitelisted: Vec<Diagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache: Option<CacheStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    analysis_coverage: Option<workflow::Assessment>,
+    #[serde(skip)]
+    gate_policy: config::Gate,
     #[serde(flatten)]
     categories: Categories,
 }
@@ -452,6 +505,15 @@ impl Report {
 
     pub fn to_json(&self) -> serde_json::Result<String> {
         serde_json::to_string(self)
+    }
+
+    pub fn to_json_ci(&mut self) -> serde_json::Result<String> {
+        let evidence = self.dead_code_evidence.take();
+        let definitions = self.definitions.take();
+        let result = self.to_json();
+        self.dead_code_evidence = evidence;
+        self.definitions = definitions;
+        result
     }
 
     pub fn to_json_strict(&self) -> serde_json::Result<String> {
@@ -515,6 +577,15 @@ impl Report {
             if let Some(column) = item.sarif_column {
                 region["startColumn"] = json!(column);
             }
+            let mut properties = json!({"confidence": item.confidence, "disposition": item.dead_code_disposition});
+            if let Some(classification) = item.dead_code_classification {
+                properties["dead_code_classification"] = json!(classification);
+                properties["dead_code_evidence"] = json!(item.dead_code_evidence);
+            }
+            if let Some(status) = item.change_status {
+                properties["change_status"] = json!(status);
+                properties["report_scope"] = json!(item.report_scope);
+            }
             json!({
                 "ruleId": item.rule_id,
                 "level": "note",
@@ -523,7 +594,7 @@ impl Report {
                     "artifactLocation": {"uri": artifact_uri(&item.file)},
                     "region": region,
                 }}],
-                "properties": {"confidence": item.confidence, "disposition": item.dead_code_disposition},
+                "properties": properties,
             })
         }).chain(self.quality.iter().flatten().map(|finding| {
             let mut result = json!({
@@ -559,6 +630,16 @@ impl Report {
                 })
             })
             .collect();
+        let mut properties = json!({"coverage": self.coverage});
+        if let Some(coverage) = &self.analysis_coverage {
+            properties["analysis_coverage"] = json!(coverage);
+        }
+        if let Some(impact) = &self.analysis_summary.pr_impact {
+            properties["pr_impact"] = json!(impact);
+        }
+        if let Some(gate) = &self.gate {
+            properties["gate"] = gate.clone();
+        }
         serde_json::to_string(&json!({
             "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
             "version": "2.1.0",
@@ -575,7 +656,7 @@ impl Report {
                     "toolExecutionNotifications": notifications,
                 }],
                 "results": results,
-                "properties": {"coverage": self.coverage},
+                "properties": properties,
             }],
         }))
     }
@@ -624,7 +705,7 @@ fn validate_category(category: Option<&str>) -> Result<(), ConfigError> {
 }
 
 struct Snapshot {
-    facts: FileFacts,
+    facts: Result<FileFacts, Issue>,
     source: String,
     hide_findings: bool,
 }
@@ -635,8 +716,17 @@ enum FileFacts {
 }
 
 pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
+    scan_with_context(path, options, None, None)
+}
+
+fn scan_with_context(
+    path: &Path,
+    options: &Options,
+    policy: Option<&config::Policy>,
+    mut diff_sources: Option<&mut BTreeMap<String, String>>,
+) -> Result<Report, ConfigError> {
     validate_category(options.category.as_deref())?;
-    let config = config::load(path, options)?;
+    let config = config::load_for_scan(path, options, policy)?;
     let phase03 = options.profile == Profile::SkylosPhase03;
     let enable_quality =
         options.enable_quality.unwrap_or(config.quality_enabled) || options.quality_only;
@@ -719,7 +809,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             }
             .map(FileFacts::Python)
         }
-        .map_err(|error| Issue::new(error.kind, &file.label, error.message).at(error.location))?;
+        .map_err(|error| Issue::new(error.kind, &file.label, error.message).at(error.location));
         Ok(Snapshot {
             facts,
             source: source.to_owned(),
@@ -740,19 +830,30 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                     continue;
                 };
                 stamps.push(work.stamp);
-                match work.result.and_then(|snapshot| snapshot) {
-                    Ok(Snapshot {
-                        facts,
-                        source,
-                        hide_findings,
-                    }) => {
+                let snapshot = work.result.and_then(|snapshot| snapshot).and_then(
+                    |Snapshot {
+                         facts,
+                         source,
+                         hide_findings,
+                     }| match facts {
+                        Ok(facts) => Ok((facts, source, hide_findings)),
+                        Err(issue) => {
+                            if let Some(diff_sources) = diff_sources.as_deref_mut() {
+                                diff_sources.insert(file.label.clone(), source);
+                            }
+                            Err(issue)
+                        }
+                    },
+                );
+                match snapshot {
+                    Ok((facts, source, hide_findings)) => {
                         if hide_findings {
                             generated_sources.insert(file.label.clone());
                         }
                         let directory = file.directory();
                         let config_index = *directory_configs
                             .entry(directory.to_owned())
-                            .or_insert_with(|| match config.for_path(directory, options) {
+                            .or_insert_with(|| match config.for_path(directory, options, policy) {
                                 Ok(local) if config.same_layers(&local) => None,
                                 Ok(local) => {
                                     let index = local_configs.len();
@@ -900,6 +1001,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             &config.selection,
             dependency_sources_complete,
             config.ignores_rule(dependencies::RULE),
+            diff_sources.as_deref_mut(),
         )
     });
     let snapshot_issues = project.verify(stamps);
@@ -910,10 +1012,10 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         dependency_result = Some(dependencies::Result::not_run("incomplete_python_sources"));
     }
     issues.extend(snapshot_issues);
-    if !config.unchanged(path, options)
+    if !config.unchanged(path, options, policy)
         || directory_configs.iter().any(|(directory, index)| {
             let effective = index.map_or(&config, |index| &local_configs[index]);
-            !effective.unchanged(directory, options)
+            !effective.unchanged(directory, options, policy)
         })
     {
         issues.push(Issue::new(
@@ -1043,6 +1145,23 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         }
     }
 
+    if let Some(diff_sources) = diff_sources {
+        diff_sources.extend(sources);
+    }
+    let dead_code_evidence = phase03.then(|| {
+        workflow::EvidenceSummary::new(
+            analysis.definitions.len(),
+            analysis.rescued_count,
+            &categories,
+            &analysis.uncertainties,
+        )
+    });
+    if phase03 {
+        categories.retain(|item| {
+            item.dead_code_classification = Some("likely_dead");
+            true
+        });
+    }
     let analysis_errors = issues
         .iter()
         .map(|issue| {
@@ -1079,6 +1198,8 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             .into_iter()
             .collect(),
     });
+    let retained_evidence =
+        RetainedEvidence::for_profile(options.profile, analysis.evidence, &analysis.verification);
     let (quality, unused_dependency_analysis, dependency_usage_evidence) =
         if let Some(result) = dependency_result {
             (Some(result.findings), Some(result.receipt), result.evidence)
@@ -1112,6 +1233,9 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             }),
             dead_code_liveness,
             unused_dependency_analysis,
+            dead_code_evidence,
+            pr_impact: None,
+            baseline: None,
         },
         coverage: Coverage {
             status,
@@ -1128,11 +1252,8 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         confidence_threshold: config.confidence,
         all_advice: options.all_advice,
         analysis_errors,
-        dead_code_evidence: RetainedEvidence::for_profile(
-            options.profile,
-            analysis.evidence,
-            &analysis.verification,
-        ),
+        dead_code_evidence: Some(retained_evidence),
+        definitions: phase03.then_some(analysis.definitions),
         grep_verification_evidence: analysis.verification,
         runtime_evidence: analysis.runtime_evidence,
         runtime_evidence_issues: analysis.runtime_evidence_issues,
@@ -1143,5 +1264,8 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         whitelisted,
         cache: cache.as_ref().map(FactCache::stats),
         categories,
+        gate: None,
+        analysis_coverage: None,
+        gate_policy: config.gate,
     })
 }

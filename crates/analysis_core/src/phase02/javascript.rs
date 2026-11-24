@@ -402,6 +402,7 @@ pub(super) fn analyze(
             let has_importers = imported.contains(file.as_str());
             analysis.findings.push(Finding {
                 category: Category::File,
+                identity_name: String::new(),
                 name: file.clone(),
                 full_name: file.clone(),
                 file: file.clone(),

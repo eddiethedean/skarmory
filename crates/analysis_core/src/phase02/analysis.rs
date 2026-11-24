@@ -11,7 +11,7 @@ use skarmory_python::phase02::{
 };
 
 use super::config::Entrypoint;
-use super::{Analysis, AnalyzedFile, Category, Evidence, Finding};
+use super::{Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding};
 use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
@@ -6983,9 +6983,32 @@ impl<'a> Graph<'a> {
                 certainty,
             });
         }
+        let mut definitions = BTreeMap::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
             let scope = &self.scopes[symbol.scope];
             let name = &symbol.name.text;
+            if self.phase03 {
+                let kind = match symbol.binding {
+                    Binding::Definition(def, _) if def.kind == DefinitionKind::Class => "class",
+                    Binding::Definition(..) => "function",
+                    Binding::Import(_) => "import",
+                    Binding::Variable(..) => "variable",
+                    Binding::Parameter => "parameter",
+                };
+                let file = &self.files[scope.file].path;
+                let Location { line, column } = symbol.name.at;
+                let qualified = self.full_name(id);
+                definitions.insert(
+                    format!("{file}:{line}:{column}:{qualified}"),
+                    DefinitionContext {
+                        name: qualified,
+                        kind,
+                        file: file.clone(),
+                        line,
+                        column,
+                    },
+                );
+            }
             if name == "_" || (name.starts_with("__") && name.ends_with("__")) {
                 continue;
             }
@@ -7074,10 +7097,16 @@ impl<'a> Graph<'a> {
             } else {
                 (name.clone(), self.full_name(id))
             };
+            let identity_name = if matches!(symbol.binding, Binding::Import(_)) {
+                format!("{} -> {full_name}", self.full_name(id))
+            } else {
+                full_name.clone()
+            };
             findings.push(Finding {
                 category,
                 name,
                 full_name,
+                identity_name,
                 file: self.files[scope.file].path.clone(),
                 line: symbol.name.at.line,
                 column: symbol.name.at.column,
@@ -7093,6 +7122,7 @@ impl<'a> Graph<'a> {
             ) {
                 findings.push(Finding {
                     category: Category::File,
+                    identity_name: String::new(),
                     name: file.path.clone(),
                     full_name: file.path.clone(),
                     file: file.path.clone(),
@@ -7115,6 +7145,7 @@ impl<'a> Graph<'a> {
         self.uncertainties.dedup();
         Analysis {
             findings,
+            definitions,
             evidence: retained,
             issues: self.issues,
             uncertainties: self.uncertainties,

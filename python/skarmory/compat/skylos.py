@@ -26,6 +26,18 @@ def analyze(
     enable_dependency_hallucinations: bool = False,
     workers: int = 1,
     cache_dir: SourcePath | None = None,
+    diff: str | None = None,
+    diff_mode: Literal["lines", "files", "impact"] = "lines",
+    baseline: SourcePath | Literal[True] | None = None,
+    baseline_ref: str | None = None,
+    write_baseline: SourcePath | None = None,
+    select: Sequence[str] | None = None,
+    severity: Literal["low", "medium", "high", "critical"] | None = None,
+    gate: bool = False,
+    strict: bool = False,
+    require_complete: bool = False,
+    force: bool = False,
+    output_format: Literal["json", "json-ci"] = "json",
 ) -> str:
     """Return the declared Skylos-compatible result as a JSON string.
 
@@ -42,6 +54,9 @@ def analyze(
     to also check unused JavaScript and TypeScript files in a bounded package
     graph rooted at the package.json main entry.
     Pass `enable_quality=True` in Phase 0.3 to check unused Python dependencies.
+    Phase 0.3 also supports Git comparisons, baselines, and gates. The JSON
+    gate record includes its exit code and coverage. Use `output_format="json-ci"`
+    to omit the whole-symbol evidence ledger while retaining per-finding evidence.
     """
     if profile not in ("skylos", "skylos-0.3"):
         raise ValueError("profile must be skylos or skylos-0.3")
@@ -58,6 +73,23 @@ def analyze(
         raise ValueError("The Skylos profile requires disabled dependency analysis")
     if not phase03 and (trace_file is not None or coverage_file is not None):
         raise TypeError("runtime evidence options require profile='skylos-0.3'")
+    if output_format not in ("json", "json-ci"):
+        raise ValueError("output_format must be json or json-ci")
+    if not phase03 and (
+        diff is not None
+        or diff_mode != "lines"
+        or baseline is not None
+        or baseline_ref is not None
+        or write_baseline is not None
+        or select is not None
+        or severity is not None
+        or gate
+        or strict
+        or require_complete
+        or force
+        or output_format != "json"
+    ):
+        raise TypeError("dead-code workflows require profile='skylos-0.3'")
     if not isinstance(conf, int):
         raise TypeError("conf must be an integer")
     if not 0 <= conf <= 100:
@@ -65,6 +97,7 @@ def analyze(
     for name, values in (
         ("exclude_folders", exclude_folders),
         ("generated_keep_paths", generated_keep_paths),
+        ("select", select),
     ):
         if isinstance(values, (str, bytes)):
             raise TypeError(f"{name} must be a sequence, such as [{values!r}]")
@@ -93,5 +126,23 @@ def analyze(
                 None if coverage_file is None or coverage_file is False else fspath(coverage_file)
             ),
             "coverage_disabled": coverage_file is False,
+            "workflow": {
+                "diff": diff,
+                "diff_mode": diff_mode,
+                "baseline": (
+                    ".skylos/baseline.json"
+                    if baseline is True
+                    else fspath(baseline) if baseline is not None else None
+                ),
+                "baseline_ref": baseline_ref,
+                "write_baseline": fspath(write_baseline) if write_baseline is not None else None,
+                "rules": select if select is not None else (),
+                "severity": severity,
+                "gate": gate,
+                "strict": strict,
+                "require_complete": require_complete,
+                "force": force,
+                "compact": output_format == "json-ci",
+            } if phase03 else None,
         },
     )
