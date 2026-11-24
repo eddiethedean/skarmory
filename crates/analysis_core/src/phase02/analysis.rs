@@ -494,10 +494,10 @@ pub(super) fn analyze_with_verification(
         graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
     }
-    graph.resolve_receiver_calls(false);
+    graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
     let callbacks = graph.initialization_callbacks();
-    graph.resolve_receiver_calls(true);
+    graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
     let Some(initialization_edges) = graph.acyclic_initialization_edges(&callbacks) else {
         graph.issues.push(Issue::new(
@@ -1356,9 +1356,13 @@ impl<'a> Graph<'a> {
         value
     }
 
-    fn synchronous_calls(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> {
-        self.scopes[scope].edges.iter().filter_map(|edge| {
-            if matches!(
+    fn synchronous_calls(
+        &self,
+        scope: ScopeId,
+        include_verification: bool,
+    ) -> impl Iterator<Item = ScopeId> {
+        self.scopes[scope].edges.iter().filter_map(move |edge| {
+            if (matches!(
                 edge.kind,
                 "direct_call"
                     | "constructor"
@@ -1367,8 +1371,8 @@ impl<'a> Graph<'a> {
                     | "pydantic_schema_build"
                     | "truth_test"
                     | "length_call"
-                    | "grep_dynamic_call"
-            ) && let Binding::Definition(_, body) = self.symbols[edge.target].binding
+            ) || include_verification && edge.kind == "grep_dynamic_call")
+                && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
                 Some(body)
             } else {
@@ -1402,7 +1406,7 @@ impl<'a> Graph<'a> {
                 while let Some(scope) = pending.pop() {
                     if reached.insert(scope) {
                         pending.extend(&self.scopes[scope].class_bodies);
-                        pending.extend(self.synchronous_calls(scope));
+                        pending.extend(self.synchronous_calls(scope, true));
                     }
                 }
             }
@@ -1461,7 +1465,7 @@ impl<'a> Graph<'a> {
                 .chain(&scope.class_bodies)
                 .chain(&callbacks[id])
                 .copied()
-                .chain(self.synchronous_calls(id))
+                .chain(self.synchronous_calls(id, true))
             {
                 incoming[target].push(id);
                 outgoing[id].push(target);
@@ -3169,7 +3173,7 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn resolve_receiver_calls(&mut self, finalize: bool) {
+    fn resolve_receiver_calls(&mut self) {
         loop {
             let before = self.resolved_receiver_calls.len();
             for index in 0..self.receiver_calls.len() {
@@ -3216,23 +3220,24 @@ impl<'a> Graph<'a> {
                 break;
             }
         }
-        if !finalize {
-            return;
-        }
-        for index in 0..self.receiver_calls.len() {
-            let call = self.receiver_calls[index].clone();
-            let owner = self.scopes[self.symbols[call.parameter].scope].owner;
-            if owner.is_none_or(|owner| {
-                self.method_receivers
-                    .get(&owner)
-                    .is_none_or(BTreeSet::is_empty)
-            }) && self.receiver_call_issues.insert(index)
-            {
-                self.scope_issue(
-                    call.scope,
-                    call.at,
-                    "unresolved_call",
-                    "receiver type is outside the bounded invocation model",
+    }
+
+    fn report_unbound_receiver_calls(&mut self, reach: &Reachability) {
+        let resolved: BTreeSet<_> = self
+            .resolved_receiver_calls
+            .iter()
+            .chain(&reach.resolved_django_receiver_calls)
+            .map(|&(index, _)| index)
+            .collect();
+        for (index, call) in self.receiver_calls.iter().enumerate() {
+            if reach.scopes.contains(&call.scope) && !resolved.contains(&index) {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_call",
+                        &self.files[self.scopes[call.scope].file].path,
+                        "receiver type is outside the bounded invocation model",
+                    )
+                    .at(call.at),
                 );
             }
         }
@@ -6381,7 +6386,7 @@ impl<'a> Graph<'a> {
     }
 
     fn traverse(
-        &self,
+        &mut self,
         reach: &mut Reachability,
         mut pending: VecDeque<Edge>,
         class_bodies: &BTreeSet<ScopeId>,
@@ -6393,6 +6398,8 @@ impl<'a> Graph<'a> {
                 reach.scopes.len(),
                 reach.active_objects.len(),
                 reach.symbols.len(),
+                reach.django_setup_scopes.len(),
+                reach.django_signal_modules.len(),
             );
             while let Some(edge) = pending.pop_front() {
                 if !verification && is_verification_edge(edge.kind) {
@@ -6437,34 +6444,6 @@ impl<'a> Graph<'a> {
                 }
             }
             for &scope in &reach.scopes {
-                if self.phase03 {
-                    let file = self.scopes[scope].file;
-                    if reach.active_objects.contains(&framework_module(file)) {
-                        reach.active_objects.insert(django_loaded_module(file));
-                    }
-                    if reach.active_objects.contains(&django_loaded_module(file)) {
-                        reach.active_objects.extend(
-                            self.scopes[scope]
-                                .imports
-                                .iter()
-                                .copied()
-                                .map(django_loaded_module),
-                        );
-                        for edge in self.scopes[scope]
-                            .django_signals
-                            .iter()
-                            .flat_map(|registration| registration.callbacks.iter())
-                        {
-                            let certainty = if possible { "possible" } else { edge.certainty };
-                            if !reach
-                                .evidence
-                                .contains(&(edge.target, edge.kind, certainty))
-                            {
-                                pending.push_back(*edge);
-                            }
-                        }
-                    }
-                }
                 let scope = &self.scopes[scope];
                 reach.active_objects.extend(&scope.activated_apps);
                 for &(parent, child) in &scope.mounts {
@@ -6489,7 +6468,9 @@ impl<'a> Graph<'a> {
                 }
             }
             if self.phase03 {
+                self.activate_django_signals(reach, &mut pending, verification, possible);
                 self.activate_fastapi(reach, &mut pending);
+                self.resolve_django_receiver_calls(reach, &mut pending);
             }
             for &(owner, target, kind) in &self.framework_lifecycle {
                 if reach.symbols.contains(&owner) && !reach.has_evidence(target, kind) {
@@ -6506,6 +6487,8 @@ impl<'a> Graph<'a> {
                         reach.scopes.len(),
                         reach.active_objects.len(),
                         reach.symbols.len(),
+                        reach.django_setup_scopes.len(),
+                        reach.django_signal_modules.len(),
                     )
             {
                 return true;
@@ -6668,6 +6651,7 @@ impl<'a> Graph<'a> {
         if !baseline_converged {
             self.issues.push(framework_limit());
         }
+        self.report_unbound_receiver_calls(&reach);
         self.issues
             .extend(
                 self.fastapi_dependency_issues
@@ -6919,6 +6903,10 @@ struct Reachability {
     scopes: BTreeSet<ScopeId>,
     symbols: BTreeSet<SymbolId>,
     active_objects: BTreeSet<Object>,
+    django_setup_scopes: BTreeSet<ScopeId>,
+    django_signal_modules: BTreeSet<usize>,
+    django_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    resolved_django_receiver_calls: BTreeSet<(usize, SymbolId)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,

@@ -25,9 +25,14 @@ pub(super) enum DjangoReceiver {
 }
 
 pub(super) struct DjangoSignalRegistration {
-    pub(super) at: Location,
-    pub(super) callbacks: Vec<Edge>,
+    at: Location,
+    callbacks: Vec<DjangoSignalCallback>,
     issue: Option<&'static str>,
+}
+
+struct DjangoSignalCallback {
+    edge: Edge,
+    receiver: Option<SymbolId>,
 }
 
 impl Graph<'_> {
@@ -569,7 +574,8 @@ impl Graph<'_> {
             let row = &self.scopes[scope];
             let loaded = reach
                 .active_objects
-                .contains(&django_loaded_module(row.file));
+                .contains(&django_loaded_module(row.file))
+                || reach.django_signal_modules.contains(&row.file);
             for registration in &row.django_signals {
                 let issue = if no_startup {
                     Some("Django signal registration has no selected startup")
@@ -586,6 +592,134 @@ impl Graph<'_> {
                             message,
                         )
                         .at(registration.at),
+                    );
+                }
+            }
+        }
+    }
+
+    pub(super) fn activate_django_signals(
+        &self,
+        reach: &mut Reachability,
+        pending: &mut VecDeque<Edge>,
+        verification: bool,
+        possible: bool,
+    ) {
+        if self.django_startup_scopes.is_disjoint(&reach.scopes) {
+            return;
+        }
+        for &scope in &reach.scopes {
+            let row = &self.scopes[scope];
+            let loaded_module = django_loaded_module(row.file);
+            if reach.active_objects.contains(&framework_module(row.file)) {
+                reach.active_objects.insert(loaded_module);
+            }
+            let starts_django = self.django_startup_scopes.contains(&scope)
+                && row.activated_apps.contains(&loaded_module);
+            // An entry point may execute startup in an imported module or a
+            // helper. Its other imports can then register receivers too.
+            if starts_django
+                || row
+                    .imports
+                    .iter()
+                    .copied()
+                    .chain(self.synchronous_calls(scope, verification))
+                    .chain(row.class_bodies.iter().copied())
+                    .any(|target| reach.django_setup_scopes.contains(&target))
+            {
+                reach.django_setup_scopes.insert(scope);
+                if !starts_django {
+                    reach.django_signal_modules.insert(row.file);
+                }
+            }
+
+            let loaded = reach.active_objects.contains(&loaded_module);
+            if loaded {
+                reach
+                    .active_objects
+                    .extend(row.imports.iter().copied().map(django_loaded_module));
+            } else if reach.django_signal_modules.contains(&row.file) {
+                reach
+                    .django_signal_modules
+                    .extend(row.imports.iter().copied());
+            } else {
+                continue;
+            }
+            for callback in row
+                .django_signals
+                .iter()
+                .flat_map(|registration| &registration.callbacks)
+            {
+                let mut edge = callback.edge;
+                // A receiver can change method dispatch only after its
+                // registration scope and module are both reached.
+                if let Some(class) = callback.receiver {
+                    reach
+                        .django_method_receivers
+                        .entry(edge.target)
+                        .or_default()
+                        .insert(class);
+                }
+                if possible || !loaded {
+                    edge.certainty = "possible";
+                }
+                if !reach
+                    .evidence
+                    .contains(&(edge.target, edge.kind, edge.certainty))
+                {
+                    pending.push_back(edge);
+                }
+            }
+        }
+    }
+
+    pub(super) fn resolve_django_receiver_calls(
+        &mut self,
+        reach: &mut Reachability,
+        pending: &mut VecDeque<Edge>,
+    ) {
+        if reach.django_method_receivers.is_empty() {
+            return;
+        }
+        for index in 0..self.receiver_calls.len() {
+            let call = &self.receiver_calls[index];
+            if !reach.scopes.contains(&call.scope) {
+                continue;
+            }
+            let Some(owner) = self.scopes[self.symbols[call.parameter].scope].owner else {
+                continue;
+            };
+            let Some(classes) = reach.django_method_receivers.get(&owner).cloned() else {
+                continue;
+            };
+            let call = call.clone();
+            for class in classes {
+                if self.resolved_receiver_calls.contains(&(index, class))
+                    || !reach.resolved_django_receiver_calls.insert((index, class))
+                {
+                    continue;
+                }
+                if let Some(Value::Callable(invocation)) = self.class_member(class, &call.member, 0)
+                    && !self.receiver_conflicts(invocation.bind_receiver(Receiver::Bound(class)))
+                {
+                    if self.receiver_parameter(invocation.target).is_some() {
+                        reach
+                            .django_method_receivers
+                            .entry(invocation.target)
+                            .or_default()
+                            .insert(class);
+                    }
+                    pending.push_back(Edge {
+                        target: invocation.target,
+                        kind: "direct_call",
+                        certainty: "possible",
+                    });
+                } else {
+                    self.scope_issue(
+                        call.scope,
+                        call.at,
+                        "unresolved_call",
+                        "receiver method dispatch is outside the bounded class hierarchy",
                     );
                 }
             }
@@ -966,12 +1100,6 @@ impl Graph<'_> {
                     issue = Some("Django signal callback could not be resolved");
                     continue;
                 }
-                if let Some(class) = invocation.receiver.supplied() {
-                    self.method_receivers
-                        .entry(invocation.target)
-                        .or_default()
-                        .insert(class);
-                }
                 let certainty = if signal == DjangoReceiver::Certain
                     && !conditional
                     && !self.conditional.contains_key(&invocation.target)
@@ -981,10 +1109,13 @@ impl Graph<'_> {
                 } else {
                     "possible"
                 };
-                callbacks.push(Edge {
-                    target: invocation.target,
-                    kind: "django_signal",
-                    certainty,
+                callbacks.push(DjangoSignalCallback {
+                    edge: Edge {
+                        target: invocation.target,
+                        kind: "django_signal",
+                        certainty,
+                    },
+                    receiver: invocation.receiver.supplied(),
                 });
             }
         }

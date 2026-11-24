@@ -255,7 +255,11 @@ decorator, and `connect()`, including the named signal and callback arguments
 and literal lists or tuples of signals. Custom signals and registrations inside
 an unresolved branch contribute possible-use evidence. Opaque registrations
 in loaded modules and registrations without a selected startup produce
-coverage diagnostics. The model does not prove which dispatches occur.
+coverage diagnostics. If a reached entry module imports or calls a startup
+helper, registrations in the entry module and its imports are considered
+possible. Opaque registrations on those paths also produce coverage
+diagnostics. Bound receivers contribute to method dispatch when their
+registration is reached. The model does not prove which dispatches occur.
 [Django signal registration](https://docs.djangoproject.com/en/5.2/topics/signals/#connecting-receiver-functions)
 
 The profile also recognizes selected Celery task registrations, SQLAlchemy
