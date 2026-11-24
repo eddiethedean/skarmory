@@ -488,6 +488,33 @@ class SdkTests(unittest.TestCase):
                         self.assertEqual(report, json.loads(output.stdout))
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_native_frontends_share_cli_coverage_and_findings(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "app.py").write_text("def python_orphan(): pass\n", encoding="utf-8")
+            (project / "main.rs").write_text(
+                "fn main() { keep(); }\nfn keep() {}\nfn rust_orphan() {}\n",
+                encoding="utf-8",
+            )
+            (project / "main.dart").write_text("void main() {}\n", encoding="utf-8")
+            report = json.loads(skylos.analyze(project, profile="skylos-0.3", conf=0))
+            self.assertEqual(report["coverage"]["status"], "incomplete")
+            self.assertEqual(
+                report["analysis_summary"]["frontend_analysis"],
+                {"Dart": "incomplete", "Rust": "complete"},
+            )
+            self.assertEqual(
+                [row["name"] for row in report["unused_functions"]], ["python_orphan", "rust_orphan"]
+            )
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                result = subprocess.run([
+                    cli, project, "--profile", "skylos-0.3", "--all-advice",
+                    "--include-generated", "--confidence", "0",
+                ], capture_output=True)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(report, json.loads(result.stdout))
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     @unittest.skipUnless(os.name == "posix", "requires POSIX symlink creation")
     def test_phase03_default_trace_rejects_symlink(self):
         with TemporaryDirectory() as directory:

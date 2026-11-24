@@ -17,10 +17,15 @@ use crate::{Coverage, Issue};
 
 mod analysis;
 pub(crate) mod config;
+mod cpp;
 mod dependencies;
+pub(crate) mod frontends;
+mod go;
+mod java;
 mod javascript;
 mod package_entrypoints;
 mod runtime_evidence;
+mod rust;
 pub use runtime_evidence::Input as EvidenceInput;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -293,6 +298,8 @@ struct Summary {
     languages: BTreeMap<&'static str, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     javascript_file_analysis: Option<JavaScriptFileAnalysis>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    frontend_analysis: BTreeMap<&'static str, &'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     grep_verify: Option<VerificationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -630,6 +637,7 @@ struct Snapshot {
 enum FileFacts {
     Python(ModuleFacts),
     JavaScript(javascript::Module),
+    Frontend(frontends::Facts),
 }
 
 pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
@@ -678,11 +686,22 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     } else {
         BTreeMap::from([("Python", 0)])
     };
+    let mut frontend_analyses = BTreeMap::<frontends::Language, Analysis>::new();
     for file in &project.files {
         let language = match preview_source::javascript_extension(OsStr::new(&file.label)) {
             Some("ts" | "tsx" | "mts" | "cts") => "TypeScript",
             Some(_) => "JavaScript",
-            None => "Python",
+            None => {
+                if let Some(frontend) = frontends::Language::from_path(Path::new(&file.label)) {
+                    let analysis = frontend_analyses.entry(frontend).or_default();
+                    if !frontend.is_implemented() && analysis.issues.is_empty() {
+                        analysis.issues.push(frontend.unsupported(&file.label));
+                    }
+                    frontend.name()
+                } else {
+                    "Python"
+                }
+            }
         };
         *languages.entry(language).or_default() += 1;
     }
@@ -694,6 +713,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let mut sources = BTreeMap::new();
     let mut files = Vec::new();
     let mut js_modules = BTreeMap::new();
+    let mut frontend_files = frontends::Files::default();
     let mut javascript_analysis = Analysis::default();
     let mut stamps = Vec::new();
     let mut file_configs = BTreeMap::new();
@@ -705,14 +725,21 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         {
             javascript::extract(&file.label, source, extension, cache.as_ref())
                 .map(FileFacts::JavaScript)
+                .map_err(|error| {
+                    Issue::new(error.kind, &file.label, error.message).at(error.location)
+                })
+        } else if let Some(frontend) = frontends::Language::from_path(Path::new(&file.label)) {
+            frontend
+                .extract(&file.label, source, cache.as_ref())
+                .map(FileFacts::Frontend)
         } else {
             match &cache {
                 Some(cache) => cache.get_or_extract(source, extract),
                 None => extract(source),
             }
             .map(FileFacts::Python)
-        }
-        .map_err(|error| Issue::new(error.kind, &file.label, error.message).at(error.location))?;
+            .map_err(|error| Issue::new(error.kind, &file.label, error.message).at(error.location))
+        }?;
         Ok(Snapshot {
             facts,
             source: source.to_owned(),
@@ -723,9 +750,16 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         })
     }) {
         Ok(work) => {
-            javascript_analysis
-                .issues
-                .extend(work.javascript_budget_issue);
+            if let Some(issue) = work.non_python_budget_issue {
+                for analysis in frontend_analyses.values_mut() {
+                    analysis
+                        .issues
+                        .push(Issue::new(issue.kind, &issue.path, &issue.message));
+                }
+                if has_javascript {
+                    javascript_analysis.issues.push(issue);
+                }
+            }
             for (file, work) in project.files.iter().zip(work.files) {
                 selected_paths.push(file.label.clone());
                 let Some(work) = work else {
@@ -776,6 +810,9 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                             FileFacts::JavaScript(module) => {
                                 js_modules.insert(file.label.clone(), module);
                             }
+                            FileFacts::Frontend(facts) => {
+                                frontend_files.insert(file.label.clone(), facts);
+                            }
                         }
                     }
                     Err(issue)
@@ -784,7 +821,19 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                     {
                         javascript_analysis.issues.push(issue);
                     }
-                    Err(issue) => issues.push(issue),
+                    Err(issue) => {
+                        if let Some(frontend) =
+                            frontends::Language::from_path(Path::new(&file.label))
+                        {
+                            frontend_analyses
+                                .entry(frontend)
+                                .or_default()
+                                .issues
+                                .push(issue);
+                        } else {
+                            issues.push(issue);
+                        }
+                    }
                 }
             }
         }
@@ -792,6 +841,16 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             selected_paths.extend(project.files.iter().map(|file| file.label.clone()));
             issues.push(issue);
         }
+    }
+
+    if frontend_analyses.contains_key(&frontends::Language::Robot)
+        && languages.contains_key("Python")
+    {
+        issues.push(Issue::new(
+            "unsupported_robot_python_usage",
+            ".",
+            "Robot Framework sources can reference Python libraries and cannot yet supply liveness evidence",
+        ));
     }
 
     let dependency_sources_complete = issues.is_empty();
@@ -872,6 +931,9 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             javascript::analyze(&project, &js_modules, &mut javascript_analysis);
         }
     }
+    if include_dead_code && issues.is_empty() && analysis.issues.is_empty() {
+        frontend_files.analyze(&project, path.is_file(), &mut frontend_analyses);
+    }
     if let Some(mut runtime) = runtime {
         analysis.runtime_evidence_issues.append(&mut runtime.issues);
         analysis.runtime_evidence_issues.sort();
@@ -927,6 +989,19 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         analysis.evidence.append(&mut javascript_analysis.evidence);
     }
     issues.append(&mut javascript_analysis.issues);
+    let mut frontend_coverage = BTreeMap::new();
+    for (frontend, mut result) in frontend_analyses {
+        let complete = python_complete && result.issues.is_empty();
+        frontend_coverage.insert(
+            frontend.name(),
+            if complete { "complete" } else { "incomplete" },
+        );
+        if complete {
+            analysis.findings.append(&mut result.findings);
+            analysis.evidence.append(&mut result.evidence);
+        }
+        issues.append(&mut result.issues);
+    }
     if has_javascript && enable_quality && !config.ignores_rule(dependencies::RULE) {
         issues.push(Issue::new(
             "unsupported_npm_dependency_analysis",
@@ -1099,6 +1174,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 },
                 scope: "local_static_imports_from_package_main",
             }),
+            frontend_analysis: frontend_coverage,
             grep_verify: (phase03 || grep_verify).then_some(VerificationSummary {
                 enabled: grep_verify,
                 rescued_count: analysis.rescued_count,
@@ -1109,7 +1185,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         coverage: Coverage {
             status,
             selected_files: selected_paths.len(),
-            extracted_files: files.len() + js_modules.len(),
+            extracted_files: files.len() + js_modules.len() + frontend_files.len(),
             issues,
         },
         selected_paths,
