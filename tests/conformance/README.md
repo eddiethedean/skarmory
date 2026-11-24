@@ -6,9 +6,11 @@ after building the CLI. The [reference harness](../../benchmarks/phase0.md)
 records the pinned Skylos comparison alongside those expectations.
 
 The [Phase 0.3 release gate](../../docs/phase-03.md#required-upstream-test-gate)
-requires every pinned Skylos dead-code test to pass against Skarmory. Preserve
-upstream expectations and publish per-case evidence alongside the independent
-semantic controls described here.
+requires every in-scope Python dead-code case and required variant from the
+pinned Skylos suite to pass against Skarmory. Assign non-Python assertions and
+inseparable mixed-language cases to their [language milestones](../../docs/language-frontends.md).
+Preserve separable Python assertions, upstream expectations, and per-case
+evidence alongside the independent semantic controls described here.
 
 ## Two separate questions
 
