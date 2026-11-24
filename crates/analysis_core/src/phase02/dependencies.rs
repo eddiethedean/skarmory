@@ -2,7 +2,7 @@
 
 mod manifests;
 mod usage;
-pub(super) use usage::Evidence;
+pub(super) use usage::{Evidence, is_command_file};
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -25,7 +25,7 @@ const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(super) struct Finding {
     rule_id: &'static str,
     kind: &'static str,
-    severity: &'static str,
+    pub(super) severity: &'static str,
     #[serde(rename = "type")]
     finding_type: &'static str,
     pub(super) name: String,
@@ -34,6 +34,8 @@ pub(super) struct Finding {
     threshold: u8,
     pub(super) message: String,
     pub(super) file: String,
+    #[serde(skip)]
+    pub(super) relative_file: Option<String>,
     basename: String,
     pub(super) line: usize,
     col: usize,
@@ -60,6 +62,8 @@ impl Finding {
             value: "unused",
             threshold: 0,
             file: display(path),
+            relative_file: located
+                .then(|| display(path.strip_prefix(root).expect("project declaration"))),
             basename: if located {
                 path.file_name()
                     .unwrap_or_default()
@@ -168,6 +172,7 @@ pub(super) fn scan(
     selection: &super::config::Selection,
     static_complete: bool,
     ignored: bool,
+    diff_sources: Option<&mut BTreeMap<String, String>>,
 ) -> Result {
     if ignored {
         return Result::not_run("rule_ignored");
@@ -190,6 +195,12 @@ pub(super) fn scan(
         usage.resolve_providers(declared.dependencies.keys());
     }
     inputs.verify();
+    if let Some(diff_sources) = diff_sources {
+        diff_sources.extend(inputs.files.iter().filter_map(|(path, (_, source))| {
+            let relative = path.strip_prefix(root).ok()?;
+            Some((display(relative), source.as_deref()?.to_owned()))
+        }));
+    }
     let mut reasons = inputs.reasons;
     reasons.append(&mut usage.reasons);
     let globally_incomplete = !reasons.is_empty();

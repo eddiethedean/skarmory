@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use skarmory_core::phase02;
+use skarmory_core::phase02::{self, workflow};
 use skarmory_core::{ScanOptions, ScanPolicy};
 
 #[derive(FromPyObject)]
@@ -41,6 +41,67 @@ struct SkylosOptions {
     trace_disabled: bool,
     coverage_file: Option<PathBuf>,
     coverage_disabled: bool,
+    #[pyo3(default)]
+    workflow: Option<WorkflowOptions>,
+}
+
+#[derive(FromPyObject)]
+#[pyo3(from_item_all)]
+struct WorkflowOptions {
+    diff: Option<String>,
+    diff_mode: String,
+    baseline: Option<PathBuf>,
+    baseline_ref: Option<String>,
+    write_baseline: Option<PathBuf>,
+    rules: Vec<String>,
+    severity: Option<String>,
+    gate: bool,
+    strict: bool,
+    require_complete: bool,
+    force: bool,
+    compact: bool,
+}
+
+impl WorkflowOptions {
+    fn settings(self) -> PyResult<workflow::Settings> {
+        let diff_mode = match self.diff_mode.as_str() {
+            "lines" => workflow::DiffMode::Lines,
+            "files" => workflow::DiffMode::Files,
+            "impact" => workflow::DiffMode::Impact,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "diff_mode must be lines, files or impact",
+                ));
+            }
+        };
+        if self.baseline.is_some() && self.baseline_ref.is_some() {
+            return Err(PyValueError::new_err(
+                "baseline and baseline_ref are mutually exclusive",
+            ));
+        }
+        let baseline = self
+            .baseline
+            .map(workflow::BaselineInput::File)
+            .or_else(|| self.baseline_ref.map(workflow::BaselineInput::Revision));
+        let severity = self
+            .severity
+            .as_deref()
+            .map(workflow::Severity::parse)
+            .transpose()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(workflow::Settings {
+            diff: self.diff,
+            diff_mode,
+            baseline,
+            write_baseline: self.write_baseline,
+            rules: self.rules,
+            severity,
+            gate: self.gate,
+            strict: self.strict,
+            require_complete: self.require_complete,
+            force: self.force,
+        })
+    }
 }
 
 #[pyfunction]
@@ -96,8 +157,17 @@ fn evidence_input(path: Option<PathBuf>, disabled: bool) -> phase02::EvidenceInp
 
 #[pyfunction]
 fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResult<String> {
+    let phase03 = options.phase03;
+    let compact = options
+        .workflow
+        .as_ref()
+        .is_some_and(|workflow| workflow.compact);
+    let settings = options
+        .workflow
+        .map(WorkflowOptions::settings)
+        .transpose()?;
     let options = phase02::Options {
-        profile: if options.phase03 {
+        profile: if phase03 {
             phase02::Profile::SkylosPhase03
         } else {
             phase02::Profile::SkylosPhase02
@@ -117,10 +187,19 @@ fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResul
         ..phase02::Options::default()
     };
     py.detach(move || {
-        phase02::scan(&path, &options)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?
-            .to_json()
-            .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+        let mut report = if phase03 {
+            workflow::run(&path, &options, &settings.unwrap_or_default())
+                .map(|outcome| outcome.report)
+        } else {
+            phase02::scan(&path, &options)
+        }
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let json = if compact {
+            report.to_json_ci()
+        } else {
+            report.to_json()
+        };
+        json.map_err(|error| PyRuntimeError::new_err(error.to_string()))
     })
 }
 

@@ -40,6 +40,7 @@ pub(super) struct Config {
     pub(super) entrypoints: Vec<Entrypoint>,
     pub(super) confidence: u8,
     pub(super) quality_enabled: bool,
+    pub(super) gate: Gate,
     pub(super) sources: Vec<String>,
     pub(super) selection: Selection,
     pub(super) warnings: Vec<String>,
@@ -407,13 +408,23 @@ impl Config {
         Decision::Keep
     }
 
-    pub(super) fn unchanged(&self, path: &Path, options: &Options) -> bool {
-        self.for_path(path, options)
+    pub(super) fn unchanged(
+        &self,
+        path: &Path,
+        options: &Options,
+        policy: Option<&Policy>,
+    ) -> bool {
+        self.for_path(path, options, policy)
             .is_ok_and(|next| self.same_layers(&next))
     }
 
-    pub(super) fn for_path(&self, path: &Path, options: &Options) -> Result<Self, ConfigError> {
-        load_at(path, options, self.date)
+    pub(super) fn for_path(
+        &self,
+        path: &Path,
+        options: &Options,
+        policy: Option<&Policy>,
+    ) -> Result<Self, ConfigError> {
+        load_at(path, options, self.date, policy)
     }
 
     pub(super) fn same_layers(&self, other: &Self) -> bool {
@@ -438,9 +449,43 @@ struct Layer {
     overrides: Option<BTreeMap<String, Override>>,
     include_generated: Option<bool>,
     quality_enabled: Option<bool>,
+    gate: Option<GateLayer>,
     dead_code: Option<DeadCode>,
     nudges: Option<bool>,
     check_circular: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Gate {
+    pub(super) max_dead_code: Option<usize>,
+    pub(super) max_quality: Option<usize>,
+    pub(super) strict: bool,
+    pub(super) require_complete: bool,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct GateLayer {
+    max_dead_code: Option<usize>,
+    max_quality: Option<usize>,
+    strict: Option<bool>,
+    coverage: GateCoverage,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct GateCoverage {
+    require_complete: Option<bool>,
+}
+
+/// Both scans read the same Git policy tree and normalize selection patterns
+/// against the live project layout, including explicit absolute exclusions.
+pub(super) struct Policy<'a> {
+    pub(super) scan_root: &'a Path,
+    pub(super) head_root: &'a Path,
+    pub(super) base_root: &'a Path,
+    pub(super) date: Date,
+    pub(super) explicit: Option<&'a ExplicitPolicy>,
 }
 
 #[derive(Deserialize)]
@@ -686,11 +731,26 @@ fn directory_selection_patterns(
     Ok(patterns)
 }
 
+#[cfg(test)]
 pub(super) fn load(path: &Path, options: &Options) -> Result<Config, ConfigError> {
-    load_at(path, options, OffsetDateTime::now_utc().date())
+    load_for_scan(path, options, None)
 }
 
-fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigError> {
+pub(super) fn load_for_scan(
+    path: &Path,
+    options: &Options,
+    policy: Option<&Policy>,
+) -> Result<Config, ConfigError> {
+    let date = policy.map_or_else(|| OffsetDateTime::now_utc().date(), |policy| policy.date);
+    load_at(path, options, date, policy)
+}
+
+fn load_at(
+    path: &Path,
+    options: &Options,
+    date: Date,
+    policy: Option<&Policy>,
+) -> Result<Config, ConfigError> {
     let confidence = options.confidence.unwrap_or(60);
     if confidence > 100 {
         return Err(ConfigError::new("confidence must be between 0 and 100"));
@@ -703,11 +763,15 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
     let mut excludes = Vec::new();
     let mut include_generated = false;
     let mut quality_enabled = false;
+    let mut gate = Gate {
+        max_quality: Some(10),
+        ..Gate::default()
+    };
     let mut selectors = Vec::new();
     let mut whitelist = WhitelistTables::default();
     let mut path_rules = PathRules::default();
 
-    for (file, layer, digest) in layers(path, options)? {
+    for (file, layer, digest) in layers(path, options, policy)? {
         sources.push(file.to_string_lossy().replace('\\', "/"));
         digests.push(digest);
         if let Some(values) = layer.exclude {
@@ -741,6 +805,20 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
                 ));
             }
             quality_enabled = value;
+        }
+        if let Some(values) = layer.gate {
+            if options.profile != super::Profile::SkylosPhase03 {
+                return Err(ConfigError::new(
+                    "gate configuration requires the skylos-0.3 profile",
+                ));
+            }
+            gate.max_dead_code = values.max_dead_code.or(gate.max_dead_code);
+            gate.max_quality = values.max_quality.or(gate.max_quality);
+            gate.strict = values.strict.unwrap_or(gate.strict);
+            gate.require_complete = values
+                .coverage
+                .require_complete
+                .unwrap_or(gate.require_complete);
         }
         if let Some(values) = layer.dead_code.and_then(|code| code.entrypoints) {
             selectors = values
@@ -787,7 +865,15 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
             ),
         ));
     }
+    let layout;
+    let path = if let Some(policy) = policy {
+        layout = policy.head_root.join(policy_relative(path, policy)?);
+        layout.as_path()
+    } else {
+        path
+    };
     Ok(Config {
+        gate,
         entrypoints: selectors,
         confidence,
         quality_enabled,
@@ -821,26 +907,58 @@ fn parse_date(value: &str) -> Option<Date> {
 
 type ConfigLayer = (PathBuf, Layer, blake3::Hash);
 
-fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigError> {
+pub(super) struct ExplicitPolicy {
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+pub(super) fn explicit_policy(options: &Options) -> Result<Option<ExplicitPolicy>, ConfigError> {
+    explicit_path(options)
+        .map(|path| {
+            let bytes = read_layer_bytes(&path)?;
+            Ok(ExplicitPolicy { path, bytes })
+        })
+        .transpose()
+}
+
+fn explicit_path(options: &Options) -> Option<PathBuf> {
+    options
+        .config_file
+        .clone()
+        .or_else(|| std::env::var_os("SKYLOS_CONFIG_FILE").map(PathBuf::from))
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+fn policy_relative<'a>(path: &'a Path, policy: &Policy) -> Result<&'a Path, ConfigError> {
+    path.strip_prefix(policy.scan_root)
+        .map_err(|_| ConfigError::new("analysis configuration path is outside the Git repository"))
+}
+
+fn layers(
+    path: &Path,
+    options: &Options,
+    policy: Option<&Policy>,
+) -> Result<Vec<ConfigLayer>, ConfigError> {
     for variable in ["SKYLOS_POLICY_BASE", "SKYLOS_SYNCED_POLICY_FILE"] {
-        if std::env::var_os(variable).is_some_and(|value| !value.is_empty()) {
+        if (policy.is_none() || variable != "SKYLOS_POLICY_BASE")
+            && std::env::var_os(variable).is_some_and(|value| !value.is_empty())
+        {
             return Err(ConfigError::new(format!(
                 "{variable} is outside the local dead-code profile"
             )));
         }
     }
-    let env_file = std::env::var_os("SKYLOS_CONFIG_FILE");
-    if let Some(file) = options
-        .config_file
-        .as_deref()
-        .or_else(|| env_file.as_deref().map(Path::new))
-        && !file.as_os_str().is_empty()
-    {
-        return read_layer(file).and_then(|layer| {
-            layer
-                .map(|(data, digest)| vec![(file.to_owned(), data, digest)])
-                .ok_or_else(|| ConfigError::new(format!("no Skylos config in {}", file.display())))
-        });
+    let explicit = match policy {
+        Some(policy) => policy.explicit.map(|input| {
+            parse_layer(&input.path, &input.bytes).map(|layer| (input.path.clone(), layer))
+        }),
+        None => explicit_path(options).map(|path| read_layer(&path).map(|layer| (path, layer))),
+    };
+    if let Some(explicit) = explicit {
+        let (path, layer) = explicit?;
+        return layer
+            .map(|(data, digest)| vec![(path.clone(), data, digest)])
+            .ok_or_else(|| ConfigError::new(format!("no Skylos config in {}", path.display())));
     }
     let cwd = std::env::current_dir().map_err(ConfigError::new)?;
     let absolute = cwd.join(path);
@@ -860,6 +978,13 @@ fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigErro
     } else {
         absolute.as_path()
     };
+    let mapped;
+    let start = if let Some(policy) = policy {
+        mapped = policy.base_root.join(policy_relative(start, policy)?);
+        &mapped
+    } else {
+        start
+    };
     let mut result = Vec::new();
     for (depth, directory) in start.ancestors().enumerate() {
         if depth >= MAX_CONFIG_LAYERS {
@@ -871,7 +996,10 @@ fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigErro
                 directory.display()
             )));
         }
-        let mut stop = directory.join(".git").exists();
+        let mut stop = policy.map_or_else(
+            || directory.join(".git").exists(),
+            |policy| directory == policy.base_root,
+        );
         for filename in [".skylos.toml", "skylos.toml", "pyproject.toml"] {
             let file = directory.join(filename);
             if !file.try_exists().map_err(ConfigError::new)? {
@@ -879,6 +1007,12 @@ fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigErro
             }
             if let Some((layer, digest)) = read_layer(&file)? {
                 stop |= layer.root;
+                let file = policy.map_or(file.clone(), |policy| {
+                    policy.head_root.join(
+                        file.strip_prefix(policy.base_root)
+                            .expect("base policy path"),
+                    )
+                });
                 result.push((file, layer, digest));
                 break;
             }
@@ -892,6 +1026,10 @@ fn layers(path: &Path, options: &Options) -> Result<Vec<ConfigLayer>, ConfigErro
 }
 
 fn read_layer(file: &Path) -> Result<Option<(Layer, blake3::Hash)>, ConfigError> {
+    parse_layer(file, &read_layer_bytes(file)?)
+}
+
+fn read_layer_bytes(file: &Path) -> Result<Vec<u8>, ConfigError> {
     use std::io::Read;
     let failure =
         |error: &dyn std::fmt::Display| ConfigError::new(format!("{}: {error}", file.display()));
@@ -913,7 +1051,13 @@ fn read_layer(file: &Path) -> Result<Option<(Layer, blake3::Hash)>, ConfigError>
             file.display()
         )));
     }
-    let text = std::str::from_utf8(&bytes).map_err(|error| failure(&error))?;
+    Ok(bytes)
+}
+
+fn parse_layer(file: &Path, bytes: &[u8]) -> Result<Option<(Layer, blake3::Hash)>, ConfigError> {
+    let failure =
+        |error: &dyn std::fmt::Display| ConfigError::new(format!("{}: {error}", file.display()));
+    let text = std::str::from_utf8(bytes).map_err(|error| failure(&error))?;
     let mut table = toml::from_str::<toml::Value>(text).map_err(|error| failure(&error))?;
     let project = file.file_name() == Some(OsStr::new("pyproject.toml"));
     if let Some(value) = table.get("tool").and_then(|tool| tool.get("skylos")) {
@@ -928,7 +1072,7 @@ fn read_layer(file: &Path) -> Result<Option<(Layer, blake3::Hash)>, ConfigError>
             file.display()
         )));
     }
-    Ok(Some((layer, blake3::hash(&bytes))))
+    Ok(Some((layer, blake3::hash(bytes))))
 }
 
 #[cfg(test)]
@@ -987,12 +1131,14 @@ expires = "not a date"
                 ..Options::default()
             },
             Date::from_calendar_date(2026, Month::January, 2).unwrap(),
+            None,
         )
         .unwrap();
         let finding = |name: &str| Finding {
             category: Category::Function,
             name: name.into(),
             full_name: format!("main.{name}"),
+            identity_name: format!("main.{name}"),
             file: "main.py".into(),
             line: 1,
             column: 1,

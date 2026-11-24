@@ -181,6 +181,7 @@ jobs:
           docker run --rm -e SKARMORY_REQUIRE_NATIVE=1 \
             --mount "type=bind,source=$PWD,target=/project,readonly" -w /project \
             python:3.11-alpine3.22 sh -ec '
+              apk add --no-cache git
               python -m pip install --no-deps dist/*.whl
               python -m unittest discover -s tests/python -v
             '

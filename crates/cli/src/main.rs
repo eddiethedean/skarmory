@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, CommandFactory, Parser, ValueEnum};
-use skarmory_core::phase02;
+use skarmory_core::phase02::{self, workflow};
 use skarmory_core::{CacheStats, ScanOptions, ScanPolicy, Timings};
 
 #[derive(Clone, ValueEnum)]
@@ -19,6 +19,13 @@ enum Profile {
 #[derive(Clone, ValueEnum)]
 enum Format {
     Json,
+    JsonCi,
+}
+
+#[derive(Clone, ValueEnum)]
+enum DiffMode {
+    Lines,
+    Impact,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -141,12 +148,49 @@ struct SkylosArgs {
     #[arg(long)]
     quality: bool,
 
-    /// Report only the selected Phase 0.3 rule.
-    #[arg(
-        long, value_parser = ["SKY-U005"], ignore_case = true, value_name = "RULE",
-        conflicts_with_all = ["trace_file", "coverage_file"],
-    )]
-    select: Option<String>,
+    /// Select Phase 0.3 rule IDs. Repeat or separate multiple IDs with commas.
+    #[arg(long, value_delimiter = ',', value_name = "RULE")]
+    select: Vec<String>,
+
+    /// Set the minimum displayed finding severity in Phase 0.3.
+    #[arg(long, value_name = "LEVEL")]
+    severity: Option<String>,
+
+    /// Report findings on working-tree lines changed from the Git merge base.
+    #[arg(long, value_name = "REF", num_args = 0..=1, default_missing_value = "auto", conflicts_with = "diff_base")]
+    diff: Option<String>,
+
+    /// Report findings in working-tree files changed from the Git merge base.
+    #[arg(long, value_name = "REF", conflicts_with = "diff_mode")]
+    diff_base: Option<String>,
+
+    /// Include newly unused symbols anywhere in the project in impact mode.
+    #[arg(long, value_enum, requires = "diff")]
+    diff_mode: Option<DiffMode>,
+
+    /// Suppress existing dead code from a versioned baseline.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = ".skylos/baseline.json", conflicts_with = "baseline_ref")]
+    baseline: Option<PathBuf>,
+
+    /// Use the project baseline committed at this Git revision.
+    #[arg(long, value_name = "REF")]
+    baseline_ref: Option<String>,
+
+    /// Record dead-code findings from a complete, unfiltered scan.
+    #[arg(long, value_name = "PATH")]
+    write_baseline: Option<PathBuf>,
+
+    /// Evaluate the configured Phase 0.3 dead-code gate.
+    #[arg(long)]
+    gate: bool,
+
+    /// Require complete Phase 0.3 coverage for the gate.
+    #[arg(long)]
+    require_complete: bool,
+
+    /// Return success for an evaluated gate failure while retaining its verdict.
+    #[arg(long, requires = "gate")]
+    force: bool,
 
     /// Disable grep verification in the Skylos compatibility profile.
     #[arg(long = "no-grep-verify")]
@@ -174,7 +218,7 @@ struct SkylosArgs {
 
     /// Select the legacy machine-readable format.
     #[arg(long = "format", value_enum)]
-    _format: Option<Format>,
+    format: Option<Format>,
 
     /// Exit with 1 when complete analysis reports findings.
     #[arg(long)]
@@ -292,7 +336,7 @@ fn write_skylos_report(
         category: args.category,
         all_advice: args.all_advice,
         enable_quality: args.quality.then_some(true),
-        quality_only: args.select.is_some(),
+        quality_only: false,
         workers,
         cache_dir,
         grep_verify: args.no_grep_verify.then_some(false),
@@ -313,12 +357,80 @@ fn write_skylos_report(
             )
         },
     };
-    let report = match phase02::scan(path, &options) {
-        Ok(report) => report,
-        Err(error) => return fail(error),
+    let compact = matches!(args.format, Some(Format::JsonCi));
+    if profile == phase02::Profile::SkylosPhase02
+        && (compact
+            || args.diff.is_some()
+            || args.diff_base.is_some()
+            || args.baseline.is_some()
+            || args.baseline_ref.is_some()
+            || args.write_baseline.is_some()
+            || !args.select.is_empty()
+            || args.severity.is_some()
+            || args.gate
+            || args.require_complete)
+    {
+        return fail("dead-code workflow options require --profile skylos-0.3");
+    }
+    if let Some(baseline) = &args.write_baseline
+        && [args.output.as_ref(), args.sarif.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|path| output_identity(path) == output_identity(baseline))
+    {
+        return fail("baseline and reports require different output paths");
+    }
+    let (mut report, exit_code) = if profile == phase02::Profile::SkylosPhase03 {
+        let severity = match args
+            .severity
+            .as_deref()
+            .map(workflow::Severity::parse)
+            .transpose()
+        {
+            Ok(severity) => severity,
+            Err(error) => return fail(error),
+        };
+        let diff_mode = match (args.diff_base.is_some(), args.diff_mode) {
+            (true, _) => workflow::DiffMode::Files,
+            (_, Some(DiffMode::Impact)) => workflow::DiffMode::Impact,
+            _ => workflow::DiffMode::Lines,
+        };
+        let baseline = args
+            .baseline
+            .map(workflow::BaselineInput::File)
+            .or_else(|| args.baseline_ref.map(workflow::BaselineInput::Revision));
+        let settings = workflow::Settings {
+            diff: args.diff.or(args.diff_base),
+            diff_mode,
+            baseline,
+            write_baseline: args.write_baseline,
+            rules: args.select,
+            severity,
+            gate: args.gate,
+            strict: args.strict,
+            require_complete: args.require_complete,
+            force: args.force,
+        };
+        match workflow::run(path, &options, &settings) {
+            Ok(outcome) => (outcome.report, outcome.exit_code),
+            Err(error) => return fail(error),
+        }
+    } else {
+        let report = match phase02::scan(path, &options) {
+            Ok(report) => report,
+            Err(error) => return fail(error),
+        };
+        let exit_code = if !report.is_complete() {
+            2
+        } else {
+            u8::from(args.strict && report.has_findings())
+        };
+        (report, exit_code)
     };
     let result = (|| {
-        let json = if args.strict {
+        let json = if compact {
+            report.to_json_ci()?
+        } else if args.strict && profile == phase02::Profile::SkylosPhase02 {
             report.to_json_strict()?
         } else {
             report.to_json()?
@@ -328,29 +440,26 @@ fn write_skylos_report(
         }
         if let Some(path) = args.output {
             write_output(&path, &json)?;
-            if args.strict {
-                write_strict_verdict(&json)?;
+            if args.strict || args.gate || args.require_complete {
+                write_gate_verdict(&json)?;
             }
         } else {
             let mut stdout = io::stdout().lock();
             writeln!(stdout, "{json}")?;
             stdout.flush()?;
+            if args.gate && !report.is_complete() {
+                write_gate_verdict(&json)?;
+            }
         }
         Ok::<_, io::Error>(())
     })();
     if let Err(error) = result {
         return fail(format_args!("failed to write report: {error}"));
     }
-    if !report.is_complete() {
-        ExitCode::from(2)
-    } else if args.strict && report.has_findings() {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    }
+    ExitCode::from(exit_code)
 }
 
-fn write_strict_verdict(report: &str) -> io::Result<()> {
+fn write_gate_verdict(report: &str) -> io::Result<()> {
     let report: serde_json::Value = serde_json::from_str(report)?;
     let gate = &report["gate"];
     let mut stderr = io::stderr().lock();
@@ -374,6 +483,16 @@ fn write_strict_verdict(report: &str) -> io::Result<()> {
     }
     if let Some(hint) = gate["hint"].as_str() {
         writeln!(stderr, "   {hint}")?;
+    }
+    if gate["coverage_status"] == "partial" && gate["verdict"] != "incomplete" {
+        for warning in gate["coverage_warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+        {
+            writeln!(stderr, "   • {warning}")?;
+        }
     }
     stderr.flush()
 }
