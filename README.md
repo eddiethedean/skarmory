@@ -155,9 +155,9 @@ reachability.
 See the [Phase 0.2 scope](docs/phase-02.md),
 [tested matches and differences](docs/phase-02-reference.md), and
 [Skylos 5.7.0 reference inventory](docs/skylos-5.7.0-contract.md) for details.
-The [Phase 0.3 plan](docs/phase-03.md) schedules the missing dead-code features.
-Its release gate requires all pinned Skylos dead-code tests to pass against
-Skarmory.
+The [Phase 0.3 plan](docs/phase-03.md) schedules the missing Python dead-code
+features. Its release gate requires all in-scope pinned Python dead-code tests
+to pass. Each additional language has its own [milestone and Rust frontend crate](docs/language-frontends.md).
 
 ## Development
 
