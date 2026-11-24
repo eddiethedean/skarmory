@@ -287,6 +287,19 @@ discovered test method, respectively. The unittest fixture also expects a
 test-only path whitelist. The reviewed inventory must account for these
 differences before qualification.
 
+### Python shutdown callbacks
+
+In the `skylos-0.3` profile, a reached call to the resolved standard-library
+`atexit.register` retains a selected synchronous function or bound method
+passed as its first positional argument. Import aliases, finite callback
+alternatives, and bare function decorators preserve that relationship. A
+lexically shadowed provider or callback requires a resolved local binding. The
+callback and code reached only through its body carry possible-use evidence.
+Forwarded values can supply possible-use evidence for known callable arguments.
+Dispatch through a callback parameter needs a separately resolved call target.
+An unresolved callback or a shutdown operation outside the bounded model leaves
+coverage incomplete when reached. [#118](https://github.com/eddiethedean/skarmory/issues/118)
+
 ### Bounded Python receivers and lazy imports
 
 Ordinary constructors and instance methods use the first positional
@@ -342,9 +355,14 @@ checks and provable truth tests can read the namespace without exposing its
 values. Shadowed names use ordinary call resolution.
 Object-argument `vars` and module and class namespace reads remain outside this
 model. [#42](https://github.com/eddiethedean/skarmory/issues/42)
-Reachable calls resolved to `builtins.eval` or `builtins.exec`, including
-imported aliases, report incomplete coverage and withhold unused findings.
-The analyzer does not evaluate their arguments as Python code. [#78](https://github.com/eddiethedean/skarmory/issues/78)
+In the Phase 0.3 profile, a one-argument call to the resolved built-in
+`eval()` or `exec()` within a function treats the local bindings visible
+at the call site as possibly read, including in dormant function bodies.
+In both Skylos profiles, reachable calls still report incomplete coverage
+and withhold unused findings because the text can execute outside the
+bounded model. Static analysis leaves the supplied text unevaluated.
+[#41](https://github.com/eddiethedean/skarmory/issues/41) ·
+[#78](https://github.com/eddiethedean/skarmory/issues/78)
 
 ### Grep verification preview
 

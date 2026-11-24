@@ -655,7 +655,7 @@ impl Graph<'_> {
                 // registration scope and module are both reached.
                 if let Some(class) = callback.receiver {
                     reach
-                        .django_method_receivers
+                        .deferred_method_receivers
                         .entry(edge.target)
                         .or_default()
                         .insert(class);
@@ -673,12 +673,12 @@ impl Graph<'_> {
         }
     }
 
-    pub(super) fn resolve_django_receiver_calls(
+    pub(super) fn resolve_deferred_receiver_calls(
         &mut self,
         reach: &mut Reachability,
         pending: &mut VecDeque<Edge>,
     ) {
-        if reach.django_method_receivers.is_empty() {
+        if reach.deferred_method_receivers.is_empty() {
             return;
         }
         for index in 0..self.receiver_calls.len() {
@@ -689,13 +689,15 @@ impl Graph<'_> {
             let Some(owner) = self.scopes[self.symbols[call.parameter].scope].owner else {
                 continue;
             };
-            let Some(classes) = reach.django_method_receivers.get(&owner).cloned() else {
+            let Some(classes) = reach.deferred_method_receivers.get(&owner).cloned() else {
                 continue;
             };
             let call = call.clone();
             for class in classes {
                 if self.resolved_receiver_calls.contains(&(index, class))
-                    || !reach.resolved_django_receiver_calls.insert((index, class))
+                    || !reach
+                        .resolved_deferred_receiver_calls
+                        .insert((index, class))
                 {
                     continue;
                 }
@@ -704,7 +706,7 @@ impl Graph<'_> {
                 {
                     if self.receiver_parameter(invocation.target).is_some() {
                         reach
-                            .django_method_receivers
+                            .deferred_method_receivers
                             .entry(invocation.target)
                             .or_default()
                             .insert(class);
