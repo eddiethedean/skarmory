@@ -343,6 +343,12 @@ pub(super) fn setup_declarations(
         match (import.level, module, import.member.as_deref()) {
             _ if local_provider => SetupValue::Unknown,
             (0, "setuptools" | "distutils.core", Some("setup")) => SetupValue::Setup,
+            (0, "setuptools", Some("find_packages" | "find_namespace_packages"))
+                if run_as_script =>
+            {
+                SetupValue::PackageFinder
+            }
+            (0, "setuptools", None) if run_as_script => SetupValue::Setuptools,
             (0, "setuptools" | "distutils.core", None) if !import.exposes_top_level => {
                 SetupValue::SetupModule
             }
@@ -468,7 +474,13 @@ pub(super) fn setup_declarations(
     }
     let opaque_line = unmodeled_effect.filter(|_| {
         has_setup_import(&facts.body, &|import| {
-            !matches!(setup_import(import), SetupValue::Unknown)
+            matches!(
+                setup_import(import),
+                SetupValue::Setup
+                    | SetupValue::SetupModule
+                    | SetupValue::Distutils
+                    | SetupValue::Setuptools
+            )
         })
     });
     SetupDeclarations { calls, opaque_line }
@@ -484,6 +496,8 @@ pub(super) enum SetupValue<'a> {
     Setup,
     SetupModule,
     Distutils,
+    Setuptools,
+    PackageFinder,
     Text(&'a str, usize),
     Sequence(Rc<[SetupValue<'a>]>),
     Mapping(Rc<BTreeMap<&'a str, SetupValue<'a>>>),
@@ -545,6 +559,24 @@ fn setup_expression_is_static(
             function,
             arguments,
             keywords,
+        } if matches!(setup_value(function, bindings), SetupValue::PackageFinder) => {
+            // Package discovery can evaluate directory and pattern arguments.
+            // Only accept arguments proven to contain plain strings.
+            arguments
+                .iter()
+                .chain(keywords.iter().map(|(_, value)| value))
+                .all(|value| match setup_value(value, bindings) {
+                    SetupValue::Text(..) => true,
+                    SetupValue::Sequence(items) => items
+                        .iter()
+                        .all(|item| matches!(item, SetupValue::Text(..))),
+                    _ => false,
+                })
+        }
+        ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
         } => {
             arguments.is_empty()
                 && matches!(&function.kind, ExpressionKind::Name(name) if name == "dict" && !bindings.contains_key("dict"))
@@ -566,7 +598,10 @@ fn setup_value<'a>(
             .cloned()
             .unwrap_or(SetupValue::Unknown),
         ExpressionKind::Member(base, name) => match (setup_value(base, bindings), name.as_str()) {
-            (SetupValue::SetupModule, "setup") => SetupValue::Setup,
+            (SetupValue::SetupModule | SetupValue::Setuptools, "setup") => SetupValue::Setup,
+            (SetupValue::Setuptools, "find_packages" | "find_namespace_packages") => {
+                SetupValue::PackageFinder
+            }
             (SetupValue::Distutils, "core") => SetupValue::SetupModule,
             _ => SetupValue::Unknown,
         },

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -7,7 +8,7 @@ use skarmory_python::phase02::{
 
 use super::{Usage, file_name, module_reference};
 use crate::phase02::AnalyzedFile;
-use crate::phase02::dependencies::Reason;
+use crate::phase02::dependencies::{Reason, is_module};
 
 pub(super) fn collect(
     usage: &mut Usage,
@@ -234,16 +235,28 @@ impl<'a> Python<'a> {
                             })
                             .map(|(_, value)| value)
                     });
-                    match target.map(|value| &value.kind) {
-                        Some(Expr::Text(name)) => {
-                            self.module(expression.at.line, name, "literal_dynamic_import")
+                    let reference = target.and_then(|value| match &value.kind {
+                        Expr::Text(name) if origin == "importlib.import_module" => {
+                            let package = arguments.get(1).or_else(|| {
+                                keywords
+                                    .iter()
+                                    .find(|(key, _)| key == "package")
+                                    .map(|(_, value)| value)
+                            });
+                            import_module_reference(name, package)
                         }
-                        _ => self.usage.reasons.push(Reason::new(
+                        Expr::Text(name) => Some(Cow::Borrowed(name.as_str())),
+                        _ => None,
+                    });
+                    if let Some(reference) = reference {
+                        self.module(expression.at.line, &reference, "literal_dynamic_import");
+                    } else {
+                        self.usage.reasons.push(Reason::new(
                             "unresolved_dynamic_import",
                             self.path,
                             Some(expression.at.line),
                             "a dynamic import target could not be resolved",
-                        )),
+                        ));
                     }
                 }
                 if origin == "pkg_resources.load_entry_point" {
@@ -339,6 +352,32 @@ impl<'a> Python<'a> {
             }
             _ => {}
         }
+    }
+}
+
+fn import_module_reference<'a>(
+    name: &'a str,
+    package: Option<&'a Expression>,
+) -> Option<Cow<'a, str>> {
+    let member = name.trim_start_matches('.');
+    let level = name.len() - member.len();
+    if level == 0 {
+        return is_module(name).then_some(Cow::Borrowed(name));
+    }
+    let Expr::Text(package) = &package?.kind else {
+        return None;
+    };
+    if !is_module(package) {
+        return None;
+    }
+    let mut parent = package.as_str();
+    for _ in 1..level {
+        parent = parent.rsplit_once('.')?.0;
+    }
+    if member.is_empty() {
+        Some(Cow::Borrowed(parent))
+    } else {
+        is_module(member).then(|| Cow::Owned(format!("{parent}.{member}")))
     }
 }
 

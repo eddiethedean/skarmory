@@ -561,15 +561,15 @@ impl Usage {
         {
             return;
         }
-        if is_python_command(command) && argument == Some("-m") {
-            if let Some(module) = args.get(1) {
-                if module == "pip" && args.get(2).is_some_and(|verb| verb == "install") {
-                    return;
-                }
-                self.module(path, line, module, "module_command");
-                if module == "pytest" {
-                    self.pytest_args(path, line, &args[2..]);
-                }
+        if is_python_command(command)
+            && let Some((module, module_args)) = python_module_args(args)
+        {
+            if module == "pip" && module_args.first().is_some_and(|verb| verb == "install") {
+                return;
+            }
+            self.module(path, line, module, "module_command");
+            if module == "pytest" {
+                self.pytest_args(path, line, module_args);
             }
             return;
         }
@@ -677,6 +677,43 @@ fn is_python_command(command: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || byte == b'.')
         })
+}
+
+fn python_module_args(mut args: &[String]) -> Option<(&str, &[String])> {
+    while let Some((argument, rest)) = args.split_first() {
+        args = rest;
+        if argument == "--check-hash-based-pycs" {
+            args = rest.get(1..)?;
+            continue;
+        }
+        let flags = argument
+            .strip_prefix('-')
+            .filter(|flags| !flags.is_empty())?;
+        for (index, flag) in flags.char_indices() {
+            match flag {
+                'm' => {
+                    let inline = &flags[index + 1..];
+                    return if inline.is_empty() {
+                        rest.split_first()
+                            .map(|(module, args)| (module.as_str(), args))
+                    } else {
+                        Some((inline, rest))
+                    };
+                }
+                'W' | 'X' => {
+                    if index + 1 == flags.len() {
+                        args = rest.get(1..)?;
+                    }
+                    break;
+                }
+                'b' | 'B' | 'd' | 'E' | 'i' | 'I' | 'O' | 'P' | 'q' | 'R' | 's' | 'S' | 'u'
+                | 'v' | 'x' => {}
+                // A script, stdin, -c, or -- ends interpreter option parsing.
+                _ => return None,
+            }
+        }
+    }
+    None
 }
 
 fn yaml_scalar(value: &str) -> String {

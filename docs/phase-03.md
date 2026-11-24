@@ -132,7 +132,10 @@ The declaration inventory reads PEP 621 runtime dependencies, conventional
 requirements inputs, `setup.cfg` and static `setup.py`. Requirements includes
 stay inside the manifest root. The scanner follows ordinary direct inputs
 and recovers inputs from pip-compile or uv compiled text locks via source
-annotations, a supported compiler header, or the sibling `.in` file.
+annotations, a supported compiler header, or the sibling `.in` file. Compiler
+headers can identify `pyproject.toml` as the direct source. Findings use the
+original declaration line. Constraint roles carry through nested includes and
+compiler options.
 An explicit root requirements file governs its include tree. The conventional
 `requirements/` directory is a fallback when neither root input exists.
 Build and setup requirements, constraints, lock pins, optional extras and
@@ -164,8 +167,13 @@ configuration is outside the requested coverage.
 The pinned reference can read installed distribution metadata and tries
 additional standalone requirements files even when a root requirements file
 exists. Skarmory uses the selected project snapshot and its declaration roots
-for reproducible results. The compatibility report keeps the upstream
-`SKY-U005` shape and tool, plugin, driver, and type-stub exemptions.
+for reproducible results. In the reviewed directory fallback case, Skylos
+reports a pin reached only through a nested constraint. Skarmory excludes
+that pin. For relative `importlib.import_module` calls, Skarmory resolves
+literal packages and abstains when it cannot resolve the package. The pinned
+reference can report those distributions as unused. The compatibility report
+keeps the upstream `SKY-U005` shape and tool, plugin, driver, and type-stub
+exemptions.
 [Pinned declaration and location cases](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_setuptools_declarations.py#L378-L421)
 · [Pinned configuration and command evidence](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_requirements_includes_and_unused_deps.py#L167-L223)
 · [Pinned mapping references](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/core/python_distributions.py)
