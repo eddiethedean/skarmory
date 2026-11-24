@@ -36,20 +36,15 @@ skarmory --version
 
 ## Quick start
 
-Run the Skylos profile from the root of your Python project.
+With the installed native CLI, run the Skylos compatibility profile from the
+root of your Python project.
 
 ```sh
 skarmory --profile skylos . --json
 ```
 
-The Phase 0.3 profile can also check unused Python runtime dependencies.
-See the [supported declarations and coverage](docs/phase-03.md#unused-python-dependencies).
-
-```sh
-skarmory --profile skylos-0.3 --quality . --json
-```
-
-The compatibility API returns a JSON string.
+With the installed Python SDK, call the same compatibility profile. The API
+returns a JSON string.
 
 ```python
 import json
@@ -122,42 +117,56 @@ The native profile implements `unreachable_function` within a closed set of
 Python 3.11 sources. Supported syntax, import resolution, and analysis limits
 are defined in the [native scan contract](docs/phase-01.md).
 
-## Dead-code features
+## Features in version 0.2.0
 
-The table compares the 0.2.0 Skylos profile with Skarmory 0.1.0 and the pinned
-Skylos 5.7.0 baseline. A dash means the feature is unavailable in that version
-or profile.
+The released Skylos compatibility profile supports these Python dead-code
+checks within its declared analysis scope.
 
-| Feature | Skarmory 0.1.0 | Skarmory 0.2.0 Skylos profile | Skylos 5.7.0 |
-| --- | --- | --- | --- |
-| Unreachable functions | Bounded reachability from declared roots | Functions and unreachable groups within the supported call graph | Unused functions and unreachable groups |
-| Unused methods and classes | — | Module-level classes and selected method dispatch patterns | Unused classes and methods |
-| Unused imports | — | Supported import bindings and aliases | Yes |
-| Unused variables | — | Supported lexical bindings | Yes |
-| Unused parameters | — | Supported function signatures and reads | Yes |
-| Unused declared dependencies | — | — | Python and npm dependency checks (`SKY-U005`) with quality scanning |
-| Empty Python files | — | Empty, comment-only, and docstring-only files, with entry-file exemptions | Yes |
-| Library exports | Declared public callables and resolvable literal `__all__` | Explicit re-exports, literal `__all__`, and selected literal lazy exports | Public API and export detection |
-| pytest | — | Statically collected tests and selected fixture patterns | Test and fixture awareness |
-| FastAPI | — | Selected routes and router registration | Framework-aware analysis |
-| Django and Flask | — | — | Framework-aware analysis |
-| Finding controls | — | Confidence thresholds, whitelists, and inline ignores | Confidence thresholds, whitelists, and inline ignores |
-| Grep verification and runtime evidence | — | — | Text-based verification and optional tracing or coverage |
-| Reports | Native JSON | Compatibility JSON, strict CLI exit status, and SARIF | JSON, strict CLI exit status, and SARIF |
-| Git diff and baseline workflows | — | — | Changed-file scans, baselines, and configurable gates |
-| Cleanup workflow | — | — | Review queue and patch previews for supported findings |
-| JavaScript and TypeScript dead code | — | — | Unused files (`SKY-E003`), unnecessary exports (`SKY-E004`), unused symbols, and unused enum members (`SKY-U007`) |
+| Feature | Supported behavior |
+| --- | --- |
+| Functions | Unreachable functions and recursive groups |
+| Classes and methods | Module-level classes and selected method dispatch |
+| Imports, variables, parameters | Supported lexical bindings, reads, and aliases |
+| Empty Python files | Empty, comment-only, and docstring-only files, with entry-file exemptions |
+| Public API | Explicit re-exports, literal `__all__`, and selected literal lazy exports |
+| Frameworks | Selected pytest discovery, fixtures, and FastAPI routing models |
+| Finding controls | Confidence thresholds, whitelists, and inline ignores |
+| Reports and automation | JSON, SARIF, strict exit status, and opt-in file-fact caching |
+
+See the [0.2.0 release contract](https://github.com/eddiethedean/skarmory/blob/v0.2.0/docs/phase-02.md)
+for the supported syntax, interfaces, limitations, and evidence. The
+[reference comparison](docs/phase-02-reference.md) records measured
+compatibility with Skylos 5.7.0.
 
 Opaque lazy exports, dynamic plugin loading, custom import hooks, and
 unresolved receiver dispatch can make a scan incomplete when they affect
 reachability.
 
-See the [Phase 0.2 scope](docs/phase-02.md),
-[tested matches and differences](docs/phase-02-reference.md), and
-[Skylos 5.7.0 reference inventory](docs/skylos-5.7.0-contract.md) for details.
-The [Phase 0.3 plan](docs/phase-03.md) schedules the missing Python dead-code
-features. Its release gate requires all in-scope pinned Python dead-code tests
-to pass. Each additional language has its own [milestone and Rust frontend crate](docs/language-frontends.md).
+## Development preview
+
+The `main` branch contains work toward Phase 0.3. These features require a
+source build, and the Phase 0.3 compatibility gate is still pending. The
+published 0.2.0 packages do not expose the `skylos-0.3` selector.
+
+For example, build and run the current CLI from the Skarmory repository root
+to check unused Python runtime dependencies in a target project.
+
+```sh
+cargo run --locked -p skarmory_cli -- --profile skylos-0.3 --quality /path/to/project --json
+```
+
+See the [Phase 0.3 plan and current preview behavior](docs/phase-03.md) and
+the [supported dependency declarations](docs/phase-03.md#unused-python-dependencies).
+
+## Roadmap
+
+Phase 0.3 expands Python dead-code analysis and workflows. Its release gate
+requires every in-scope pinned Python dead-code case and required variant to
+pass. Python quality, security, and developer workflows follow in 0.4–0.6.
+
+Starting in Phase 0.7, each additional language frontend has a dedicated Rust
+crate and release milestone. JavaScript and TypeScript share one frontend.
+See the [roadmap](docs/roadmap.md) and [language milestone plan](docs/language-frontends.md).
 
 ## Development
 
@@ -196,13 +205,15 @@ PYTHONPATH=python python -m unittest discover -s tests/python -v
 
 ### Project documentation
 
-- [Phase 0.2](docs/phase-02.md) describes the Skylos profile and
-  opt-in module-fact cache.
+- [Phase 0.2](docs/phase-02.md) describes the Skylos profile, historical feature
+  comparison, and changes after release.
 - [Phase 0.3](docs/phase-03.md) plans expanded dead-code coverage, verification,
   and workflows.
 - [Contributing](CONTRIBUTING.md) covers development, testing, and publishing.
 - [Architecture](docs/architecture.md) describes the Rust engine and Python SDK.
 - [Roadmap](docs/roadmap.md) lists milestones and release gates.
+- [Language frontends](docs/language-frontends.md) describes the planned crates
+  and independent language release phases.
 - [Compatibility](docs/compatibility.md) defines the Skylos comparison policy.
 - [Conformance](tests/conformance/README.md) and [benchmarks](benchmarks/README.md)
   document how correctness, coverage, and performance are measured.

@@ -164,7 +164,9 @@ without inspecting why behavior changed.
 Before claiming a compatibility surface:
 
 1. Every mandatory contract fixture passes or has a published intentional
-   exception to exact parity.
+   exception to exact parity. The Phase 0.3 Python release gate requires an
+   ordinary pass for every in-scope case and variant; a recorded difference
+   cannot waive that prerequisite.
 2. No unexplained behavioral difference remains.
 3. The must-retain set has no new false positives and required positive cases
    retain their detections.

@@ -340,8 +340,10 @@ and transformation-specific safety controls.
 ## 0.7–0.18: dedicated language frontends
 
 Introduce the shared `skarmory_engine` and language-neutral `skarmory_core` boundary
-in 0.7. Each later milestone adds a dedicated Rust frontend crate and passes its
-own pinned dead-code cases, supported build variants, independent controls, and
+in 0.7 through [infrastructure issue #142](https://github.com/eddiethedean/skarmory/issues/142),
+before the JavaScript/TypeScript frontend is qualified. Each later milestone
+adds a dedicated Rust frontend crate and passes its own pinned dead-code
+cases, supported build variants, independent controls, and
 earlier-phase regressions. See [language milestone details](language-frontends.md)
 and [tracking issue #46](https://github.com/eddiethedean/skarmory/issues/46).
 

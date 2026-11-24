@@ -36,9 +36,12 @@ Tracking [#46](https://github.com/eddiethedean/skarmory/issues/46).
 
 **JavaScript / TypeScript** — `skarmory_javascript`. [Issue #45](https://github.com/eddiethedean/skarmory/issues/45).
 
-Introduce the engine/core/frontend dependency boundaries and feature registry.
-Qualify module resolution, package exports, tsconfig paths, re-exports, unused
-files, exports, symbols, enum members, npm dependencies, component references,
+Complete [shared engine/frontend infrastructure #142](https://github.com/eddiethedean/skarmory/issues/142)
+before qualifying the JavaScript/TypeScript frontend. Introduce the engine,
+language-neutral core, Python frontend migration, dependency boundaries and
+feature registry. Qualify module resolution, package exports, tsconfig paths,
+re-exports, unused files, exports, symbols, enum members, npm dependencies,
+component references,
 and TypeScript cleanup preview/apply/rollback. Resolve the missing original
 fixtures below before awarding pass credit.
 
