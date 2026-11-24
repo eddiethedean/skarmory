@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from phase03_cli import CASE as CLI_CASE
-from phase03_cli import RecursiveCaseCli
+from phase03_cli import WORKFLOW_SOURCES, RecursiveCaseCli, WorkflowCaseCli
 
 PORT = "tests/conformance/run_phase03_seed.py"
 BENCHMARK_SOURCE = "benchmarks/dead_code/manifest.json"
@@ -112,8 +112,11 @@ def port_cases(args):
     cases = {key: case for key, case in expected[args.variant].items() if case["port"] == PORT}
     if not cases:
         raise ValueError(f"no seed port mappings for {args.variant}")
-    if layer == "cli" and set(cases) != {CLI_CASE}:
-        raise ValueError("the CLI port only supports the original recursive control pair")
+    if layer == "cli" and any(
+        key != CLI_CASE and case["source"] not in WORKFLOW_SOURCES
+        for key, case in cases.items()
+    ):
+        raise ValueError("missing native CLI adapter for a mapped case")
     if layer == "sdk" and args.sdk_python is None:
         raise ValueError("--sdk-python is required for the SDK variant")
     return inventory, digest, variant, cases
@@ -299,8 +302,12 @@ def pytest_worker(args):
             with pytest.MonkeyPatch.context() as patch:
                 if args.mode == "candidate":
                     if variant["layer"] == "cli":
-                        cli = RecursiveCaseCli(args.artifact)
-                        patch.setattr(item.module, "subprocess", cli)
+                        if key == CLI_CASE:
+                            cli = RecursiveCaseCli(args.artifact)
+                            patch.setattr(item.module, "subprocess", cli)
+                        else:
+                            cli = WorkflowCaseCli(args.artifact, item.funcargs["tmp_path"], key)
+                            patch.setattr(item.module.cli, "main", cli.run)
                     else:
                         patch.setattr(item.module, "analyze", analyze)
                 try:
@@ -354,7 +361,7 @@ def pytest_worker(args):
             proven = required in lines
             if required == "installed-sdk":
                 proven = args.mode == "candidate"
-            elif required == "native-cli-control-pair":
+            elif required in {"native-cli-control-pair", "native-cli-workflow"}:
                 proven = key in capture.scans
             elif required == "grep-verification":
                 proven = key in capture.grep_scans

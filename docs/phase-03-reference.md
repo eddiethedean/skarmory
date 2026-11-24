@@ -143,3 +143,17 @@ within the benchmark's five-second limit. The scorer records one additional
 unlabeled function finding from Skarmory, which default label mode permits.
 A `math.sqrt` call that can invoke a custom numeric conversion still reports
 incomplete coverage.
+
+## Python workflow CLI cases
+
+The CLI shard includes ten pinned Python impact invocations and the three
+real-scan JSON-CI cases. The original pytest assertions exercise the native
+CLI, including output files and SARIF, incomplete base and head comparisons,
+and rejected impact options. The adapter removes the upstream upload and
+provenance switches for those local runs. The case IDs and original assertion
+locations are in the [inventory](../tests/conformance/phase03-inventory.toml).
+
+The pinned reference and candidate passed all 14 CLI cases in a local macOS
+ARM64 CPython 3.11 run, including the original recursive reachability case.
+The release workflow requires its separate Linux receipts. The inventory audit
+and remaining ports still govern the full publication gate.
