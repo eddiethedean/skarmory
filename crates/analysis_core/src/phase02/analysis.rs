@@ -267,6 +267,7 @@ struct ClassInvocation {
     at: Location,
     edge: Edge,
     receiver: Receiver,
+    deferred_atexit_receiver: Option<SymbolId>,
 }
 
 #[derive(Clone)]
@@ -417,6 +418,7 @@ pub(super) fn analyze_with_verification(
         subclassed: BTreeSet::new(),
         instance_receivers: BTreeMap::new(),
         class_invocations: Vec::new(),
+        atexit_receivers: BTreeMap::new(),
         method_receivers: BTreeMap::new(),
         receiver_calls: Vec::new(),
         resolved_receiver_calls: BTreeSet::new(),
@@ -553,6 +555,7 @@ struct Graph<'a> {
     subclassed: BTreeSet<SymbolId>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
     class_invocations: Vec<ClassInvocation>,
+    atexit_receivers: BTreeMap<ScopeId, Vec<(Edge, SymbolId)>>,
     method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     receiver_calls: Vec<ReceiverCall>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
@@ -3159,22 +3162,30 @@ impl<'a> Graph<'a> {
         certainty: &'static str,
         at: Location,
     ) {
+        let atexit = is_atexit_edge(kind);
         let (kind, certainty) = match (invocation.verified, kind) {
             (true, "direct_call") => ("grep_dynamic_call", "possible"),
             (true, _) => ("grep_dynamic", "possible"),
             (false, _) => (kind, certainty),
         };
         let owner = self.scopes[self.symbols[invocation.target].scope].owner;
+        let mut deferred_atexit_receiver = None;
         if let Some(class) = invocation.receiver.supplied()
             && self.receiver_parameter(invocation.target).is_some()
         {
-            self.method_receivers
-                .entry(invocation.target)
-                .or_default()
-                .insert(class);
+            if atexit {
+                // A shutdown receiver only affects dispatch when its registration runs.
+                deferred_atexit_receiver = Some(class);
+            } else {
+                self.method_receivers
+                    .entry(invocation.target)
+                    .or_default()
+                    .insert(class);
+            }
         }
-        if matches!(invocation.receiver, Receiver::Ordinary)
-            || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner)
+        if deferred_atexit_receiver.is_none()
+            && (matches!(invocation.receiver, Receiver::Ordinary)
+                || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner))
         {
             self.edge(scope, invocation.target, kind, certainty);
         } else {
@@ -3187,6 +3198,7 @@ impl<'a> Graph<'a> {
                     certainty,
                 },
                 receiver: invocation.receiver,
+                deferred_atexit_receiver,
             });
         }
     }
@@ -3224,6 +3236,12 @@ impl<'a> Graph<'a> {
                     "explicit method receiver is outside the bounded model",
                 );
             } else {
+                if let Some(class) = call.deferred_atexit_receiver {
+                    self.atexit_receivers
+                        .entry(call.scope)
+                        .or_default()
+                        .push((call.edge, class));
+                }
                 self.scopes[call.scope].edges.push(call.edge);
             }
         }
@@ -3282,7 +3300,7 @@ impl<'a> Graph<'a> {
         let resolved: BTreeSet<_> = self
             .resolved_receiver_calls
             .iter()
-            .chain(&reach.resolved_django_receiver_calls)
+            .chain(&reach.resolved_deferred_receiver_calls)
             .map(|&(index, _)| index)
             .collect();
         for (index, call) in self.receiver_calls.iter().enumerate() {
@@ -6582,6 +6600,17 @@ impl<'a> Graph<'a> {
                 }
             }
             for &scope in &reach.scopes {
+                if possible && let Some(receivers) = self.atexit_receivers.get(&scope) {
+                    for &(edge, class) in receivers {
+                        if verification || !is_verification_edge(edge.kind) {
+                            reach
+                                .deferred_method_receivers
+                                .entry(edge.target)
+                                .or_default()
+                                .insert(class);
+                        }
+                    }
+                }
                 let scope = &self.scopes[scope];
                 reach.active_objects.extend(&scope.activated_apps);
                 for &(parent, child) in &scope.mounts {
@@ -6608,7 +6637,7 @@ impl<'a> Graph<'a> {
             if self.phase03 {
                 self.activate_django_signals(reach, &mut pending, verification, possible);
                 self.activate_fastapi(reach, &mut pending);
-                self.resolve_django_receiver_calls(reach, &mut pending);
+                self.resolve_deferred_receiver_calls(reach, &mut pending);
             }
             for &(owner, target, kind) in &self.framework_lifecycle {
                 if reach.symbols.contains(&owner) && !reach.has_evidence(target, kind) {
@@ -7061,8 +7090,8 @@ struct Reachability {
     active_objects: BTreeSet<Object>,
     django_setup_scopes: BTreeSet<ScopeId>,
     django_signal_modules: BTreeSet<usize>,
-    django_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
-    resolved_django_receiver_calls: BTreeSet<(usize, SymbolId)>,
+    deferred_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
