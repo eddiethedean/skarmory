@@ -29,6 +29,8 @@ fn scan_with_exit(
     }
     if let Some(cache) = cache {
         command.args(["--workers", "4", "--cache-dir"]).arg(cache);
+    } else {
+        command.args(["--workers", "1"]);
     }
     let output = command
         .current_dir(project)
@@ -928,4 +930,360 @@ def build_dormant_model():
             .collect();
         assert_eq!(schema_evidence, [certainty], "{report}");
     }
+}
+
+fn django_signal_project(project: &Path, registrations: &str) {
+    fs::create_dir(project.join("inventory")).unwrap();
+    for (path, source) in [
+        (
+            "manage.py",
+            "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line(['manage.py', 'check'])\n",
+        ),
+        (
+            "settings.py",
+            "INSTALLED_APPS = ['inventory.apps.InventoryConfig']\n",
+        ),
+        ("inventory/__init__.py", ""),
+        (
+            "inventory/apps.py",
+            "from django.apps import AppConfig\nclass InventoryConfig(AppConfig):\n    name = 'inventory'\n    def ready(self):\n        from . import signals\n",
+        ),
+        ("inventory/signals.py", registrations),
+    ] {
+        fs::write(project.join(path), source).unwrap();
+    }
+}
+
+fn django_signal_evidence(report: &Value) -> Vec<(&str, &str)> {
+    let mut registrations = Vec::new();
+    for row in report["dead_code_evidence"]["symbols"].as_array().unwrap() {
+        for event in row["evidence"].as_array().unwrap() {
+            if event["kind"] == "django_signal" {
+                registrations.push((
+                    row["qualified_name"].as_str().unwrap(),
+                    event["certainty"].as_str().unwrap(),
+                ));
+            }
+        }
+    }
+    registrations.sort_unstable();
+    registrations
+}
+
+#[test]
+fn django_resolves_loaded_signal_forms_and_leaves_dormant_receivers_unused() {
+    let project = tempfile::tempdir().unwrap();
+    django_signal_project(
+        project.path(),
+        r#"from django.db.models.signals import post_save
+from django.core.signals import request_finished
+from django.dispatch import Signal as Event, receiver as listen
+from sys import platform
+
+changed = Event()
+signals = [post_save, request_finished]
+
+def update_inventory():
+    return 42
+
+@listen(signal=signals)
+def refresh(sender, **kwargs):
+    return update_inventory()
+
+register = listen(request_finished)
+@register
+def report(sender, **kwargs):
+    return 1
+
+@listen(changed)
+def on_change(sender, **kwargs):
+    return 2
+
+def after_change(sender, **kwargs):
+    return 3
+
+connect = changed.connect
+connect(receiver=after_change)
+
+class InventoryEvent(Event):
+    pass
+
+@listen(InventoryEvent())
+def on_inventory(sender, **kwargs):
+    return 6
+
+def conditional_receiver(sender, **kwargs):
+    return 4
+
+if platform == "darwin":
+    post_save.connect(conditional_receiver)
+
+def dormant_receiver(sender, **kwargs):
+    return 5
+
+def dormant_registration():
+    changed.connect(dormant_receiver)
+
+class Lookalike:
+    def connect(self, receiver):
+        return None
+
+Lookalike().connect(None)
+
+def receiver(callback):
+    return callback
+
+@receiver
+def looks_registered():
+    return 8
+
+@listen([])
+def empty_registration(sender, **kwargs):
+    return 9
+"#,
+    );
+    fs::write(
+        project.path().join("other.py"),
+        "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef unloaded(sender, **kwargs):\n    return 7\n",
+    )
+    .unwrap();
+
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    for name in [
+        "inventory.signals.dormant_receiver",
+        "inventory.signals.dormant_registration",
+        "inventory.signals.looks_registered",
+        "inventory.signals.empty_registration",
+        "other.unloaded",
+    ] {
+        assert!(unused.contains(&name), "{unused:?}");
+    }
+    assert!(
+        !unused.contains(&"inventory.signals.update_inventory"),
+        "{unused:?}"
+    );
+    assert_eq!(
+        django_signal_evidence(&report),
+        [
+            ("inventory.signals.after_change", "possible"),
+            ("inventory.signals.conditional_receiver", "possible"),
+            ("inventory.signals.on_change", "possible"),
+            ("inventory.signals.on_inventory", "possible"),
+            ("inventory.signals.refresh", "certain"),
+            ("inventory.signals.report", "certain"),
+        ]
+    );
+
+    let cache = tempfile::tempdir().unwrap();
+    let cold = scan_with_settings(project.path(), None, Some(cache.path()));
+    let warm = scan_with_settings(project.path(), None, Some(cache.path()));
+    for key in [
+        "unused_functions",
+        "unused_parameters",
+        "dead_code_evidence",
+        "coverage",
+    ] {
+        assert_eq!(report[key], cold[key], "{key}");
+        assert_eq!(cold[key], warm[key], "{key}");
+    }
+    fs::write(project.path().join("settings.py"), "INSTALLED_APPS = []\n").unwrap();
+    let inactive = scan_with_settings(project.path(), None, Some(cache.path()));
+    assert!(django_signal_evidence(&inactive).is_empty());
+    assert!(findings(&inactive, "unused_functions").contains(&"inventory.signals.refresh"));
+}
+
+#[test]
+fn django_reports_opaque_or_malformed_signal_registrations_only_when_loaded() {
+    let project = tempfile::tempdir().unwrap();
+    django_signal_project(
+        project.path(),
+        r#"from django.db.models.signals import post_save
+from django.dispatch import receiver
+from external import custom
+
+@receiver(custom)
+def opaque(sender, **kwargs):
+    return 1
+
+@receiver(post_save, signal=post_save)
+def malformed(sender, **kwargs):
+    return 2
+"#,
+    );
+
+    let report = scan_with_exit(project.path(), None, None, 2);
+    let issues = report["analysis_errors"].as_array().unwrap();
+    assert_eq!(issues.len(), 2, "{report}");
+    assert!(issues.iter().all(|issue| {
+        issue["file"] == "inventory/signals.py" && issue["kind"] == "unresolved_registration"
+    }));
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.opaque", "possible")],
+    );
+
+    fs::write(project.path().join("settings.py"), "INSTALLED_APPS = []\n").unwrap();
+    let inactive = scan(project.path());
+    let unused = findings(&inactive, "unused_functions");
+    for name in ["inventory.signals.opaque", "inventory.signals.malformed"] {
+        assert!(unused.contains(&name), "{unused:?}");
+    }
+}
+
+#[test]
+fn django_entry_reaching_setup_checks_its_own_registrations() {
+    let project = tempfile::tempdir().unwrap();
+    for (path, source) in [
+        ("settings.py", "INSTALLED_APPS = []\n"),
+        (
+            "bootstrap.py",
+            "import os\nfrom django import setup\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nsetup()\n",
+        ),
+        ("entry.py", "import bootstrap\nimport receivers\n"),
+        (
+            "receivers.py",
+            r#"from django.dispatch import receiver
+from integration.signals import changed
+
+@receiver(changed)
+def sync_record(sender, **kwargs):
+    return sync_helper()
+
+def sync_helper():
+    return 1
+"#,
+        ),
+        (
+            "unrelated.py",
+            "import settings\nfrom django.db.models.signals import post_save\nfrom django.dispatch import receiver\n@receiver(post_save)\ndef dormant(sender, **kwargs):\n    return 2\n",
+        ),
+    ] {
+        fs::write(project.path().join(path), source).unwrap();
+    }
+
+    let report = scan_with_exit(project.path(), None, None, 2);
+    let issues = report["analysis_errors"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{report}");
+    assert_eq!(issues[0]["file"], "receivers.py");
+    assert_eq!(issues[0]["kind"], "unresolved_registration");
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("receivers.sync_record", "possible")],
+    );
+
+    fs::write(
+        project.path().join("bootstrap.py"),
+        "import os\nfrom django import setup\ndef initialize():\n    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n    setup()\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("entry.py"),
+        "from bootstrap import initialize\nfrom receivers import subscribe\ninitialize()\nsubscribe()\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("receivers.py"),
+        r#"from django.db.models.signals import post_save as changed
+from integration import on_save
+
+def subscribe():
+    changed.connect(on_save)
+"#,
+    )
+    .unwrap();
+
+    let report = scan_with_exit(project.path(), None, None, 2);
+    let issues = report["analysis_errors"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{report}");
+    assert_eq!(issues[0]["file"], "receivers.py");
+    assert_eq!(issues[0]["kind"], "unresolved_registration");
+
+    fs::write(
+        project.path().join("receivers.py"),
+        r#"from django.db.models.signals import post_save as changed
+
+def on_save(sender, **kwargs):
+    return 1
+
+def subscribe():
+    changed.connect(on_save)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").contains(&"unrelated.dormant"));
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("receivers.on_save", "possible")],
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        for key in ["coverage", "dead_code_evidence", "unused_functions"] {
+            assert_eq!(cached[key], report[key], "{key}");
+        }
+    }
+}
+
+#[test]
+fn django_dormant_signal_receivers_do_not_change_dispatch() {
+    let project = tempfile::tempdir().unwrap();
+    let active = r#"from django.db.models.signals import post_save
+
+class Handler:
+    def on_save(self, sender, **kwargs):
+        return self.process()
+
+class Installed(Handler):
+    def process(self):
+        return 1
+
+installed = Installed()
+post_save.connect(installed.on_save)
+"#;
+    let dormant = r#"
+def install_optional():
+    instance = Optional()
+    post_save.connect(instance.on_save)
+"#;
+    let callable = format!(
+        "{active}\nclass Optional(Handler):\n    def process(self):\n        return 2\n{dormant}installed.on_save(None)\n",
+    );
+    django_signal_project(project.path(), &callable);
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    assert!(
+        unused.contains(&"inventory.signals.Optional.process"),
+        "{report}"
+    );
+    assert!(
+        !unused.contains(&"inventory.signals.Installed.process"),
+        "{report}"
+    );
+
+    let non_callable = format!("{active}\nclass Optional(Handler):\n    process = None\n{dormant}");
+    let signals = project.path().join("inventory/signals.py");
+    fs::write(&signals, &non_callable).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.Handler.on_save", "certain")],
+    );
+    let unused = findings(&report, "unused_functions");
+    assert!(
+        unused.contains(&"inventory.signals.install_optional"),
+        "{report}"
+    );
+    assert!(
+        !unused.contains(&"inventory.signals.Installed.process"),
+        "{report}"
+    );
+
+    fs::write(&signals, format!("{non_callable}\ninstall_optional()\n")).unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    let issues = report["analysis_errors"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{report}");
+    assert_eq!(issues[0]["file"], "inventory/signals.py");
+    assert_eq!(issues[0]["kind"], "unresolved_call");
 }
