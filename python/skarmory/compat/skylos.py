@@ -1,4 +1,4 @@
-"""The declared offline Python dead-code profile for Skylos 5.7.0."""
+"""The declared offline dead-code profiles for Skylos 5.7.0."""
 
 from collections.abc import Sequence
 from os import fspath
@@ -49,7 +49,9 @@ def analyze(
     default. Pass a path relative to the project root or False to disable
     the corresponding input. The report keeps runtime provenance and
     rejected evidence separate from static coverage.
-    Pass `enable_quality=True` in Phase 0.3 to check unused runtime dependencies.
+    Phase 0.3 development builds also include experimental unused-file checks
+    for JavaScript and TypeScript packages with a package.json main entry.
+    Pass `enable_quality=True` in Phase 0.3 to check unused Python dependencies.
     Phase 0.3 also supports Git comparisons, baselines, and gates. The JSON
     gate record includes its exit code and coverage. Use `output_format="json-ci"`
     to omit the whole-symbol evidence ledger while retaining per-finding evidence.

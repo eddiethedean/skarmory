@@ -135,6 +135,7 @@ pub(super) fn write(path: &Path, report: &Report) -> Result<Summary, ConfigError
     }
     let findings = inventory(report)
         .into_iter()
+        .filter(|(identity, _)| super::DEAD_CODE_RULES.contains(&identity.rule.as_str()))
         .flat_map(|(identity, count)| std::iter::repeat_n(identity, count))
         .collect();
     let mut bytes = serde_json::to_vec_pretty(&Baseline {

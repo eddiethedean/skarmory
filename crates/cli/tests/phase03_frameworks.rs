@@ -1287,3 +1287,337 @@ def install_optional():
     assert_eq!(issues[0]["file"], "inventory/signals.py");
     assert_eq!(issues[0]["kind"], "unresolved_call");
 }
+
+#[test]
+fn atexit_registrations_retain_only_reached_callbacks_and_transitive_helpers() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("shutdown.py");
+    fs::write(
+        &path,
+        r#"from atexit import register as on_exit
+from os import name
+
+def leaf():
+    return 1
+
+def cleanup(code=0):
+    return leaf() + code
+
+def platform_cleanup(code=0):
+    return code
+
+callback = cleanup if name == "posix" else platform_cleanup
+on_exit(callback, code=1)
+
+@on_exit
+def decorated():
+    return 2
+
+def unused():
+    return 3
+
+def dormant():
+    on_exit(unused)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["shutdown.dormant", "shutdown.unused"],
+        "{report}"
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, kind) in [
+        ("shutdown.cleanup", "atexit_registration"),
+        ("shutdown.platform_cleanup", "atexit_registration"),
+        ("shutdown.decorated", "atexit_registration"),
+        ("shutdown.leaf", "direct_call"),
+    ] {
+        assert!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == name
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["kind"] == kind && entry["certainty"] == "possible")
+            }),
+            "missing possible {kind} evidence for {name}: {report}"
+        );
+    }
+    for hits in [0, 1] {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(cached, report);
+    }
+
+    // An independent direct call establishes reachability through the same body.
+    let contents = fs::read_to_string(&path).unwrap();
+    fs::write(&path, contents + "\ncleanup()\n").unwrap();
+    let updated = scan(project.path());
+    assert!(
+        updated["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "shutdown.leaf"
+                    && row["evidence"].as_array().unwrap().iter().any(|entry| {
+                        entry["kind"] == "direct_call" && entry["certainty"] == "certain"
+                    })
+            })
+    );
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, updated);
+}
+
+#[test]
+fn atexit_registration_checks_provider_identity_and_unresolved_targets() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("shutdown.py");
+    fs::write(
+        &path,
+        r#"from atexit import register
+from sys import argv
+
+def cleanup():
+    return 1
+
+register(argv[0])
+"#,
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_callback" && issue["line"] == 7)
+    );
+    assert!(findings(&report, "unused_functions").is_empty());
+
+    fs::write(
+        &path,
+        r#"from atexit import register
+
+def fake_register(value):
+    return 1
+
+register = fake_register
+
+def cleanup():
+    return 1
+
+register(1)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["shutdown.cleanup"]);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().all(|row| {
+        row["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["kind"] != "atexit_registration")
+    }));
+}
+
+#[test]
+fn atexit_callback_reads_respect_dormant_lexical_bindings() {
+    let project = tempfile::tempdir().unwrap();
+    for (import, dormant, call) in [
+        (
+            "from atexit import register as schedule",
+            "schedule",
+            "schedule(cleanup)",
+        ),
+        (
+            "import atexit as shutdown",
+            "shutdown",
+            "shutdown.register(cleanup)",
+        ),
+        (
+            "from atexit import register",
+            "cleanup",
+            "register(cleanup)",
+        ),
+    ] {
+        fs::write(
+            project.path().join("shutdown.py"),
+            format!(
+                "{import}\n\ndef cleanup():\n    return 1\n\ndef run():\n    if False:\n        {dormant} = print\n    {call}\n\nrun()\n"
+            ),
+        )
+        .unwrap();
+        let report = scan_with_exit(project.path(), None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unbound_local" && issue["line"] == 9)
+        );
+        assert!(findings(&report, "unused_functions").is_empty());
+    }
+}
+
+#[test]
+fn atexit_dormant_bound_callbacks_do_not_change_live_receiver_dispatch() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("shutdown.py");
+    for (method, has_finish) in [
+        ("    pass\n", false),
+        (
+            "    def finish(self):\n        return dormant_helper()\n",
+            true,
+        ),
+    ] {
+        fs::write(
+            &path,
+            format!(
+                r#"from atexit import register
+
+class Handler:
+    def cleanup(self):
+        return self.finish()
+
+class Active(Handler):
+    def finish(self):
+        return 1
+
+def dormant_helper():
+    return 2
+
+class Dormant(Handler):
+{method}
+def install_dormant():
+    resource = Dormant()
+    register(resource.cleanup)
+
+Active().cleanup()
+"#
+            ),
+        )
+        .unwrap();
+        let report = scan(project.path());
+        let unused = findings(&report, "unused_functions");
+        assert!(unused.contains(&"shutdown.dormant_helper"), "{report}");
+        assert!(unused.contains(&"shutdown.install_dormant"), "{report}");
+        assert_eq!(
+            unused.contains(&"shutdown.Dormant.finish"),
+            has_finish,
+            "{report}"
+        );
+        assert!(!unused.contains(&"shutdown.Active.finish"), "{report}");
+    }
+}
+
+#[test]
+fn atexit_reached_bound_callback_retains_its_receiver_with_possible_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("shutdown.py");
+    fs::write(
+        &path,
+        r#"from atexit import register
+from os import name
+from helpers import live_helper, shutdown_helper
+
+class Handler:
+    def cleanup(self):
+        return self.finish()
+
+class Active(Handler):
+    def finish(self):
+        return live_helper()
+
+class AtExit(Handler):
+    def finish(self):
+        return self.flush()
+
+    def flush(self):
+        return shutdown_helper()
+
+def install_shutdown():
+    resource = AtExit()
+    register(resource.cleanup)
+
+Active().cleanup()
+if name == "posix":
+    install_shutdown()
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("helpers.py"),
+        "def live_helper():\n    return 1\n\ndef shutdown_helper():\n    return 2\n",
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, kind, certainty) in [
+        (
+            "shutdown.Handler.cleanup",
+            "atexit_registration",
+            "possible",
+        ),
+        ("shutdown.Active.finish", "direct_call", "certain"),
+        ("helpers.live_helper", "direct_call", "certain"),
+        ("shutdown.AtExit.finish", "direct_call", "possible"),
+        ("shutdown.AtExit.flush", "direct_call", "possible"),
+        ("helpers.shutdown_helper", "direct_call", "possible"),
+    ] {
+        assert!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == name
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["kind"] == kind && entry["certainty"] == certainty)
+            }),
+            "missing {certainty} {kind} evidence for {name}: {report}"
+        );
+    }
+    for row in symbols.iter().filter(|row| {
+        row["qualified_name"] == "shutdown.AtExit.finish"
+            || row["qualified_name"] == "shutdown.AtExit.flush"
+            || row["qualified_name"] == "helpers.shutdown_helper"
+    }) {
+        assert!(
+            row["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["certainty"] != "certain"),
+            "unexpected certain shutdown-only evidence: {row}"
+        );
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let updated = fs::read_to_string(&path)
+        .unwrap()
+        .replace("if name == \"posix\":\n    install_shutdown()\n", "");
+    fs::write(path, updated).unwrap();
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    assert!(unused.contains(&"shutdown.AtExit.finish"), "{report}");
+    assert!(unused.contains(&"helpers.shutdown_helper"), "{report}");
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+}

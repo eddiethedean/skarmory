@@ -1,4 +1,4 @@
-//! Bounded native Python dead-code analysis and Skylos 5.7.0 reporting.
+//! Bounded native dead-code analysis and Skylos 5.7.0 reporting.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -18,6 +18,7 @@ use crate::{Coverage, Issue};
 mod analysis;
 pub(crate) mod config;
 mod dependencies;
+mod javascript;
 mod package_entrypoints;
 mod runtime_evidence;
 pub use runtime_evidence::Input as EvidenceInput;
@@ -188,6 +189,8 @@ struct Diagnostic {
     #[serde(skip_serializing_if = "Option::is_none")]
     severity: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    confidence_factors: Option<[&'static str; 1]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     category: Option<&'static str>,
@@ -222,20 +225,32 @@ impl Diagnostic {
         disposition: &'static str,
         source: Option<&str>,
     ) -> Self {
-        let empty_file = finding.category == Category::File;
+        let file = finding.category == Category::File;
+        let javascript_file = finding.rule_id == javascript::RULE;
+        let message = match (finding.rule_id, finding.reason) {
+            (javascript::RULE, javascript::DEAD_IMPORTERS) => Some(
+                "Unused TypeScript/JavaScript file (only imported by files that are themselves unused)",
+            ),
+            (javascript::RULE, _) => {
+                Some("Unused TypeScript/JavaScript file (not imported by any other file)")
+            }
+            ("SKY-E002", _) => Some("Empty Python file (no code, or docstring-only)"),
+            _ => None,
+        };
         Self {
-            simple_name: (!empty_file).then(|| finding.name.clone()),
-            name: (!empty_file).then_some(finding.name),
-            full_name: (!empty_file).then_some(finding.full_name),
+            simple_name: (!file).then(|| finding.name.clone()),
+            name: (!file).then_some(finding.name),
+            full_name: (!file).then_some(finding.full_name),
             kind: finding.category.as_str(),
             basename: finding.file.rsplit('/').next().unwrap_or("").into(),
             file: finding.file,
             line: finding.line,
             column: finding.column,
-            confidence: (!empty_file).then_some(finding.confidence),
-            severity: empty_file.then_some("LOW"),
-            message: empty_file.then_some("Empty Python file (no code, or docstring-only)"),
-            category: empty_file.then_some("DEAD_CODE"),
+            confidence: (!file || javascript_file).then_some(finding.confidence),
+            severity: file.then_some("LOW"),
+            confidence_factors: javascript_file.then_some([finding.reason]),
+            message,
+            category: file.then_some("DEAD_CODE"),
             rule_id: finding.rule_id,
             reason,
             dead_code_disposition: disposition,
@@ -315,6 +330,8 @@ struct Summary {
     coverage_status: &'static str,
     languages: BTreeMap<&'static str, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    javascript_file_analysis: Option<JavaScriptFileAnalysis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     grep_verify: Option<VerificationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dead_code_liveness: Option<LivenessSummary>,
@@ -326,6 +343,13 @@ struct Summary {
     pr_impact: Option<workflow::Impact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<workflow::BaselineSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct JavaScriptFileAnalysis {
+    rule_id: &'static str,
+    status: &'static str,
+    scope: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -679,9 +703,14 @@ fn validate_category(category: Option<&str>) -> Result<(), ConfigError> {
 }
 
 struct Snapshot {
-    facts: Result<ModuleFacts, skarmory_python::FrontendError>,
+    facts: Result<FileFacts, Issue>,
     source: String,
     hide_findings: bool,
+}
+
+enum FileFacts {
+    Python(ModuleFacts),
+    JavaScript(javascript::Module),
 }
 
 pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
@@ -727,41 +756,90 @@ fn scan_with_context(
             &roots,
         )
     });
-    let mut project =
-        preview_source::discover_filtered(path, &roots, FileEntry::None, Some(&config.selection));
+    let mut project = preview_source::discover_sources(
+        path,
+        &roots,
+        FileEntry::None,
+        Some(&config.selection),
+        phase03 && include_dead_code,
+    );
+    let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
+        BTreeMap::new()
+    } else {
+        BTreeMap::from([("Python", 0)])
+    };
+    for file in &project.files {
+        let language = match preview_source::javascript_extension(OsStr::new(&file.label)) {
+            Some("ts" | "tsx" | "mts" | "cts") => "TypeScript",
+            Some(_) => "JavaScript",
+            None => "Python",
+        };
+        *languages.entry(language).or_default() += 1;
+    }
+    let has_javascript =
+        languages.contains_key("JavaScript") || languages.contains_key("TypeScript");
     let mut issues = std::mem::take(&mut project.issues);
     let mut selected_paths = Vec::new();
     let mut generated_sources = BTreeSet::new();
     let mut sources = BTreeMap::new();
     let mut files = Vec::new();
+    let mut js_modules = BTreeMap::new();
+    let mut javascript_analysis = Analysis::default();
     let mut stamps = Vec::new();
     let mut file_configs = BTreeMap::new();
     let mut directory_configs = BTreeMap::new();
     let mut local_configs = Vec::new();
     match project.map_file_sources(options.workers, |file, source| {
-        let facts = match &cache {
-            Some(cache) => cache.get_or_extract(source, extract),
-            None => extract(source),
-        };
-        Snapshot {
+        let facts = if let Some(extension) =
+            preview_source::javascript_extension(OsStr::new(&file.label))
+        {
+            javascript::extract(&file.label, source, extension, cache.as_ref())
+                .map(FileFacts::JavaScript)
+        } else {
+            match &cache {
+                Some(cache) => cache.get_or_extract(source, extract),
+                None => extract(source),
+            }
+            .map(FileFacts::Python)
+        }
+        .map_err(|error| Issue::new(error.kind, &file.label, error.message).at(error.location));
+        Ok(Snapshot {
             facts,
             source: source.to_owned(),
             hide_findings: !path.is_file()
                 && config
                     .selection
                     .suppress_generated_findings(&file.label, source),
-        }
+        })
     }) {
         Ok(work) => {
-            for (file, work) in project.files.iter().zip(work) {
-                stamps.push(work.stamp);
+            javascript_analysis
+                .issues
+                .extend(work.javascript_budget_issue);
+            for (file, work) in project.files.iter().zip(work.files) {
                 selected_paths.push(file.label.clone());
-                match work.result {
-                    Ok(Snapshot {
-                        facts: Ok(facts),
-                        source,
-                        hide_findings,
-                    }) => {
+                let Some(work) = work else {
+                    stamps.push(None);
+                    continue;
+                };
+                stamps.push(work.stamp);
+                let snapshot = work.result.and_then(|snapshot| snapshot).and_then(
+                    |Snapshot {
+                         facts,
+                         source,
+                         hide_findings,
+                     }| match facts {
+                        Ok(facts) => Ok((facts, source, hide_findings)),
+                        Err(issue) => {
+                            if let Some(diff_sources) = diff_sources.as_deref_mut() {
+                                diff_sources.insert(file.label.clone(), source);
+                            }
+                            Err(issue)
+                        }
+                    },
+                );
+                match snapshot {
+                    Ok((facts, source, hide_findings)) => {
                         if hide_findings {
                             generated_sources.insert(file.label.clone());
                         }
@@ -788,25 +866,24 @@ fn scan_with_context(
                             file_configs.insert(file.label.clone(), index);
                         }
                         sources.insert(file.label.clone(), source);
-                        files.push(AnalyzedFile {
-                            path: file.label.clone(),
-                            module: file.name.clone(),
-                            is_package: Path::new(&file.label).file_name()
-                                == Some(OsStr::new("__init__.py")),
-                            facts,
-                        });
-                    }
-                    Ok(Snapshot {
-                        facts: Err(error),
-                        source,
-                        ..
-                    }) => {
-                        if let Some(diff_sources) = diff_sources.as_deref_mut() {
-                            diff_sources.insert(file.label.clone(), source);
+                        match facts {
+                            FileFacts::Python(facts) => files.push(AnalyzedFile {
+                                path: file.label.clone(),
+                                module: file.name.clone(),
+                                is_package: Path::new(&file.label).file_name()
+                                    == Some(OsStr::new("__init__.py")),
+                                facts,
+                            }),
+                            FileFacts::JavaScript(module) => {
+                                js_modules.insert(file.label.clone(), module);
+                            }
                         }
-                        issues.push(
-                            Issue::new(error.kind, &file.label, error.message).at(error.location),
-                        );
+                    }
+                    Err(issue)
+                        if preview_source::javascript_extension(OsStr::new(&file.label))
+                            .is_some() =>
+                    {
+                        javascript_analysis.issues.push(issue);
                     }
                     Err(issue) => issues.push(issue),
                 }
@@ -880,6 +957,22 @@ fn scan_with_context(
     } else {
         Analysis::default()
     };
+    if include_dead_code
+        && has_javascript
+        && issues.is_empty()
+        && analysis.issues.is_empty()
+        && javascript_analysis.issues.is_empty()
+    {
+        if path.is_file() {
+            javascript_analysis.issues.push(Issue::new(
+                "unsupported_js_input_scope",
+                &selected_paths[0],
+                "JavaScript and TypeScript file reachability requires scanning the package directory",
+            ));
+        } else {
+            javascript::analyze(&project, &js_modules, &mut javascript_analysis);
+        }
+    }
     if let Some(mut runtime) = runtime {
         analysis.runtime_evidence_issues.append(&mut runtime.issues);
         analysis.runtime_evidence_issues.sort();
@@ -929,7 +1022,20 @@ fn scan_with_context(
             ));
         }
     }
-    let static_complete = issues.is_empty();
+    let python_complete = issues.is_empty();
+    let javascript_complete = python_complete && javascript_analysis.issues.is_empty();
+    if javascript_complete {
+        analysis.findings.append(&mut javascript_analysis.findings);
+        analysis.evidence.append(&mut javascript_analysis.evidence);
+    }
+    issues.append(&mut javascript_analysis.issues);
+    if has_javascript && enable_quality && !config.ignores_rule(dependencies::RULE) {
+        issues.push(Issue::new(
+            "unsupported_npm_dependency_analysis",
+            ".",
+            "the unused-dependency rule currently covers Python dependencies only",
+        ));
+    }
     if let Some(result) = &dependency_result {
         issues.extend(result.issues());
     }
@@ -973,7 +1079,7 @@ fn scan_with_context(
         .iter()
         .map(|file| (file.path.as_str(), &file.facts))
         .collect();
-    if static_complete {
+    if python_complete {
         for mut finding in analysis.findings {
             if generated_sources.contains(&finding.file) {
                 continue;
@@ -989,6 +1095,11 @@ fn scan_with_context(
                                 .any(|rule| rule.eq_ignore_ascii_case(finding.rule_id)))
                 })
             });
+            let inline = inline
+                || (finding.rule_id == javascript::RULE
+                    && js_modules
+                        .get(&finding.file)
+                        .is_some_and(|module| module.ignore_file));
             if inline {
                 suppressed.push(Diagnostic::new(
                     finding,
@@ -1015,7 +1126,7 @@ fn scan_with_context(
                 }
                 config::Decision::Keep => {}
             }
-            // SKY-E002 is a file-level policy rather than a scored binding.
+            // Skylos applies the confidence threshold to bindings and keeps file findings.
             if finding.category == Category::File || finding.confidence >= config.confidence {
                 categories.get_mut(finding.category).push(Diagnostic::new(
                     finding,
@@ -1099,7 +1210,16 @@ fn scan_with_context(
             total_files: selected_paths.len(),
             analysis_error_count: issues.len(),
             coverage_status: status,
-            languages: BTreeMap::from([("Python", selected_paths.len())]),
+            languages,
+            javascript_file_analysis: has_javascript.then_some(JavaScriptFileAnalysis {
+                rule_id: javascript::RULE,
+                status: if javascript_complete {
+                    "complete"
+                } else {
+                    "incomplete"
+                },
+                scope: "local_static_imports_from_package_main",
+            }),
             grep_verify: (phase03 || grep_verify).then_some(VerificationSummary {
                 enabled: grep_verify,
                 rescued_count: analysis.rescued_count,
@@ -1113,7 +1233,7 @@ fn scan_with_context(
         coverage: Coverage {
             status,
             selected_files: selected_paths.len(),
-            extracted_files: files.len(),
+            extracted_files: files.len() + js_modules.len(),
             issues,
         },
         selected_paths,

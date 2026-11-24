@@ -11,8 +11,9 @@ combined wheel is an experimental installed layout.
 
 ## Product goal
 
-Build a Python code analyzer with a shared native Rust engine, a native CLI, and
-a thin Python API. Preserve the useful analysis behavior and framework awareness
+Build a Python-first code analyzer with a shared native Rust engine, a native CLI,
+and a thin Python API. Expand into a multi-language analyzer through dedicated
+Rust frontend crates and independently qualified language milestones. Preserve the useful analysis behavior and framework awareness
 of Skylos while making frequent local scans responsive.
 
 The first reference implementation is
@@ -45,11 +46,23 @@ Compatibility is versioned and limited to explicitly declared features. The
 | Phase 0 | Compatibility contract, benchmark baseline, native vertical slice | Initial scaffold | Reproducible baseline and measured native prototype |
 | 0.1 | Native unreachable-function preview for packaged Python 3.11 projects | Phase 0 | Reviewed reachability, coverage, and worker-equivalence checks pass |
 | 0.2 | [Declared Python dead-code compatibility and persistent module facts](phase-02.md) | 0.1 | Reviewed reference differences, independent controls, and cached/clean equivalence |
-| 0.3 | [Expanded dead-code coverage and workflows](phase-03.md) | 0.2 | Every pinned Skylos dead-code test passes against Skarmory |
+| 0.3 | [Expanded Python dead-code coverage and workflows](phase-03.md) | 0.2 | Every in-scope pinned Python dead-code case and variant passes against Skarmory |
 | 0.4 | Quality and secrets | 0.3 | Rule-level conformance and independent controls |
 | 0.5 | Security and data flow | 0.4 and semantic infrastructure | Accuracy, completeness, and resource budgets verified |
 | 0.6 | Developer workflows | Phase 0.3 workflow contracts and relevant stable rule families | Integration and narrow edit contracts verified |
-| 1.0 | Stable declared Python analysis contract | Earlier gates | Published feature matrix, APIs, wheels, and evidence |
+| 0.7 | [JavaScript / TypeScript frontend](language-frontends.md#phase-07) (`skarmory_javascript`) | 0.6 | Scoped language conformance and earlier-phase regressions |
+| 0.8 | [Rust frontend](language-frontends.md#phase-08) (`skarmory_rust`) | 0.7 | Scoped language conformance and earlier-phase regressions |
+| 0.9 | [Go frontend](language-frontends.md#phase-09) (`skarmory_go`) | 0.8 | Scoped language conformance and earlier-phase regressions |
+| 0.10 | [Java frontend](language-frontends.md#phase-010) (`skarmory_java`) | 0.9 | Scoped language conformance and earlier-phase regressions |
+| 0.11 | [C++ frontend](language-frontends.md#phase-011) (`skarmory_cpp`) | 0.10 | Scoped language conformance and earlier-phase regressions |
+| 0.12 | [C# frontend](language-frontends.md#phase-012) (`skarmory_csharp`) | 0.11 | Scoped language conformance and earlier-phase regressions |
+| 0.13 | [Swift frontend](language-frontends.md#phase-013) (`skarmory_swift`) | 0.12 | Scoped language conformance and earlier-phase regressions |
+| 0.14 | [Kotlin frontend](language-frontends.md#phase-014) (`skarmory_kotlin`) | 0.13 | Scoped language conformance and earlier-phase regressions |
+| 0.15 | [Dart frontend](language-frontends.md#phase-015) (`skarmory_dart`) | 0.14 | Scoped language conformance and earlier-phase regressions |
+| 0.16 | [PHP frontend](language-frontends.md#phase-016) (`skarmory_php`) | 0.15 | Scoped language conformance and earlier-phase regressions |
+| 0.17 | [Ruby frontend](language-frontends.md#phase-017) (`skarmory_ruby`) | 0.16 | Scoped language conformance and earlier-phase regressions |
+| 0.18 | [Robot Framework frontend](language-frontends.md#phase-018) (`skarmory_robot`) | 0.17 | Scoped language conformance and earlier-phase regressions |
+| 1.0 | Stable declared analysis contracts | Earlier gates | Published feature matrix, APIs, wheels, and evidence |
 
 ## Planned Rust dependencies
 
@@ -63,7 +76,7 @@ workflow in [CONTRIBUTING.md](../CONTRIBUTING.md#dependencies-and-packaging).
 | --- | --- | --- |
 | 0.1 | [walkdir](https://docs.rs/walkdir/latest/walkdir/), [Rayon](https://docs.rs/rayon/latest/rayon/), [clap](https://docs.rs/clap/latest/clap/) | Use walkdir for recursive discovery with explicit root and nested symlink behavior, sorted paths, and coverage diagnostics for traversal errors. Add bounded Rayon workers after the serial fixtures pass. Use clap for the preview flags while preserving native CLI output and exit behavior. |
 | 0.2 | [toml](https://docs.rs/toml/latest/toml/), [globset](https://docs.rs/globset/latest/globset/), [ignore](https://docs.rs/ignore/latest/ignore/), [BLAKE3](https://docs.rs/blake3/latest/blake3/), [tempfile](https://docs.rs/tempfile/latest/tempfile/), [serde-sarif](https://docs.rs/serde-sarif/latest/serde_sarif/) | Match TOML syntax, path rules, and config precedence against pinned Skylos fixtures. Evaluate ignore for declared Git-style filtering. Use BLAKE3 content fingerprints and versioned Serde records, with tempfile for atomic cache writes from the same directory. Evaluate serde-sarif for the declared report format and verify exported reports against the compatibility fixtures. |
-| 0.3 | Oxc and Tree-sitter frontends, requirement parsing, evidence search, Git integration, and patch previews. See the [Phase 0.3 crate shortlist](phase-03.md#rust-crate-candidates). | Qualify candidates against the pinned test inventory, supported build targets, and packaging requirements. Preserve interpreter-independent static CLI operation. |
+| 0.3 | Python requirement parsing, evidence search, Git integration, and patch previews. See the [Phase 0.3 crate shortlist](phase-03.md#rust-crate-candidates). | Qualify candidates against the pinned test inventory, supported build targets, and packaging requirements. Preserve interpreter-independent static CLI operation. |
 | 0.4 | [regex](https://docs.rs/regex/latest/regex/), [aho-corasick](https://docs.rs/aho-corasick/latest/aho_corasick/) | Use regex for reviewed text and byte patterns. Check Python lookaround and backreferences when porting rules. Evaluate the already transitive aho-corasick crate for a shared literal search pass. Preserve reference clone scores when optimizing candidate selection. |
 | 0.5 | [petgraph](https://docs.rs/petgraph/latest/petgraph/), [fixedbitset](https://docs.rs/fixedbitset/latest/fixedbitset/) | Evaluate iterative strongly connected component analysis for recursive call groups and dense bitsets for flow facts. Keep propagation, budgets, and evidence paths in the analysis engine. |
 | 0.6 | [notify](https://docs.rs/notify/latest/notify/), [lsp-server](https://docs.rs/lsp-server/latest/lsp_server/), [lsp-types](https://docs.rs/lsp-types/latest/lsp_types/) | Use notify for watch events and rescan when events may have been lost. Use the LSP pair for editor transport and messages, with position conversion at the adapter boundary. |
@@ -247,10 +260,11 @@ See the [pinned reference results](phase-02-reference.md),
 [carry-forward holdout](phase-02-holdout.md), and
 [cache benchmark](../benchmarks/phase02.md).
 
-## 0.3: expanded dead-code coverage and workflows
+## 0.3: expanded Python dead-code coverage and workflows
 
-Phase 0.3 requires every case and required variant in the pinned Skylos
-dead-code suite to pass against Skarmory before release. The
+Phase 0.3 requires every in-scope Python case and required variant in the pinned
+Skylos dead-code suite to pass against Skarmory before release. Non-Python and
+inseparable cross-language cases belong to their respective later milestones. The
 [Phase 0.3 plan](phase-03.md) defines the workstream acceptance checks and
 [upstream test gate](phase-03.md#required-upstream-test-gate). See the
 [workstream issues](phase-03.md#scope-and-acceptance) to track implementation.
@@ -259,8 +273,6 @@ dead-code suite to pass against Skarmory before release. The
   and map each assertion to Skarmory.
 - [ ] Expand Python reachability, framework and test discovery models, and
   unused declared dependency checks.
-- [ ] Add JavaScript and TypeScript unused-file and export analysis and the
-  liveness behavior exercised in other upstream frontends.
 - [ ] Add grep verification and positive runtime use evidence with versioned
   compatibility defaults and provenance.
 - [ ] Add dead-code diff reports, complete base and head comparisons, baselines,
@@ -325,9 +337,19 @@ Goal: use the engine reliably in CI and frequent edit loops.
 Exit evidence: end-to-end integration tests, cached/resident/clean equivalence,
 and transformation-specific safety controls.
 
-## 1.0: stable declared Python analysis
+## 0.7–0.18: dedicated language frontends
 
-- [ ] Publish supported Python syntax, operating systems, interpreter/wheel matrix,
+Introduce the shared `skarmory_engine` and language-neutral `skarmory_core` boundary
+in 0.7 through [infrastructure issue #142](https://github.com/eddiethedean/skarmory/issues/142),
+before the JavaScript/TypeScript frontend is qualified. Each later milestone
+adds a dedicated Rust frontend crate and passes its own pinned dead-code
+cases, supported build variants, independent controls, and
+earlier-phase regressions. See [language milestone details](language-frontends.md)
+and [tracking issue #46](https://github.com/eddiethedean/skarmory/issues/46).
+
+## 1.0: stable declared analysis
+
+- [ ] Publish supported language syntax, operating systems, interpreter/wheel matrix,
   and analyzer feature matrix.
 - [ ] Stabilize the native public configuration, typed Python API, diagnostic schema,
   error model, and documented CLI contracts.
@@ -338,9 +360,9 @@ and transformation-specific safety controls.
 - [ ] Document parser/model upgrades, cache invalidation, schema evolution, and
   policy changes.
 
-The other language frontends exercised in Phase 0.3 have their own
-compatibility scope. Language backends beyond that gate, external services,
-and cloud/LLM workflows require their own milestones.
+Each language frontend has its own published compatibility scope and release
+gate. Language backends beyond 0.18, external services, and cloud/LLM workflows
+require their own milestones.
 
 ## Performance goals
 

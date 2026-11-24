@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTICES = ROOT / "THIRD_PARTY_NOTICES.txt"
 NOTICE_PREFIXES = ("license", "copying", "notice", "copyright")
 UPSTREAM_INPUTS = {
+    ("https://github.com/oxc-project/oxc", "0.159.0"): "oxc-0.159.0.txt",
     ("https://github.com/astral-sh/ruff", "0.0.12"): "ruff-0.0.12.txt",
     ("https://github.com/ModProg/quote-use", "0.8.4"): "mit-terms.txt",
 }

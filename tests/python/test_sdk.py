@@ -507,6 +507,40 @@ class SdkTests(unittest.TestCase):
                 self.assertEqual(report, json.loads(result.stdout))
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_javascript_file_reachability_and_cli_parity(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            for name, text in (
+                ("package.json", '{"main":"main.ts"}'),
+                ("main.ts", "import './barrel.ts';"),
+                ("barrel.ts", "export { live } from './provider.ts';"),
+                ("provider.ts", "export const live = 1;"),
+                ("unused.js", "console.log('unused');"),
+            ):
+                (project / name).write_text(text, encoding="utf-8")
+
+            for exit_code, status, expected in (
+                (0, "complete", [("unused.js", "SKY-E003")]),
+                (2, "incomplete", []),
+            ):
+                with self.subTest(status=status):
+                    if status == "incomplete":
+                        (project / "provider.ts").unlink()
+                    report = json.loads(skylos.analyze(project, profile="skylos-0.3"))
+                    self.assertEqual(report["coverage"]["status"], status)
+                    self.assertEqual(
+                        [(row["file"], row["rule_id"]) for row in report["unused_files"]],
+                        expected,
+                    )
+                    if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                        output = subprocess.run([
+                            cli, project, "--profile", "skylos-0.3", "--all-advice",
+                            "--include-generated", "--confidence", "60",
+                        ], capture_output=True)
+                        self.assertEqual(output.returncode, exit_code, output.stderr)
+                        self.assertEqual(report, json.loads(output.stdout))
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     @unittest.skipUnless(os.name == "posix", "requires POSIX symlink creation")
     def test_phase03_default_trace_rejects_symlink(self):
         with TemporaryDirectory() as directory:

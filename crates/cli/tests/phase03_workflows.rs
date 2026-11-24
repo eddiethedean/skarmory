@@ -379,6 +379,30 @@ fn baseline_tracks_shifted_and_stale_findings_and_can_be_read_from_git() {
 }
 
 #[test]
+fn python_baseline_round_trips_in_a_mixed_repository() {
+    let root = project(&[
+        ("app.py", "def old():\n    return 1\n"),
+        ("package.json", r#"{"main":"main.js"}"#),
+        ("main.js", "console.log('entry');\n"),
+        ("unused.js", "console.log('unused');\n"),
+    ]);
+    let path = ".skylos/baseline.json";
+    let saved = scan(root.path(), &["--write-baseline", path], 0);
+    assert_eq!(names(&saved, "unused_functions"), ["old"]);
+    let baseline: Value =
+        serde_json::from_slice(&fs::read(root.path().join(path)).unwrap()).unwrap();
+    assert_eq!(
+        baseline["findings"],
+        serde_json::json!([{"rule": "SKY-U001", "path": "app.py", "symbol": "app.old"}])
+    );
+
+    let applied = scan(root.path(), &["--baseline", path], 0);
+    assert_eq!(applied["analysis_summary"]["baseline"]["matched_count"], 1);
+    assert!(items(&applied, "unused_functions").is_empty());
+    assert_eq!(applied["unused_files"], saved["unused_files"]);
+}
+
+#[test]
 fn gate_coverage_is_independent_of_the_verdict_and_display_filters() {
     let root = project(&[
         ("a.py", "print(1)\n"),
@@ -404,6 +428,8 @@ fn gate_coverage_is_independent_of_the_verdict_and_display_filters() {
             .unwrap()
             .is_empty()
     );
+    let unchanged = scan(root.path(), &["--gate", "--diff", "HEAD"], 0);
+    assert_eq!(unchanged["gate"]["coverage_status"], "partial");
 
     for flag in ["--strict", "--require-complete"] {
         let strict = scan(root.path(), &["--gate", flag], 2);

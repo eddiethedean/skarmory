@@ -11,18 +11,25 @@ description = "Shared native analysis engine for Skarmory"
 [dependencies]
 blake3.workspace = true
 globset.workspace = true
+oxc_allocator = "=0.159.0"
+oxc_ast = "=0.159.0"
+oxc_ast_visit = "=0.159.0"
+oxc_parser = "=0.159.0"
+oxc_semantic = "=0.159.0"
+oxc_span = "=0.159.0"
 pep508_rs = { version = "=0.9.2", default-features = false }
 rayon.workspace = true
-skarmory_python.workspace = true
+rusqlite = { version = "=0.43.0", features = ["bundled"], default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 similar = "=3.2.1"
 shlex = "=2.0.1"
+skarmory_python.workspace = true
+stacker = "=0.1.25"
 tempfile.workspace = true
 time.workspace = true
 toml.workspace = true
 walkdir.workspace = true
-rusqlite = { version = "=0.43.0", features = ["bundled"], default-features = false }
 
 [lints]
 workspace = true
