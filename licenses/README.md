@@ -17,3 +17,14 @@ generator uses these files when an archive omits its license text.
 - [Oxc 0.159.0](oxc-0.159.0.txt) copies the upstream MIT license and
   copyright notices at the revision recorded in the Oxc crate archives.
   [Pinned Oxc license](https://github.com/oxc-project/oxc/blob/d9483516f84068f867e0a3949ac0ec53ef82aa63/LICENSE)
+
+- The [C++](tree-sitter-cpp-0.23.4.txt) and [Java](tree-sitter-java-0.23.5.txt)
+  grammar crate archives omit the MIT license files. The notice generator uses
+  the upstream texts at the source revisions in the archives.
+  [Pinned C++ license](https://github.com/tree-sitter/tree-sitter-cpp/blob/f41e1a044c8a84ea9fa8577fdd2eab92ec96de02/LICENSE) ·
+  [Pinned Java license](https://github.com/tree-sitter/tree-sitter-java/blob/94703d5a6bed02b98e438d7cad1136c01a60ba2c/LICENSE)
+
+- The Go reachability regression uses the generated module and source inputs
+  from the pinned Skylos subtest. The CLI test sources ship a copy of the
+  [Skylos license](../crates/cli/tests/fixtures/skylos-5.7.0/LICENSE).
+  [Pinned fixture](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/engines/go/internal/symbols/reachability_test.go#L13-L20)

@@ -136,6 +136,46 @@ Package exports, workspace and `tsconfig` resolution, package scripts, browser
 and component assets, binding and export analysis, and npm dependency
 analysis remain part of [#45](https://github.com/eddiethedean/skarmory/issues/45).
 
+## Additional native frontends
+
+Phase 0.3 reports selected Go, Rust, C++, and Java sources through the shared
+CLI and SDK. The `frontend_analysis` summary reports coverage independently
+for each selected frontend. Versioned file facts are cached, and each scan
+rebuilds name resolution and re-reads any supported project metadata.
+Missing declarations, uncertain bindings, unsupported syntax, and exceeded
+budgets produce coverage issues. The static scanner uses compiled-in parsers
+and executes no project code.
+
+| Frontend | Implemented boundary |
+| --- | --- |
+| Go | One module, ordinary package functions, direct references and simple receiver identities. The native graph starts from package entry points and keeps call cycles separate from the roots that can reach them. Workspaces, build-sensitive source selection, and unresolved semantic cases retain explicit gaps. |
+| Rust | A single `main.rs` or `lib.rs` crate root with parameterless free functions, direct calls, and local named function values. Module graphs, macros, attributes, and unresolved bindings report incomplete coverage. |
+| C++ | File-local free-function identity, ordinary direct references and addresses, and parse diagnostics for the six pinned source and header suffixes. Build-dependent inputs and unresolved forms report coverage gaps. |
+| Java | Selected class and method reachability, standard entry points, and statically resolved service and JavaFX controller declarations. Unknown resource targets and unsupported or ambiguous bindings report coverage gaps. |
+
+The table below records initial pinned anchors for issue #46. The complete
+case-level inventory, build variants, and original assertion mappings are
+tracked under [#41](https://github.com/eddiethedean/skarmory/issues/41). A
+frontend requires both semantic controls and a verified distribution before
+claiming release compatibility. Selected sources for the seven frontends
+marked pending are counted and produce `unsupported_frontend`. Selected
+Robot Framework sources also suspend Python non-use conclusions because
+library declarations can activate Python functions.
+
+| Frontend | Pinned case anchors | Inputs and semantics to qualify |
+| --- | --- | --- |
+| Go | [Native reachability group](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/engines/go/internal/symbols/reachability_test.go), [workspace](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_go_workspace_context.py) | `go.mod`, `go.work`, build selection, standard library, typed callbacks and selectors. The pinned native reference uses Go 1.22. Source-derived identity is insufficient for arbitrary interface dispatch and external packages. |
+| Rust | [Function reachability](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_rust_function_reachability.py), [coverage](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_rust_analysis_coverage.py) | `Cargo.toml`, module paths, trait and inherent method ownership, macro expansion, and conditional compilation. Qualify semantic resolution for bindings that syntax cannot identify. |
+| C++ | [Discovery and local identity](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_cpp_integration.py), [corpus](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_cpp_corpus.py) | Per-file linkage, references and direct calls, preprocessing and includes, compiler or build metadata when needed. |
+| Java | [Service and FXML benchmark cases](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/benchmarks/dead_code/manifest.json) | Java package and class identities, service descriptors, FXML namespaces and resources, and receiver-specific dispatch. |
+| Swift (pending) | [Integration and private identity](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_swift_integration.py), [reflection](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_swift_project_reflection.py) | SwiftPM source selection, private file identity, access policy, and reflective entry points. |
+| PHP (pending) | [Callable identity](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_php_dead_code_identity.py) | Composer inputs, namespace aliases, receiver and trait ownership, and framework registration. |
+| C# (pending) | [Application reachability](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_csharp_app_reachability.py), [markup and overloads](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_csharp_overload_and_markup_refs.py) | Project files, overload and type identity, application roots, and markup handlers. |
+| Kotlin (pending) | [Kotlin cases](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_kotlin.py) | Gradle source sets, package and member ownership, and callback entry points. |
+| Ruby (pending) | [Ruby scopes and callbacks](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_ruby_scope_callbacks.py) | Gem/package source scope, reopening and inheritance, aliases, and callback lineage. |
+| Dart (pending) | [Imported call identity](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_dart_project_call_identity.py), [optional grammar](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_dart_optional_extra.py) | Package imports, entry roots, owner identity, and the required grammar variant. |
+| Robot Framework (pending) | [Python library liveness](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_robot_framework_liveness.py), [dead blocks](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_robot_framework_dead_blocks.py) | Suites, resources, variable files, Python library exports, and keyword semantics. |
+
 ## Scope and acceptance
 
 | Workstream | Deliverable | Required controls | Issue |

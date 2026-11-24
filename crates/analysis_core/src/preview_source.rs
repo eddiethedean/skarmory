@@ -11,6 +11,7 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::phase02::config::Selection;
+use crate::phase02::frontends::Language;
 use crate::{Issue, source};
 
 const MAX_SELECTED_FILES: usize = 16_384;
@@ -41,7 +42,7 @@ pub(super) struct Project {
     files_by_path: BTreeMap<PathBuf, usize>,
     directories: BTreeMap<PathBuf, DirectoryEntries>,
     ambiguous: BTreeSet<usize>,
-    include_javascript: bool,
+    include_phase03_sources: bool,
 }
 
 pub(super) struct SourceFile {
@@ -66,7 +67,7 @@ pub(super) enum LookupError {
 
 pub(super) struct ProjectWork<T> {
     pub files: Vec<Option<FileWork<T>>>,
-    pub javascript_budget_issue: Option<Issue>,
+    pub non_python_budget_issue: Option<Issue>,
 }
 
 pub(super) struct FileWork<T> {
@@ -95,6 +96,7 @@ enum SeenEntry {
     LinkedSource,
     OtherSource,
     JavaScriptContext,
+    FrontendContext,
 }
 
 impl Stamp {
@@ -139,7 +141,7 @@ pub(super) fn discover_sources(
     roots: &[PathBuf],
     entry: FileEntry<'_>,
     selection: Option<&Selection>,
-    include_javascript: bool,
+    include_phase03_sources: bool,
 ) -> Project {
     let mut project = Project {
         files: Vec::new(),
@@ -153,7 +155,7 @@ pub(super) fn discover_sources(
         files_by_path: BTreeMap::new(),
         directories: BTreeMap::new(),
         ambiguous: BTreeSet::new(),
-        include_javascript,
+        include_phase03_sources,
     };
     let path = normalized(path);
     let (input, metadata) = match checked_path(&path) {
@@ -173,8 +175,8 @@ pub(super) fn discover_sources(
         project.issues.push(Issue::new(
             "discovery_error",
             &display(&path),
-            if include_javascript {
-                "expected a directory or a regular Python, JavaScript, or TypeScript file"
+            if include_phase03_sources {
+                "expected a directory or a supported regular source file"
             } else {
                 "expected a directory or a regular .py file"
             },
@@ -343,7 +345,7 @@ impl Project {
             };
             let path = entry.path();
             let kind = entry.file_type();
-            let seen = seen_entry(path, kind, self.include_javascript);
+            let seen = seen_entry(path, kind, self.include_phase03_sources);
             if entry.depth() > 0
                 && let Some(seen) = seen
                 && let Some(parent) = path
@@ -356,7 +358,9 @@ impl Project {
                 && let Some(selection) = selection
                 && let label = self.label(path)
                 && let Some(reason) = selection.exclusion(&label)
-                && (kind.is_dir() || self.is_source(entry.file_name()))
+                && (kind.is_dir()
+                    || self.is_source(entry.file_name())
+                    || seen == Some(SeenEntry::FrontendContext))
                 && (!kind.is_dir() || !selection.may_include_children(&label))
             {
                 self.exclusions.push(Exclusion {
@@ -548,7 +552,7 @@ impl Project {
         extract: impl Fn(&str) -> T + Sync,
     ) -> Result<Vec<FileWork<T>>, Issue> {
         let work = self.map_file_sources(workers, |_, source| extract(source))?;
-        if let Some(issue) = work.javascript_budget_issue {
+        if let Some(issue) = work.non_python_budget_issue {
             return Err(issue);
         }
         Ok(work.files.into_iter().flatten().collect())
@@ -571,8 +575,9 @@ impl Project {
         }
         let mut python_bytes = 0;
         let mut python_count = 0;
-        let mut javascript_bytes = 0;
-        for file in &self.files {
+        let mut non_python_bytes = 0;
+        let mut non_python_count = 0;
+        for file in self.files.iter().filter(|file| file.is_implemented()) {
             // Reserve a file's full read allowance when its metadata was unavailable.
             let bytes = file
                 .discovered
@@ -580,8 +585,9 @@ impl Project {
                 .map_or(source::MAX_SOURCE_BYTES, |stamp| {
                     stamp.len.min(source::MAX_SOURCE_BYTES)
                 });
-            if file.is_javascript() {
-                javascript_bytes += bytes;
+            if !file.is_python() {
+                non_python_bytes += bytes;
+                non_python_count += 1;
             } else {
                 python_bytes += bytes;
                 python_count += 1;
@@ -595,15 +601,16 @@ impl Project {
             ));
         }
         // Keep the combined read bound while preserving the Python work that
-        // fits it. An incomplete JavaScript snapshot cannot support a file graph.
-        let javascript_over_budget = javascript_bytes > MAX_SNAPSHOT_BYTES - python_bytes;
-        let admitted = if javascript_over_budget {
+        // fits it. An incomplete source snapshot cannot support a project graph.
+        let non_python_over_budget = non_python_bytes > MAX_SNAPSHOT_BYTES - python_bytes;
+        let admitted = if non_python_over_budget {
             python_count
         } else {
-            self.files.len()
+            python_count + non_python_count
         };
         let run = |file: &SourceFile| {
-            (!javascript_over_budget || !file.is_javascript()).then(|| file.work(&extract))
+            (file.is_implemented() && (!non_python_over_budget || file.is_python()))
+                .then(|| file.work(&extract))
         };
 
         let capacity = std::thread::available_parallelism().map_or(1, usize::from);
@@ -621,11 +628,11 @@ impl Project {
         };
         Ok(ProjectWork {
             files,
-            javascript_budget_issue: javascript_over_budget.then(|| {
+            non_python_budget_issue: non_python_over_budget.then(|| {
                 Issue::new(
                     "analysis_limit",
                     ".",
-                    "selected JavaScript and TypeScript sources exceed the space left in the 32 MiB snapshot budget",
+                    "selected non-Python sources exceed the space left in the 32 MiB snapshot budget",
                 )
             }),
         })
@@ -646,7 +653,7 @@ impl Project {
             }
         }
         for (directory, entries) in &self.directories {
-            if !read_directory_entries(directory, self.include_javascript)
+            if !read_directory_entries(directory, self.include_phase03_sources)
                 .is_ok_and(|current| current == *entries)
             {
                 issues.push(Issue::new(
@@ -671,11 +678,29 @@ impl Project {
         display(path.strip_prefix(&self.base).unwrap_or(path))
     }
     fn is_source(&self, name: &OsStr) -> bool {
-        is_source(name, self.include_javascript)
+        is_source(name, self.include_phase03_sources)
     }
 
     pub(super) fn javascript_context(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.discovered_paths(|name, _| is_javascript_context(name))
+    }
+
+    pub(super) fn go_context(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.frontend_context().filter(|path| is_go_context(path))
+    }
+
+    pub(super) fn java_context(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.frontend_context().filter(|path| is_java_context(path))
+    }
+
+    fn frontend_context(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.discovered_paths(|_, kind| kind == SeenEntry::FrontendContext)
+            .filter(|path| {
+                let label = self.label(path);
+                self.exclusions
+                    .binary_search_by(|entry| entry.path.cmp(&label))
+                    .is_err()
+            })
     }
 
     pub(super) fn javascript_sources(&self) -> impl Iterator<Item = PathBuf> + '_ {
@@ -703,8 +728,11 @@ impl Project {
     }
 }
 
-fn is_source(name: &OsStr, include_javascript: bool) -> bool {
-    source::is_python(name) || (include_javascript && javascript_extension(name).is_some())
+fn is_source(name: &OsStr, include_phase03_sources: bool) -> bool {
+    source::is_python(name)
+        || (include_phase03_sources
+            && (javascript_extension(name).is_some()
+                || Language::from_path(Path::new(name)).is_some()))
 }
 
 pub(super) fn javascript_extension(name: &OsStr) -> Option<&'static str> {
@@ -745,12 +773,29 @@ fn is_javascript_context(name: &OsStr) -> bool {
     })
 }
 
+fn is_go_context(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(OsStr::to_str),
+        Some("go.mod" | "go.work")
+    ) || matches!(path.extension().and_then(OsStr::to_str), Some("s" | "S"))
+}
+
+fn is_java_context(path: &Path) -> bool {
+    path.extension() == Some(OsStr::new("fxml"))
+        || path
+            .parent()
+            .is_some_and(|parent| parent.ends_with("META-INF/services"))
+}
+
 /// Record entries that can affect source selection or JavaScript reachability.
-fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<SeenEntry> {
+fn seen_entry(path: &Path, kind: FileType, include_phase03_sources: bool) -> Option<SeenEntry> {
     let name = path.file_name()?;
-    let is_source = is_source(name, include_javascript);
-    if !kind.is_dir() && include_javascript && is_javascript_context(name) {
+    let is_source = is_source(name, include_phase03_sources);
+    if !kind.is_dir() && include_phase03_sources && is_javascript_context(name) {
         return Some(SeenEntry::JavaScriptContext);
+    }
+    if !kind.is_dir() && include_phase03_sources && (is_go_context(path) || is_java_context(path)) {
+        return Some(SeenEntry::FrontendContext);
     }
     if kind.is_symlink() {
         if fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
@@ -771,7 +816,7 @@ fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<S
 
 fn read_directory_entries(
     directory: &Path,
-    include_javascript: bool,
+    include_phase03_sources: bool,
 ) -> std::io::Result<DirectoryEntries> {
     // Directory timestamps can settle after enumeration on Windows. Verify the
     // source universe by comparing entry names and kinds without rereading sources.
@@ -791,7 +836,7 @@ fn read_directory_entries(
     let mut entries = DirectoryEntries::new();
     for child in fs::read_dir(directory)? {
         let child = child?;
-        if let Some(kind) = seen_entry(&child.path(), child.file_type()?, include_javascript) {
+        if let Some(kind) = seen_entry(&child.path(), child.file_type()?, include_phase03_sources) {
             entries.insert((child.file_name(), kind));
         }
     }
@@ -830,8 +875,12 @@ impl Drop for WorkerReservation<'_> {
 }
 
 impl SourceFile {
-    fn is_javascript(&self) -> bool {
-        javascript_extension(self.path.as_os_str()).is_some()
+    fn is_implemented(&self) -> bool {
+        Language::from_path(&self.path).is_none_or(Language::is_implemented)
+    }
+
+    fn is_python(&self) -> bool {
+        self.path.file_name().is_some_and(source::is_python)
     }
 
     pub(super) fn directory(&self) -> &Path {
