@@ -137,6 +137,17 @@ struct SkylosArgs {
     #[arg(long)]
     all_advice: bool,
 
+    /// Enable the Phase 0.3 Python unused-dependency quality rule.
+    #[arg(long)]
+    quality: bool,
+
+    /// Report only the selected Phase 0.3 rule.
+    #[arg(
+        long, value_parser = ["SKY-U005"], ignore_case = true, value_name = "RULE",
+        conflicts_with_all = ["trace_file", "coverage_file"],
+    )]
+    select: Option<String>,
+
     /// Disable grep verification in the Skylos compatibility profile.
     #[arg(long = "no-grep-verify")]
     no_grep_verify: bool,
@@ -280,6 +291,8 @@ fn write_skylos_report(
         confidence: args.confidence,
         category: args.category,
         all_advice: args.all_advice,
+        enable_quality: args.quality.then_some(true),
+        quality_only: args.select.is_some(),
         workers,
         cache_dir,
         grep_verify: args.no_grep_verify.then_some(false),

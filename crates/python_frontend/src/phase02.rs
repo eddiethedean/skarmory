@@ -150,6 +150,7 @@ pub enum ExpressionKind {
     },
     Not(Box<Expression>),
     Await(Box<Expression>),
+    Addition(Vec<Expression>),
     Operands(Vec<Expression>),
 }
 
@@ -759,6 +760,9 @@ impl Lowering<'_> {
                 ExpressionKind::Not(Box::new(lower(&node.operand)?))
             }
             Expr::UnaryOp(node) => ExpressionKind::Operands(vec![lower(&node.operand)?]),
+            Expr::BinOp(node) if node.op == ruff_python_ast::Operator::Add => {
+                ExpressionKind::Addition(vec![lower(&node.left)?, lower(&node.right)?])
+            }
             Expr::BinOp(node) => {
                 ExpressionKind::Operands(vec![lower(&node.left)?, lower(&node.right)?])
             }

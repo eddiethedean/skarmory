@@ -17,6 +17,7 @@ use crate::{Coverage, Issue};
 
 mod analysis;
 pub(crate) mod config;
+mod dependencies;
 mod package_entrypoints;
 mod runtime_evidence;
 pub use runtime_evidence::Input as EvidenceInput;
@@ -32,6 +33,9 @@ pub enum Profile {
 pub struct Options {
     pub profile: Profile,
     pub grep_verify: Option<bool>,
+    /// None uses the Phase 0.3 compatibility configuration.
+    pub enable_quality: Option<bool>,
+    pub quality_only: bool,
     pub trace_file: EvidenceInput,
     pub coverage_file: EvidenceInput,
     pub config_file: Option<PathBuf>,
@@ -52,6 +56,8 @@ impl Default for Options {
         Self {
             profile: Profile::default(),
             grep_verify: None,
+            enable_quality: Some(false),
+            quality_only: false,
             trace_file: EvidenceInput::Default,
             coverage_file: EvidenceInput::Default,
             config_file: None,
@@ -274,6 +280,8 @@ struct Summary {
     grep_verify: Option<VerificationSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dead_code_liveness: Option<LivenessSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unused_dependency_analysis: Option<dependencies::Receipt>,
 }
 
 #[derive(Debug, Serialize)]
@@ -391,6 +399,10 @@ pub struct Report {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     runtime_evidence_issues: Vec<Issue>,
     dead_code_abstentions: Vec<Issue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quality: Option<Vec<dependencies::Finding>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dependency_usage_evidence: Vec<dependencies::Evidence>,
     suppressed: Vec<Diagnostic>,
     whitelisted: Vec<Diagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -406,6 +418,10 @@ impl Report {
 
     pub fn has_findings(&self) -> bool {
         self.categories.iter().next().is_some()
+            || self
+                .quality
+                .as_ref()
+                .is_some_and(|quality| !quality.is_empty())
     }
 
     pub fn to_json(&self) -> serde_json::Result<String> {
@@ -414,7 +430,7 @@ impl Report {
 
     pub fn to_json_strict(&self) -> serde_json::Result<String> {
         let mut result = serde_json::to_value(self)?;
-        let issues = self.categories.iter().count();
+        let issues = self.categories.iter().count() + self.quality.iter().flatten().count();
         let (status, verdict, exit_code, reasons) = if !self.is_complete() {
             (
                 "incomplete",
@@ -455,7 +471,9 @@ impl Report {
                 "details": self.categories.iter().map(|finding| format!(
                     "{}:{}  unused {} {}", finding.file, finding.line, finding.kind,
                     finding.name.as_deref().unwrap_or(&finding.basename)
-                )).collect::<Vec<_>>(),
+                )).chain(self.quality.iter().flatten().map(|finding| format!(
+                    "{}:{}  unused dependency {}", finding.file, finding.line, finding.name
+                ))).collect::<Vec<_>>(),
                 "hint": null,
             })).collect::<Vec<_>>(),
             "coverage_status": self.coverage.status,
@@ -481,8 +499,28 @@ impl Report {
                 }}],
                 "properties": {"confidence": item.confidence, "disposition": item.dead_code_disposition},
             })
-        }).collect();
-        let rule_ids: BTreeSet<_> = self.categories.iter().map(|item| item.rule_id).collect();
+        }).chain(self.quality.iter().flatten().map(|finding| {
+            let mut result = json!({
+                "ruleId": dependencies::RULE,
+                "level": "warning",
+                "message": {"text": finding.message},
+            });
+            if finding.line != 0 {
+                result["locations"] = json!([{"physicalLocation": {
+                    "artifactLocation": {"uri": artifact_uri(&finding.file)},
+                    "region": {"startLine": finding.line},
+                }}]);
+            }
+            result
+        })).collect();
+        let mut rule_ids: BTreeSet<_> = self.categories.iter().map(|item| item.rule_id).collect();
+        if self
+            .quality
+            .as_ref()
+            .is_some_and(|quality| !quality.is_empty())
+        {
+            rule_ids.insert(dependencies::RULE);
+        }
         let notifications: Vec<_> = self
             .coverage
             .issues
@@ -569,7 +607,15 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     validate_category(options.category.as_deref())?;
     let config = config::load(path, options)?;
     let phase03 = options.profile == Profile::SkylosPhase03;
-    let grep_verify = options.grep_verify.unwrap_or(phase03);
+    let enable_quality =
+        options.enable_quality.unwrap_or(config.quality_enabled) || options.quality_only;
+    let include_dead_code = !options.quality_only;
+    let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
+    if enable_quality && !phase03 {
+        return Err(ConfigError::new(
+            "quality scanning requires the skylos-0.3 profile",
+        ));
+    }
     if !phase03
         && (!matches!(options.trace_file, EvidenceInput::Default)
             || !matches!(options.coverage_file, EvidenceInput::Default))
@@ -586,7 +632,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v11/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v12/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -675,12 +721,13 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         }
     }
 
-    let package_entrypoints =
-        (phase03 && issues.is_empty()).then(|| package_entrypoints::Snapshot::read(path, &files));
+    let dependency_sources_complete = issues.is_empty();
+    let package_entrypoints = (include_dead_code && phase03 && issues.is_empty())
+        .then(|| package_entrypoints::Snapshot::read(path, &files));
     let available_package_entrypoints = package_entrypoints
         .as_ref()
         .filter(|metadata| metadata.issues.is_empty());
-    let runtime = (phase03 && issues.is_empty()).then(|| {
+    let runtime = (include_dead_code && phase03 && issues.is_empty()).then(|| {
         runtime_evidence::Snapshot::read(
             path,
             &project,
@@ -692,10 +739,10 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
     });
     let verification = (grep_verify && issues.is_empty())
         .then(|| grep_verification::Snapshot::read(&project, Some(&config.selection)));
-    let django_settings = phase03
+    let django_settings = (include_dead_code && phase03)
         .then(|| std::env::var_os("DJANGO_SETTINGS_MODULE"))
         .flatten();
-    let mut analysis = if issues.is_empty() {
+    let mut analysis = if include_dead_code && issues.is_empty() {
         if local_configs.is_empty() {
             analysis::analyze_with_verification(
                 &files,
@@ -749,7 +796,24 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         issues.append(&mut metadata.issues);
         issues.extend(metadata.verify());
     }
-    issues.extend(project.verify(stamps));
+    let mut dependency_result = enable_quality.then(|| {
+        dependencies::scan(
+            path,
+            &project,
+            &files,
+            &config.selection,
+            dependency_sources_complete,
+            config.ignores_rule(dependencies::RULE),
+        )
+    });
+    let snapshot_issues = project.verify(stamps);
+    if !snapshot_issues.is_empty()
+        && dependency_result.is_some()
+        && !config.ignores_rule(dependencies::RULE)
+    {
+        dependency_result = Some(dependencies::Result::not_run("incomplete_python_sources"));
+    }
+    issues.extend(snapshot_issues);
     if !config.unchanged(path, options)
         || directory_configs.iter().any(|(directory, index)| {
             let effective = index.map_or(&config, |index| &local_configs[index]);
@@ -761,6 +825,15 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             ".",
             "configuration changed during analysis",
         ));
+        if dependency_result.is_some() {
+            dependency_result = Some(dependencies::Result::not_run(
+                "dependency_selection_changed",
+            ));
+        }
+    }
+    let static_complete = issues.is_empty();
+    if let Some(result) = &dependency_result {
+        issues.extend(result.issues());
     }
     issues.sort();
     issues.dedup();
@@ -802,7 +875,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         .iter()
         .map(|file| (file.path.as_str(), &file.facts))
         .collect();
-    if status == "complete" {
+    if static_complete {
         for mut finding in analysis.findings {
             if generated_sources.contains(&finding.file) {
                 continue;
@@ -892,6 +965,12 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
             .into_iter()
             .collect(),
     });
+    let (quality, unused_dependency_analysis, dependency_usage_evidence) =
+        if let Some(result) = dependency_result {
+            (Some(result.findings), Some(result.receipt), result.evidence)
+        } else {
+            (None, None, Vec::new())
+        };
     Ok(Report {
         schema_version: if phase03 { 2 } else { 1 },
         profile: if phase03 {
@@ -909,6 +988,7 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
                 rescued_count: analysis.rescued_count,
             }),
             dead_code_liveness,
+            unused_dependency_analysis,
         },
         coverage: Coverage {
             status,
@@ -934,6 +1014,8 @@ pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
         runtime_evidence: analysis.runtime_evidence,
         runtime_evidence_issues: analysis.runtime_evidence_issues,
         dead_code_abstentions: analysis.uncertainties,
+        quality,
+        dependency_usage_evidence,
         suppressed,
         whitelisted,
         cache: cache.as_ref().map(FactCache::stats),

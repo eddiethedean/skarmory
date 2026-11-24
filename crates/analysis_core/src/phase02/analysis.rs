@@ -2455,6 +2455,7 @@ impl<'a> Graph<'a> {
                 expression.kind,
                 ExpressionKind::Await(_)
                     | ExpressionKind::OrderingComparison { .. }
+                    | ExpressionKind::Addition(_)
                     | ExpressionKind::Operands(_)
             )
         {
@@ -2911,7 +2912,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
             ExpressionKind::Scalar => Value::Scalar,
-            ExpressionKind::Operands(operands) => {
+            ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
                     && operands
                         .iter()
@@ -4200,6 +4201,7 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
+            | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => {
                 for item in values {
                     self.walk(scope, item, before);
@@ -4587,7 +4589,9 @@ impl<'a> Graph<'a> {
                 .facts
                 .postponed_annotations;
         match &expr.kind {
-            ExpressionKind::Operands(values) | ExpressionKind::Sequence(values) => {
+            ExpressionKind::Addition(values)
+            | ExpressionKind::Operands(values)
+            | ExpressionKind::Sequence(values) => {
                 for reference in values {
                     self.annotation(scope, reference, before, evaluated);
                 }
@@ -7002,6 +7006,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::Boolean { values, .. }
+            | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),
             ExpressionKind::Compare { left, right, .. }
             | ExpressionKind::OrderingComparison { left, right } => {

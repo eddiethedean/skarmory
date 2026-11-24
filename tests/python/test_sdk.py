@@ -197,6 +197,26 @@ class SdkTests(unittest.TestCase):
             skylos.analyze(FIXTURES / "reachable", enable_quality=True)
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_unused_dependency_quality_opt_in(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "app.py").write_text("import yaml\n", encoding="utf-8")
+            (project / "requirements.txt").write_text("pyyaml\npyserial\n", encoding="utf-8")
+            options = {"profile": "skylos-0.3", "grep_verify": False}
+            default = json.loads(skylos.analyze(project, **options))
+            self.assertNotIn("quality", default)
+            result = json.loads(skylos.analyze(project, enable_quality=True, **options))
+            finding, = result["quality"]
+            self.assertEqual((finding["rule_id"], finding["name"], finding["line"]), ("SKY-U005", "pyserial", 2))
+            self.assertEqual(Path(finding["file"]), (project / "requirements.txt").resolve())
+            self.assertTrue(result["analysis_summary"]["unused_dependency_analysis"]["complete"])
+            if cli := os.environ.get("SKARMORY_TEST_CLI"):
+                result_cli = json.loads(subprocess.check_output([
+                    cli, str(project), "--profile", "skylos-0.3", "--no-grep-verify", "--quality", "--all-advice",
+                ]))
+                self.assertEqual(result_cli, result)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     def test_grep_verification_sdk_profiles_and_cache_edits(self):
         with TemporaryDirectory() as directory:
             project = Path(directory) / "project"

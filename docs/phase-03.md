@@ -119,16 +119,65 @@ inventory and Skarmory-backed execution results are Phase 0.3 deliverables.
 | Git diff, baselines, and gates | Build findings from the full selected head snapshot before changed-line filtering. Compare complete base and head analyses for impact mode, including changes to unchanged code. Add versioned baselines and a configurable dead-code gate. | Remove a caller while leaving its callee unchanged. Check stable identity across line shifts, already-dead symbols, incomplete base and head snapshots, and stale baselines. Test strict and non-strict verdicts independently of scan coverage. | [#49](https://github.com/eddiethedean/skarmory/issues/49) |
 | Dead-code cleanup | Produce a review queue and read-only patch previews for eligible findings. Implement explicitly requested edit application and rollback where required by upstream tests. Define effects and applicability per transformation and attach a source fingerprint to each preview. | Cover a safe preview, an import or definition with observable effects, and source changes after the scan. Revalidate the fingerprint before applying a patch. Exercise the pinned TypeScript preview, apply, and rollback tests. | [#50](https://github.com/eddiethedean/skarmory/issues/50) |
 
-The pinned Skylos release exposes Python and npm `SKY-U005` through quality
-scanning. Preserve that behavior and the asserted coverage and locations in the
-compatibility adapter. Python findings point to the original declaration when
-the manifest is inside the report scope. Match the pinned project-directory
-and line-zero fallback for a declaration outside that scope. Parse
-`setup.py` and command evidence statically. Treat optional Python dependency
-groups as a planned native opt-in with its own selection and evidence contract.
-[Pinned Python declaration tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_setuptools_declarations.py#L378-L421)
-· [Pinned usage evidence test](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_requirements_includes_and_unused_deps.py#L167-L223)
-· [Pinned location fallback test](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_vibe_rules.py#L786-L806)
+### Unused Python dependencies
+
+Enable Python `SKY-U005` with `skarmory --profile skylos-0.3 --quality .`,
+`--select SKY-U005`, or the CLI configuration key `quality_enabled = true`.
+The SDK uses `analyze(path, profile="skylos-0.3", enable_quality=True)`.
+`--quality` adds this rule to the Python dead-code scan. `--select SKY-U005`
+runs the dependency rule on its own. The Phase 0.3 quality selection currently
+covers this Python rule.
+
+The declaration inventory reads PEP 621 runtime dependencies, conventional
+requirements inputs, `setup.cfg` and static `setup.py`. Requirements includes
+stay inside the manifest root. The scanner follows ordinary direct inputs
+and recovers inputs from pip-compile or uv compiled text locks via source
+annotations, a supported compiler header, or the sibling `.in` file. Compiler
+headers can identify `pyproject.toml` as the direct source. Findings use the
+original declaration line. Constraint roles carry through nested includes and
+compiler options.
+An explicit root requirements file governs its include tree. The conventional
+`requirements/` directory is a fallback when neither root input exists.
+Build and setup requirements, constraints, lock pins, optional extras and
+dependency groups are outside the runtime inventory. A native opt-in for
+optional groups remains planned.
+
+The rule counts static Python imports, including test and type-checking use,
+literal import calls, selected Django and Sphinx settings, package entry
+points, and supported pytest, mypy, and flake8 configuration. It also reads
+static command invocations in Procfiles, Dockerfiles, Compose files, Makefiles,
+and tox configuration. An install-only command supplies no use evidence.
+Distribution matching uses normalized names and a bounded table of known
+import and console entry names. Static scanning uses only project inputs and
+executes no target code. Mappings that would need installed package metadata
+or network resolution are outside this scope.
+
+JSON reports findings in `quality`, positive references in
+`dependency_usage_evidence`, and rule coverage in
+`analysis_summary.unused_dependency_analysis`. Reported declarations keep
+their manifest line. For a declaration above the report directory, the
+finding uses the report directory and line zero. SARIF omits the location
+for this fallback. The rule abstains when a source, include or dynamic import
+prevents a reliable absence claim. Ambiguous providers only block the
+affected distributions. Explicit single-file scans and scans without
+eligible Python sources record that the rule did not run. These limits
+affect aggregate coverage and strict exit status. A rule ignored in project
+configuration is outside the requested coverage.
+
+The pinned reference can read installed distribution metadata and tries
+additional standalone requirements files even when a root requirements file
+exists. Skarmory uses the selected project snapshot and its declaration roots
+for reproducible results. In the reviewed directory fallback case, Skylos
+reports a pin reached only through a nested constraint. Skarmory excludes
+that pin. For relative `importlib.import_module` calls, Skarmory resolves
+literal packages and abstains when it cannot resolve the package. The pinned
+reference can report those distributions as unused. The compatibility report
+keeps the upstream `SKY-U005` shape and tool, plugin, driver, and type-stub
+exemptions.
+[Pinned declaration and location cases](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_setuptools_declarations.py#L378-L421)
+· [Pinned configuration and command evidence](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_requirements_includes_and_unused_deps.py#L167-L223)
+· [Pinned mapping references](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/core/python_distributions.py)
+· [Pinned no-location case](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_vibe_rules.py#L786-L806)
 
 Record how the mixed npm integration assertions for `SKY-Q408` and `SKY-Q409`
 are handled under the [upstream test gate](#required-upstream-test-gate).
@@ -408,7 +457,7 @@ the pinned test inventory establishes which capabilities each frontend needs.
 | JavaScript and TypeScript | Use `oxc_parser`, `oxc_semantic`, `oxc_allocator`, and `oxc_span` at `0.159.0` for parsing and binding. Use `oxc_resolver` `11.24.3` for Node resolution and `tsconfig` paths. | Check package exports, re-exports, type-only imports, and enum member identity against pinned fixtures. Keep package-script evidence, project-wide reachability, and coverage reporting in Skarmory. [Parser](https://oxc.rs/docs/guide/usage/parser.html), [semantic analysis](https://docs.rs/oxc_semantic/0.159.0/oxc_semantic/), [resolver](https://docs.rs/oxc_resolver/11.24.3/oxc_resolver/) |
 | Other frontends | Start with `tree-sitter` `0.27.2` and individually pinned, compiled-in grammars. The smoke test covered `tree-sitter-go` `0.25.0`, `tree-sitter-c-sharp` `0.24.0`, and `tree-sitter-dart-orchard` `0.7.1`. Check grammar candidates for Rust, Swift, PHP, Java, C++, Ruby, Kotlin, and Robot Framework where the inventory requires them. | Verify grammar compatibility, syntax error handling, and source spans on pinned fixtures. Qualify grammar and native scanner licensing and packaging. Establish a build and distribution path for the Robot grammar. Skarmory owns language-specific symbol extraction and reachability. [Tree-sitter](https://docs.rs/tree-sitter/0.27.2/tree_sitter/), [Dart grammar](https://docs.rs/crate/tree-sitter-dart-orchard/0.7.1), [Robot grammar candidate](https://github.com/Hubro/tree-sitter-robot) |
 | Go and Rust semantics | Start with syntax-derived facts. Compare a narrowly scoped `go/types` fact adapter and an isolated `ra_ap_hir` `0.0.363` pilot if the pinned tests require richer facts. | Run pinned Go tests that exercise type identity and generics, and Rust fixtures that require semantic resolution. Measure what each approach adds to build time and binary size. Qualify how any adapter would ship and keep static scans free of target-code execution. [Pinned Go tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/engines/go/internal/symbols/reachability_test.go), [`go/types`](https://pkg.go.dev/go/types), [`ra_ap_hir`](https://docs.rs/ra_ap_hir/0.0.363/ra_ap_hir/) |
-| Python dependencies | Keep the Ruff AST and existing `toml` dependency. Use `uv-pep508` `0.0.101` for requirement specifiers, extras, and markers. Evaluate `uv-requirements-txt` `0.0.101` if pinned fixtures warrant a fuller requirements parser. | Keep static setuptools and command interpretation, bounded requirements traversal, declaration provenance, and evidence-to-distribution mapping in Skarmory. Compare the fuller parser's dependency footprint and offline behavior. [`uv-pep508`](https://docs.rs/uv-pep508/0.0.101/uv_pep508/), [`uv-requirements-txt`](https://docs.rs/crate/uv-requirements-txt/0.0.101) |
+| Python dependencies | Keep the Ruff AST and existing `toml` dependency. The Python rule uses `pep508_rs` `0.9.2` to parse requirement specifiers, extras, and markers. Evaluate `uv-requirements-txt` `0.0.101` if pinned fixtures warrant a fuller requirements parser. | Keep static setuptools and command interpretation, bounded requirements traversal, declaration provenance, and evidence-to-distribution mapping in Skarmory. Compare the fuller parser's dependency footprint and offline behavior. [`pep508_rs`](https://docs.rs/pep508_rs/0.9.2/pep508_rs/), [`uv-requirements-txt`](https://docs.rs/crate/uv-requirements-txt/0.0.101) |
 | Grep verification | Evaluate `aho-corasick` `1.1.5`, already in the lockfile as a transitive dependency, for bounded multi-literal matching. | Verify identifier boundaries and original source offsets. Apply symbol ownership, search budgets, and possible-use classification in Skarmory. [`aho-corasick`](https://docs.rs/aho-corasick/1.1.5/aho_corasick/) |
 | Git diff and gates | Evaluate `gix` `0.90.0` with default features disabled and `sha1`, `status`, `blob-diff`, and `revision` enabled. | Check merge bases, staged and unstaged changes, rename behavior, and changed-line filtering against fixtures. The smoke test only checked repository opening and `HEAD` lookup. [`gix` features](https://docs.rs/crate/gix/0.90.0/features) |
 | Cleanup | Use `similar` `3.2.1` for unified diff previews. Reuse `blake3` for source fingerprints and `tempfile` for staging. | Keep edit eligibility, source revalidation, and apply and rollback behavior in Skarmory. Cover read-only previews and stale patches with the pinned fixtures. [`similar`](https://docs.rs/similar/3.2.1/similar/) |
