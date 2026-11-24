@@ -39,6 +39,7 @@ const DEFAULT_EXCLUDES: &[&str] = &[
 pub(super) struct Config {
     pub(super) entrypoints: Vec<Entrypoint>,
     pub(super) confidence: u8,
+    pub(super) quality_enabled: bool,
     pub(super) sources: Vec<String>,
     pub(super) selection: Selection,
     pub(super) warnings: Vec<String>,
@@ -361,13 +362,12 @@ struct PathRules {
 }
 
 impl Config {
+    pub(super) fn ignores_rule(&self, rule_id: &str) -> bool {
+        self.path_rules.ignores.iter().any(|rule| rule == rule_id)
+    }
+
     pub(super) fn decision(&self, finding: &Finding) -> Decision {
-        if self
-            .path_rules
-            .ignores
-            .iter()
-            .any(|rule| rule == finding.rule_id)
-        {
+        if self.ignores_rule(finding.rule_id) {
             return Decision::Suppress(format!("rule ignored ({})", finding.rule_id));
         }
         let name = finding.name.as_str();
@@ -437,6 +437,7 @@ struct Layer {
     whitelist: Option<Whitelist>,
     overrides: Option<BTreeMap<String, Override>>,
     include_generated: Option<bool>,
+    quality_enabled: Option<bool>,
     dead_code: Option<DeadCode>,
     nudges: Option<bool>,
     check_circular: Option<bool>,
@@ -701,6 +702,7 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
     let mut digests = Vec::new();
     let mut excludes = Vec::new();
     let mut include_generated = false;
+    let mut quality_enabled = false;
     let mut selectors = Vec::new();
     let mut whitelist = WhitelistTables::default();
     let mut path_rules = PathRules::default();
@@ -731,6 +733,14 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
         }
         if let Some(value) = layer.include_generated {
             include_generated = value;
+        }
+        if let Some(value) = layer.quality_enabled {
+            if options.profile != super::Profile::SkylosPhase03 {
+                return Err(ConfigError::new(
+                    "quality_enabled requires the skylos-0.3 profile",
+                ));
+            }
+            quality_enabled = value;
         }
         if let Some(values) = layer.dead_code.and_then(|code| code.entrypoints) {
             selectors = values
@@ -780,6 +790,7 @@ fn load_at(path: &Path, options: &Options, date: Date) -> Result<Config, ConfigE
     Ok(Config {
         entrypoints: selectors,
         confidence,
+        quality_enabled,
         date,
         sources,
         digests,
