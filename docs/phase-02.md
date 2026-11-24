@@ -5,7 +5,10 @@ Skarmory 0.2.0 includes the Phase 0.2 profile alongside the native
 revision `87978e69adf91b3811e97b00c40aa39d7937cd94`, with the artifact,
 environment, and backends recorded in the
 [baseline manifest](../tests/conformance/baselines/skylos-5.7.0.toml).
-Compatibility applies to the Python 3.11 cases and options declared below.
+The sections through the release gates describe the published 0.2.0
+contract. Post-release changes to the same profile on `main` are listed in
+[Development changes](#development-changes-after-020). Compatibility applies
+to the Python 3.11 cases and options declared below.
 See the [reference results](phase-02-reference.md), the
 [carry-forward holdout](phase-02-holdout.md), and the
 [cache benchmark](../benchmarks/phase02.md) for the measured scope.
@@ -68,7 +71,7 @@ reviewed differences against the [Skylos inventory](skylos-5.7.0-contract.md).
 | Unused functions and classes | Find unreachable functions, including isolated recursive groups, and unused module-level classes in the declared model. Retain reachable definitions, imported identities, explicit exports, and proven instantiations. Track definition-time effects independently of body calls. |
 | Unused imports, variables, and parameters | Cover straightforward lexical bindings, direct reads, aliases, and shadowing. Test an unused import beside a used alias and a re-export, an unused assignment beside a read or captured binding, and an unused parameter beside a read or a parameter kept by a supported signature contract. |
 | Empty Python files | Match `SKY-E002` in `unused_files` for empty, comment-only, and docstring-only Python modules. Include `__init__.py`, `__main__.py`, and `main.py` as exempt controls. |
-| Public API | Resolve explicit re-export chains and effective literal `__all__` after supported initialization. Model a single unshadowed module `__getattr__` with one positional parameter that maps literal names to statically resolved local exports. A variadic-only positional hook can establish a missing member when it immediately raises the built-in `AttributeError` with no arguments or with scalar literals or the parameter tuple. An existing binding takes precedence over lazy lookup. The selected branch can use its literal lookup name as a value. Unresolved values in a selected lazy return, including values inside tuples, lists, and dictionaries, report incomplete coverage. An opaque export that affects the public boundary produces uncertainty or incomplete coverage. |
+| Public API | Resolve explicit re-export chains and effective literal `__all__` after supported initialization. Model a single unshadowed module `__getattr__` that maps literal names to statically resolved local exports. An existing binding takes precedence over lazy lookup. An opaque export that affects the public boundary produces uncertainty or incomplete coverage. |
 | Tests and framework roots | Start with statically collected pytest tests and fixtures and FastAPI route decorators, imported app and router constructors, and direct `include_router` registration. Exercise a mounted router, a dormant router, and a shadowed or unrelated decorator with the same spelling. Record how a selected test, fixture, app, or router becomes active. |
 | Callbacks and closures | Resolve finite captured bindings and direct local callback targets. Cover canonical `asyncio.create_task`, executor `submit`, and `multiprocessing.Process(target=...)` followed by a supported `start()`. Check active, dormant, shadowed, and unresolved consumers. Distinguish creation of a coroutine or process from scheduling or starting it. |
 
@@ -79,21 +82,6 @@ definitions with evidence. An unbounded target that affects project-wide
 non-use makes the relevant analysis incomplete. Reuse Phase 0.1 source
 snapshots and coverage diagnostics. Static analysis reads sources and
 configuration without importing or executing target code.
-
-In `if` conditions, a resolved instance can call a local `__bool__` method or
-fall back to `__len__` when `__bool__` is absent. The analyzer retains the method
-and its reachable helpers without assuming the truth-test result. A reachable
-test that could dispatch to an unresolved selected hook makes coverage
-incomplete.
-
-Explicit calls to the built-in `len()` retain a resolved local `__len__` method
-and its reachable helpers. A reachable call reports incomplete coverage when
-the instance's length method cannot be resolved or an opaque argument may call
-a selected length method. This applies when the result is used in a comparison.
-Built-in container results retain their built-in length behavior when the
-constructor and its inputs are bounded. When a selected hash or equality method
-could run during set construction, an earlier assignment alone cannot prove
-that a mutable input still contains only built-in scalars.
 
 Other framework and library APIs, namespace-package and arbitrary import-hook
 resolution, dynamic plugin loading, opaque lazy exports, text-based grep
@@ -106,10 +94,6 @@ Document unsupported observations in the result when they affect the requested
 scan.
 
 ## Configuration, findings, and output
-
-Relative source exclusions filter files discovered during directory scans.
-An explicitly requested Python file takes precedence over a relative
-exclusion. An absolute exclusion can still apply to that file.
 
 - Freeze discovery from a directory or the parent of a file. Per directory,
   use `.skylos.toml`, then `skylos.toml`, then `[tool.skylos]` in
@@ -224,3 +208,75 @@ refresh lockfile and distribution notices with those changes.
 - Run the existing packaging checks and conformance fixtures alongside the
   new gates. Verify that the native CLI runs independently of Python and that
   the installed SDK produces equivalent native results.
+
+## Development changes after 0.2.0
+
+The following refinements to the Phase 0.2 profile are implemented on `main`
+after the published 0.2.0 release. They are part of the ongoing Phase 0.3 work
+and require a source build until a release containing them is published.
+Refer to the [0.2.0 source tag](https://github.com/eddiethedean/skarmory/blob/v0.2.0/docs/phase-02.md)
+for the original published contract.
+
+### Public API and lazy exports
+
+Resolve explicit re-export chains and effective literal `__all__` after supported
+initialization. Model a single unshadowed module `__getattr__` with one
+positional parameter that maps literal names to statically resolved local
+exports. A variadic-only positional hook can establish a missing member when
+it immediately raises the built-in `AttributeError` with no arguments, scalar
+literals, or the parameter tuple. An existing binding takes precedence over
+lazy lookup. The selected branch can use its literal lookup name as a value.
+Unresolved values in a selected lazy return, including values inside tuples,
+lists, and dictionaries, report incomplete coverage. An opaque export that
+affects the public boundary produces uncertainty or incomplete coverage.
+
+[Variadic lazy-hook implementation](https://github.com/eddiethedean/skarmory/pull/94).
+
+### Truth and length methods
+
+In `if` conditions, a resolved instance can call a local `__bool__` method or
+fall back to `__len__` when `__bool__` is absent. The analyzer retains the method
+and its reachable helpers without assuming the truth-test result. A reachable
+test that could dispatch to an unresolved selected hook makes coverage
+incomplete.
+
+Explicit calls to the built-in `len()` retain a resolved local `__len__` method
+and its reachable helpers. A reachable call reports incomplete coverage when
+the instance's length method cannot be resolved or an opaque argument may call
+a selected length method. This applies when the result is used in a comparison.
+Built-in container results retain their built-in length behavior when the
+constructor and its inputs are bounded. When a selected hash or equality method
+could run during set construction, an earlier assignment alone cannot prove
+that a mutable input still contains only built-in scalars.
+
+### Source exclusion precedence
+
+Relative source exclusions filter files discovered during directory scans.
+An explicitly requested Python file takes precedence over a relative
+exclusion. An absolute exclusion can still apply to that file.
+
+## Historical dead-code feature comparison
+
+The table compares the 0.2.0 Skylos profile with Skarmory 0.1.0 and the pinned
+Skylos 5.7.0 baseline. A dash means the feature is unavailable in that version
+or profile.
+
+| Feature | Skarmory 0.1.0 | Skarmory 0.2.0 Skylos profile | Skylos 5.7.0 |
+| --- | --- | --- | --- |
+| Unreachable functions | Bounded reachability from declared roots | Functions and unreachable groups within the supported call graph | Unused functions and unreachable groups |
+| Unused methods and classes | — | Module-level classes and selected method dispatch patterns | Unused classes and methods |
+| Unused imports | — | Supported import bindings and aliases | Yes |
+| Unused variables | — | Supported lexical bindings | Yes |
+| Unused parameters | — | Supported function signatures and reads | Yes |
+| Unused declared dependencies | — | — | Python and npm dependency checks (`SKY-U005`) with quality scanning |
+| Empty Python files | — | Empty, comment-only, and docstring-only files, with entry-file exemptions | Yes |
+| Library exports | Declared public callables and resolvable literal `__all__` | Explicit re-exports, literal `__all__`, and selected literal lazy exports | Public API and export detection |
+| pytest | — | Statically collected tests and selected fixture patterns | Test and fixture awareness |
+| FastAPI | — | Selected routes and router registration | Framework-aware analysis |
+| Django and Flask | — | — | Framework-aware analysis |
+| Finding controls | — | Confidence thresholds, whitelists, and inline ignores | Confidence thresholds, whitelists, and inline ignores |
+| Grep verification and runtime evidence | — | — | Text-based verification and optional tracing or coverage |
+| Reports | Native JSON | Compatibility JSON, strict CLI exit status, and SARIF | JSON, strict CLI exit status, and SARIF |
+| Git diff and baseline workflows | — | — | Changed-file scans, baselines, and configurable gates |
+| Cleanup workflow | — | — | Review queue and patch previews for supported findings |
+| JavaScript and TypeScript dead code | — | — | Unused files (`SKY-E003`), unnecessary exports (`SKY-E004`), unused symbols, and unused enum members (`SKY-U007`) |
