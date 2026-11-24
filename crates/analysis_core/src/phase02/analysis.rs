@@ -438,6 +438,7 @@ pub(super) fn analyze_with_verification(
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
         django_roots: BTreeSet::new(),
+        django_startup_scopes: BTreeSet::new(),
         django_registration_issues: Vec::new(),
         initial_django_settings: django_settings.map_or(DjangoSettings::Unset, |value| {
             value.to_str().map_or(DjangoSettings::Unknown, |value| {
@@ -571,6 +572,7 @@ struct Graph<'a> {
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
     django_roots: BTreeSet<Object>,
+    django_startup_scopes: BTreeSet<ScopeId>,
     django_registration_issues: Vec<(Object, Issue)>,
     initial_django_settings: DjangoSettings,
     unittest_classes: BTreeMap<SymbolId, FrameworkClassRole>,
@@ -1354,6 +1356,7 @@ impl<'a> Graph<'a> {
                     | "constructor"
                     | "decorator"
                     | "subclass_hook"
+                    | "pydantic_schema_build"
                     | "truth_test"
                     | "length_call"
                     | "grep_dynamic_call"
@@ -3930,7 +3933,7 @@ impl<'a> Graph<'a> {
                                     | "django.core.management.execute_from_command_line"
                             ) =>
                     {
-                        let settings = match &self.scopes[scope].django_settings {
+                        let mut settings = match &self.scopes[scope].django_settings {
                             DjangoSettings::Module(module) => Some(module.clone()),
                             DjangoSettings::Unset | DjangoSettings::Unknown => None,
                         };
@@ -3943,13 +3946,22 @@ impl<'a> Graph<'a> {
                                     .map(|(_, value)| value)
                             });
                             match argv.map(|value| self.identity(scope, value, before, 0)) {
-                                Some(Value::Sequence(values)) => match values.get(1) {
-                                    Some(Value::Text(command)) if !command.starts_with('-') => {
-                                        frameworks::DjangoCommands::Selected(command.clone())
+                                Some(Value::Sequence(values)) => {
+                                    match django_management_settings(&values) {
+                                        DjangoSettings::Unset => {}
+                                        DjangoSettings::Module(module) => settings = Some(module),
+                                        DjangoSettings::Unknown => settings = None,
                                     }
-                                    Some(Value::Text(_)) | None => frameworks::DjangoCommands::None,
-                                    _ => frameworks::DjangoCommands::Available,
-                                },
+                                    match values.get(1) {
+                                        Some(Value::Text(command)) if !command.starts_with('-') => {
+                                            frameworks::DjangoCommands::Selected(command.clone())
+                                        }
+                                        Some(Value::Text(_)) | None => {
+                                            frameworks::DjangoCommands::None
+                                        }
+                                        _ => frameworks::DjangoCommands::Available,
+                                    }
+                                }
                                 _ => frameworks::DjangoCommands::Available,
                             }
                         } else {
@@ -6616,6 +6628,9 @@ impl<'a> Graph<'a> {
                     }),
             );
         self.report_fastapi_coverage(&reach);
+        if self.phase03 {
+            self.report_django_startup_coverage(&reach);
+        }
         self.issues.extend(
             self.django_registration_issues
                 .drain(..)
@@ -7225,6 +7240,35 @@ fn framework_module(file: usize) -> Object {
 
 fn django_loaded_module(file: usize) -> Object {
     (file, 0, 1)
+}
+
+fn django_management_settings(argv: &[Value]) -> DjangoSettings {
+    // Django parses global options after the executable and subcommand before
+    // consulting INSTALLED_APPS. The last settings option wins.
+    let mut arguments = argv.iter().skip(2);
+    let mut module = "";
+    while let Some(argument) = arguments.next() {
+        let Value::Text(option) = argument else {
+            return DjangoSettings::Unknown;
+        };
+        match option.as_str() {
+            "--" => break,
+            "--settings" => match arguments.next() {
+                Some(Value::Text(value)) if !value.starts_with('-') => module = value,
+                _ => return DjangoSettings::Unknown,
+            },
+            _ => {
+                if let Some(value) = option.strip_prefix("--settings=") {
+                    module = value;
+                }
+            }
+        }
+    }
+    if module.is_empty() {
+        DjangoSettings::Unset
+    } else {
+        DjangoSettings::Module(module.to_owned())
+    }
 }
 
 fn is_django_signal(provider: &str) -> bool {
@@ -8914,6 +8958,60 @@ print(Status.default)
                 .iter()
                 .any(|event| matches!(event.kind, "django_registration" | "django_signal"))
         );
+    }
+
+    #[test]
+    fn phase03_django_startup_requires_a_reachable_launcher() {
+        for launch in ["", "\napplication = create_app()\n"] {
+            let files = [
+                module("settings.py", "settings", "ROOT_URLCONF = 'urls'\n"),
+                module(
+                    "urls.py",
+                    "urls",
+                    "from django.urls import path\nimport signals\ndef home(request):\n    return None\nurlpatterns = [path('', home)]\n",
+                ),
+                module(
+                    "signals.py",
+                    "signals",
+                    "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef save(sender):\n    return sender\n",
+                ),
+                module(
+                    "server.py",
+                    "server",
+                    &format!(
+                        "def create_app():\n    import os\n    from django.core.asgi import get_asgi_application\n    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n    return get_asgi_application()\n{launch}"
+                    ),
+                ),
+            ];
+            let result = analyze_phase03(&files, &[]);
+            if launch.is_empty() {
+                for path in ["urls.py", "signals.py"] {
+                    assert!(
+                        result.issues.iter().any(|issue| {
+                            issue.path == path && issue.kind == "unresolved_registration"
+                        }),
+                        "{:?}",
+                        result.issues
+                    );
+                }
+                assert!(!result.evidence.iter().any(|entry| {
+                    matches!(entry.kind, "django_registration" | "django_signal")
+                }));
+            } else {
+                assert!(result.issues.is_empty(), "{:?}", result.issues);
+                for (name, kind) in [
+                    ("urls.home", "django_registration"),
+                    ("signals.save", "django_signal"),
+                ] {
+                    assert!(
+                        result
+                            .evidence
+                            .iter()
+                            .any(|entry| { entry.full_name == name && entry.kind == kind })
+                    );
+                }
+            }
+        }
     }
 
     #[test]

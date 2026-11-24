@@ -418,6 +418,71 @@ application = get_wsgi_application()
 }
 
 #[test]
+fn django_management_settings_option_selects_the_installed_commands() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (settings, app) in [("production", "primary"), ("staging", "alternate")] {
+        fs::write(
+            root.join(format!("{settings}.py")),
+            format!("INSTALLED_APPS = ['{app}']\n"),
+        )
+        .unwrap();
+        let app_dir = root.join(app);
+        let commands = app_dir.join("management/commands");
+        fs::create_dir_all(&commands).unwrap();
+        fs::write(app_dir.join("__init__.py"), "").unwrap();
+        fs::write(commands.join("record.py"), format!(
+            "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self, *args, **options):\n        return record_message()\ndef record_message():\n    return '{settings}'\n",
+        )).unwrap();
+    }
+    let launcher = |argv: &str| {
+        fs::write(
+            root.join("manage.py"),
+            format!(
+                "import os\nfrom os import name\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'production')\nexecute_from_command_line(argv=['manage.py', 'record', {argv}])\n"
+            ),
+        )
+        .unwrap();
+    };
+
+    for (options, unused_app) in [
+        ("'--settings=staging'", "primary"),
+        ("'--settings', 'staging'", "primary"),
+        ("'--settings=production', '--settings=staging'", "primary"),
+        ("'--settings=staging', '--settings='", "alternate"),
+        ("'--', '--settings=staging'", "alternate"),
+    ] {
+        launcher(options);
+        let report = scan_with_settings(root, Some("production"), None);
+        let module = format!("{unused_app}.management.commands.record");
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            [
+                format!("{module}.Command.handle"),
+                format!("{module}.record_message"),
+            ],
+            "{options}: {report}"
+        );
+    }
+
+    launcher("'--settings', name");
+    let report = scan_with_exit(root, Some("production"), None, 2);
+    assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration"
+                    && issue["message"] == "Django startup settings could not be resolved"
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn unittest_cases_in_pytest_suffix_modules_are_collected() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -577,6 +642,106 @@ class WebChecks(unittest.TestCase):
 }
 
 #[test]
+fn django_registered_views_reach_inherited_setup() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("settings.py"), "ROOT_URLCONF = 'urls'\n").unwrap();
+    fs::write(
+        root.join("wsgi.py"),
+        "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\napplication = get_wsgi_application()\n",
+    )
+    .unwrap();
+    let write_views = |setup_body: &str| {
+        fs::write(
+            root.join("urls.py"),
+            format!(
+                r#"from django.http import HttpResponse
+from django.urls import path
+from django.views import View
+
+class Audited(View):
+    def setup(self, request):
+        audit_setup()
+{setup_body}
+    def get(self, request):
+        return HttpResponse("ok")
+
+class Home(Audited):
+    pass
+
+class Dormant(View):
+    def setup(self, request):
+        dormant_setup()
+        raise RuntimeError("dormant")
+
+def audit_setup():
+    return "audit"
+
+def dormant_setup():
+    return "dormant"
+
+dormant_view = Dormant.as_view()
+urlpatterns = [path("", Home.as_view())]
+"#,
+            ),
+        )
+        .unwrap();
+    };
+    let assert_setup_evidence = |report: &Value| {
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        for (name, kind) in [
+            ("urls.Audited.setup", "framework_lifecycle"),
+            ("urls.audit_setup", "direct_call"),
+        ] {
+            assert!(
+                symbols.iter().any(|row| {
+                    row["qualified_name"] == name
+                        && row["evidence"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|entry| entry["kind"] == kind)
+                }),
+                "missing {kind} evidence for {name}: {report}"
+            );
+        }
+    };
+
+    write_views("        raise RuntimeError('request rejected')");
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["urls.Dormant.setup", "urls.dormant_setup"],
+        "{report}"
+    );
+    assert_setup_evidence(&report);
+    for hits in [0, 3] {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(stats["hits"], hits);
+        assert_eq!(cached, report);
+    }
+
+    write_views("        super().setup(request)");
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert_eq!(incomplete["coverage"]["status"], "incomplete");
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["path"] == "urls.py"
+                    && issue["line"] == 8
+                    && issue["kind"] == "unresolved_call"
+            }),
+        "{incomplete}"
+    );
+    assert_setup_evidence(&incomplete);
+}
+
+#[test]
 fn phase03_framework_registrations_preserve_positive_and_negative_controls() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -678,5 +843,89 @@ User(name="Ada")
             }),
             "missing {kind} evidence for {name}: {report}"
         );
+    }
+}
+
+#[test]
+fn pydantic_builds_an_eager_schema_when_the_class_is_defined() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("models.py"),
+        r#"from os import name
+from pydantic import BaseModel
+
+def eager_schema():
+    return {"type": "any"}
+
+def conditional_schema():
+    return {"type": "any"}
+
+def deferred_schema():
+    return {"type": "any"}
+
+def dormant_schema():
+    return {"type": "any"}
+
+def post_init_only():
+    return None
+
+class Eager(BaseModel):
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source, handler):
+        return eager_schema()
+
+    def model_post_init(self, context):
+        post_init_only()
+
+class Deferred(BaseModel):
+    model_config = {"defer_build": True}
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source, handler):
+        return deferred_schema()
+
+class Conditional(BaseModel):
+    model_config = {"defer_build": name == "posix"}
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source, handler):
+        return conditional_schema()
+
+def build_dormant_model():
+    class Dormant(BaseModel):
+        @classmethod
+        def __get_pydantic_core_schema__(cls, source, handler):
+            return dormant_schema()
+"#,
+    )
+    .unwrap();
+
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    for name in ["models.eager_schema", "models.conditional_schema"] {
+        assert!(!unused.contains(&name), "{report}");
+    }
+    for name in [
+        "models.deferred_schema",
+        "models.dormant_schema",
+        "models.post_init_only",
+    ] {
+        assert!(unused.contains(&name), "{report}");
+    }
+    assert!(
+        findings(&report, "unused_classes").contains(&"models.Eager"),
+        "{report}"
+    );
+    let evidence = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (model, certainty) in [("Eager", "certain"), ("Conditional", "possible")] {
+        let name = format!("models.{model}.__get_pydantic_core_schema__");
+        let schema_evidence: Vec<_> = evidence
+            .iter()
+            .filter(|row| row["qualified_name"] == name)
+            .flat_map(|row| row["evidence"].as_array().unwrap())
+            .filter(|entry| entry["kind"] == "pydantic_schema_build")
+            .map(|entry| entry["certainty"].as_str().unwrap())
+            .collect();
+        assert_eq!(schema_evidence, [certainty], "{report}");
     }
 }

@@ -80,6 +80,9 @@ impl Graph<'_> {
             let Binding::Definition(_, class_scope) = self.symbols[class].binding else {
                 continue;
             };
+            if role == FrameworkClassRole::PydanticModel {
+                self.collect_pydantic_schema_build(class, class_scope);
+            }
             for name in lifecycle {
                 if let Some(target) = self.local(class_scope, name, END)
                     && matches!(self.symbols[target].binding, Binding::Definition(_, _))
@@ -100,6 +103,74 @@ impl Graph<'_> {
         }
 
         self.collect_test_frameworks();
+    }
+
+    fn collect_pydantic_schema_build(&mut self, class: SymbolId, class_scope: ScopeId) {
+        let (lineage, _) = self.class_lineage(class);
+        let Some(hook) = lineage
+            .iter()
+            .find_map(|&scope| self.local(scope, "__get_pydantic_core_schema__", END))
+        else {
+            return;
+        };
+        let deferred = self.pydantic_defer_build(&lineage);
+        if deferred == Some(true) {
+            return;
+        }
+        let certainty = if deferred == Some(false)
+            && !self.conditional.contains_key(&class)
+            && !self.conditional.contains_key(&hook)
+        {
+            "certain"
+        } else {
+            "possible"
+        };
+        let hooks = match self.binding(hook, END, 0) {
+            Value::Alternatives(values) => values,
+            value => vec![value],
+        };
+        for hook in hooks {
+            if let Value::Callable(invocation) = hook {
+                // Schema generation runs as part of class creation, even if
+                // no later code references or instantiates the model.
+                self.edge(
+                    class_scope,
+                    invocation.target,
+                    "pydantic_schema_build",
+                    certainty,
+                );
+            } else {
+                self.scope_issue(
+                    class_scope,
+                    self.symbols[class].name.at,
+                    "unresolved_registration",
+                    "Pydantic core schema hook could not be resolved",
+                );
+            }
+        }
+    }
+
+    fn pydantic_defer_build(&mut self, lineage: &[ScopeId]) -> Option<bool> {
+        // Subclasses merge model_config by key, with nearer classes winning.
+        for &scope in lineage {
+            if let Some(config) = self.local(scope, "model_config", END) {
+                let Value::Mapping(items) = self.binding(config, END, 0) else {
+                    return None;
+                };
+                for [key, value] in items.as_chunks::<2>().0.iter().rev() {
+                    match (key, value) {
+                        (Value::Text(key), Value::Bool(value)) if key == "defer_build" => {
+                            return Some(*value);
+                        }
+                        (Value::Text(key), _) if key != "defer_build" => {}
+                        _ => return None,
+                    }
+                }
+            } else if self.local(scope, "Config", END).is_some() {
+                return None;
+            }
+        }
+        Some(false)
     }
 
     fn collect_test_frameworks(&mut self) {
@@ -367,41 +438,12 @@ impl Graph<'_> {
     }
 
     fn collect_django_urlconfs(&mut self) {
-        if self
-            .scopes
-            .iter()
-            .all(|scope| scope.starts_django.is_empty())
-        {
-            for file in 0..self.files.len() {
-                if let Some(patterns) = self.local(file, "urlpatterns", END)
-                    && has_django_pattern(&self.binding_value(patterns, 0))
-                {
-                    self.issue(
-                        file,
-                        self.symbols[patterns].name.at,
-                        "unresolved_registration",
-                        "Django URL patterns have no selected startup and ROOT_URLCONF",
-                    );
-                }
-            }
-            for scope in 0..self.scopes.len() {
-                if let Some((_, target, _)) = self.scopes[scope]
-                    .routes
-                    .iter()
-                    .find(|(_, _, kind)| *kind == "django_signal")
-                {
-                    self.scope_issue(
-                        scope,
-                        self.symbols[*target].name.at,
-                        "unresolved_registration",
-                        "Django signal registration has no selected startup",
-                    );
-                }
-            }
-            return;
-        }
         for scope in 0..self.scopes.len() {
-            for startup in std::mem::take(&mut self.scopes[scope].starts_django) {
+            let startups = std::mem::take(&mut self.scopes[scope].starts_django);
+            if !startups.is_empty() {
+                self.django_startup_scopes.insert(scope);
+            }
+            for startup in startups {
                 let Some(settings) = startup
                     .settings
                     .as_deref()
@@ -486,6 +528,39 @@ impl Graph<'_> {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    pub(super) fn report_django_startup_coverage(&mut self, reach: &Reachability) {
+        if !self.django_startup_scopes.is_disjoint(&reach.scopes) {
+            return;
+        }
+        for file in 0..self.files.len() {
+            if let Some(patterns) = self.local(file, "urlpatterns", END)
+                && has_django_pattern(&self.binding_value(patterns, 0))
+            {
+                self.issue(
+                    file,
+                    self.symbols[patterns].name.at,
+                    "unresolved_registration",
+                    "Django URL patterns have no selected startup and ROOT_URLCONF",
+                );
+            }
+        }
+        for &scope in &reach.scopes {
+            let row = &self.scopes[scope];
+            if let Some((_, target, _)) = row
+                .routes
+                .iter()
+                .find(|(_, _, kind)| *kind == "django_signal")
+            {
+                self.issue(
+                    row.file,
+                    self.symbols[*target].name.at,
+                    "unresolved_registration",
+                    "Django signal registration has no selected startup",
+                );
             }
         }
     }
@@ -693,23 +768,36 @@ impl Graph<'_> {
     ) {
         self.scopes[scope].routes.push((object, class, kind));
         for name in hooks {
-            if let Some(binding) = self.django_class_attribute(class, name) {
-                if let Value::Callable(invocation) = self.binding(binding, END, 0) {
-                    self.scopes[scope]
-                        .routes
-                        .push((object, invocation.target, kind));
-                    self.method_receivers
-                        .entry(invocation.target)
-                        .or_default()
-                        .insert(class);
-                } else {
-                    self.django_registration_issue(
-                        object,
-                        at,
-                        "Django lifecycle callback could not be resolved",
-                    );
-                }
-            }
+            self.activate_django_hook(scope, object, class, name, kind, at);
+        }
+    }
+
+    fn activate_django_hook(
+        &mut self,
+        scope: ScopeId,
+        object: Object,
+        class: SymbolId,
+        name: &str,
+        kind: &'static str,
+        at: Location,
+    ) {
+        let Some(binding) = self.django_class_attribute(class, name) else {
+            return;
+        };
+        if let Value::Callable(invocation) = self.binding(binding, END, 0) {
+            self.scopes[scope]
+                .routes
+                .push((object, invocation.target, kind));
+            self.method_receivers
+                .entry(invocation.target)
+                .or_default()
+                .insert(class);
+        } else {
+            self.django_registration_issue(
+                object,
+                at,
+                "Django lifecycle callback could not be resolved",
+            );
         }
     }
 
@@ -738,7 +826,15 @@ impl Graph<'_> {
                 Value::DjangoView(class) => {
                     self.scopes[file]
                         .routes
-                        .push((parent, class, "django_registration"))
+                        .push((parent, class, "django_registration"));
+                    self.activate_django_hook(
+                        file,
+                        parent,
+                        class,
+                        "setup",
+                        "framework_lifecycle",
+                        at,
+                    );
                 }
                 Value::DjangoInclude(child) => self.scopes[file].mounts.push((parent, child)),
                 _ => self.django_registration_issue(

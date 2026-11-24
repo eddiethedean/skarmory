@@ -180,16 +180,18 @@ different routes or postponed dependencies, or when ordering across scopes
 cannot be determined. It retains constructors of resolved class dependencies.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
 
-Django URL discovery follows a recognized launcher and the scan process's
-`DJANGO_SETTINGS_MODULE`, or the first literal default set in the launcher's
-scope when the variable is unset. It resolves
+Django URL discovery follows a reachable, recognized launcher. The settings
+module comes from a literal `--settings` option in a management launcher, the
+scan process's `DJANGO_SETTINGS_MODULE`, or the first literal default set in
+the launcher's scope, in that order. It resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
-`path` and `re_path` registrations, and literal `include` modules. Signal
+`path` and `re_path` registrations, and literal `include` modules. Registered
+class-based views reach their effective `setup()` hook. Signal
 registrations through selected built-in signal providers follow imports
 from the startup, settings and active URL modules. Unresolved URL registrations
-in active URL modules produce coverage diagnostics. Standalone URL patterns
-resolved through Django's provider also report incomplete coverage when no
-startup is selected.
+in active URL modules produce coverage diagnostics. Recognized URL patterns
+and signal registrations report incomplete coverage when no Django startup
+is reached.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
@@ -204,7 +206,9 @@ The profile also recognizes selected Celery task registrations, SQLAlchemy
 listeners, Pydantic model hooks, unittest test and lifecycle methods through
 effective class bindings, and pytest hooks and fixtures through selected
 conftest modules or literal `pytest_plugins` declarations. pytest autouse fixtures
-also apply to unittest cases collected by pytest. These are bounded models under
+also apply to unittest cases collected by pytest. A reachable eager Pydantic
+model declaration can execute its core-schema hook during class creation.
+These are bounded models under
 [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
 Additional Django command dispatch and FastAPI dependency patterns still need
