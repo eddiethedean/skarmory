@@ -42,9 +42,10 @@ compatibility, rather than another collection of isolated accelerators.
 
 ```mermaid
 flowchart TD
-    CLI["Native CLI"] --> Engine["Rust analysis engine"]
+    CLI["Native CLI"] --> Engine["skarmory_engine"]
     SDK["Python API via PyO3"] --> Engine
-    Engine --> Facts["Source snapshots and module facts"]
+    Engine --> Frontends["Language frontend crates"]
+    Frontends --> Facts["skarmory_core: shared facts"]
     Facts --> Local["Local rules"]
     Facts --> Graph["Project graph and framework models"]
     Graph --> Analysis["Reachability and data flow"]
@@ -54,18 +55,38 @@ flowchart TD
     Analysis --> Report
 ```
 
-The boundaries are logical components; they do not require a crate for each
-individual subsystem.
+The following workspace boundaries are the target architecture for the language
+milestones beginning in Phase 0.7. Python remains the sole qualified language
+in Phase 0.3. Each language frontend is a workspace crate; shared analysis
+subsystems may remain modules within a crate.
 
 | Component | Responsibility |
 | --- | --- |
-| `skarmory_core` | Project state, stable analysis facts, graphs, rules, evidence, and caching |
-| `skarmory_python` | Python parser adapter and syntax-specific fact extraction |
+| `skarmory_core` | Language-neutral facts, symbol identity, shared graphs and algorithms, evidence, diagnostics, coverage and cache contracts |
+| `skarmory_engine` | Frontend registration, discovery and immutable snapshots, orchestration, cross-language references, shared budgets and report aggregation |
+| `skarmory_python` | Python parser, facts, package resolution, framework models and language-specific rules |
+| Other frontend crates | One for each language or closely related parser family, as defined in the [language roadmap](language-frontends.md) |
 | `skarmory_cli` | Arguments, output, and command-specific exit behavior |
 | `skarmory_bindings` | PyO3 conversion and native API exposure |
 | Python package | Typed interface, compatibility helpers, and optional integrations |
 | Conformance harness | Reference comparisons and reviewed discrepancies |
 | Benchmark harness | Reproducible timing, memory, coverage, and accuracy measurements |
+
+The engine depends on the enabled frontend crates, which depend on the core.
+The core does not depend on any frontend or grammar. CLI and SDK depend on the
+engine. Keep parser ASTs private to their frontend. A frontend owns its package
+and build inputs, resolution, entry points, language-specific rules and tests.
+Shared graph algorithms and stable facts remain in the core; cross-language
+edges and uncertainty are reconciled by the engine. Introduce `skarmory_engine`
+and migrate existing Python and JavaScript analysis to the crate boundaries as
+part of the first language milestone. The current layout is transitional.
+
+Publish default artifacts with all qualified languages to date. Use optional
+per-language Cargo features (with JS/TS as one family), test default and minimal
+builds, and report disabled or unsupported requested languages explicitly.
+Version frontend cache facts and include each grammar and frontend identity in
+cache keys. Keep package versions aligned and publish dependencies before
+dependents. See [language milestones](language-frontends.md).
 
 The core must not depend on Python interpreter objects. It receives ordinary
 native options and source inputs and returns native report data. CLI and SDK
