@@ -267,6 +267,7 @@ struct ClassInvocation {
     at: Location,
     edge: Edge,
     receiver: Receiver,
+    deferred_atexit_receiver: Option<SymbolId>,
 }
 
 #[derive(Clone)]
@@ -417,6 +418,7 @@ pub(super) fn analyze_with_verification(
         subclassed: BTreeSet::new(),
         instance_receivers: BTreeMap::new(),
         class_invocations: Vec::new(),
+        atexit_receivers: BTreeMap::new(),
         method_receivers: BTreeMap::new(),
         receiver_calls: Vec::new(),
         resolved_receiver_calls: BTreeSet::new(),
@@ -424,6 +426,7 @@ pub(super) fn analyze_with_verification(
         issues: Vec::new(),
         scope_issues: Vec::new(),
         probing_identity: false,
+        check_dormant_declarations: false,
         nested_lazy_imports: Vec::new(),
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
@@ -552,6 +555,7 @@ struct Graph<'a> {
     subclassed: BTreeSet<SymbolId>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
     class_invocations: Vec<ClassInvocation>,
+    atexit_receivers: BTreeMap<ScopeId, Vec<(Edge, SymbolId)>>,
     method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     receiver_calls: Vec<ReceiverCall>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
@@ -559,6 +563,7 @@ struct Graph<'a> {
     issues: Vec<Issue>,
     scope_issues: Vec<(ScopeId, Issue)>,
     probing_identity: bool,
+    check_dormant_declarations: bool,
     nested_lazy_imports: Vec<(ScopeId, &'a [Statement])>,
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
@@ -2454,6 +2459,39 @@ impl<'a> Graph<'a> {
         self.expression_value(scope, expression, before, depth, ValueEvaluation::Identity)
     }
 
+    fn identity_with_dormant_declarations(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Value {
+        let previous = std::mem::replace(&mut self.check_dormant_declarations, true);
+        let value = self.identity(scope, expression, before, depth);
+        self.check_dormant_declarations = previous;
+        value
+    }
+
+    fn call_target_identity(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Value {
+        let value = self.identity(scope, expression, before, depth);
+        if self.phase03
+            && !self.check_dormant_declarations
+            && matches!(&value, Value::Provider(name) if name == "atexit.register")
+        {
+            // Dormant assignments still determine Python's lexical scopes.
+            // Recheck the provider through any local or module aliases.
+            self.identity_with_dormant_declarations(scope, expression, before, depth)
+        } else {
+            value
+        }
+    }
+
     fn expression_value(
         &mut self,
         scope: ScopeId,
@@ -2500,8 +2538,23 @@ impl<'a> Graph<'a> {
         match &expression.kind {
             ExpressionKind::Name(name) => {
                 let lazy = matches!(evaluation, ValueEvaluation::Lazy { .. });
-                let binding = self.lexical_binding(scope, name, before, lazy);
-                if lazy && matches!(binding, LexicalBinding::UnboundLocal) {
+                let binding = self.lexical_binding(
+                    scope,
+                    name,
+                    before,
+                    lazy || self.check_dormant_declarations,
+                );
+                if (lazy || self.check_dormant_declarations)
+                    && matches!(binding, LexicalBinding::UnboundLocal)
+                {
+                    if self.check_dormant_declarations {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unbound_local",
+                            format!("{name} has no active local binding"),
+                        );
+                    }
                     return Value::Unknown;
                 }
                 if let LexicalBinding::Found(id) = binding {
@@ -2610,7 +2663,7 @@ impl<'a> Graph<'a> {
                 function,
                 arguments,
                 keywords,
-            } => match recurse(self, function) {
+            } => match self.call_target_identity(scope, function, before, depth + 1) {
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
                 }
@@ -2645,6 +2698,12 @@ impl<'a> Graph<'a> {
                     Value::Provider("builtins.open.result".into())
                 }
                 Value::Provider(name) if name == "asyncio.create_task" => Value::ScheduledTask,
+                Value::Provider(name) if self.phase03 && name == "atexit.register" => {
+                    // register returns the same callable it receives.
+                    arguments.first().map_or(Value::Unknown, |argument| {
+                        self.identity_with_dormant_declarations(scope, argument, before, depth + 1)
+                    })
+                }
                 Value::Provider(name)
                     if name == "builtins.object" && arguments.is_empty() && keywords.is_empty() =>
                 {
@@ -3117,22 +3176,30 @@ impl<'a> Graph<'a> {
         certainty: &'static str,
         at: Location,
     ) {
+        let atexit = is_atexit_edge(kind);
         let (kind, certainty) = match (invocation.verified, kind) {
             (true, "direct_call") => ("grep_dynamic_call", "possible"),
             (true, _) => ("grep_dynamic", "possible"),
             (false, _) => (kind, certainty),
         };
         let owner = self.scopes[self.symbols[invocation.target].scope].owner;
+        let mut deferred_atexit_receiver = None;
         if let Some(class) = invocation.receiver.supplied()
             && self.receiver_parameter(invocation.target).is_some()
         {
-            self.method_receivers
-                .entry(invocation.target)
-                .or_default()
-                .insert(class);
+            if atexit {
+                // A shutdown receiver only affects dispatch when its registration runs.
+                deferred_atexit_receiver = Some(class);
+            } else {
+                self.method_receivers
+                    .entry(invocation.target)
+                    .or_default()
+                    .insert(class);
+            }
         }
-        if matches!(invocation.receiver, Receiver::Ordinary)
-            || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner)
+        if deferred_atexit_receiver.is_none()
+            && (matches!(invocation.receiver, Receiver::Ordinary)
+                || matches!(invocation.receiver, Receiver::Bound(class) if Some(class) == owner))
         {
             self.edge(scope, invocation.target, kind, certainty);
         } else {
@@ -3145,6 +3212,7 @@ impl<'a> Graph<'a> {
                     certainty,
                 },
                 receiver: invocation.receiver,
+                deferred_atexit_receiver,
             });
         }
     }
@@ -3182,6 +3250,12 @@ impl<'a> Graph<'a> {
                     "explicit method receiver is outside the bounded model",
                 );
             } else {
+                if let Some(class) = call.deferred_atexit_receiver {
+                    self.atexit_receivers
+                        .entry(call.scope)
+                        .or_default()
+                        .push((call.edge, class));
+                }
                 self.scopes[call.scope].edges.push(call.edge);
             }
         }
@@ -3240,7 +3314,7 @@ impl<'a> Graph<'a> {
         let resolved: BTreeSet<_> = self
             .resolved_receiver_calls
             .iter()
-            .chain(&reach.resolved_django_receiver_calls)
+            .chain(&reach.resolved_deferred_receiver_calls)
             .map(|&(index, _)| index)
             .collect();
         for (index, call) in self.receiver_calls.iter().enumerate() {
@@ -3709,7 +3783,7 @@ impl<'a> Graph<'a> {
                 {
                     self.walk(scope, expr, before);
                 }
-                let callee = self.identity(scope, function, before, 0);
+                let callee = self.call_target_identity(scope, function, before, 0);
                 match callee {
                     Value::Callable(invocation) => {
                         self.call_invocation(
@@ -3812,6 +3886,15 @@ impl<'a> Graph<'a> {
                             "scheduled_coroutine",
                             expr.at,
                         );
+                    }
+                    Value::Provider(name) if self.phase03 && name == "atexit.register" => {
+                        self.register_atexit(CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        });
                     }
                     Value::Submit => {
                         self.activate_submission(scope, before, expr.at, arguments, keywords);
@@ -4437,6 +4520,57 @@ impl<'a> Graph<'a> {
         Some(values)
     }
 
+    fn register_atexit(&mut self, call: CallArguments<'_>) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        if let Some((callback, forwarded)) = positional.split_first() {
+            let callback = self.identity_with_dormant_declarations(scope, callback, before, 0);
+            if self.retain_atexit_callback(scope, callback, at) {
+                for argument in forwarded
+                    .iter()
+                    .chain(keywords.iter().map(|(_, value)| value))
+                {
+                    let value = self.identity_with_dormant_declarations(scope, argument, before, 0);
+                    self.expose(scope, value, "atexit_argument", argument.at);
+                }
+                return;
+            }
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_callback",
+            "atexit.register requires a bounded synchronous callback as its first positional argument",
+        );
+    }
+
+    fn retain_atexit_callback(&mut self, scope: ScopeId, value: Value, at: Location) -> bool {
+        match value {
+            Value::Callable(invocation)
+                if !invocation.verified
+                    && !matches!(invocation.receiver, Receiver::Explicit(_))
+                    && matches!(self.symbols[invocation.target].binding,
+                        Binding::Definition(definition, _) if definition.kind == DefinitionKind::Function) =>
+            {
+                self.invoke(scope, invocation, "atexit_registration", "possible", at);
+                true
+            }
+            Value::Alternatives(values) => {
+                let mut resolved = true;
+                for value in values {
+                    resolved &= self.retain_atexit_callback(scope, value, at);
+                }
+                resolved
+            }
+            _ => false,
+        }
+    }
+
     fn activate_submission(
         &mut self,
         scope: ScopeId,
@@ -4883,7 +5017,7 @@ impl<'a> Graph<'a> {
         for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
             self.walk(scope, value, before);
         }
-        match self.identity(scope, function, before, 0) {
+        match self.call_target_identity(scope, function, before, 0) {
             Value::Method(object, kind, name) if is_route(kind, &name, self.phase03) => {
                 if self.phase03 && matches!(kind, ObjectKind::App | ObjectKind::Router) {
                     self.fastapi_route(
@@ -4936,6 +5070,26 @@ impl<'a> Graph<'a> {
                     _ => unreachable!(),
                 };
                 self.edge(scope, target, kind, "certain");
+            }
+            Value::Provider(name) if self.phase03 && name == "atexit.register" => {
+                if !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && self.scopes[scope]
+                        .owner
+                        .is_none_or(|owner| !self.is_class(owner))
+                    && self.retain_atexit_callback(
+                        scope,
+                        Value::Callable(Invocation::ordinary(target)),
+                        decorator.at,
+                    )
+                {
+                    return true;
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_decorator",
+                    "atexit.register decorator requires a bounded synchronous function",
+                );
             }
             Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
             Value::Provider(name)
@@ -6435,7 +6589,9 @@ impl<'a> Graph<'a> {
                 reach.django_signal_modules.len(),
             );
             while let Some(edge) = pending.pop_front() {
-                if !verification && is_verification_edge(edge.kind) {
+                if !verification && is_verification_edge(edge.kind)
+                    || !possible && is_atexit_edge(edge.kind)
+                {
                     continue;
                 }
                 let certainty = if possible { "possible" } else { edge.certainty };
@@ -6477,6 +6633,17 @@ impl<'a> Graph<'a> {
                 }
             }
             for &scope in &reach.scopes {
+                if possible && let Some(receivers) = self.atexit_receivers.get(&scope) {
+                    for &(edge, class) in receivers {
+                        if verification || !is_verification_edge(edge.kind) {
+                            reach
+                                .deferred_method_receivers
+                                .entry(edge.target)
+                                .or_default()
+                                .insert(class);
+                        }
+                    }
+                }
                 let scope = &self.scopes[scope];
                 reach.active_objects.extend(&scope.activated_apps);
                 for &(parent, child) in &scope.mounts {
@@ -6503,7 +6670,7 @@ impl<'a> Graph<'a> {
             if self.phase03 {
                 self.activate_django_signals(reach, &mut pending, verification, possible);
                 self.activate_fastapi(reach, &mut pending);
-                self.resolve_django_receiver_calls(reach, &mut pending);
+                self.resolve_deferred_receiver_calls(reach, &mut pending);
             }
             for &(owner, target, kind) in &self.framework_lifecycle {
                 if reach.symbols.contains(&owner) && !reach.has_evidence(target, kind) {
@@ -6528,6 +6695,30 @@ impl<'a> Graph<'a> {
             }
         }
         false
+    }
+
+    fn traverse_with_atexit(
+        &mut self,
+        reach: &mut Reachability,
+        pending: VecDeque<Edge>,
+        class_bodies: &BTreeSet<ScopeId>,
+    ) -> bool {
+        if !self.traverse(reach, pending, class_bodies, false, false) {
+            return false;
+        }
+        if !self.phase03 {
+            return true;
+        }
+        // Keep established routes into a callback's body. Shutdown-only
+        // paths and their descendants contribute possible evidence.
+        let pending: VecDeque<_> = reach
+            .scopes
+            .iter()
+            .flat_map(|&scope| &self.scopes[scope].edges)
+            .filter(|edge| is_atexit_edge(edge.kind))
+            .copied()
+            .collect();
+        pending.is_empty() || self.traverse(reach, pending, class_bodies, false, true)
     }
 
     fn verification_edges(
@@ -6619,17 +6810,11 @@ impl<'a> Graph<'a> {
                 .copied()
                 .filter(|edge| !is_runtime_execution_edge(edge.kind))
                 .collect();
-            if self.traverse(
-                &mut static_only,
-                static_pending,
-                &class_bodies,
-                false,
-                false,
-            ) {
+            if self.traverse_with_atexit(&mut static_only, static_pending, &class_bodies) {
                 static_reach = Some(static_only);
             }
         }
-        let baseline_converged = self.traverse(&mut reach, pending, &class_bodies, false, false);
+        let baseline_converged = self.traverse_with_atexit(&mut reach, pending, &class_bodies);
         if !possible_runtime_roots.is_empty()
             && !self.traverse(
                 &mut reach,
@@ -6938,8 +7123,8 @@ struct Reachability {
     active_objects: BTreeSet<Object>,
     django_setup_scopes: BTreeSet<ScopeId>,
     django_signal_modules: BTreeSet<usize>,
-    django_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
-    resolved_django_receiver_calls: BTreeSet<(usize, SymbolId)>,
+    deferred_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
@@ -7257,6 +7442,10 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => method == "add_url_rule",
         ObjectKind::CeleryApp => false,
     }
+}
+
+fn is_atexit_edge(kind: &str) -> bool {
+    matches!(kind, "atexit_registration" | "atexit_argument")
 }
 
 fn is_known_call(name: &str, phase03: bool) -> bool {

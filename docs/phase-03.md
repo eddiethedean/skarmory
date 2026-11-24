@@ -282,6 +282,19 @@ discovered test method, respectively. The unittest fixture also expects a
 test-only path whitelist. The reviewed inventory must account for these
 differences before qualification.
 
+### Python shutdown callbacks
+
+In the `skylos-0.3` profile, a reached call to the resolved standard-library
+`atexit.register` retains a selected synchronous function or bound method
+passed as its first positional argument. Import aliases, finite callback
+alternatives, and bare function decorators preserve that relationship. A
+lexically shadowed provider or callback requires a resolved local binding. The
+callback and code reached only through its body carry possible-use evidence.
+Forwarded values can supply possible-use evidence for known callable arguments.
+Dispatch through a callback parameter needs a separately resolved call target.
+An unresolved callback or a shutdown operation outside the bounded model leaves
+coverage incomplete when reached. [#118](https://github.com/eddiethedean/skarmory/issues/118)
+
 ### Bounded Python receivers and lazy imports
 
 Ordinary constructors and instance methods use the first positional
