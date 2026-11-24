@@ -392,8 +392,26 @@ fn source_line(source: &str, offset: usize) -> usize {
 }
 
 fn display(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace(std::path::MAIN_SEPARATOR, "/")
+    let label = path
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    #[cfg(windows)]
+    if let Some(std::path::Component::Prefix(prefix)) = path.components().next() {
+        match prefix.kind() {
+            std::path::Prefix::VerbatimDisk(_) => {
+                if let Some(disk) = label.strip_prefix("//?/") {
+                    return disk.to_owned();
+                }
+            }
+            std::path::Prefix::VerbatimUNC(_, _) => {
+                if let Some(network) = label.get("//?/UNC/".len()..) {
+                    return format!("//{network}");
+                }
+            }
+            _ => {}
+        }
+    }
+    label
 }
 
 fn normalize(name: &str) -> String {
