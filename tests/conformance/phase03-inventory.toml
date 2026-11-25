@@ -63,6 +63,338 @@ path = "manual/mixed_repo/realistic_benchmark.ts"
 # The expected unused subset is all targets, finish_packet and process_packet,
 # or empty, depending on which body the fixture activates.
 
+# Original framework corpus fixture provenance.
+
+[[fixtures]]
+path = "corpus/fixtures/flask_route_handler/app.py"
+sha256 = "cc5c99294d08282fd1c68b65f81cfc7a591b62e5f256ce1d1463c5b9c89e943f"
+provenance = "Pinned framework corpus fixture from https://github.com/pallets/flask"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/fastapi_depends_route/app.py"
+sha256 = "a498fe163bfb9bdcdf45bba01065f5e31575279a22c0a2c3bc98ce4b18b57830"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/celery_task/tasks.py"
+sha256 = "2d7573e7eac1aa8c439406c0451f39b550fe404f595a60e986114f99eaf7cd28"
+provenance = "Pinned framework corpus fixture from https://github.com/celery/celery"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/pluggy_hookimpl/plugin.py"
+sha256 = "9b36e86dbd2a9599ad26a0bd45e86412a765c9c2820eb29a9e6157e625645361"
+provenance = "Pinned framework corpus fixture from https://github.com/pytest-dev/pluggy"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/pytest_plugin_hooks/plugin.py"
+sha256 = "56a8e61527da5e65c9ccb35d46a20945600f7a0f4d5406cb92af8bab03017d04"
+provenance = "Pinned framework corpus fixture from https://github.com/pytest-dev/pytest"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/typer_callback/app.py"
+sha256 = "3da7cc61e068560a934459e5ac028336a4db10fe1007282fc16879d6ec327d8b"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/typer"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/starlette_add_route/app.py"
+sha256 = "3ae3db417d06949a75041906f2f4cbbe56486be456d3012449fbb1911e944337"
+provenance = "Pinned framework corpus fixture from https://github.com/encode/starlette"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/sanic_register_listener/app.py"
+sha256 = "6485fea3ecd18ff5bf3df9438a9ab2a6d2e7a26388e85cfc13f562dd6a2b68a5"
+provenance = "Pinned framework corpus fixture from https://github.com/sanic-org/sanic"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/django_urlpatterns.py"
+sha256 = "76d45e766015accdeed7eb76408c5050f5e0054d38cd4af2cad6345b7d9c1e71"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/django_error_handlers/pyproject.toml"
+sha256 = "bad3bfb075a1208f82e96d6bf2f838c9c80c1a1a592a4cc37b1c114e65f0db94"
+provenance = "Pinned framework corpus fixture from https://github.com/daveisfera/skylos-repro"
+license = "Unlicense"
+
+[[fixtures]]
+path = "corpus/fixtures/django_error_handlers/urls.py"
+sha256 = "eb59c834658fa3c01a4d5b7340547de9f3c4341d5639fa976ac7fd7059621f19"
+provenance = "Pinned framework corpus fixture from https://github.com/daveisfera/skylos-repro"
+license = "Unlicense"
+
+[[fixtures]]
+path = "corpus/fixtures/django_path_converter/pyproject.toml"
+sha256 = "7e2d708ce0046d06728ad75538fd11df10e5174a89e3aa222ca4ebb7dcf20457"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/django_path_converter/urls.py"
+sha256 = "c0c09748dcafab5c934bc2744dcdb53ab8af9d8eb61188e2bec5793ab6530d63"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/gunicorn_config.py"
+sha256 = "0d4b211f71d0226973b3ebba4fddd2b1db130060f47b8cd99ca084c8be08d678"
+provenance = "Pinned framework corpus fixture from https://github.com/daveisfera/skylos-repro"
+license = "Unlicense"
+
+[[fixtures]]
+path = "corpus/fixtures/django_cbv.py"
+sha256 = "4d5ea294e82e6f67183840e8908c0556de4f40d77933a6e49927b6c5c484e96e"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/drf_viewset.py"
+sha256 = "1bed2fad157d383dee3d658a422790e5f021186a5cdb7850c163916a39534aaa"
+provenance = "Pinned framework corpus fixture from https://github.com/encode/django-rest-framework"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/drf_serializer.py"
+sha256 = "4894c27dbfb2ee31b7091df7c36efeec1608593fdb3bf199fdc46c7b7f9906a5"
+provenance = "Pinned framework corpus fixture from https://github.com/encode/django-rest-framework"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/sqlalchemy_model.py"
+sha256 = "77d5700d70f47ffbda0be22a941c7f13b5cec41fdb311a84d8282367ce0a39bc"
+provenance = "Pinned framework corpus fixture from https://github.com/sqlalchemy/sqlalchemy"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/fastapi_pydantic_model.py"
+sha256 = "2de74107dca56cf920243fa99f68a71912d4d811875ae8a5d5610edfccd6109a"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/pydantic_settings_model.py"
+sha256 = "0354e96517a9fc73069b8998c9dc9e85323b3e936904c5684bcd0af9cf7cf60a"
+provenance = "Pinned framework corpus fixture from https://github.com/pydantic/pydantic-settings"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/aiohttp_routes.py"
+sha256 = "4b6306fb172f3a3d5bc9c308bd90cecc0dc725314cd10298954aad565c4498ff"
+provenance = "Pinned framework corpus fixture from https://github.com/aio-libs/aiohttp"
+license = "Apache-2.0"
+
+[[fixtures]]
+path = "corpus/fixtures/attrs_define.py"
+sha256 = "be353f656ea9152864ff6c526d99d290804755651decf0e19503451d48a3bf79"
+provenance = "Pinned framework corpus fixture from https://github.com/python-attrs/attrs"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/marshmallow_schema.py"
+sha256 = "b6a338719304acca6fe46f0f5e2ebd3c3fee1dbce7229fda04c730557d70916f"
+provenance = "Pinned framework corpus fixture from https://github.com/marshmallow-code/marshmallow"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/sqlalchemy_event_listener.py"
+sha256 = "73842d8bf99e2a80f9237e7e5a556ea7201492f9cfa3ec5a639ead6715a3d0c2"
+provenance = "Pinned framework corpus fixture from https://github.com/sqlalchemy/sqlalchemy"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/flask_add_url_rule.py"
+sha256 = "4fba4f56a15496adbf4474e81234ebe11d2284d0d98dca963ed69aaa8291311b"
+provenance = "Pinned framework corpus fixture from https://github.com/pallets/flask"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/fastapi_add_api_route.py"
+sha256 = "2aaa9ae024eee9c2299467ef2f1c5a9f9d0276bc75d2567ef902d1889df6c296"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/fastapi_include_router.py"
+sha256 = "07fecfad8ad3b5272e3134337651e732999ad5c9e8bf020f5be740f969e5860c"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/django_management_command.py"
+sha256 = "c1a8d1dab8b69705d8df4dee9dfe6c983cdc09088471ef6b0d94482ec5b77990"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/django_signal_receiver.py"
+sha256 = "3044b167f4a2002b2146f06d87378bb13f37f7a40bb881286afc2dfaa3851816"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/sqlalchemy_listens_for.py"
+sha256 = "4bbb1493e92767dad42816642a0e0a097eece1e9e14086d0e7d647e419b9c8b3"
+provenance = "Pinned framework corpus fixture from https://github.com/sqlalchemy/sqlalchemy"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/marshmallow_validates_schema.py"
+sha256 = "e3714c4a6436a1662a8a641b638026e7663d8be9c804b8701365e9be34866142"
+provenance = "Pinned framework corpus fixture from https://github.com/marshmallow-code/marshmallow"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/django_admin_register.py"
+sha256 = "ba272f69e358547adb5f16e715195114859eea454daa7055064ccd2dbc95d881"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/django_appconfig.py"
+sha256 = "dd3545a99729bea4abdd95fd8931cdaff1c159a24818e7f9e3e79e08e7048a54"
+provenance = "Pinned framework corpus fixture from https://github.com/django/django"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/celery_task_class.py"
+sha256 = "a69df38644d7c75262015d3d7f223b5f039513ca769945a62f2f7d861ed61eb1"
+provenance = "Pinned framework corpus fixture from https://github.com/celery/celery"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/click_command_subclass.py"
+sha256 = "17eeb627d7550719ccc298cee88ff882c76cd9fc3ba784a0c95715bb098f98c1"
+provenance = "Pinned framework corpus fixture from https://github.com/pallets/click"
+license = "BSD-3-Clause"
+
+[[fixtures]]
+path = "corpus/fixtures/pydantic_computed_field.py"
+sha256 = "c7a768954da15a2278a21c26cb7202eeac7d5f978135a7936a84ab4e6acb789b"
+provenance = "Pinned framework corpus fixture from https://github.com/pydantic/pydantic"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/pydantic_serializer_hooks.py"
+sha256 = "b2bbb1f1a602264ef25cef3f4a0651eebf372ba659a6890dd6e8b89b094cdb88"
+provenance = "Pinned framework corpus fixture from https://github.com/pydantic/pydantic"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/pydantic_model_post_init.py"
+sha256 = "e5b465dcbda835a7384566f7da06cd12f88fc2c4aff322c25aeb099b4e14304c"
+provenance = "Pinned framework corpus fixture from https://github.com/pydantic/pydantic"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/sqlalchemy_hybrid_property.py"
+sha256 = "2e94c04a8a6d2b3f1601f19b0d379073d93a1c6531131a72fb963d52266c7174"
+provenance = "Pinned framework corpus fixture from https://github.com/sqlalchemy/sqlalchemy"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_unittest_lifecycle/support.py"
+sha256 = "592c7469e5c6a6630dd8834511da4612fc93b15901ed7e27b0c5dc68ebf4f3ad"
+provenance = "Pinned framework corpus fixture from https://github.com/python/cpython"
+license = "PSF-2.0"
+
+[[fixtures]]
+path = "corpus/fixtures/python_unittest_lifecycle/test_case.py"
+sha256 = "6e01a276f70eb0027d054217a2907200f97af82fd06277a31fba3d96d403d249"
+provenance = "Pinned framework corpus fixture from https://github.com/python/cpython"
+license = "PSF-2.0"
+
+[[fixtures]]
+path = "corpus/fixtures/pydantic_model_use.py"
+sha256 = "ffc84824d3646efb46950b8db7decdd3a4ea7e141192519ce555906f775014af"
+provenance = "Pinned framework corpus fixture from https://github.com/pydantic/pydantic"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_src_package_routes/src/__init__.py"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_src_package_routes/src/api/__init__.py"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_src_package_routes/src/api/routes/__init__.py"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_src_package_routes/src/api/routes/accounts.py"
+sha256 = "9fb321a071d37dcc8ab8fca188292eeb37294860b1a53108633dd6f6f151800d"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_src_package_routes/src/api/routes/stale.py"
+sha256 = "9e143d1f3ba9e099bcd5ece3eeb008daeded06d769c74c5bc6e53393e75e4af4"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_src_package_routes/src/main.py"
+sha256 = "0afdbbe2bc041998a21260d9753306577ae3f8e9a1bd572253b06c341613e351"
+provenance = "Pinned framework corpus fixture from https://github.com/fastapi/fastapi"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_wrapper_decorator_registration/toolpkg/__init__.py"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+provenance = "Pinned framework corpus fixture from https://github.com/modelcontextprotocol/python-sdk"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_wrapper_decorator_registration/toolpkg/handlers.py"
+sha256 = "09eecbfffaaedb84913e6376cb3e9adf615d47294ddb44a6a96e0bd8b2c471a6"
+provenance = "Pinned framework corpus fixture from https://github.com/modelcontextprotocol/python-sdk"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_wrapper_decorator_registration/toolpkg/server.py"
+sha256 = "3843c22e87f1c5df4d2ee4ed9a8ba70a5be7cdd7dc68b8869c1df1f66224881a"
+provenance = "Pinned framework corpus fixture from https://github.com/modelcontextprotocol/python-sdk"
+license = "MIT"
+
+[[fixtures]]
+path = "corpus/fixtures/python_decorator_factory_registration/trainer/__init__.py"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+provenance = "Pinned framework corpus fixture from https://github.com/google/gin-config"
+license = "Apache-2.0"
+
+[[fixtures]]
+path = "corpus/fixtures/python_decorator_factory_registration/trainer/components.py"
+sha256 = "4d470a7d5ae8ecc25bffaeb98471f869f2198a1dae368ee619d1e41dcba45c8a"
+provenance = "Pinned framework corpus fixture from https://github.com/google/gin-config"
+license = "Apache-2.0"
+
+[[fixtures]]
+path = "corpus/fixtures/python_decorator_factory_registration/trainer/main.py"
+sha256 = "9de66816442df200ecc4dd48f42a9b3691de2b779803b34ae1054c4cbeaef5da"
+provenance = "Pinned framework corpus fixture from https://github.com/google/gin-config"
+license = "Apache-2.0"
+
+[[fixtures]]
+path = "corpus/fixtures/python_decorator_factory_registration/trainer/wrappers.py"
+sha256 = "b5fc39ef55a68c9c3453c4454b49762221808e907368b6531ab4f2472d4908b4"
+provenance = "Pinned framework corpus fixture from https://github.com/google/gin-config"
+license = "Apache-2.0"
+
 [[cases]]
 id = "test/test_closure_reachability.py::test_creating_a_nested_function_does_not_execute_its_body[none-False]"
 milestone = "0.3"
@@ -9845,3 +10177,575 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
+
+# Original framework corpus assertions scored by the pinned runner.
+
+[[cases]]
+id = "corpus/manifest.json::flask-route-handler"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:index", "present:unused_functions:catalogue"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/flask_route_handler; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/flask_route_handler/app.py"]
+
+[[cases]]
+id = "corpus/manifest.json::fastapi-depends-route"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:get_db", "absent:unused_functions:read_root", "present:unused_functions:read_status"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/fastapi_depends_route; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/fastapi_depends_route/app.py"]
+
+[[cases]]
+id = "corpus/manifest.json::celery-task"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:add", "present:unused_functions:multiply"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/celery_task; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/celery_task/tasks.py"]
+
+[[cases]]
+id = "corpus/manifest.json::pluggy-hookimpl"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:my_hook", "present:unused_functions:render_report"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/pluggy_hookimpl; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/pluggy_hookimpl/plugin.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::pytest-plugin-hooks"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:pytest_addhooks", "absent:unused_functions:pytest_cmdline_main", "absent:unused_functions:pytest_assertrepr_compare", "absent:unused_parameters:config", "absent:unused_parameters:op", "absent:unused_parameters:left", "absent:unused_parameters:right", "present:unused_functions:serialize_comparison", "present:unused_parameters:render_style"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/pytest_plugin_hooks; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/pytest_plugin_hooks/plugin.py"]
+
+[[cases]]
+id = "corpus/manifest.json::typer-callback"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:main", "present:unused_functions:configure_display"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/typer_callback; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/typer_callback/app.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::starlette-add-route"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:homepage", "present:unused_functions:status_page"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/starlette_add_route; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/starlette_add_route/app.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::sanic-register-listener"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:before_start", "present:unused_functions:after_boot"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/sanic_register_listener; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/sanic_register_listener/app.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::django-urlpatterns"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:home", "present:unused_functions:status"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_urlpatterns.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_urlpatterns.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::django-error-handlers"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_variables:handler400", "absent:unused_variables:handler403", "absent:unused_variables:handler404", "absent:unused_variables:handler500", "present:unused_variables:fallback_callback"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_error_handlers; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_error_handlers/pyproject.toml", "corpus/fixtures/django_error_handlers/urls.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::django-path-converter"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:to_python", "absent:unused_functions:to_url", "absent:unused_functions:DateCodec.decode_date", "absent:unused_functions:DateCodec.encode_date", "absent:unused_variables:regex", "present:unused_functions:DateParser.decode_date", "present:unused_functions:DateParser.encode_date", "present:unused_variables:date_pattern", "present:unused_classes:DateCodec"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_path_converter; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_path_converter/pyproject.toml", "corpus/fixtures/django_path_converter/urls.py"]
+
+[[cases]]
+id = "corpus/manifest.json::gunicorn-config"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:worker_exit", "absent:unused_variables:bind", "absent:unused_variables:forwarded_allow_ips", "absent:unused_variables:secure_scheme_headers", "absent:unused_variables:workers", "absent:unused_variables:threads", "absent:unused_variables:worker_class", "absent:unused_variables:timeout", "absent:unused_variables:graceful_timeout", "absent:unused_variables:chdir", "absent:unused_variables:preload_app", "absent:unused_variables:control_socket_disable", "present:unused_functions:on_message", "present:unused_variables:worker_hint"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/gunicorn_config.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/gunicorn_config.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::django-class-based-view"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:get", "absent:unused_functions:PageFormatter.format_page", "absent:unused_classes:HomeView", "present:unused_functions:PageRenderer.format_page", "present:unused_classes:PageFormatter"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_cbv.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_cbv.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::drf-viewset"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:list", "absent:unused_functions:PreviewActions.preview", "absent:unused_classes:UserViewSet", "present:unused_functions:ActionPreview.preview", "present:unused_classes:PreviewActions"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/drf_viewset.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/drf_viewset.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::drf-serializer"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:validate_email", "absent:unused_functions:ContactRecord.normalize_address", "absent:unused_classes:UserSerializer", "absent:unused_variables:email", "present:unused_functions:ContactFormatter.normalize_address", "present:unused_classes:ContactRecord", "present:unused_variables:address"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/drf_serializer.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/drf_serializer.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::sqlalchemy-model"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:User", "absent:unused_variables:id", "absent:unused_variables:name", "present:unused_classes:AuditRow", "present:unused_variables:row_id", "present:unused_variables:title"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/sqlalchemy_model.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/sqlalchemy_model.py"]
+
+[[cases]]
+id = "corpus/manifest.json::fastapi-pydantic-model"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:create_user", "absent:unused_functions:validate_email", "absent:unused_functions:DraftPayload.clean_contact", "absent:unused_classes:UserIn", "present:unused_functions:PayloadCleaner.clean_contact", "present:unused_functions:preview_user", "present:unused_classes:DraftPayload"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/fastapi_pydantic_model.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/fastapi_pydantic_model.py"]
+
+[[cases]]
+id = "corpus/manifest.json::pydantic-settings-model"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:Settings", "present:unused_classes:SettingsSnapshot"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/pydantic_settings_model.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/pydantic_settings_model.py"]
+
+[[cases]]
+id = "corpus/manifest.json::aiohttp-routes"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:hello", "absent:unused_parameters:request", "present:unused_functions:metadata", "present:unused_parameters:format_style"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/aiohttp_routes.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/aiohttp_routes.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::attrs-define-fields"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_variables:id", "absent:unused_variables:name", "present:unused_variables:account_id", "present:unused_variables:display_name"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/attrs_define.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/attrs_define.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::marshmallow-schema"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:make_user", "absent:unused_functions:PayloadParser.parse_item", "absent:unused_classes:UserSchema", "present:unused_functions:ItemLoader.parse_item", "present:unused_classes:PayloadParser"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/marshmallow_schema.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/marshmallow_schema.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::sqlalchemy-event-listener"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:on_connect", "absent:unused_parameters:dbapi_connection", "absent:unused_parameters:connection_record", "present:unused_functions:connection_closed", "present:unused_parameters:label_style"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/sqlalchemy_event_listener.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/sqlalchemy_event_listener.py"]
+
+[[cases]]
+id = "corpus/manifest.json::flask-add-url-rule"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:list_users", "present:unused_functions:create_report"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/flask_add_url_rule.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/flask_add_url_rule.py"]
+
+[[cases]]
+id = "corpus/manifest.json::fastapi-add-api-route"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:read_items", "present:unused_functions:search_items"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/fastapi_add_api_route.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/fastapi_add_api_route.py"]
+
+[[cases]]
+id = "corpus/manifest.json::fastapi-include-router"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:ping", "present:unused_functions:status_payload"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/fastapi_include_router.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/fastapi_include_router.py"]
+
+[[cases]]
+id = "corpus/manifest.json::django-management-command"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:handle", "absent:unused_classes:Command", "present:unused_classes:CommandPreview", "present:unused_functions:parse_command"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_management_command.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_management_command.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::django-signal-receiver"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:on_save", "present:unused_functions:on_archive"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_signal_receiver.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_signal_receiver.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::sqlalchemy-listens-for"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:on_connect", "absent:unused_parameters:dbapi_connection", "absent:unused_parameters:connection_record", "present:unused_functions:on_disconnect", "present:unused_parameters:audit_token"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/sqlalchemy_listens_for.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/sqlalchemy_listens_for.py"]
+
+[[cases]]
+id = "corpus/manifest.json::marshmallow-validates-schema"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:validate_schema", "absent:unused_classes:UserSchema", "present:unused_classes:PayloadValidator", "present:unused_functions:validate_record"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/marshmallow_validates_schema.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/marshmallow_validates_schema.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::django-admin-register"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:UserAdmin", "present:unused_classes:AdminDraft"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_admin_register.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_admin_register.py"]
+
+[[cases]]
+id = "corpus/manifest.json::django-appconfig-ready"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:DemoConfig", "absent:unused_functions:ready", "present:unused_classes:StagingConfig", "present:unused_functions:inspect_config"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/django_appconfig.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/django_appconfig.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::celery-task-class"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:DemoTask", "absent:unused_functions:run", "present:unused_classes:TaskDraft", "present:unused_functions:queue_payload"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/celery_task_class.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/celery_task_class.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::click-command-subclass"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:DemoCommand", "absent:unused_functions:invoke", "absent:unused_functions:format_arguments", "present:unused_classes:CommandDraft", "present:dead_code_abstentions:format_arguments"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/click_command_subclass.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/click_command_subclass.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::pydantic-computed-field"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:User", "absent:unused_functions:full_name", "absent:unused_functions:compose_name", "present:unused_classes:PreviewRecord", "present:dead_code_abstentions:compose_name"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/pydantic_computed_field.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/pydantic_computed_field.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::pydantic-serializer-hooks"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:User", "absent:unused_functions:serialize_name", "absent:unused_functions:serialize_model", "present:unused_classes:SerializationDraft", "present:unused_functions:serialize_title", "present:unused_functions:serialize_snapshot"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/pydantic_serializer_hooks.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/pydantic_serializer_hooks.py"]
+
+[[cases]]
+id = "corpus/manifest.json::pydantic-model-post-init"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:User", "absent:unused_functions:model_post_init", "present:unused_classes:ProfileDraft", "present:unused_functions:prepare_profile"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/pydantic_model_post_init.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/pydantic_model_post_init.py"]
+
+[[cases]]
+id = "corpus/manifest.json::sqlalchemy-hybrid-property"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:full_name", "present:unused_functions:render_name"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/sqlalchemy_hybrid_property.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/sqlalchemy_hybrid_property.py"]
+
+[[cases]]
+id = "corpus/manifest.json::python-unittest-lifecycle"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:setUpClass", "absent:unused_functions:tearDownClass", "absent:unused_functions:setUpModule", "absent:unused_functions:tearDownModule", "absent:unused_functions:prepare_record", "present:whitelisted:prepare_record", "present:unused_functions:publish_record"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/python_unittest_lifecycle; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/python_unittest_lifecycle/support.py", "corpus/fixtures/python_unittest_lifecycle/test_case.py"]
+blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::pydantic-model-use-boundary"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_classes:ProfileModel", "absent:unused_classes:RuntimeSettings", "present:unused_classes:DraftModel", "present:unused_classes:DraftSettings"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/pydantic_model_use.py; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+fixtures = ["corpus/fixtures/pydantic_model_use.py"]
+
+[[cases]]
+id = "corpus/manifest.json::python-src-package-routes"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:list_accounts", "absent:unused_functions:create_account", "absent:unused_functions:account_socket", "present:unused_functions:orphan_helper", "present:unused_functions:never_mounted_route"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/python_src_package_routes; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/python_src_package_routes/src/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/routes/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/routes/accounts.py", "corpus/fixtures/python_src_package_routes/src/api/routes/stale.py", "corpus/fixtures/python_src_package_routes/src/main.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::python-wrapper-decorator-registration"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:open_tab", "absent:unused_functions:close_tab", "absent:unused_functions:list_tabs", "absent:unused_functions:reload_tab", "absent:unused_functions:remote_click", "absent:unused_functions:remote_scroll", "present:unused_functions:unused_logged", "present:unused_functions:unused_cached", "present:unused_functions:unused_identity", "present:unused_functions:unused_late", "present:unused_functions:unused_static", "present:unused_functions:unused_lru", "present:unused_functions:unused_remote_logged"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/python_wrapper_decorator_registration; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/python_wrapper_decorator_registration/toolpkg/__init__.py", "corpus/fixtures/python_wrapper_decorator_registration/toolpkg/handlers.py", "corpus/fixtures/python_wrapper_decorator_registration/toolpkg/server.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+
+[[cases]]
+id = "corpus/manifest.json::python-decorator-factory-registration"
+milestone = "0.3"
+languages = ["python"]
+source = "corpus/manifest.json"
+assertions = ["absent:unused_functions:build_optimizer", "absent:unused_functions:build_network", "present:unused_functions:unused_retried", "present:unused_functions:unused_cached", "present:unused_functions:unused_labelled", "present:unused_functions:unused_empty_call", "present:unused_functions:plain_unused"]
+prerequisites = ["installed-sdk", "pinned-framework-corpus"]
+provenance = "Original corpus expectation for corpus/fixtures/python_decorator_factory_registration; fixture provenance and hashes recorded separately"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+fixtures = ["corpus/fixtures/python_decorator_factory_registration/trainer/__init__.py", "corpus/fixtures/python_decorator_factory_registration/trainer/components.py", "corpus/fixtures/python_decorator_factory_registration/trainer/main.py", "corpus/fixtures/python_decorator_factory_registration/trainer/wrappers.py"]
+blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
