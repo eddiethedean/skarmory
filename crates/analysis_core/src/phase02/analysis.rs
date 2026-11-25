@@ -1,9 +1,11 @@
 //! Project binding resolution and reachability for the Skylos profile.
 
+use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::RangeInclusive;
+use std::path::Path;
 
 use skarmory_python::Location;
 use skarmory_python::phase02::{
@@ -452,6 +454,57 @@ fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analys
     analyze_with_verification(files, entrypoints, None, None, None, true, None)
 }
 
+#[derive(Default)]
+struct NestedPackages<'a> {
+    roots: Vec<Option<&'a Path>>,
+    names: BTreeMap<(&'a Path, &'a str), &'a str>,
+}
+
+impl<'a> NestedPackages<'a> {
+    fn index(files: &'a [AnalyzedFile]) -> Self {
+        let packages: BTreeMap<_, _> = files
+            .iter()
+            .filter(|file| file.is_package)
+            .filter_map(|file| Some((Path::new(&file.path).parent()?, file.module.as_str())))
+            .collect();
+        let names: BTreeMap<_, _> = packages
+            .iter()
+            .filter_map(|(&package, &module)| {
+                let root = package.parent()?;
+                let name = package.file_name()?.to_str()?;
+                // A regular package beneath a non-package directory can be
+                // imported by its short name from that source root.
+                (module != name
+                    && skarmory_python::simple_name(name)
+                    && !packages.contains_key(root))
+                .then_some(((root, name), module))
+            })
+            .collect();
+        let roots = files
+            .iter()
+            .map(|file| {
+                Path::new(&file.path)
+                    .ancestors()
+                    .skip(1)
+                    .find(|directory| !packages.contains_key(directory))
+            })
+            .collect();
+        Self { roots, names }
+    }
+
+    fn resolve<'b>(&self, file: usize, module: &'b str) -> Cow<'b, str> {
+        let Some(root) = self.roots.get(file).copied().flatten() else {
+            return Cow::Borrowed(module);
+        };
+        let top = module.split('.').next().unwrap_or(module);
+        self.names
+            .get(&(root, top))
+            .map_or(Cow::Borrowed(module), |package| {
+                Cow::Owned(format!("{package}{}", &module[top.len()..]))
+            })
+    }
+}
+
 pub(super) fn analyze_with_verification(
     files: &[AnalyzedFile],
     entrypoints: &[Entrypoint],
@@ -464,6 +517,11 @@ pub(super) fn analyze_with_verification(
     let mut graph = Graph {
         files,
         modules: BTreeMap::new(),
+        nested_packages: if phase03 {
+            NestedPackages::index(files)
+        } else {
+            NestedPackages::default()
+        },
         scopes: Vec::new(),
         symbols: Vec::new(),
         direct_submodule_imports: BTreeMap::new(),
@@ -646,6 +704,7 @@ pub(super) fn analyze_with_verification(
 struct Graph<'a> {
     files: &'a [AnalyzedFile],
     modules: BTreeMap<&'a str, usize>,
+    nested_packages: NestedPackages<'a>,
     scopes: Vec<Scope<'a>>,
     symbols: Vec<Symbol<'a>>,
     direct_submodule_imports: BTreeMap<usize, Vec<SymbolId>>,
@@ -998,9 +1057,10 @@ impl<'a> Graph<'a> {
         let row = &self.scopes[scope];
         self.phase03
             && row.parent.is_none()
-            && imports
-                .first()
-                .is_some_and(|import| !self.modules.contains_key(import.module.as_str()))
+            && imports.first().is_some_and(|import| {
+                let module = self.nested_packages.resolve(row.file, &import.module);
+                !self.modules.contains_key(module.as_ref())
+            })
             && row
                 .body
                 .iter()
@@ -1117,9 +1177,27 @@ impl<'a> Graph<'a> {
         names.join(".")
     }
 
-    fn relative_module(&self, file: usize, import: &Import) -> Option<String> {
+    fn visible_import_module<'b>(
+        &self,
+        file: usize,
+        import: &'b Import,
+        module: &'b str,
+    ) -> Cow<'b, str> {
+        if import.exposes_top_level {
+            let top = import.module.split('.').next().unwrap_or(&import.module);
+            self.nested_packages.resolve(file, top)
+        } else {
+            Cow::Borrowed(module)
+        }
+    }
+
+    fn import_module(&self, file: usize, import: &Import) -> Option<String> {
         if import.level == 0 {
-            return Some(import.module.clone());
+            return Some(
+                self.nested_packages
+                    .resolve(file, &import.module)
+                    .into_owned(),
+            );
         }
         let source = &self.files[file];
         let mut parts: Vec<_> = source.module.split('.').collect();
@@ -1172,7 +1250,7 @@ impl<'a> Graph<'a> {
                 continue;
             }
             let source = self.scopes[symbol.scope].file;
-            let Some(module) = self.relative_module(source, import) else {
+            let Some(module) = self.import_module(source, import) else {
                 continue;
             };
             let unconditional = symbol.scope == source && !self.conditional.contains_key(&id);
@@ -1577,7 +1655,7 @@ impl<'a> Graph<'a> {
                 if !visited.insert((handler, position(import.local.at))) {
                     continue;
                 }
-                let module = self.relative_module(file, import);
+                let module = self.import_module(file, import);
                 if let Some(branch) = self.record_import(scope, handler, module.as_deref(), import)
                 {
                     self.lazy_value(scope, &branch, 0, Some(scope));
@@ -1892,7 +1970,7 @@ impl<'a> Graph<'a> {
                 Value::Unknown
             }
             Binding::Import(import) => {
-                let Some(module) = self.relative_module(file, import) else {
+                let Some(module) = self.import_module(file, import) else {
                     return Value::Unknown;
                 };
                 if let Some(member) = import.member.as_deref() {
@@ -1908,18 +1986,14 @@ impl<'a> Graph<'a> {
                         depth + 1,
                     )
                 } else {
-                    let visible_module = if import.exposes_top_level {
-                        module.split('.').next().unwrap_or(&module)
-                    } else {
-                        &module
-                    };
+                    let visible_module = self.visible_import_module(file, import, &module);
                     if let Some(replacement) =
-                        self.imported_module_write(visible_module, (scope, import.local.at))
+                        self.imported_module_write(&visible_module, (scope, import.local.at))
                     {
                         return replacement;
                     }
-                    self.modules.get(visible_module).map_or_else(
-                        || Value::Provider(visible_module.into()),
+                    self.modules.get(visible_module.as_ref()).map_or_else(
+                        || Value::Provider(visible_module.into_owned()),
                         |file| Value::Module(*file),
                     )
                 }
@@ -5075,6 +5149,16 @@ impl<'a> Graph<'a> {
                             expr.at,
                         );
                     }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "os.environ.get"
+                            && keywords.is_empty()
+                            && matches!(arguments.as_slice(), [key] | [key, _]
+                                if matches!(key.kind, ExpressionKind::Text(_))) =>
+                    {
+                        // The lookup has no source-backed callback. Keep its
+                        // result unknown and analyze both reachable branches.
+                    }
                     Value::Provider(name) if self.phase03 && name == "os.environ.setdefault" => {
                         if let [key, settings] = arguments.as_slice()
                             && keywords.is_empty()
@@ -6390,7 +6474,7 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::Import(import) => {
-                    let module = self.relative_module(self.scopes[scope].file, import);
+                    let module = self.import_module(self.scopes[scope].file, import);
                     if let Some(branch) =
                         self.record_import(scope, scope, module.as_deref(), import)
                     {
@@ -7165,7 +7249,7 @@ impl<'a> Graph<'a> {
             Binding::Import(import) => {
                 bindings.push(id);
                 let source = self.scopes[symbol.scope].file;
-                let module = self.relative_module(source, import)?;
+                let module = self.import_module(source, import)?;
                 if let Some(member) = &import.member {
                     if let Some(write) =
                         self.module_member_write(&module, member, (symbol.scope, import.local.at))
@@ -7188,12 +7272,11 @@ impl<'a> Graph<'a> {
                     );
                     self.pytest_member(selected, before, bindings, depth + 1)
                 } else {
-                    let visible = if import.exposes_top_level {
-                        module.split('.').next().unwrap_or(&module)
-                    } else {
-                        &module
-                    };
-                    self.modules.get(visible).copied().map(Value::Module)
+                    let visible = self.visible_import_module(source, import, &module);
+                    self.modules
+                        .get(visible.as_ref())
+                        .copied()
+                        .map(Value::Module)
                 }
             }
             _ => None,
@@ -9037,9 +9120,12 @@ impl<'a> Graph<'a> {
                 _ => continue,
             };
             let (name, full_name) = if let Binding::Import(import) = &symbol.binding {
-                let module = self
-                    .relative_module(scope.file, import)
-                    .unwrap_or_else(|| import.module.clone());
+                let module = if import.level == 0 {
+                    import.module.clone()
+                } else {
+                    self.import_module(scope.file, import)
+                        .unwrap_or_else(|| import.module.clone())
+                };
                 let full_name = import
                     .member
                     .as_ref()

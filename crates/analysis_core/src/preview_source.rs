@@ -47,6 +47,7 @@ pub(super) struct Project {
 pub(super) struct SourceFile {
     pub label: String,
     pub name: String,
+    pub loose_name: bool,
     path: PathBuf,
     discovered: Option<Stamp>,
 }
@@ -263,6 +264,7 @@ pub(super) fn discover_sources(
         project.files.push(SourceFile {
             label,
             name: String::new(),
+            loose_name: false,
             path,
             discovered,
         });
@@ -464,6 +466,7 @@ impl Project {
                         .strip_suffix(".py")
                         .unwrap_or(&file.label)
                         .replace('/', ".");
+                    self.files[index].loose_name = true;
                 }
                 None => self.issues.push(if namespace {
                     Issue::new(
