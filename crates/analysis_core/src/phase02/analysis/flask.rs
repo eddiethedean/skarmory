@@ -497,7 +497,7 @@ impl Graph<'_> {
                     self.closed_flask_provider_failure(provider, direct_importers)
             {
                 let stopped = self.closed_flask_importer_prefixes(provider, &imports);
-                if self.closed_flask_project_prefixes(&stopped, Some(provider)) {
+                if self.closed_flask_project_prefixes(&stopped, Some((provider, failure))) {
                     self.failed_flask_provider_initializers
                         .insert(provider, failure);
                     self.record_failed_flask_imports(stopped);
@@ -517,15 +517,39 @@ impl Graph<'_> {
     fn closed_flask_project_prefixes(
         &mut self,
         stopped: &BTreeMap<ScopeId, usize>,
-        checked_provider: Option<ScopeId>,
+        checked_provider: Option<(ScopeId, Location)>,
     ) -> bool {
-        (0..self.files.len())
-            .filter(|&file| Some(file) != checked_provider)
+        // A statement after the proposed failure cannot install a framework
+        // mutation. Test the remaining prefixes with only their reached
+        // writes, and discard the cutoffs if those prefixes are opaque.
+        self.flask_initializer_probe_cutoffs = stopped
+            .iter()
+            .map(|(&file, &index)| (file, self.scopes[file].body[index].at))
+            .chain(checked_provider)
+            .collect();
+        let closed = (0..self.files.len())
+            .filter(|&file| !checked_provider.is_some_and(|(provider, _)| file == provider))
             .all(|file| {
                 let body = self.scopes[file].body;
                 let prefix = stopped.get(&file).map_or(body, |&index| &body[..index]);
                 self.closed_flask_decorator_prefix(file, prefix)
-            })
+            });
+        self.flask_initializer_probe_cutoffs.clear();
+        closed
+    }
+
+    pub(super) fn before_flask_initializer_failure(&self, file: ScopeId, at: Location) -> bool {
+        [
+            &self.flask_initializer_probe_cutoffs,
+            &self.failed_flask_provider_initializers,
+            &self.failed_flask_import_initializers,
+        ]
+        .into_iter()
+        .all(|cutoffs| {
+            cutoffs
+                .get(&file)
+                .is_none_or(|&failure| position(at) < position(failure))
+        })
     }
 
     fn record_failed_flask_imports(&mut self, stopped: BTreeMap<ScopeId, usize>) {
@@ -1213,7 +1237,8 @@ impl Graph<'_> {
                 || (definition.bases.is_empty() && definition.table_keyword.is_none()
                     && body_without_docstring(definition).is_empty()))
                 && !definition.name.text.starts_with("__")
-                && definition.decorators.is_empty()
+                && (definition.decorators.is_empty()
+                    || self.closed_flask_callback_declaration(file, definition, statement.at))
                 && definition.annotations.is_empty()
                 && definition.defaults.iter().all(|value| safe_flask_literal(&value.kind)),
             StatementKind::Evaluate(Expression { kind: ExpressionKind::Text(_), .. }) => true,
@@ -1261,6 +1286,27 @@ impl Graph<'_> {
             }
             _ => false,
         })
+    }
+
+    fn closed_flask_callback_declaration(
+        &mut self,
+        scope: ScopeId,
+        definition: &Definition,
+        before: Location,
+    ) -> bool {
+        let [decorator] = definition.decorators.as_slice() else {
+            return false;
+        };
+        // These resolved Flask descriptors only store the callback.
+        // Its body does not execute during module initialization.
+        definition.kind != DefinitionKind::Class
+            && matches!(&decorator.kind, ExpressionKind::Member(..))
+            && matches!(
+                self.probe_identity(scope, decorator, before),
+                Value::Method(_, kind, name)
+                    if kind == ObjectKind::FlaskLoginManager && flask_login_callback(&name)
+                        || flask_callback_method(kind, &name)
+            )
     }
 
     pub(super) fn flask_blueprint_import_position(

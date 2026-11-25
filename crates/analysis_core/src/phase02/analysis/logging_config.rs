@@ -10,6 +10,33 @@ pub(super) const DICT_CONFIG: &str = "logging.config.dictConfig";
 const MAX_ITEMS: usize = 256;
 const MAX_REPLAY_DEPTH: usize = 16;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LoggingBase {
+    Formatter,
+    Filter,
+}
+
+impl LoggingBase {
+    pub(super) fn provider(name: &str) -> Option<Self> {
+        match name {
+            "logging.Formatter" => Some(Self::Formatter),
+            "logging.Filter" => Some(Self::Filter),
+            _ => None,
+        }
+    }
+
+    pub(super) fn defines(self, name: &str) -> bool {
+        name == "__init__"
+            || match self {
+                Self::Formatter => matches!(
+                    name,
+                    "format" | "formatTime" | "formatException" | "formatMessage" | "formatStack"
+                ),
+                Self::Filter => name == "filter",
+            }
+    }
+}
+
 #[derive(Clone)]
 enum Data {
     Dictionary(usize),
@@ -579,6 +606,154 @@ fn imports_logging(statement: &Statement) -> bool {
 }
 
 impl<'a> Graph<'a> {
+    pub(super) fn defer_log_record_message(
+        &mut self,
+        scope: ScopeId,
+        callee: &Expression,
+        before: Location,
+        at: Location,
+    ) -> bool {
+        let Some(parameter) = self.log_record_member(scope, callee, before, &["getMessage"]) else {
+            return false;
+        };
+        self.logging_record_calls.push(ParameterCall {
+            scope,
+            parameter,
+            at,
+        });
+        true
+    }
+
+    pub(super) fn defer_log_record_json(
+        &mut self,
+        scope: ScopeId,
+        value: &Expression,
+        before: Location,
+        at: Location,
+    ) -> bool {
+        let ExpressionKind::Dictionary(items) = &value.kind else {
+            return false;
+        };
+        let (items, remainder) = items.as_chunks::<2>();
+        if !remainder.is_empty() {
+            return false;
+        }
+        let mut record = None;
+        for [key, value] in items {
+            if !matches!(key.kind, ExpressionKind::Text(_)) {
+                return false;
+            }
+            let parameter = match &value.kind {
+                ExpressionKind::Text(_)
+                | ExpressionKind::Scalar(Some(_))
+                | ExpressionKind::Bool(_)
+                | ExpressionKind::None => continue,
+                ExpressionKind::Member(_, _) => {
+                    self.log_record_member(scope, value, before, &["levelname", "name"])
+                }
+                ExpressionKind::Call {
+                    function,
+                    arguments,
+                    keywords,
+                } if arguments.is_empty() && keywords.is_empty() => {
+                    self.log_record_member(scope, function, before, &["getMessage"])
+                }
+                _ => None,
+            };
+            let Some(parameter) = parameter else {
+                return false;
+            };
+            record = Some(parameter);
+        }
+        let Some(parameter) = record else {
+            return false;
+        };
+        self.logging_record_calls.push(ParameterCall {
+            scope,
+            parameter,
+            at,
+        });
+        true
+    }
+
+    fn log_record_member(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        members: &[&str],
+    ) -> Option<SymbolId> {
+        let ExpressionKind::Member(receiver, member) = &expression.kind else {
+            return None;
+        };
+        if !members.contains(&member.as_str()) {
+            return None;
+        }
+        let owner = self.scopes[scope].owner?;
+        let Binding::Definition(definition, _) = self.symbols[owner].binding else {
+            return None;
+        };
+        let [_, record] = definition.parameters.as_slice() else {
+            return None;
+        };
+        if definition.name.text != "format"
+            || !definition.simple_positional_parameters
+            || !definition.decorators.is_empty()
+            || !matches!(&receiver.kind, ExpressionKind::Name(name) if name == &record.text)
+        {
+            return None;
+        }
+        self.parameter_binding(scope, receiver, before)
+    }
+
+    pub(super) fn report_log_record_calls(&mut self, reach: &Reachability) {
+        if self.logging_record_calls.is_empty() {
+            return;
+        }
+        // LogRecord.getMessage can format a supplied object. Keep coverage
+        // open when selected code can supply a custom formatting operation
+        // or an opaque action can alter the record contract.
+        let closed = !self.has_format_hooks
+            && !self.has_iteration_hooks
+            && !self
+                .symbols
+                .iter()
+                .any(|symbol| matches!(symbol.name.text.as_str(), "__mod__" | "__rmod__"))
+            && !self
+                .scope_issues
+                .iter()
+                .any(|(scope, _)| reach.scopes.contains(scope));
+        for call in &self.logging_record_calls {
+            if !reach.scopes.contains(&call.scope) {
+                continue;
+            }
+            let owner = self.scopes[self.symbols[call.parameter].scope]
+                .owner
+                .expect("parameters belong to a definition");
+            if closed
+                && self.logging_formatter_methods.contains(&owner)
+                && reach.has_evidence(owner, "django_logging_factory")
+                && reach
+                    .evidence
+                    .range((owner, "", "")..)
+                    .take_while(|(target, _, _)| *target == owner)
+                    .all(|(_, kind, _)| {
+                        matches!(*kind, "django_logging_factory" | "type_reference")
+                    })
+            {
+                continue;
+            }
+            self.issues.push(
+                Issue::new(
+                    "unresolved_call",
+                    &self.files[self.scopes[call.scope].file].path,
+                    "call target is outside the bounded model",
+                )
+                .at(call.at),
+            );
+        }
+    }
+
     pub(super) fn terminal_logging_config_failure(
         &mut self,
         scope: ScopeId,

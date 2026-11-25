@@ -15,7 +15,9 @@ use skarmory_python::phase02::{
 };
 
 use super::config::{Entrypoint, FastapiRouterMode};
-use super::{Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding};
+use super::{
+    Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding, WEAK_HELPER_FUNCTION,
+};
 use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
@@ -26,6 +28,7 @@ mod celery_routes;
 mod comprehension;
 mod django_forms;
 mod django_globals;
+mod django_middleware;
 mod django_migrations;
 mod django_template_paths;
 mod django_templates;
@@ -268,8 +271,10 @@ enum FrameworkClassRole {
     DjangoForm,
     DjangoModelForm,
     DjangoFormField,
+    DjangoRelationshipField,
     DjangoSignal,
     DjangoAdmin,
+    ClickCommand,
     DrfSerializer,
     DrfViewSet,
     CeleryTask,
@@ -631,6 +636,7 @@ pub(super) fn analyze_with_verification(
         failed_terminal_modules: BTreeSet::new(),
         failed_flask_provider_initializers: BTreeMap::new(),
         failed_flask_import_initializers: BTreeMap::new(),
+        flask_initializer_probe_cutoffs: BTreeMap::new(),
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
         framework_class_whitelists: BTreeMap::new(),
@@ -645,6 +651,9 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_middleware_sites: Vec::new(),
+        logging_record_calls: Vec::new(),
+        logging_formatter_methods: BTreeSet::new(),
         django_view_arguments: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
@@ -832,6 +841,7 @@ struct Graph<'a> {
     failed_terminal_modules: BTreeSet<ScopeId>,
     failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
     failed_flask_import_initializers: BTreeMap<ScopeId, Location>,
+    flask_initializer_probe_cutoffs: BTreeMap<ScopeId, Location>,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
@@ -846,6 +856,9 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_middleware_sites: Vec<django_middleware::MiddlewareSite>,
+    logging_record_calls: Vec<ParameterCall>,
+    logging_formatter_methods: BTreeSet<SymbolId>,
     django_view_arguments: django_views::ViewRouteArguments,
     django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
@@ -3036,10 +3049,7 @@ impl<'a> Graph<'a> {
                     }
                 }
                 Value::Provider(base)
-                    if name == "__init_subclass__"
-                        && (builtin_noop_subclass_hook(&base)
-                            || self.phase03
-                                && django_forms::is_relationship_field_class(&base)) =>
+                    if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
                 {
                     None
                 }
@@ -3052,7 +3062,9 @@ impl<'a> Graph<'a> {
                             Some(
                                 FrameworkClassRole::DjangoCommand
                                 | FrameworkClassRole::DjangoManager
-                                | FrameworkClassRole::DjangoQuerySet,
+                                | FrameworkClassRole::DjangoQuerySet
+                                | FrameworkClassRole::DjangoRelationshipField
+                                | FrameworkClassRole::DjangoView,
                             ),
                             "__new__",
                         ) => None,
@@ -3176,7 +3188,6 @@ impl<'a> Graph<'a> {
                     || self.phase03
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
-                            || django_forms::is_relationship_field_class(&name)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -5558,6 +5569,11 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::DjangoViewFactory(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "django.core.management.call_command" => {
+                        self.register_django_programmatic_command(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
                     Value::Provider(name)
                         if self.phase03
                             && matches!(
@@ -5604,6 +5620,9 @@ impl<'a> Graph<'a> {
                                     "django.core.wsgi.get_wsgi_application"
                                         | "django.core.asgi.get_asgi_application"
                                 ),
+                                definite_setup: self.branch_depth == 0
+                                    && arguments.is_empty() && keywords.is_empty()
+                                    && name != "django.core.management.execute_from_command_line",
                                 commands,
                             });
                     }
@@ -5778,6 +5797,9 @@ impl<'a> Graph<'a> {
                         if self.phase03 && name == "pathlib.Path"
                             && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
                     Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "json.dumps"
+                        && arguments.len() == 1 && keywords.is_empty()
+                        && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -5856,6 +5878,11 @@ impl<'a> Graph<'a> {
                             return;
                         }
                         if self.phase03 && self.defer_fresh_field_call(scope, expr) {
+                            return;
+                        }
+                        if self.phase03 && arguments.is_empty() && keywords.is_empty()
+                            && self.defer_log_record_message(scope, function, before, expr.at)
+                        {
                             return;
                         }
                         let parameter = self.parameter_binding(scope, function, before);
@@ -7578,14 +7605,105 @@ impl<'a> Graph<'a> {
                         }) => {}
             Value::Unknown
                 if self.phase03 && self.empty_flask_lookalike(scope, function, before) => {}
-            _ => self.scope_issue(
-                scope,
-                decorator.at,
-                "unresolved_decorator",
-                "decorator identity is outside the bounded model",
-            ),
+            value => {
+                if self.phase03
+                    && matches!(value, Value::Provider(_))
+                    && self.opaque_decorator_receives_function(scope, decorator, target, before)
+                {
+                    self.edge(scope, target, "opaque_decorator_argument", "possible");
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_decorator",
+                    "decorator identity is outside the bounded model",
+                );
+            }
         };
         false
+    }
+
+    fn opaque_decorator_receives_function(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Name(name) = &decorator.kind else {
+            return false;
+        };
+        if !self
+            .local(scope, name, before)
+            .is_some_and(|id| matches!(self.symbols[id].binding, Binding::Import(_)))
+        {
+            return false;
+        }
+        let Binding::Definition(definition, _) = self.symbols[target].binding else {
+            return false;
+        };
+        if definition.kind == DefinitionKind::Class {
+            return false;
+        }
+        let Some(layer) = definition
+            .decorators
+            .iter()
+            .position(|item| std::ptr::eq(item, decorator))
+        else {
+            return false;
+        };
+        // Inner decorators apply first. Only pass-through layers can prove
+        // that the opaque decorator receives this function.
+        definition.decorators[layer + 1..].iter().all(|inner| {
+            let ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } = &inner.kind
+            else {
+                let value = self.probe_identity(scope, inner, before);
+                return matches!(value, Value::IdentityFunction)
+                    || self.local_identity_decorator(value, inner);
+            };
+            if !keywords.is_empty()
+                || !arguments.iter().all(|argument| {
+                    matches!(
+                        argument.kind,
+                        ExpressionKind::None
+                            | ExpressionKind::Bool(_)
+                            | ExpressionKind::Text(_)
+                            | ExpressionKind::Scalar(_)
+                    )
+                })
+            {
+                return false;
+            }
+            let Value::Callable(invocation) = self.probe_identity(scope, function, before) else {
+                return false;
+            };
+            let Binding::Definition(factory, _) = self.symbols[invocation.target].binding else {
+                return false;
+            };
+            !invocation.verified
+                && matches!(invocation.receiver, Receiver::Ordinary | Receiver::Bound(_))
+                && factory.kind == DefinitionKind::Function
+                && !factory.is_generator
+                && factory.decorators.is_empty()
+                && factory.simple_positional_parameters
+                && factory.parameters.len()
+                    == arguments.len()
+                        + usize::from(matches!(invocation.receiver, Receiver::Bound(_)))
+                && matches!(
+                    body_without_docstring(factory),
+                    [Statement {
+                        kind: StatementKind::Return(Some(Expression {
+                            kind: ExpressionKind::IdentityLambda,
+                            ..
+                        })),
+                        ..
+                    }]
+                )
+        })
     }
 
     fn local_identity_decorator(&self, value: Value, decorator: &Expression) -> bool {
@@ -9285,6 +9403,9 @@ impl<'a> Graph<'a> {
                         | drf::PROTOCOL_DECLARATION
                         | drf::FIELD_DECLARATION
                         | mcp_tools::DECORATOR_APPLICATION
+                        | "click_command_declaration"
+                        | "celery_task_declaration"
+                        | "django_relationship_field_declaration"
                 ) {
                     continue;
                 }
@@ -9621,6 +9742,8 @@ impl<'a> Graph<'a> {
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
+            self.report_django_middleware_calls(&reach);
+            self.report_log_record_calls(&reach);
             self.report_flask_parameter_hooks(&reach);
         }
         self.issues.extend(
@@ -9812,7 +9935,15 @@ impl<'a> Graph<'a> {
                         } else {
                             90
                         },
-                        "no_call_path_from_root",
+                        if self.phase03
+                            && scope.owner.is_none()
+                            && !self.direct.contains(&id)
+                            && (name.starts_with("format_") || name.ends_with("_name"))
+                        {
+                            WEAK_HELPER_FUNCTION
+                        } else {
+                            "no_call_path_from_root"
+                        },
                     )
                 }
                 Binding::Import(_) if !self.read.contains(&id) => {
@@ -10484,6 +10615,7 @@ fn is_deferred_possible_edge(kind: &str) -> bool {
                 | "logging_factory"
                 | celery_routes::ROUTER
                 | celery_routes::ROUTER_PARAMETER
+                | "opaque_decorator_argument"
         )
 }
 
@@ -10790,6 +10922,9 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.forms.ModelForm" | "django.forms.models.ModelForm" => {
             Some(FrameworkClassRole::DjangoModelForm)
         }
+        name if django_forms::is_relationship_field_class(name) => {
+            Some(FrameworkClassRole::DjangoRelationshipField)
+        }
         name if django_forms::provider_field_role(name).is_some() => {
             django_forms::provider_field_role(name)
         }
@@ -10797,6 +10932,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
+        "click.Command" | "click.core.Command" => Some(FrameworkClassRole::ClickCommand),
         "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
             Some(FrameworkClassRole::DrfSerializer)
         }
@@ -10823,6 +10959,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
 fn framework_managed_base(name: &str) -> bool {
     framework_class_provider(name).is_some()
         || is_django_string_converter(name)
+        || logging_config::LoggingBase::provider(name).is_some()
         || matches!(
             name,
             "django.db.migrations.Migration" | "django.db.migrations.migration.Migration"
@@ -11001,6 +11138,133 @@ configure()
                 .collect();
             assert_eq!(hooks, expected.into_iter().collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn django_logging_settings_follow_inherited_standard_formatter_hooks() {
+        let source = |version| {
+            format!(
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nLOGGING = {{{version}}}\n\
+             def configure():\n    global LOGGING\n    LOGGING.update({{'formatters': {{'active': {{'()': 'shop.formatters.Formatter'}}}}}})\nconfigure()\n"
+            )
+        };
+        for (version, selected) in [("'version': 1", true), ("", false)] {
+            let settings = source(version);
+            let report = analyze_phase03(
+                &[
+                    module("shop/__init__.py", "shop", ""),
+                    module("shop/settings.py", "shop.settings", &settings),
+                    module(
+                        "shop/formatters.py",
+                        "shop.formatters",
+                        "import json\nimport logging\nclass Base(logging.Formatter):\n    def format(self, record):\n        helper()\n        return json.dumps({'name': record.name, 'message': record.getMessage()})\nclass Formatter(Base):\n    def retired(self): return 1\ndef helper(): return 'message'\n",
+                    ),
+                ],
+                &[],
+            );
+            assert!(report.issues.is_empty(), "{version}: {:?}", report.issues);
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_logging_factory"
+                        && row.full_name == "shop.formatters.Base.format"),
+                selected
+            );
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "direct_call"
+                        && row.full_name == "shop.formatters.helper"),
+                selected
+            );
+        }
+    }
+
+    #[test]
+    fn log_record_processing_requires_the_selected_formatter_contract() {
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module(
+                    "shop/settings.py",
+                    "shop.settings",
+                    "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nLOGGING = {'version': 1, 'formatters': {'active': {'()': 'shop.formatters.Formatter'}}}\n",
+                ),
+                module(
+                    "shop/formatters.py",
+                    "shop.formatters",
+                    "import logging\nclass Formatter(logging.Formatter):\n    def format(self, record): return record.getMessage()\nclass Custom:\n    def getMessage(self): return 'test'\nFormatter().format(Custom())\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+    }
+
+    #[test]
+    fn django_middleware_preserves_only_the_configured_continuation() {
+        let middleware = "class Active:\n    def __init__(self, next_handler): self.next = next_handler\n    def __call__(self, request): return self.next(request)\nclass Retired:\n    def __init__(self, next_handler): self.next = next_handler\n    def __call__(self, request): return self.next(request)\n";
+        for (setting, selected) in [
+            ("MIDDLEWARE = ['shop.middleware.Active']\n", true),
+            (
+                "MIDDLEWARE = ['shop.middleware.Active']\nMIDDLEWARE = []\n",
+                false,
+            ),
+        ] {
+            let settings = format!("INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n{setting}");
+            let report = analyze_phase03(
+                &[
+                    module("shop/__init__.py", "shop", ""),
+                    module("shop/settings.py", "shop.settings", &settings),
+                    module("shop/middleware.py", "shop.middleware", middleware),
+                ],
+                &[],
+            );
+            assert!(report.issues.is_empty(), "{setting}: {:?}", report.issues);
+            let callbacks: Vec<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == "django_middleware").then_some(row.full_name.as_str())
+                })
+                .collect();
+            if selected {
+                assert_eq!(
+                    callbacks,
+                    [
+                        "shop.middleware.Active.__init__",
+                        "shop.middleware.Active.__call__"
+                    ]
+                );
+            } else {
+                assert!(callbacks.is_empty());
+            }
+        }
+
+        let settings = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nMIDDLEWARE = ['shop.middleware.Active']\n";
+        let middleware =
+            format!("{middleware}from external import callback\nActive(callback)(None)\n");
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", settings),
+                module("shop/middleware.py", "shop.middleware", &middleware),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
     }
 
     #[test]
@@ -13804,6 +14068,57 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     }
 
     #[test]
+    fn phase03_django_class_based_view_uses_only_reached_dispatch_stages() {
+        let prefix = "from django.urls import path\nfrom django.views import View\nclass Parent(View):\n    def get(self, request): return 1\nclass Page(Parent):\n    def post(self, request): return 2\n";
+        let mounted = "urlpatterns = [path('page/', Page.as_view())]\n";
+        for (override_method, registration, expected) in [
+            ("", "Page()\nurlpatterns = []\n", &[][..]),
+            ("", mounted, &["urls.Page.post", "urls.Parent.get"][..]),
+            (
+                "    http_method_names = ['head']\n",
+                mounted,
+                &["urls.Parent.get"][..],
+            ),
+            (
+                "    def dispatch(self, request): return 3\n",
+                mounted,
+                &["urls.Page.dispatch"][..],
+            ),
+            (
+                "    def setup(self, request): pass\n",
+                mounted,
+                &["urls.Page.setup"][..],
+            ),
+            (
+                "    def __init__(self): raise RuntimeError()\n",
+                mounted,
+                &["urls.Page.__init__"][..],
+            ),
+        ] {
+            let result = analyze_phase03(
+                &django_url_test_files(&format!("{prefix}{override_method}{registration}"), ""),
+                &[],
+            );
+            assert!(
+                result.issues.is_empty(),
+                "{override_method} {registration}: {:?}",
+                result.issues
+            );
+            let callbacks: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "framework_lifecycle")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(
+                callbacks,
+                expected.iter().copied().collect(),
+                "{override_method} {registration}"
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "requires the pinned FastAPI import-root fixture"]
     fn pinned_fastapi_import_roots() {
         let root = PathBuf::from(std::env::var_os("SKARMORY_PHASE03_IMPORT_ROOT_FIXTURE").unwrap());
@@ -14303,6 +14618,49 @@ class Command(BaseCommand):\n    def add_arguments(self, parser): return parser\
     }
 
     #[test]
+    fn phase03_django_call_command_follows_programmatic_dispatch_after_setup() {
+        let setup = "django.setup()\n";
+        let invoke = "run(command_name='audit')\n";
+        let imports = "import django\nimport os\nfrom django.core.management import call_command as run\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n";
+        let command = "from django.core.management.base import BaseCommand\ndef helper(): return 1\n\
+class Command(BaseCommand):\n    def run_from_argv(self, argv): pass\n    def add_arguments(self, parser): return parser\n    def handle(self, *args, **kwargs): return helper()\n";
+        for (actions, started) in [
+            (format!("{setup}{invoke}"), true),
+            (format!("{invoke}{setup}"), false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("startup.py", "startup", &format!("{imports}{actions}")),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        command,
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                result.issues.is_empty(),
+                started,
+                "{actions}: {:?}",
+                result.issues
+            );
+            let reached = |name: &str, kind: &str| {
+                result
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name.ends_with(name) && row.kind == kind)
+            };
+            assert_eq!(reached(".add_arguments", "django_command"), started);
+            assert_eq!(reached(".handle", "django_command"), started);
+            assert_eq!(reached(".helper", "direct_call"), started);
+            assert!(!reached(".run_from_argv", "django_command"));
+        }
+    }
+
+    #[test]
     fn phase03_flat_inert_django_shadow_stops_a_command_import() {
         let command = "from django.core.management.base import BaseCommand\ndef prepare(): return 1\nclass Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\nprepare()\n";
         for (shadow, closed) in [
@@ -14593,6 +14951,27 @@ class AnotherField(RelatedField): pass\n";
                 .iter()
                 .any(|row| row.full_name == "fields.RelatedField.label_from_instance")
         );
+        let form = format!(
+            "{definition}class Contact(forms.Form):\n    related = RelatedField(queryset=None, required=True)\n"
+        );
+        let installed = analyze_phase03(&[module("fields.py", "fields", &form)], &[]);
+        assert!(installed.issues.is_empty(), "{:?}", installed.issues);
+        assert!(installed.evidence.iter().any(|row| {
+            row.full_name == "fields.RelatedField.label_from_instance"
+                && row.kind == "django_relationship_field_declaration"
+                && row.certainty == "possible"
+        }));
+        let dynamic = form.replace("queryset=None", "queryset=external_query");
+        let dynamic = analyze_phase03(&[module("fields.py", "fields", &dynamic)], &[]);
+        assert!(
+            dynamic
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_constructor"),
+            "{:?}",
+            dynamic.issues
+        );
+
         let constructed = analyze_phase03(
             &[module(
                 "fields.py",
@@ -14850,6 +15229,82 @@ class Command:
                 },
                 "{apps}"
             );
+        }
+    }
+
+    #[test]
+    fn phase03_django_setup_keeps_only_effects_before_a_proven_failure() {
+        let signal = "from django.db.models.signals import post_save\ndef callback(sender, **kwargs): return None\npost_save.connect(callback)\n";
+        for (failure, callbacks) in [
+            ("constructor", &[][..]),
+            ("models", &[][..]),
+            (
+                "ready",
+                &["later.models.callback", "shop.models.callback"][..],
+            ),
+        ] {
+            let constructor = if failure == "constructor" {
+                "    def __init__(self, name, module): raise RuntimeError()\n"
+            } else {
+                ""
+            };
+            let ready = if failure == "ready" {
+                "raise RuntimeError()"
+            } else {
+                "pass"
+            };
+            let models = if failure == "models" {
+                "raise RuntimeError()\n"
+            } else {
+                signal
+            };
+            let result = analyze_phase03(
+                &[
+                    module(
+                        "settings.py",
+                        "settings",
+                        "INSTALLED_APPS = ['shop.apps.ShopConfig', 'later.apps.LaterConfig']\n",
+                    ),
+                    module(
+                        "startup.py",
+                        "startup",
+                        "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+                    ),
+                    module("shop/__init__.py", "shop", ""),
+                    module(
+                        "shop/apps.py",
+                        "shop.apps",
+                        &format!(
+                            "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n{constructor}    def ready(self): {ready}\n"
+                        ),
+                    ),
+                    module("shop/models.py", "shop.models", models),
+                    module("later/__init__.py", "later", ""),
+                    module(
+                        "later/apps.py",
+                        "later.apps",
+                        "from django.apps import AppConfig\nclass LaterConfig(AppConfig):\n    name = 'later'\n    def ready(self):\n        from . import signals\n",
+                    ),
+                    module("later/models.py", "later.models", signal),
+                    module("later/signals.py", "later.signals", signal),
+                ],
+                &[],
+            );
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration"),
+                "{failure}: {:?}",
+                result.issues
+            );
+            let active: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_signal" && row.certainty == "certain")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(active, callbacks.iter().copied().collect(), "{failure}");
         }
     }
 

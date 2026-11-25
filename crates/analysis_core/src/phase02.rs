@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use skarmory_python::Location;
 use skarmory_python::phase02::{ModuleFacts, extract};
 
 use crate::fact_cache::{CacheStats, FactCache};
@@ -135,6 +136,8 @@ struct Finding {
     rule_id: &'static str,
     reason: &'static str,
 }
+
+const WEAK_HELPER_FUNCTION: &str = "weak_helper_function";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Evidence {
@@ -807,7 +810,7 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v35/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v36/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -924,6 +927,14 @@ fn scan_selected(
                         sources.insert(file.label.clone(), source);
                         match facts {
                             FileFacts::Python(facts) => {
+                                if !phase03 && let Some(at) = facts.first_named_condition {
+                                    issues.push(Issue::new(
+                                        "unsupported_construct",
+                                        &file.label,
+                                        "assignment expressions are outside the compatibility subset",
+                                    ).at(at));
+                                    continue;
+                                }
                                 let is_package = Path::new(&file.label).file_name()
                                     == Some(OsStr::new("__init__.py"));
                                 // The loose-file identity includes the initializer's
@@ -1260,6 +1271,19 @@ fn scan_selected(
                     "whitelisted",
                     source,
                 ));
+                continue;
+            }
+            if finding.reason == WEAK_HELPER_FUNCTION {
+                // The pinned reference treats these unreferenced helper names
+                // as abstentions. Keep them separate from usage and coverage.
+                analysis.uncertainties.push(
+                    Issue::new(WEAK_HELPER_FUNCTION, &finding.file, "weak helper function")
+                        .at(Location {
+                            line: finding.line,
+                            column: finding.column,
+                        })
+                        .with_symbol(finding.name, finding.full_name),
+                );
                 continue;
             }
             // Skylos applies the confidence threshold to bindings and keeps file findings.

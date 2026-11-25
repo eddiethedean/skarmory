@@ -83,22 +83,9 @@ impl Graph<'_> {
         body: ScopeId,
         role: FrameworkClassRole,
     ) {
-        let symbol = &self.symbols[class];
-        let scope = symbol.scope;
-        let name = &symbol.name.text;
-        if scope != self.scopes[scope].file
-            || name.starts_with('_')
-            || self.local(scope, name, END) != Some(class)
-            || self.binding_depends_on_branch(class, END)
-        {
-            return;
-        }
-        let Binding::Definition(definition, _) = symbol.binding else {
+        let Some(scope) = self.public_protocol_module_scope(class) else {
             return;
         };
-        if !definition.decorators.is_empty() {
-            return;
-        }
         self.edge(scope, class, PROTOCOL_DECLARATION, "possible");
 
         // Fields are collected by SerializerMetaclass at class creation.

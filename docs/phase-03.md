@@ -305,8 +305,10 @@ directory and an import before any executable initializer work. Consumers of
 the failed module retain incomplete coverage.
 
 Django model relationship field subclasses have no class-creation callback
-for rendering choices. The preview recognizes these declarations and keeps
-constructor or rendering effects outside this declaration proof.
+for rendering choices. A bounded relationship field assignment can construct
+the default lazy choices with `queryset=None` and retain a public form's
+label override as a protocol declaration. Rendering still needs a separate
+execution path.
 [Django relationship fields](https://docs.djangoproject.com/en/5.2/ref/forms/fields/#fields-which-handle-relationships)
 
 FastMCP records possible-use evidence for tool decorators applied through a
@@ -362,6 +364,8 @@ command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
 Command-specific help can construct the command and run argument setup before
 exiting. The built-in command listing and version paths need no local command.
+A literal `call_command` after a resolved `django.setup()` in the same scope
+uses programmatic dispatch through parser setup and `execute`.
 The selected command follows its effective lifecycle after module initialization.
 Ordered writes through the command module's own globals dictionary or module
 object can replace the export before Django reads it. Later ordinary assignments
@@ -403,7 +407,10 @@ and unbound backend replacements can stop initialization before Django consumes
 the setting. A closed source
 decorator can replace a backend class with another initialized class or
 discard a hook without executing its body. Source importers of a mutated list
-and unresolved mutations retain their coverage diagnostics.
+and unresolved mutations retain their coverage diagnostics. Selected Django
+middleware with a plain constructor and a request method forwarding the
+framework continuation contributes possible-use evidence. Middleware with
+opaque constructor or request behavior retains an incomplete dispatch diagnostic.
 
 The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
 module initialization. It follows literal formatter and filter declarations,
@@ -412,8 +419,11 @@ For source-owned instances used only by that initializer, it follows
 constructor defaults, field edits, and reached method calls. Type guards over
 known values account for reached `os.PathLike.register(dict)` calls and
 short-circuiting. A proven unbound name in the initializer can prevent later
-configuration from running. An opaque configuration or consumer leaves
-coverage incomplete.
+configuration from running. Effective Django logging configurations can
+select source subclasses of stdlib filters and formatters with the default
+constructor. Selected formatter overrides can format a standard log record
+and serialize its literal string fields. An opaque configuration or consumer
+leaves coverage incomplete.
 
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
@@ -422,6 +432,9 @@ template scopes. Bounded pathlib paths start at the file that defines them,
 including settings imported from another module. The preview applies file
 exclusions and requires resolved loader settings and context. Unsupported
 markup in a selected template produces a coverage diagnostic.
+Mounted class-based views follow resolved construction, setup, and request
+dispatch. A source override controls its own dispatch. Default dispatch uses
+the effective HTTP method list and Django's implicit GET handler for HEAD.
 [Django generic views](https://docs.djangoproject.com/en/5.2/ref/class-based-views/generic-display/) · [Django template API](https://docs.djangoproject.com/en/5.2/ref/templates/api/)
 
 A supported Django form validation call retains possible `clean` and
@@ -504,12 +517,18 @@ The expanded replay still includes unqualified cases in Django command and
 signal discovery, FastAPI and Flask registration, and Celery backend selection.
 Use the pinned case ledger to assess each contract before claiming parity.
 
+Public Click command overrides and source-owned Celery task libraries can
+contribute protocol declaration evidence. The declaration does not execute
+the command or task body. A selected Celery app still needs a reached task
+registration for execution evidence. The pinned reporting policy records
+unreferenced module helper names of the form `format_*` or `*_name` as
+abstentions, with their source locations and symbol names.
+
 The pinned `django-urlpatterns` and `django-signal-receiver` corpus fixtures
 omit startup and a qualifying settings/URLconf pair, leaving coverage incomplete.
 The standalone `django-class-based-view`, `django-management-command`, and
 `django-appconfig-ready` fixtures expect retention without a selected
-registration or launcher. The `celery-task-class` fixture declares a task
-without registering it. The pinned `starlette-add-route` fixture supplies an
+registration or launcher. The pinned `starlette-add-route` fixture supplies an
 `endpoint` keyword to Starlette 1.3.1's `add_route`, which takes `route`.
 The installed framework raises before registering the handler. The `python-unittest-lifecycle` fixture expects hooks
 to be retained without a discovered test method and an unrelated helper to be

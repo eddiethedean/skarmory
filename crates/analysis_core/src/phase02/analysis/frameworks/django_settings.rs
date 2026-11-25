@@ -5,10 +5,11 @@ use super::*;
 mod backend_writes;
 mod collections;
 
-const PROTOCOL_SETTINGS: [&str; 4] = [
+const PROTOCOL_SETTINGS: [&str; 5] = [
     "AUTHENTICATION_BACKENDS",
     "STORAGES",
     "LOGGING",
+    "MIDDLEWARE",
     "TEMPLATES",
 ];
 
@@ -51,8 +52,9 @@ const STORAGE_METHODS: &[&str] = &[
 enum Protocol {
     Auth,
     Storage,
-    Filter,
-    Formatter,
+    Filter { default_constructor: bool },
+    Formatter { default_constructor: bool },
+    Middleware,
     ContextProcessor,
 }
 
@@ -61,9 +63,15 @@ impl Protocol {
         match self {
             Self::Auth => AUTH_METHODS,
             Self::Storage => STORAGE_METHODS,
-            Self::Filter => &["filter"],
-            Self::Formatter => &["format", "formatTime", "formatException", "formatStack"],
-            Self::ContextProcessor => &[],
+            Self::Filter { .. } => &["filter"],
+            Self::Formatter { .. } => &[
+                "format",
+                "formatTime",
+                "formatException",
+                "formatMessage",
+                "formatStack",
+            ],
+            Self::Middleware | Self::ContextProcessor => &[],
         }
     }
 
@@ -71,7 +79,8 @@ impl Protocol {
         match self {
             Self::Auth => "django_auth_backend",
             Self::Storage => "django_storage_backend",
-            Self::Filter | Self::Formatter => "django_logging_factory",
+            Self::Filter { .. } | Self::Formatter { .. } => "django_logging_factory",
+            Self::Middleware => "django_middleware",
             Self::ContextProcessor => "django_setting_reference",
         }
     }
@@ -144,9 +153,14 @@ impl Graph<'_> {
                     continue;
                 };
                 if name == "LOGGING"
-                    && let Some(config) = self.local(settings, "LOGGING_CONFIG", END)
-                    && !matches!(self.binding(config, END, 0), Value::Text(path)
-                        if path == "logging.config.dictConfig")
+                    && (self.modules.contains_key("logging")
+                        || self.modules.contains_key("logging.config")
+                        || self
+                            .local(settings, "LOGGING_CONFIG", END)
+                            .is_some_and(|config| {
+                                !matches!(self.binding(config, END, 0), Value::Text(path)
+                                if path == "logging.config.dictConfig")
+                            }))
                 {
                     continue;
                 }
@@ -382,7 +396,42 @@ impl Graph<'_> {
             };
             class = replacement.target;
         }
-        let Some(mro) = self.converter_mro(class, &mut BTreeMap::new(), 0) else {
+        if matches!(protocol, Protocol::Middleware) {
+            self.read.extend(target.bindings);
+            roots.push(possible_edge(class, "django_setting_reference"));
+            match self.prove_django_middleware(class, settings) {
+                Some(site)
+                    if !writes
+                        .iter()
+                        .any(|writes| writes.classes.contains_key(&class))
+                        && !modified_callback_body(site.initializer, &writes, replaced_bodies)
+                        && !modified_callback_body(site.handler, &writes, replaced_bodies) =>
+                {
+                    for callback in [site.initializer, site.handler] {
+                        roots.push(possible_edge(callback, protocol.evidence()));
+                    }
+                    self.django_middleware_sites.push(site);
+                }
+                _ => self.scope_issue(
+                    file,
+                    self.symbols[binding].name.at,
+                    "unresolved_registration",
+                    "configured Django middleware dispatch is outside the bounded model",
+                ),
+            }
+            return;
+        }
+        let allow_logging_base = matches!(
+            protocol,
+            Protocol::Filter {
+                default_constructor: true
+            } | Protocol::Formatter {
+                default_constructor: true
+            }
+        );
+        let Some(mro) =
+            self.source_protocol_mro(class, &mut BTreeMap::new(), 0, allow_logging_base)
+        else {
             return;
         };
         // Creation or instance lookup can replace any method on the object.
@@ -436,6 +485,15 @@ impl Graph<'_> {
                     .or_default()
                     .insert(class);
             }
+            if *name == "format"
+                && matches!(protocol, Protocol::Formatter { .. })
+                && descriptor == ConverterDescriptor::Instance
+                && mro.contains(&ConverterBase::Logging(
+                    logging_config::LoggingBase::Formatter,
+                ))
+            {
+                self.logging_formatter_methods.insert(target.target);
+            }
             self.read.extend(target.bindings);
             roots.push(possible_edge(target.target, protocol.evidence()));
         }
@@ -451,11 +509,12 @@ impl Graph<'_> {
         writes: &[&SettingsWrites],
     ) -> Option<Option<SymbolId>> {
         for &base in mro {
-            let ConverterBase::Source(class) = base else {
-                if base == ConverterBase::Object {
-                    continue;
-                }
-                return None;
+            let class = match base {
+                ConverterBase::Source(class) => class,
+                ConverterBase::Object => continue,
+                ConverterBase::Logging(logging) if logging.defines(name) => return Some(None),
+                ConverterBase::Logging(_) => continue,
+                ConverterBase::String => return None,
             };
             if writes.iter().any(|writes| {
                 writes
@@ -528,12 +587,19 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
         return;
     }
     match (name, value) {
-        ("AUTHENTICATION_BACKENDS", Value::Sequence(items)) => {
+        ("AUTHENTICATION_BACKENDS" | "MIDDLEWARE", Value::Sequence(items)) => {
             paths.extend(items.iter().filter_map(|value| {
                 let Value::Text(path) = value else {
                     return None;
                 };
-                Some((path.as_str(), Protocol::Auth))
+                Some((
+                    path.as_str(),
+                    if name == "MIDDLEWARE" {
+                        Protocol::Middleware
+                    } else {
+                        Protocol::Auth
+                    },
+                ))
             }));
         }
         ("STORAGES", _) => {
@@ -551,13 +617,20 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                 Some(Value::Integer(1) | Value::Scalar | Value::Bool(true))
             ) =>
         {
-            for (section, protocol) in [
-                ("filters", Protocol::Filter),
-                ("formatters", Protocol::Formatter),
-            ] {
+            for section in ["filters", "formatters"] {
                 if let Some(entries) = get(value, section) {
                     for entry in mapping(entries).into_values() {
                         if let Some(Value::Text(path)) = get(entry, "()") {
+                            let default_constructor = mapping(entry).len() == 1;
+                            let protocol = if section == "filters" {
+                                Protocol::Filter {
+                                    default_constructor,
+                                }
+                            } else {
+                                Protocol::Formatter {
+                                    default_constructor,
+                                }
+                            };
                             paths.push((path, protocol));
                         }
                     }

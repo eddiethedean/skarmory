@@ -155,6 +155,87 @@ struct Lineage {
 }
 
 impl Graph<'_> {
+    pub(super) fn record_django_relationship_field(
+        &mut self,
+        class: SymbolId,
+        call: CallArguments<'_>,
+    ) -> bool {
+        let Some(form) = self.scopes[call.scope]
+            .owner
+            .filter(|&owner| self.is_class(owner))
+        else {
+            return false;
+        };
+        if !self.scopes[call.scope].body.iter().any(|statement| {
+            matches!(&statement.kind, StatementKind::Assign { value: Some(value), annotation: None, .. }
+                if position(value.at) == position(call.at))
+        }) || !matches!(
+            self.framework_class_role(form, &mut BTreeSet::new(), 0),
+            Some(FrameworkClassRole::DjangoForm | FrameworkClassRole::DjangoModelForm)
+        ) {
+            return false;
+        }
+        let Some([Some(queryset), required]) =
+            registration_arguments(call.positional, call.keywords, ["queryset", "required"])
+        else {
+            return false;
+        };
+        if !matches!(queryset.kind, ExpressionKind::None)
+            || required.is_some_and(|value| !matches!(value.kind, ExpressionKind::Bool(_)))
+            || !self.bounded_django_relationship_field(class, call.scope)
+        {
+            return false;
+        }
+
+        // The default widget receives a lazy choice iterator. A public form
+        // can be configured with a queryset later; its declaration alone does
+        // not execute the field's label callback.
+        if self.public_protocol_module_scope(form).is_some()
+            && let Some(Value::Callable(callback)) =
+                self.class_member_at(class, "label_from_instance", 0, Some((call.scope, call.at)))
+            && !callback.verified
+            && matches!(self.symbols[callback.target].binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Function
+                && definition.decorators.is_empty()
+                && definition.simple_positional_parameters
+                && definition.parameters.len() == 2
+                && !definition.is_generator)
+        {
+            self.edge(
+                call.scope,
+                callback.target,
+                "django_relationship_field_declaration",
+                "possible",
+            );
+        }
+        true
+    }
+
+    fn bounded_django_relationship_field(&mut self, class: SymbolId, scope: ScopeId) -> bool {
+        let (lineage, _) = self.class_lineage(class);
+        lineage.iter().all(|&body| {
+            let owner = self.scopes[body]
+                .owner
+                .expect("class body must have an owner");
+            self.scopes[body]
+                .names
+                .keys()
+                .all(|name| *name == "label_from_instance")
+                && [
+                    "__init__",
+                    "__new__",
+                    "__setattr__",
+                    "__getattribute__",
+                    "queryset",
+                    "widget",
+                    "choices",
+                    "iterator",
+                ]
+                .iter()
+                .all(|name| self.class_discovery_write(owner, name, scope).is_none())
+        })
+    }
+
     pub(super) fn django_field_value(
         &mut self,
         provider: &str,
@@ -493,12 +574,23 @@ impl Graph<'_> {
                         }
                         true
                     }
-                    Value::Instance(field_class)
-                        if !model
-                            && self.framework_class_role(field_class, &mut BTreeSet::new(), 0)
-                                == Some(FrameworkClassRole::DjangoFormField) =>
-                    {
-                        if !self.django_inert_form_field(field_class) {
+                    Value::Instance(field_class) if !model => {
+                        let bounded =
+                            match self.framework_class_role(field_class, &mut BTreeSet::new(), 0) {
+                                Some(FrameworkClassRole::DjangoFormField) => {
+                                    self.django_inert_form_field(field_class)
+                                }
+                                Some(FrameworkClassRole::DjangoRelationshipField) => {
+                                    self.bounded_django_relationship_field(field_class, body)
+                                }
+                                _ => {
+                                    if !was_read {
+                                        self.read.remove(&id);
+                                    }
+                                    continue;
+                                }
+                            };
+                        if !bounded {
                             return None;
                         }
                         fields.insert(name.to_owned());

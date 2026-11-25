@@ -705,6 +705,23 @@ impl Graph<'_> {
                                     | "_post_teardown"
                             ))
                         || role == FrameworkClassRole::DjangoAppConfig && member == "ready"
+                        || role == FrameworkClassRole::DjangoView
+                            && (matches!(
+                                member,
+                                "__init__"
+                                    | "__new__"
+                                    | "__getattribute__"
+                                    | "__getattr__"
+                                    | "setup"
+                                    | "dispatch"
+                                    | "http_method_names"
+                                    | "http_method_not_allowed"
+                                    | "request"
+                            ) || self
+                                .class_lineage(*class)
+                                .0
+                                .into_iter()
+                                .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoCommand
                             && (matches!(
                                 member,
@@ -723,6 +740,7 @@ impl Graph<'_> {
                                 .into_iter()
                                 .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoSignal && member == "connect"
+                        || role == FrameworkClassRole::ClickCommand && member == "invoke"
                         || role == FrameworkClassRole::DrfViewSet && drf::is_viewset_action(member)
                         || role == FrameworkClassRole::DrfSerializer
                             && drf::is_serializer_mutation(member)
@@ -1095,6 +1113,11 @@ impl Graph<'_> {
         original: Option<ScopeId>,
         (scope, at): (ScopeId, Location),
     ) -> Option<MemberWriteValue> {
+        let reached = || {
+            writes
+                .iter()
+                .filter(|write| self.before_flask_initializer_failure(write.file, write.at))
+        };
         let reader = self.scopes[scope].file;
         let mut before = at;
         let mut deferred = false;
@@ -1110,26 +1133,20 @@ impl Graph<'_> {
         // Its enclosing module-level declaration provides a lower bound.
         let before = if deferred { before } else { at };
         if deferred
-            && writes
-                .iter()
-                .any(|write| write.file == reader && position(write.at) >= position(before))
+            && reached().any(|write| write.file == reader && position(write.at) >= position(before))
         {
             return Some(MemberWriteValue::Ambiguous);
         }
-        let local = writes
-            .iter()
+        let local = reached()
             .rev()
             .find(|write| write.file == reader && position(write.at) < position(before));
-        let unordered = writes
-            .iter()
-            .any(|write| write.file != reader && Some(write.file) != original);
+        let unordered = reached().any(|write| write.file != reader && Some(write.file) != original);
         if unordered {
             return Some(MemberWriteValue::Ambiguous);
         }
         local
             .or_else(|| {
-                writes
-                    .iter()
+                reached()
                     .rev()
                     .find(|write| Some(write.file) == original && write.file != reader)
             })
