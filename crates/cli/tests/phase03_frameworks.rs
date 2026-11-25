@@ -68,6 +68,43 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn sqlalchemy_hybrid_descriptor_retains_the_getter_without_calling_it() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("model.py"),
+        concat!(
+            "from sqlalchemy.ext.hybrid import hybrid_property\n",
+            "class User:\n",
+            "    @hybrid_property\n",
+            "    def full_name(self): return make_name()\n",
+            "def make_name(): return 'Ada'\n",
+            "class Profile:\n",
+            "    def render_name(self): return 'Ada'\n",
+            "Profile()\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(!unused.contains(&"model.User.full_name"));
+    assert!(unused.contains(&"model.make_name"));
+    assert!(unused.contains(&"model.Profile.render_name"));
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "model.User.full_name"
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["kind"] == "sqlalchemy_hybrid_descriptor"))
+    );
+}
+
+#[test]
 fn flask_login_callbacks_require_the_real_manager_and_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

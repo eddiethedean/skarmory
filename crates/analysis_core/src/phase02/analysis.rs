@@ -5995,6 +5995,21 @@ impl<'a> Graph<'a> {
                     && self.is_fastapi_lifespan(target) => {}
             Value::Provider(name)
                 if self.phase03
+                    && name == "sqlalchemy.ext.hybrid.hybrid_property"
+                    && !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && let Some(owner) = self.scopes[scope].owner
+                    && self.is_class(owner) =>
+            {
+                if matches!(self.symbols[target].binding,
+                    Binding::Definition(definition, _) if definition.decorators.len() == 1)
+                {
+                    self.edge(scope, target, "sqlalchemy_hybrid_descriptor", "certain");
+                }
+                self.framework_lifecycle
+                    .push((owner, target, "framework_lifecycle"));
+            }
+            Value::Provider(name)
+                if self.phase03
                     && matches!(
                         name.as_str(),
                         "pydantic.computed_field"
@@ -6002,14 +6017,12 @@ impl<'a> Graph<'a> {
                             | "pydantic.model_validator"
                             | "pydantic.root_validator"
                             | "pydantic.validator"
-                            | "sqlalchemy.ext.hybrid.hybrid_property"
                     ) =>
             {
                 if let Some(owner) = self.scopes[scope].owner
                     && self.is_class(owner)
-                    && (name == "sqlalchemy.ext.hybrid.hybrid_property"
-                        || self.framework_class_role(owner, &mut BTreeSet::new(), 0)
-                            == Some(FrameworkClassRole::PydanticModel))
+                    && self.framework_class_role(owner, &mut BTreeSet::new(), 0)
+                        == Some(FrameworkClassRole::PydanticModel)
                 {
                     self.framework_lifecycle
                         .push((owner, target, "framework_lifecycle"));
@@ -7731,7 +7744,10 @@ impl<'a> Graph<'a> {
                 }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
                 reach.symbols.insert(edge.target);
-                if matches!(edge.kind, "type_reference" | "generator_creation") {
+                if matches!(
+                    edge.kind,
+                    "type_reference" | "generator_creation" | "sqlalchemy_hybrid_descriptor"
+                ) {
                     continue;
                 }
                 let Binding::Definition(_, scope) = self.symbols[edge.target].binding else {
