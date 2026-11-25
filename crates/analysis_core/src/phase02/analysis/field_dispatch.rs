@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) const DIRECT: &str = "fresh_field_call";
+const MAX_INITIALIZER_FIELDS: usize = 32;
 
 pub(super) struct FreshFieldInvocation {
     caller: ScopeId,
@@ -254,7 +255,8 @@ impl Graph<'_> {
             return false;
         };
         self.symbols[initializer].name.text == "__init__"
-            && self.fresh_constructor_field(class).is_some()
+            && (self.fresh_constructor_field(class).is_some()
+                || self.plain_argument_initializer(class, initializer))
             && self.class_discovery_writes(class, scope).is_empty()
             && self
                 .receiver_parameter(initializer)
@@ -307,18 +309,72 @@ impl Graph<'_> {
         }
     }
 
-    fn fresh_constructor_field(&self, class: SymbolId) -> Option<ConstructorField<'_>> {
+    fn fresh_field_class(&self, class: SymbolId) -> Option<&Definition> {
         let Binding::Definition(definition, _) = self.symbols[class].binding else {
             return None;
         };
-        if definition.kind != DefinitionKind::Class
-            || !definition.bases.is_empty()
-            || definition.table_keyword.is_some()
-            || !definition.decorators.is_empty()
-            || self.subclassed.contains(&class)
+        (definition.kind == DefinitionKind::Class
+            && definition.bases.is_empty()
+            && definition.table_keyword.is_none()
+            && definition.decorators.is_empty()
+            && !self.subclassed.contains(&class))
+        .then_some(definition)
+    }
+
+    fn plain_argument_initializer(&self, class: SymbolId, initializer: SymbolId) -> bool {
+        let Some(class) = self.fresh_field_class(class) else {
+            return false;
+        };
+        let Binding::Definition(method, _) = self.symbols[initializer].binding else {
+            return false;
+        };
+        let Some((receiver, parameters)) = method.parameters.split_first() else {
+            return false;
+        };
+        let writes = body_without_docstring(method);
+        if !plain_method(method, method.parameters.len())
+            || parameters.len() > MAX_INITIALIZER_FIELDS
+            || writes.is_empty()
+            || writes.len() > MAX_INITIALIZER_FIELDS
         {
-            return None;
+            return false;
         }
+        let mut fields = BTreeSet::new();
+        for statement in writes {
+            let StatementKind::WriteAttribute {
+                receiver: target,
+                member,
+                value: Some(value),
+            } = &statement.kind
+            else {
+                return false;
+            };
+            if member.starts_with("__")
+                || !matches!(&target.kind, ExpressionKind::Name(name) if name == &receiver.text)
+                || !matches!(&value.kind, ExpressionKind::Name(name)
+                    if parameters.iter().any(|parameter| name == &parameter.text))
+                || !fields.insert(member.as_str())
+            {
+                return false;
+            }
+        }
+        // Plain functions elsewhere in the class cannot intercept instance
+        // stores. Exclude data descriptors and special attribute machinery.
+        body_without_docstring(class).iter().all(|statement| {
+            let StatementKind::Define(definition) = &statement.kind else {
+                return false;
+            };
+            let name = definition.name.text.as_str();
+            std::ptr::eq(definition, method)
+                || (definition.kind == DefinitionKind::Function
+                    && definition.decorators.is_empty()
+                    && (name == "__str__" || !name.starts_with("__"))
+                    && !fields.contains(name))
+        })
+    }
+
+    fn fresh_constructor_field(&self, class: SymbolId) -> Option<ConstructorField<'_>> {
+        let definition = self.fresh_field_class(class)?;
         let mut field = None;
         for statement in body_without_docstring(definition) {
             let StatementKind::Define(method) = &statement.kind else {
