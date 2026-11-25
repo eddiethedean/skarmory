@@ -10566,6 +10566,141 @@ configure()
     }
 
     #[test]
+    fn dict_config_follows_reached_instance_settings_and_ordered_guard_paths() {
+        let prefix = r#"import logging.config
+import os
+from os import PathLike as Path
+CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}
+class Server:
+    def __init__(self, config=CONFIG):
+        self.config = config
+    def apply(self):
+        if isinstance(self.config, Path):
+            self.config.clear()
+        if isinstance(self.config, dict):
+            logging.config.dictConfig(self.config)
+server = Server()
+"#;
+        for (change, selected) in [
+            ("", true),
+            ("alias = server\nalias.config = {}\n", false),
+            ("os.PathLike.register(dict)\n", false),
+            ("path_type = os.PathLike\npath_type.register(dict)\n", false),
+            ("register = os.PathLike.register\nregister(dict)\n", false),
+        ] {
+            let source = format!("{prefix}{change}server.apply()\n");
+            let result = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module("formatters.py", "formatters", "class Selected: pass\n"),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{change}: {:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|edge| {
+                    edge.kind == "logging_factory" && edge.full_name == "formatters.Selected"
+                }),
+                selected,
+                "{change}",
+            );
+        }
+    }
+
+    #[test]
+    fn dict_config_instance_replay_keeps_coverage_for_untracked_external_dispatch() {
+        let source = r#"import logging.config
+CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}
+class Server:
+    def __init__(self, config=CONFIG):
+        self.config = config
+    def apply(self):
+        logging.config.dictConfig(self.config)
+server = Server()
+server.apply()
+"#;
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module(
+                    "consumer.py",
+                    "consumer",
+                    "from app import server\nserver.config = replacement\nserver.apply()\n",
+                ),
+                module("formatters.py", "formatters", "class Selected: pass\n"),
+            ],
+            &[],
+        );
+        assert!(!result.issues.is_empty());
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|edge| edge.kind == "logging_factory")
+        );
+    }
+
+    #[test]
+    fn dict_config_stops_at_proven_unbound_initializer_operands() {
+        const PREFIX: &str = "import logging.config\nimport os\n\
+            CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}\n";
+        for failure in [
+            "logging.config.dictConfig = replacement",
+            "alias = logging.config\nsetattr(alias, 'dictConfig', replacement)",
+            "unknown(CONFIG)",
+            "def apply(logging): logging.config.dictConfig(CONFIG)\napply(replacement)",
+            "alias = os\nalias.PathLike = replacement",
+            "os.PathLike.__subclasshook__ = replacement",
+            "setattr(os.PathLike, '__subclasshook__', replacement)",
+            "unknown(os.PathLike)",
+        ] {
+            let source = format!("{PREFIX}{failure}\nlogging.config.dictConfig(CONFIG)\n");
+            let result = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module("formatters.py", "formatters", "class Selected: pass\n"),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{failure}: {:?}", result.issues);
+            assert_eq!(names(&result, Category::Class), ["Selected"], "{failure}");
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|edge| edge.kind == "logging_factory"),
+                "{failure}"
+            );
+        }
+        let source = format!(
+            "{PREFIX}import external\nexternal.replace_logging()\nunknown(CONFIG)\nlogging.config.dictConfig(CONFIG)\n"
+        );
+        let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call" && issue.line == Some(6)),
+            "{:?}",
+            result.issues
+        );
+        let source = format!("{PREFIX}unknown(CONFIG)\nlogging.config.dictConfig(CONFIG)\n");
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", &source),
+                module("consumer.py", "consumer", "from app import CONFIG\n"),
+            ],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| { issue.kind == "unresolved_import" && issue.path == "consumer.py" })
+        );
+    }
+
+    #[test]
     fn dict_config_resolves_factory_at_the_reached_stdlib_consumer() {
         let source = "from logging.config import dictConfig as apply\n\
                       apply({'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}})\n";
@@ -10650,6 +10785,7 @@ configure()
     #[test]
     fn dict_config_with_opaque_mutation_keeps_coverage_incomplete() {
         let source = "import logging.config\n\
+                      from external_mutator import configure\n\
                       CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}\n\
                       configure(CONFIG)\n\
                       logging.config.dictConfig(CONFIG)\n";

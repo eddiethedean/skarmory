@@ -338,7 +338,12 @@ unresolved mutations retain their coverage diagnostics.
 The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
 module initialization. It follows literal formatter and filter declarations,
 ordered dictionary edits, aliases, and eligible one-argument mutation helpers.
-An opaque configuration or consumer leaves coverage incomplete.
+For source-owned instances used only by that initializer, it follows
+constructor defaults, field edits, and reached method calls. Type guards over
+known values account for reached `os.PathLike.register(dict)` calls and
+short-circuiting. A proven unbound name in the initializer can prevent later
+configuration from running. An opaque configuration or consumer leaves
+coverage incomplete.
 
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
