@@ -17,6 +17,17 @@ pub(super) struct Fastapi {
     signatures: BTreeMap<SymbolId, BTreeMap<ScopeId, bool>>,
     lifespans: BTreeMap<Object, (Site, ScopeId)>,
     observable_objects: BTreeSet<Object>,
+    parameter_routes: Vec<ParameterRoute>,
+}
+
+struct ParameterRoute {
+    owner: SymbolId,
+    scope: ScopeId,
+    parameter: String,
+    target: SymbolId,
+    path: Expression,
+    method: String,
+    at: Location,
 }
 
 #[derive(Clone, Copy)]
@@ -343,6 +354,130 @@ impl<'a> Graph<'a> {
         self.record_fastapi_route(object, Some(target), call, method, false);
     }
 
+    pub(super) fn record_fastapi_parameter_route(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &decorator.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Member(receiver, method) = &function.kind else {
+            return false;
+        };
+        let [
+            path @ Expression {
+                kind: ExpressionKind::Text(text),
+                ..
+            },
+        ] = arguments.as_slice()
+        else {
+            return false;
+        };
+        if !keywords.is_empty() || !text.starts_with('/') || !is_literal_api_decorator(method) {
+            return false;
+        }
+        let Some(parameter) = self.parameter_binding(scope, receiver, before) else {
+            return false;
+        };
+        let Some(owner) = self.scopes[scope].owner else {
+            return false;
+        };
+        let Binding::Definition(wrapper, _) = self.symbols[owner].binding else {
+            return false;
+        };
+        let Binding::Definition(endpoint, _) = self.symbols[target].binding else {
+            return false;
+        };
+        // Only a direct definition runs at the wrapper call site. Defaults,
+        // annotations and other decorators can execute code before mounting.
+        if self.scopes[scope].parent != Some(self.scopes[scope].file)
+            || wrapper.kind != DefinitionKind::Function
+            || !wrapper.decorators.is_empty()
+            || !wrapper.simple_positional_parameters
+            || wrapper.parameters.len() != 1
+            || !wrapper.defaults.is_empty()
+            || !matches!(body_without_docstring(wrapper), [Statement { kind: StatementKind::Define(child), .. }]
+                if position(child.name.at) == position(endpoint.name.at))
+            || endpoint.kind == DefinitionKind::Class
+            || endpoint.decorators.len() != 1
+            || !endpoint.defaults.is_empty()
+            || !endpoint.annotations.is_empty()
+        {
+            return false;
+        }
+        self.fastapi.parameter_routes.push(ParameterRoute {
+            owner,
+            scope,
+            parameter: self.symbols[parameter].name.text.clone(),
+            target,
+            path: Expression {
+                at: path.at,
+                kind: ExpressionKind::Text(text.clone()),
+            },
+            method: method.clone(),
+            at: decorator.at,
+        });
+        true
+    }
+
+    fn fastapi_parameter_receiver(
+        &self,
+        route: &ParameterRoute,
+        call: &DirectArguments,
+    ) -> Option<Object> {
+        let Value::Object(object, ObjectKind::App | ObjectKind::Router) =
+            call.values.get(&route.parameter)?
+        else {
+            return None;
+        };
+        (call.arguments_bound
+            && matches!(
+                self.fastapi_member_write(*object, &route.method, (call.caller, call.at)),
+                None | Some(mutations::MemberWriteValue::Deleted)
+            ))
+        .then_some(*object)
+    }
+
+    pub(super) fn index_fastapi_parameter_routes(&mut self) {
+        let routes = std::mem::take(&mut self.fastapi.parameter_routes);
+        for route in &routes {
+            let calls: Vec<_> = self
+                .direct_arguments
+                .get(&route.owner)
+                .into_iter()
+                .flatten()
+                .filter_map(|call| {
+                    self.fastapi_parameter_receiver(route, call)
+                        .map(|object| (object, call.caller, call.at, call.conditional))
+                })
+                .collect();
+            for (object, scope, at, conditional) in calls {
+                self.record_fastapi_route(
+                    object,
+                    Some(route.target),
+                    CallArguments {
+                        scope,
+                        before: at,
+                        at,
+                        positional: std::slice::from_ref(&route.path),
+                        keywords: &[],
+                    },
+                    &route.method,
+                    conditional,
+                );
+            }
+        }
+        self.fastapi.parameter_routes = routes;
+    }
+
     pub(super) fn fastapi_decorated_value(
         &mut self,
         target: SymbolId,
@@ -482,18 +617,7 @@ impl<'a> Graph<'a> {
                     else {
                         return None;
                     };
-                    if !matches!(
-                        method.as_str(),
-                        "get"
-                            | "post"
-                            | "put"
-                            | "delete"
-                            | "patch"
-                            | "head"
-                            | "options"
-                            | "trace"
-                            | "api_route"
-                    ) {
+                    if !is_literal_api_decorator(&method) {
                         return None;
                     }
                     stack.push(DecoratorLayer::Route {
@@ -1218,6 +1342,34 @@ impl<'a> Graph<'a> {
     }
 
     pub(super) fn report_fastapi_coverage(&mut self, reach: &Reachability) {
+        for route in &self.fastapi.parameter_routes {
+            if !reach.scopes.contains(&route.scope) {
+                continue;
+            }
+            let mut calls = self
+                .direct_arguments
+                .get(&route.owner)
+                .into_iter()
+                .flatten()
+                .filter(|call| reach.scopes.contains(&call.caller))
+                .peekable();
+            if calls.peek().is_none()
+                || calls.any(|call| self.fastapi_parameter_receiver(route, call).is_none())
+                || reach
+                    .evidence
+                    .iter()
+                    .any(|(target, kind, _)| *target == route.owner && *kind != "direct_call")
+            {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_registration",
+                        &self.files[self.scopes[route.scope].file].path,
+                        "FastAPI registration parameter is unresolved for a reached wrapper call",
+                    )
+                    .at(route.at),
+                );
+            }
+        }
         if reach.fastapi_limited {
             self.issues.push(Issue::new(
                 "analysis_limit",
@@ -1244,6 +1396,13 @@ impl<'a> Graph<'a> {
             );
         }
     }
+}
+
+fn is_literal_api_decorator(method: &str) -> bool {
+    matches!(
+        method,
+        "get" | "post" | "put" | "delete" | "patch" | "head" | "options" | "trace" | "api_route"
+    )
 }
 
 impl Event {

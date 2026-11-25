@@ -651,6 +651,55 @@ inner()
 }
 
 #[test]
+fn fastapi_literal_registration_wrapper_follows_reached_router_argument() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from fastapi import APIRouter, FastAPI
+from external_config import unknown_router
+
+def helper(): return 1
+def retired(): return 2
+
+def attach(target):
+    @target.get('/')
+    def endpoint(): return helper()
+
+router = APIRouter()
+app = FastAPI()
+"#;
+    let mounted = "app.include_router(router)\n";
+    fs::write(&file, format!("{source}{mounted}")).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "web.attach",
+            "web.attach.endpoint",
+            "web.helper",
+            "web.retired"
+        ]
+    );
+
+    fs::write(&file, format!("{source}attach(router)\n{mounted}")).unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["web.retired"]);
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(&file, format!("{source}attach(unknown_router)\n{mounted}")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_registration" && error["line"] == 8 })
+    );
+}
+
+#[test]
 fn fastapi_wildcard_imports_require_known_external_provider_identity() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

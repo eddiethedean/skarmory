@@ -561,6 +561,7 @@ pub(super) fn analyze_with_verification(
     }
     if phase03 {
         graph.collect_django_converter_wrappers();
+        graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
@@ -6052,6 +6053,9 @@ impl<'a> Graph<'a> {
         self.walk(scope, function, before);
         for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
             self.walk(scope, value, before);
+        }
+        if self.phase03 && self.record_fastapi_parameter_route(scope, decorator, target, before) {
+            return false;
         }
         match self.call_target_identity(scope, function, before, 0) {
             Value::Method(object, ObjectKind::App, name)
