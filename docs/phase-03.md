@@ -289,6 +289,11 @@ directory. Excluded modules, opaque extensions and consumers of the failed
 initializer preserve incomplete coverage. The optional
 `analysis_summary.fastapi_route_declarations` field records identified route
 declaration locations separately from activation evidence.
+For a mounted FastAPI WebSocket route with a capture-free path and one
+required unannotated parameter, the preview can prove that a handler that
+only awaits `accept()` on that query argument stops at the attribute lookup.
+The handler keeps its registration evidence, and independent unused
+definitions remain reportable.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 
 A source-owned, inert root Django or Celery package can prove that the
