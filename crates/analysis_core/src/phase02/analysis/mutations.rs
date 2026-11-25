@@ -705,6 +705,23 @@ impl Graph<'_> {
                                     | "_post_teardown"
                             ))
                         || role == FrameworkClassRole::DjangoAppConfig && member == "ready"
+                        || role == FrameworkClassRole::DjangoView
+                            && (matches!(
+                                member,
+                                "__init__"
+                                    | "__new__"
+                                    | "__getattribute__"
+                                    | "__getattr__"
+                                    | "setup"
+                                    | "dispatch"
+                                    | "http_method_names"
+                                    | "http_method_not_allowed"
+                                    | "request"
+                            ) || self
+                                .class_lineage(*class)
+                                .0
+                                .into_iter()
+                                .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoCommand
                             && (matches!(
                                 member,

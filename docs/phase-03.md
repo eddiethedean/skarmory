@@ -418,6 +418,9 @@ template scopes. Bounded pathlib paths start at the file that defines them,
 including settings imported from another module. The preview applies file
 exclusions and requires resolved loader settings and context. Unsupported
 markup in a selected template produces a coverage diagnostic.
+Mounted class-based views follow resolved construction, setup, and request
+dispatch. A source override controls its own dispatch. Default dispatch uses
+the effective HTTP method list and Django's implicit GET handler for HEAD.
 [Django generic views](https://docs.djangoproject.com/en/5.2/ref/class-based-views/generic-display/) · [Django template API](https://docs.djangoproject.com/en/5.2/ref/templates/api/)
 
 A supported Django form validation call retains possible `clean` and

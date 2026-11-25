@@ -314,13 +314,7 @@ impl Graph<'_> {
                 FrameworkClassRole::DjangoAppConfig | FrameworkClassRole::DjangoCommand => {
                     (None, &[][..], false)
                 }
-                FrameworkClassRole::DjangoView => (
-                    None,
-                    &[
-                        "get", "post", "put", "patch", "delete", "head", "options", "dispatch",
-                    ][..],
-                    false,
-                ),
+                FrameworkClassRole::DjangoView => (None, &[][..], false),
                 FrameworkClassRole::DjangoModel
                 | FrameworkClassRole::DjangoManager
                 | FrameworkClassRole::DjangoQuerySet
@@ -2969,6 +2963,7 @@ impl Graph<'_> {
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
             }
+            FrameworkClassRole::DjangoView => &[],
             FrameworkClassRole::DjangoCommand => {
                 &["stdout", "stderr", "style", "requires_system_checks"]
             }
@@ -3891,19 +3886,7 @@ impl Graph<'_> {
                             }));
                     }
                 }
-                Value::DjangoView(class) => {
-                    self.scopes[file]
-                        .routes
-                        .push((parent, class, "django_registration"));
-                    self.activate_django_hook(
-                        file,
-                        parent,
-                        class,
-                        "setup",
-                        "framework_lifecycle",
-                        at,
-                    );
-                }
+                Value::DjangoView(class) => self.activate_django_view(file, parent, class, at),
                 Value::DjangoInclude(child) => self.scopes[file].mounts.push((parent, child)),
                 Value::ConstantFunction | Value::NullaryConstantFunction => {}
                 _ => self.django_registration_issue(
@@ -3917,6 +3900,122 @@ impl Graph<'_> {
                 at,
                 "Django urlpatterns value is outside the bounded registration model",
             ),
+        }
+    }
+
+    fn activate_django_view(
+        &mut self,
+        file: ScopeId,
+        object: Object,
+        class: SymbolId,
+        at: Location,
+    ) {
+        const LIFECYCLE: &str = "framework_lifecycle";
+        self.scopes[file]
+            .routes
+            .push((object, class, "django_registration"));
+        for name in ["__new__", "__getattribute__", "__getattr__"] {
+            if self.django_class_value(class, name, file).is_some() {
+                self.django_registration_issue(object, at, "Django view allocation or attribute lookup is outside the bounded dispatch model");
+                return;
+            }
+        }
+        for name in ["__init__", "setup"] {
+            let Some(value) = self.django_class_value(class, name, file) else {
+                continue;
+            };
+            if let Value::Callable(invocation) = value
+                && self.bounded_framework_function(invocation.target)
+                && let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+            {
+                let minimum = if name == "__init__" { 1 } else { 2 };
+                if !definition.has_variadic_positional_parameter
+                    && definition.positional_parameter_count < minimum
+                    || name == "__init__"
+                        && (definition.required_positional_parameter_count > minimum
+                            || !definition.required_keyword_only_parameters.is_empty())
+                {
+                    return;
+                }
+                self.record_django_hook(file, object, class, invocation, LIFECYCLE);
+                let body = body_without_docstring(definition);
+                if django_unconditionally_raises(body) {
+                    return;
+                }
+                let no_effects = body.is_empty()
+                    || matches!(
+                        body,
+                        [Statement {
+                            kind: StatementKind::Return(None)
+                                | StatementKind::Return(Some(Expression {
+                                    kind: ExpressionKind::None,
+                                    ..
+                                })),
+                            ..
+                        }]
+                    );
+                if no_effects {
+                    if name == "__init__" {
+                        continue;
+                    }
+                    if self.django_class_value(class, "request", file).is_none() {
+                        // as_view checks that setup installed self.request.
+                        return;
+                    }
+                }
+            }
+            self.django_registration_issue(
+                object,
+                at,
+                "Django view initialization may change request dispatch",
+            );
+            return;
+        }
+        if self.django_class_value(class, "dispatch", file).is_some() {
+            // An override owns dispatch. Calls to source handlers from its
+            // body use ordinary method reachability.
+            self.activate_django_hook(file, object, class, "dispatch", LIFECYCLE, at);
+            return;
+        }
+        let mut methods: BTreeSet<_> =
+            match self.django_class_value(class, "http_method_names", file) {
+                None => [
+                    "get", "post", "put", "patch", "delete", "head", "options", "trace",
+                ]
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+                Some(Value::Sequence(values))
+                    if values.iter().all(|value| matches!(value, Value::Text(_))) =>
+                {
+                    values
+                        .into_iter()
+                        .filter_map(|value| match value {
+                            Value::Text(name) => Some(name),
+                            _ => None,
+                        })
+                        .collect()
+                }
+                _ => {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django view http_method_names could not be resolved",
+                    );
+                    return;
+                }
+            };
+        if methods.contains("head") && self.django_class_value(class, "head", file).is_none() {
+            methods.insert("get".into());
+        }
+        if methods.contains("get") && self.django_class_value(class, "get", file).is_none() {
+            self.scopes[file]
+                .routes
+                .push((object, class, "django_view_default_dispatch"));
+        }
+        methods.insert("http_method_not_allowed".into());
+        for method in methods {
+            self.activate_django_hook(file, object, class, &method, LIFECYCLE, at);
         }
     }
 

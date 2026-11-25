@@ -260,7 +260,7 @@ impl Graph<'_> {
             let row = &self.scopes[object.0];
             classes.extend(row.routes.iter().filter_map(|&(root, target, kind)| {
                 (root == object
-                    && kind == "django_registration"
+                    && kind == "django_view_default_dispatch"
                     && self.is_class(target)
                     && reach.symbols.contains(&target))
                 .then_some(target)

@@ -3054,7 +3054,8 @@ impl<'a> Graph<'a> {
                                 FrameworkClassRole::DjangoCommand
                                 | FrameworkClassRole::DjangoManager
                                 | FrameworkClassRole::DjangoQuerySet
-                                | FrameworkClassRole::DjangoRelationshipField,
+                                | FrameworkClassRole::DjangoRelationshipField
+                                | FrameworkClassRole::DjangoView,
                             ),
                             "__new__",
                         ) => None,
@@ -13755,6 +13756,57 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                     .issues
                     .iter()
                     .any(|issue| issue.kind == "unresolved_call")
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_class_based_view_uses_only_reached_dispatch_stages() {
+        let prefix = "from django.urls import path\nfrom django.views import View\nclass Parent(View):\n    def get(self, request): return 1\nclass Page(Parent):\n    def post(self, request): return 2\n";
+        let mounted = "urlpatterns = [path('page/', Page.as_view())]\n";
+        for (override_method, registration, expected) in [
+            ("", "Page()\nurlpatterns = []\n", &[][..]),
+            ("", mounted, &["urls.Page.post", "urls.Parent.get"][..]),
+            (
+                "    http_method_names = ['head']\n",
+                mounted,
+                &["urls.Parent.get"][..],
+            ),
+            (
+                "    def dispatch(self, request): return 3\n",
+                mounted,
+                &["urls.Page.dispatch"][..],
+            ),
+            (
+                "    def setup(self, request): pass\n",
+                mounted,
+                &["urls.Page.setup"][..],
+            ),
+            (
+                "    def __init__(self): raise RuntimeError()\n",
+                mounted,
+                &["urls.Page.__init__"][..],
+            ),
+        ] {
+            let result = analyze_phase03(
+                &django_url_test_files(&format!("{prefix}{override_method}{registration}"), ""),
+                &[],
+            );
+            assert!(
+                result.issues.is_empty(),
+                "{override_method} {registration}: {:?}",
+                result.issues
+            );
+            let callbacks: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "framework_lifecycle")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(
+                callbacks,
+                expected.iter().copied().collect(),
+                "{override_method} {registration}"
             );
         }
     }
