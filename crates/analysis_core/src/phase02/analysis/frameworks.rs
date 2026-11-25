@@ -2,12 +2,27 @@
 
 use super::*;
 
+fn django_unconditionally_raises(body: &[Statement]) -> bool {
+    body.iter()
+        .find(|statement| {
+            matches!(
+                statement.kind,
+                StatementKind::Raise(_)
+                    | StatementKind::Return(_)
+                    | StatementKind::If { .. }
+                    | StatementKind::With { .. }
+            )
+        })
+        .is_some_and(|statement| matches!(statement.kind, StatementKind::Raise(_)))
+}
+
 mod django_settings;
 
 pub(super) struct DjangoStartup {
     pub(super) at: Location,
     pub(super) settings: Option<String>,
     pub(super) creates_application: bool,
+    pub(super) definite_setup: bool,
     pub(super) commands: DjangoCommands,
 }
 
@@ -15,6 +30,7 @@ pub(super) enum DjangoCommands {
     None,
     Available,
     Selected(String),
+    Programmatic(String),
     Help { name: String, through_argv: bool },
     UnresolvedHelp,
 }
@@ -2540,14 +2556,14 @@ impl Graph<'_> {
                     | "django.contrib.admin.apps.SimpleAdminConfig"
             ) && external_django
         };
-        let autodiscover_admin = apps.iter().any(|app| {
-            matches!(app, Value::Text(entry) if builtin_admin(entry)
-                && entry != "django.contrib.admin.apps.SimpleAdminConfig")
-        });
+        let mut admin_ready = None;
         let mut selected = Vec::new();
         for app in apps {
             let resolved = if let Value::Text(entry) = app {
                 if builtin_admin(&entry) {
+                    if entry != "django.contrib.admin.apps.SimpleAdminConfig" {
+                        admin_ready.get_or_insert(selected.len());
+                    }
                     continue;
                 }
                 if external_django
@@ -2583,35 +2599,62 @@ impl Graph<'_> {
             selected.push(entry);
         }
 
-        // All app configurations must load before Django imports models or
-        // runs any ready hook. Phase-one package imports still precede failure.
+        // Django imports all model modules before invoking the first ready
+        // hook. Keep imports that have already run when a later one fails.
+        for entry in &selected {
+            let module = format!("{}.models", self.files[entry.app].module);
+            let Some(&file) = self.modules.get(module.as_str()) else {
+                continue;
+            };
+            self.scopes[scope]
+                .activated_apps
+                .push(django_loaded_module(file));
+            if self.failed_terminal_modules.contains(&file)
+                || django_unconditionally_raises(self.scopes[file].body)
+            {
+                self.django_registration_issue(
+                    object,
+                    at,
+                    "Django models module cannot finish initialization",
+                );
+                return false;
+            }
+        }
+
+        let admin_modules: Vec<_> = selected
+            .iter()
+            .filter_map(|entry| {
+                let name = format!("{}.admin", self.files[entry.app].module);
+                self.modules
+                    .get(name.as_str())
+                    .copied()
+                    .map(django_loaded_module)
+            })
+            .collect();
+        let app_count = selected.len();
         let mut registered_commands = BTreeMap::new();
-        for DjangoAppEntry { app, config, label } in selected {
+        for (index, DjangoAppEntry { app, config, label }) in selected.into_iter().enumerate() {
+            if admin_ready == Some(index) {
+                self.scopes[scope]
+                    .activated_apps
+                    .extend(admin_modules.iter().copied());
+            }
             if let Some(class) = config {
                 self.activate_django_hook(scope, object, class, "ready", "django_app_config", at);
+                if self.django_hook_raises(class, "ready", scope) {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django AppConfig.ready cannot finish initialization",
+                    );
+                    return false;
+                }
             }
             self.django_template_apps
                 .entry(settings)
                 .or_default()
                 .insert(app, label);
             let prefix = format!("{}.", self.files[app].module);
-            for module in [
-                self.modules
-                    .get(format!("{prefix}models").as_str())
-                    .copied(),
-                if autodiscover_admin {
-                    self.modules.get(format!("{prefix}admin").as_str()).copied()
-                } else {
-                    None
-                },
-            ]
-            .into_iter()
-            .flatten()
-            {
-                self.scopes[scope]
-                    .activated_apps
-                    .push(django_loaded_module(module));
-            }
             if matches!(
                 commands,
                 DjangoCommands::None | DjangoCommands::UnresolvedHelp
@@ -2629,6 +2672,9 @@ impl Graph<'_> {
                 }
             }
         }
+        if admin_ready == Some(app_count) {
+            self.scopes[scope].activated_apps.extend(admin_modules);
+        }
         if matches!(commands, DjangoCommands::UnresolvedHelp) {
             self.django_registration_issue(
                 object,
@@ -2637,7 +2683,7 @@ impl Graph<'_> {
             );
         }
         for (name, file) in registered_commands {
-            if matches!(commands, DjangoCommands::Selected(command) | DjangoCommands::Help { name: command, .. } if *command != name)
+            if matches!(commands, DjangoCommands::Selected(command) | DjangoCommands::Programmatic(command) | DjangoCommands::Help { name: command, .. } if *command != name)
             {
                 continue;
             }
@@ -2754,7 +2800,10 @@ impl Graph<'_> {
                     ..
                 }
             );
-            if (name == "run_from_argv" && direct_help) || (name == "print_help" && !direct_help) {
+            if (name == "run_from_argv"
+                && (direct_help || matches!(commands, DjangoCommands::Programmatic(_))))
+                || (name == "print_help" && !direct_help)
+            {
                 continue;
             }
             if name == "execute" && matches!(commands, DjangoCommands::Help { .. }) {
@@ -2828,19 +2877,7 @@ impl Graph<'_> {
                     }
                 }
                 let body = body_without_docstring(definition);
-                let stop = body
-                    .iter()
-                    .find(|stmt| {
-                        matches!(
-                            stmt.kind,
-                            StatementKind::Raise(_)
-                                | StatementKind::Return(_)
-                                | StatementKind::If { .. }
-                                | StatementKind::With { .. }
-                        )
-                    })
-                    .is_some_and(|stmt| matches!(stmt.kind, StatementKind::Raise(_)));
-                if stop {
+                if django_unconditionally_raises(body) {
                     break;
                 }
                 if unknown_dispatch {
@@ -2883,6 +2920,31 @@ impl Graph<'_> {
                 }
                 break;
             }
+        }
+    }
+
+    pub(super) fn register_django_programmatic_command(&mut self, call: CallArguments<'_>) {
+        let settings = self.scopes[call.scope]
+            .starts_django
+            .iter()
+            .find(|startup| startup.definite_setup)
+            .and_then(|startup| startup.settings.clone());
+        let target = registration_arguments(call.positional, call.keywords, ["command_name"])
+            .and_then(|[target]| target)
+            .map(|target| self.identity(call.scope, target, call.before, 0));
+        if self.branch_depth == 0
+            && let Some(settings) = settings
+            && let Some(Value::Text(command)) = target
+        {
+            self.scopes[call.scope].starts_django.push(DjangoStartup {
+                at: call.at,
+                settings: Some(settings),
+                creates_application: false,
+                definite_setup: false,
+                commands: DjangoCommands::Programmatic(command),
+            });
+        } else {
+            self.scope_issue(call.scope, call.at, "unresolved_registration", "Django call_command requires a literal command and an earlier resolved setup in this scope");
         }
     }
 
@@ -3422,13 +3484,25 @@ impl Graph<'_> {
         self.read.extend(config.bindings);
         self.scopes[scope]
             .activated_apps
-            .push(django_loaded_module(file));
+            .extend([django_loaded_module(file), django_loaded_module(app)]);
         self.activate_django_class(scope, object, class, &["__init__"], "django_app_config", at);
+        if self.django_hook_raises(class, "__init__", scope) {
+            return None;
+        }
         Some(DjangoAppEntry {
             app,
             label,
             config: Some(class),
         })
+    }
+
+    fn django_hook_raises(&mut self, class: SymbolId, hook: &str, scope: ScopeId) -> bool {
+        let Some(Value::Callable(invocation)) = self.django_class_value(class, hook, scope) else {
+            return false;
+        };
+        self.bounded_framework_function(invocation.target)
+            && matches!(self.symbols[invocation.target].binding,
+                Binding::Definition(definition, _) if django_unconditionally_raises(&definition.body))
     }
 
     fn django_class_binding(

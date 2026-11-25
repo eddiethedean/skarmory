@@ -5559,6 +5559,11 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::DjangoViewFactory(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "django.core.management.call_command" => {
+                        self.register_django_programmatic_command(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
                     Value::Provider(name)
                         if self.phase03
                             && matches!(
@@ -5605,6 +5610,9 @@ impl<'a> Graph<'a> {
                                     "django.core.wsgi.get_wsgi_application"
                                         | "django.core.asgi.get_asgi_application"
                                 ),
+                                definite_setup: self.branch_depth == 0
+                                    && arguments.is_empty() && keywords.is_empty()
+                                    && name != "django.core.management.execute_from_command_line",
                                 commands,
                             });
                     }
@@ -14251,6 +14259,49 @@ class Command(BaseCommand):\n    def add_arguments(self, parser): return parser\
     }
 
     #[test]
+    fn phase03_django_call_command_follows_programmatic_dispatch_after_setup() {
+        let setup = "django.setup()\n";
+        let invoke = "run(command_name='audit')\n";
+        let imports = "import django\nimport os\nfrom django.core.management import call_command as run\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n";
+        let command = "from django.core.management.base import BaseCommand\ndef helper(): return 1\n\
+class Command(BaseCommand):\n    def run_from_argv(self, argv): pass\n    def add_arguments(self, parser): return parser\n    def handle(self, *args, **kwargs): return helper()\n";
+        for (actions, started) in [
+            (format!("{setup}{invoke}"), true),
+            (format!("{invoke}{setup}"), false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("startup.py", "startup", &format!("{imports}{actions}")),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        command,
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                result.issues.is_empty(),
+                started,
+                "{actions}: {:?}",
+                result.issues
+            );
+            let reached = |name: &str, kind: &str| {
+                result
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name.ends_with(name) && row.kind == kind)
+            };
+            assert_eq!(reached(".add_arguments", "django_command"), started);
+            assert_eq!(reached(".handle", "django_command"), started);
+            assert_eq!(reached(".helper", "direct_call"), started);
+            assert!(!reached(".run_from_argv", "django_command"));
+        }
+    }
+
+    #[test]
     fn phase03_flat_inert_django_shadow_stops_a_command_import() {
         let command = "from django.core.management.base import BaseCommand\ndef prepare(): return 1\nclass Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\nprepare()\n";
         for (shadow, closed) in [
@@ -14819,6 +14870,82 @@ class Command:
                 },
                 "{apps}"
             );
+        }
+    }
+
+    #[test]
+    fn phase03_django_setup_keeps_only_effects_before_a_proven_failure() {
+        let signal = "from django.db.models.signals import post_save\ndef callback(sender, **kwargs): return None\npost_save.connect(callback)\n";
+        for (failure, callbacks) in [
+            ("constructor", &[][..]),
+            ("models", &[][..]),
+            (
+                "ready",
+                &["later.models.callback", "shop.models.callback"][..],
+            ),
+        ] {
+            let constructor = if failure == "constructor" {
+                "    def __init__(self, name, module): raise RuntimeError()\n"
+            } else {
+                ""
+            };
+            let ready = if failure == "ready" {
+                "raise RuntimeError()"
+            } else {
+                "pass"
+            };
+            let models = if failure == "models" {
+                "raise RuntimeError()\n"
+            } else {
+                signal
+            };
+            let result = analyze_phase03(
+                &[
+                    module(
+                        "settings.py",
+                        "settings",
+                        "INSTALLED_APPS = ['shop.apps.ShopConfig', 'later.apps.LaterConfig']\n",
+                    ),
+                    module(
+                        "startup.py",
+                        "startup",
+                        "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+                    ),
+                    module("shop/__init__.py", "shop", ""),
+                    module(
+                        "shop/apps.py",
+                        "shop.apps",
+                        &format!(
+                            "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n{constructor}    def ready(self): {ready}\n"
+                        ),
+                    ),
+                    module("shop/models.py", "shop.models", models),
+                    module("later/__init__.py", "later", ""),
+                    module(
+                        "later/apps.py",
+                        "later.apps",
+                        "from django.apps import AppConfig\nclass LaterConfig(AppConfig):\n    name = 'later'\n    def ready(self):\n        from . import signals\n",
+                    ),
+                    module("later/models.py", "later.models", signal),
+                    module("later/signals.py", "later.signals", signal),
+                ],
+                &[],
+            );
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration"),
+                "{failure}: {:?}",
+                result.issues
+            );
+            let active: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_signal" && row.certainty == "certain")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(active, callbacks.iter().copied().collect(), "{failure}");
         }
     }
 

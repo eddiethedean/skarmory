@@ -356,6 +356,8 @@ command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
 Command-specific help can construct the command and run argument setup before
 exiting. The built-in command listing and version paths need no local command.
+A literal `call_command` after a resolved `django.setup()` in the same scope
+uses programmatic dispatch through parser setup and `execute`.
 The selected command follows its effective lifecycle after module initialization.
 Ordered writes through the command module's own globals dictionary or module
 object can replace the export before Django reads it. Later ordinary assignments
