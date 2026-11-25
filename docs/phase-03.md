@@ -217,6 +217,11 @@ guard when its operands have bounded scalar behavior. Comparisons that could
 invoke a selected class hook report incomplete coverage when reached. This
 supports the pinned recursive-group and caller-edit cases. [#52](https://github.com/eddiethedean/skarmory/issues/52)
 
+The compatibility report groups an unused Python method under its already
+reported unused owning class. The grouped method is still recorded as a
+suppressed non-use finding, and a method of a retained class still receives
+its own finding.
+
 ### Bounded Python framework discovery
 
 The `skylos-0.3` profile uses resolved imports for the framework identities in

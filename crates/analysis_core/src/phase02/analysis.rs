@@ -8488,6 +8488,10 @@ impl<'a> Graph<'a> {
                 file: self.files[scope.file].path.clone(),
                 line: symbol.name.at.line,
                 column: symbol.name.at.column,
+                method_owner: scope
+                    .owner
+                    .filter(|&owner| category == Category::Function && self.is_class(owner))
+                    .map(|owner| position(self.symbols[owner].name.at)),
                 confidence,
                 rule_id,
                 reason,
@@ -8506,6 +8510,7 @@ impl<'a> Graph<'a> {
                     file: file.path.clone(),
                     line: 1,
                     column: 1,
+                    method_owner: None,
                     confidence: 100,
                     rule_id: "SKY-E002",
                     reason: "empty_or_docstring_only",

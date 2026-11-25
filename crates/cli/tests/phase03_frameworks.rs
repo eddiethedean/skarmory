@@ -67,6 +67,20 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
     names
 }
 
+fn unreachable_functions(report: &Value) -> Vec<&str> {
+    let mut names = findings(report, "unused_functions");
+    names.extend(
+        report["suppressed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["reason"] == "covered by the unused class finding")
+            .map(|row| row["full_name"].as_str().unwrap()),
+    );
+    names.sort_unstable();
+    names
+}
+
 #[test]
 fn pydantic_computed_fields_follow_dump_and_property_access() {
     let project = tempfile::tempdir().unwrap();
@@ -737,7 +751,7 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
     }
 
     let report = scan(project.path());
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     for expected in [
         "ordinary.pytest_addhooks",
         "plugin.Ordinary.pytest_collection_finish",
@@ -795,7 +809,7 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
 
     fs::write(project.path().join("pytest.py"), "").unwrap();
     let report = scan(project.path());
-    assert!(findings(&report, "unused_functions").contains(&"plugin.pytest_assertrepr_compare"));
+    assert!(unreachable_functions(&report).contains(&"plugin.pytest_assertrepr_compare"));
 }
 
 #[test]
@@ -873,7 +887,7 @@ def admin_label():
             assert_eq!(serial[key], parallel[key]);
             assert_eq!(serial[key], cached[key]);
         }
-        let unused = findings(&serial, "unused_functions");
+        let unused = unreachable_functions(&serial);
         assert_eq!(
             unused.contains(&"shop.admin.ProductAdmin.tax_display"),
             !active
@@ -902,9 +916,7 @@ def admin_label():
         + "\nadmin.site.register(Product, ProductAdmin)\n";
     fs::write(&admin_path, &imperative).unwrap();
     let report = scan(root);
-    assert!(
-        !findings(&report, "unused_functions").contains(&"shop.admin.ProductAdmin.tax_display")
-    );
+    assert!(!unreachable_functions(&report).contains(&"shop.admin.ProductAdmin.tax_display"));
 
     let getter = imperative.replace(
         "    def __str__(self):\n        return admin_label()",
@@ -912,7 +924,7 @@ def admin_label():
     );
     fs::write(&admin_path, getter).unwrap();
     let report = scan(root);
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(unused.contains(&"shop.admin.ProductAdmin.tax_display"));
     assert!(!unused.contains(&"shop.admin.ProductAdmin.old_display"));
 
@@ -990,7 +1002,7 @@ def dormant_setup():
     let cache = tempfile::tempdir().unwrap();
     let report = scan(project.path());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "web.DormantResource.release",
             "web.dormant_hook",
@@ -1592,7 +1604,7 @@ app.register_task(Registered())
     .unwrap();
     let report = scan(project.path());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "jobs.Dormant.perform",
             "jobs.dormant_helper",
@@ -2135,7 +2147,7 @@ fn django_management_settings_option_selects_the_installed_commands() {
         let report = scan_with_settings(root, Some("production"), None);
         let module = format!("{unused_app}.management.commands.record");
         assert_eq!(
-            findings(&report, "unused_functions"),
+            unreachable_functions(&report),
             [
                 format!("{module}.Command.handle"),
                 format!("{module}.record_message"),
@@ -2147,7 +2159,7 @@ fn django_management_settings_option_selects_the_installed_commands() {
     launcher("'--settings', name");
     let report = scan_with_exit(root, Some("production"), None, 2);
     assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
-    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(unreachable_functions(&report).is_empty(), "{report}");
     assert!(
         report["coverage"]["issues"]
             .as_array()
@@ -3211,10 +3223,7 @@ fn django_configured_project_proves_loaded_signals_without_a_launcher() {
         [("inventory.signals.refresh", "certain")],
         "{report}"
     );
-    assert_eq!(
-        findings(&report, "unused_functions"),
-        ["inventory.signals.stale"]
-    );
+    assert_eq!(unreachable_functions(&report), ["inventory.signals.stale"]);
 
     let launcher_path = root.join("deployment.py");
     let launcher = "import os\nfrom django import setup\ndef boot():\n    os.environ['DJANGO_SETTINGS_MODULE'] = 'other_settings'\n    setup()\n";
@@ -3260,7 +3269,7 @@ fn django_configured_project_proves_loaded_signals_without_a_launcher() {
         fs::write(&config_path, format!("{config}{replacement}")).unwrap();
         let report = scan(root);
         assert!(django_signal_evidence(&report).is_empty(), "{report}");
-        assert!(!findings(&report, "unused_functions").contains(&"inventory.signals.helper"));
+        assert!(!unreachable_functions(&report).contains(&"inventory.signals.helper"));
     }
     fs::write(config_path, config).unwrap();
 
@@ -3272,7 +3281,7 @@ fn django_configured_project_proves_loaded_signals_without_a_launcher() {
     let report = scan(root);
     assert!(django_signal_evidence(&report).is_empty());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "inventory.apps.InventoryConfig.ready",
             "inventory.signals.stale"
@@ -3615,7 +3624,7 @@ def install_optional():
     );
     django_signal_project(project.path(), &callable);
     let report = scan(project.path());
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(
         unused.contains(&"inventory.signals.Optional.process"),
         "{report}"
@@ -3633,7 +3642,7 @@ def install_optional():
         django_signal_evidence(&report),
         [("inventory.signals.Handler.on_save", "certain")],
     );
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(
         unused.contains(&"inventory.signals.install_optional"),
         "{report}"
@@ -3872,7 +3881,7 @@ Active().cleanup()
         )
         .unwrap();
         let report = scan(project.path());
-        let unused = findings(&report, "unused_functions");
+        let unused = unreachable_functions(&report);
         assert!(unused.contains(&"shutdown.dormant_helper"), "{report}");
         assert!(unused.contains(&"shutdown.install_dormant"), "{report}");
         assert_eq!(
@@ -3926,7 +3935,7 @@ if name == "posix":
     )
     .unwrap();
     let report = scan(project.path());
-    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(unreachable_functions(&report).is_empty(), "{report}");
     let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
     for (name, kind, certainty) in [
         (
@@ -3977,10 +3986,34 @@ if name == "posix":
         .replace("if name == \"posix\":\n    install_shutdown()\n", "");
     fs::write(path, updated).unwrap();
     let report = scan(project.path());
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(unused.contains(&"shutdown.AtExit.finish"), "{report}");
     assert!(unused.contains(&"helpers.shutdown_helper"), "{report}");
     let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");
     assert_eq!(cached, report);
+}
+
+#[test]
+fn phase03_reports_the_dead_class_without_duplicate_method_findings() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("model.py"),
+        concat!(
+            "class Dormant:\n",
+            "    def clean(self): return 1\n",
+            "class Used:\n",
+            "    def clean(self): return 2\n",
+            "Used()\n",
+        ),
+    )
+    .unwrap();
+
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_classes"), ["model.Dormant"]);
+    assert_eq!(findings(&report, "unused_functions"), ["model.Used.clean"]);
+    assert!(report["suppressed"].as_array().unwrap().iter().any(|row| {
+        row["full_name"] == "model.Dormant.clean"
+            && row["reason"] == "covered by the unused class finding"
+    }));
 }
