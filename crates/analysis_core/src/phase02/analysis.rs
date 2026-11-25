@@ -610,6 +610,7 @@ pub(super) fn analyze_with_verification(
             && package_entrypoints.is_none_or(|snapshot| snapshot.entries.is_empty())
             && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
         failed_terminal_modules: BTreeSet::new(),
+        failed_flask_provider_initializers: BTreeMap::new(),
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
         framework_class_whitelists: BTreeMap::new(),
@@ -684,6 +685,7 @@ pub(super) fn analyze_with_verification(
     if phase03 {
         graph.index_flask_context();
         graph.index_django_global_writes();
+        graph.index_failed_flask_provider_initializers();
     }
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
@@ -803,6 +805,7 @@ struct Graph<'a> {
     phase03: bool,
     terminal_proofs: bool,
     failed_terminal_modules: BTreeSet<ScopeId>,
+    failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
@@ -6824,6 +6827,15 @@ impl<'a> Graph<'a> {
                 }
                 StatementKind::Import(import) => {
                     let module = self.import_module(self.scopes[scope].file, import);
+                    if self.phase03
+                        && self.stop_at_failed_flask_provider_import(
+                            scope,
+                            module.as_deref(),
+                            import,
+                        )
+                    {
+                        return true;
+                    }
                     if let Some(branch) =
                         self.record_import(scope, scope, module.as_deref(), import)
                     {

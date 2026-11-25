@@ -2,6 +2,11 @@
 
 use super::*;
 
+enum FailedProvider<'a> {
+    Expressions(Vec<&'a Expression>),
+    GlobalWrite(&'a Expression, SymbolId),
+}
+
 pub(super) fn provider_kind(name: &str) -> Option<ObjectKind> {
     match name {
         "flask.Flask" | "flask.app.Flask" => Some(ObjectKind::FlaskApp),
@@ -347,6 +352,27 @@ impl Graph<'_> {
         scope: ScopeId,
         statement: &Statement,
     ) -> bool {
+        let Some((function, target)) = self.flask_global_initializer_failure(scope, statement)
+        else {
+            return false;
+        };
+        let body = self.scopes[scope].body;
+        let Some(index) = body.iter().position(|item| std::ptr::eq(item, statement)) else {
+            return false;
+        };
+        if !self.closed_flask_initializers(scope, &body[..index]) {
+            return false;
+        }
+        self.walk(scope, function, statement.at);
+        self.edge(scope, target, "flask_initializer_failed_call", "certain");
+        true
+    }
+
+    fn flask_global_initializer_failure<'a>(
+        &mut self,
+        scope: ScopeId,
+        statement: &'a Statement,
+    ) -> Option<(&'a Expression, SymbolId)> {
         let StatementKind::Evaluate(Expression {
             kind:
                 ExpressionKind::Call {
@@ -357,13 +383,13 @@ impl Graph<'_> {
             ..
         }) = &statement.kind
         else {
-            return false;
+            return None;
         };
         if !matches!(function.kind, ExpressionKind::Name(_))
             || !arguments.is_empty()
             || !keywords.is_empty()
         {
-            return false;
+            return None;
         }
         let at = statement.at;
         let read = std::mem::take(&mut self.read);
@@ -376,10 +402,10 @@ impl Graph<'_> {
             verified: false,
         }) = found
         else {
-            return false;
+            return None;
         };
         let Binding::Definition(definition, _) = self.symbols[target].binding else {
-            return false;
+            return None;
         };
         if self.symbols[target].scope != scope
             || definition.kind != DefinitionKind::Function
@@ -387,7 +413,7 @@ impl Graph<'_> {
             || !definition.parameters.is_empty()
             || !definition.decorators.is_empty()
         {
-            return false;
+            return None;
         }
         let [
             Statement {
@@ -396,12 +422,12 @@ impl Graph<'_> {
             },
         ] = body_without_docstring(definition)
         else {
-            return false;
+            return None;
         };
         // The helper reads its global at the call position, before changing the
         // receiver. A declaration earlier in the module cannot establish absence.
         if !self.unbound_module_name(scope, value, at) {
-            return false;
+            return None;
         }
         let receiver = Expression {
             kind: ExpressionKind::Name(name.text.clone()),
@@ -418,23 +444,321 @@ impl Graph<'_> {
             Value::Provider(name) => provider_kind(&name).is_some(),
             _ => false,
         };
-        let prefix = &self.scopes[scope].body;
-        let Some(index) = prefix.iter().position(|item| std::ptr::eq(item, statement)) else {
-            return false;
-        };
-        if !flask_receiver || !self.closed_flask_initializers(scope, &prefix[..index]) {
-            return false;
-        }
-        self.walk(scope, function, at);
-        self.edge(scope, target, "flask_initializer_failed_call", "certain");
-        true
+        flask_receiver.then_some((function, target))
     }
 
     fn flask_constructor_import(&self, scope: ScopeId, statement: &Statement) -> bool {
         matches!(&statement.kind, StatementKind::Import(import) if import.level == 0
-            && matches!(import.module.as_str(), "flask" | "flask.app" | "flask_login" | "flask_login.login_manager")
-            && !self.modules.contains_key(import.module.as_str())
+            && matches!(import.module.as_str(),
+                "flask" | "flask.app" | "flask.blueprints" | "flask_login" | "flask_login.login_manager")
+            && self.import_module(scope, import)
+                .is_some_and(|module| !self.modules.contains_key(module.as_str()))
             && !self.scopes[scope].open_wildcard)
+    }
+
+    pub(super) fn index_failed_flask_provider_initializers(&mut self) {
+        if !self.terminal_proofs {
+            return;
+        }
+        let mut imports = BTreeMap::<ScopeId, BTreeMap<ScopeId, usize>>::new();
+        for file in 0..self.files.len() {
+            for (index, statement) in self.scopes[file].body.iter().enumerate() {
+                if let StatementKind::Import(import) = &statement.kind
+                    && let Some(module) = self.import_module(file, import)
+                    && let Some(&provider) = self.modules.get(module.as_str())
+                    && provider != file
+                {
+                    imports
+                        .entry(provider)
+                        .or_default()
+                        .entry(file)
+                        .or_insert(index);
+                }
+            }
+        }
+        let read = std::mem::take(&mut self.read);
+        for (provider, importers) in imports {
+            if self.is_pytest_file(provider)
+                || self.files[provider].path.rsplit('/').next() == Some("conftest.py")
+            {
+                continue;
+            }
+            let body = self.scopes[provider].body;
+            let Some(start) = body
+                .iter()
+                .position(|stmt| self.flask_constructor_import(provider, stmt))
+            else {
+                continue;
+            };
+            // A selected source import in the provider's prefix could
+            // re-enter the provider and observe a partial module namespace.
+            if !self.closed_flask_decorator_prefix(provider, &body[..=start])
+                || body[..start]
+                    .iter()
+                    .any(|statement| self.flask_local_import(provider, statement))
+            {
+                continue;
+            }
+            for statement in &body[start + 1..] {
+                if self.flask_provider_failure(provider, statement).is_some()
+                    && (0..self.files.len())
+                        .filter(|&file| file != provider)
+                        .all(|file| {
+                            let body = self.scopes[file].body;
+                            // Code after the failed import cannot execute or supply
+                            // a missing binding on the importer's path.
+                            let prefix = importers.get(&file).map_or(body, |&index| &body[..index]);
+                            self.closed_flask_decorator_prefix(file, prefix)
+                        })
+                {
+                    self.failed_flask_provider_initializers
+                        .insert(provider, statement.at);
+                    break;
+                }
+                if self.flask_local_import(provider, statement)
+                    || !self
+                        .closed_flask_decorator_prefix(provider, std::slice::from_ref(statement))
+                {
+                    break;
+                }
+            }
+        }
+        self.read = read;
+    }
+
+    fn flask_local_import(&self, file: ScopeId, statement: &Statement) -> bool {
+        matches!(&statement.kind, StatementKind::Import(import)
+            if self.import_module(file, import)
+                .is_some_and(|module| self.modules.contains_key(module.as_str())))
+    }
+
+    pub(super) fn terminal_failed_flask_provider(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        if !self
+            .failed_flask_provider_initializers
+            .get(&scope)
+            .is_some_and(|&at| position(at) == position(statement.at))
+        {
+            return false;
+        }
+        let read = std::mem::take(&mut self.read);
+        let failure = self.flask_provider_failure(scope, statement);
+        self.read = read;
+        match failure {
+            Some(FailedProvider::Expressions(expressions)) => {
+                for expression in expressions {
+                    self.walk(scope, expression, statement.at);
+                }
+                true
+            }
+            Some(FailedProvider::GlobalWrite(function, target)) => {
+                self.walk(scope, function, statement.at);
+                self.edge(scope, target, "flask_initializer_failed_call", "certain");
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(super) fn stop_at_failed_flask_provider_import(
+        &mut self,
+        scope: ScopeId,
+        module: Option<&str>,
+        import: &Import,
+    ) -> bool {
+        let file = self.scopes[scope].file;
+        if self.branch_depth != 0
+            || self.is_pytest_file(file)
+            || self.files[file].path.rsplit('/').next() == Some("conftest.py")
+        {
+            return false;
+        }
+        let Some(module) = module else { return false };
+        let Some(&provider) = self.modules.get(module) else {
+            return false;
+        };
+        if !self
+            .failed_flask_provider_initializers
+            .contains_key(&provider)
+            || self.import_member_position(scope, module, import).is_some()
+        {
+            return false;
+        }
+        if scope != file {
+            let body = self.scopes[scope].body;
+            let Some(index) = body.iter().position(|statement| {
+                matches!(&statement.kind, StatementKind::Import(item) if std::ptr::eq(item, import))
+            }) else {
+                return false;
+            };
+            let read = std::mem::take(&mut self.read);
+            let closed = self.in_function(scope)
+                && self.closed_flask_decorator_prefix(scope, &body[..index]);
+            self.read = read;
+            if !closed {
+                return false;
+            }
+        }
+        self.import_issue(
+            scope,
+            file,
+            import,
+            format!("selected module {module:?} cannot finish initialization"),
+        );
+        if scope == file {
+            self.failed_terminal_modules.insert(scope);
+        }
+        true
+    }
+
+    fn flask_provider_failure<'a>(
+        &mut self,
+        scope: ScopeId,
+        statement: &'a Statement,
+    ) -> Option<FailedProvider<'a>> {
+        if let Some(reads) = self.flask_failure_reads(scope, statement) {
+            return Some(FailedProvider::Expressions(reads));
+        }
+        if let Some((function, target)) = self.flask_global_initializer_failure(scope, statement) {
+            return Some(FailedProvider::GlobalWrite(function, target));
+        }
+        let at = statement.at;
+        let unbound = |graph: &Self, expression| graph.unbound_module_name(scope, expression, at);
+        match &statement.kind {
+            StatementKind::WriteModuleEntry {
+                value: Some(value), ..
+            } if unbound(self, value) => Some(FailedProvider::Expressions(Vec::new())),
+            StatementKind::WriteAttribute {
+                value:
+                    Some(Expression {
+                        kind: ExpressionKind::Member(base, _),
+                        ..
+                    }),
+                ..
+            } if unbound(self, base) => Some(FailedProvider::Expressions(Vec::new())),
+            StatementKind::Define(definition)
+                if definition
+                    .decorators
+                    .first()
+                    .is_some_and(|value| unbound(self, value)) =>
+            {
+                Some(FailedProvider::Expressions(Vec::new()))
+            }
+            StatementKind::Evaluate(Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    },
+                ..
+            }) if keywords.is_empty() => self
+                .flask_failed_patch_inputs(scope, function, arguments, at)
+                .map(FailedProvider::Expressions),
+            _ => None,
+        }
+    }
+
+    fn flask_failed_patch_inputs<'a>(
+        &mut self,
+        scope: ScopeId,
+        function: &'a Expression,
+        arguments: &'a [Expression],
+        at: Location,
+    ) -> Option<Vec<&'a Expression>> {
+        let ExpressionKind::Member(receiver, member) = &function.kind else {
+            return None;
+        };
+        let ExpressionKind::Call {
+            function: inner,
+            arguments: inputs,
+            keywords,
+        } = &receiver.kind
+        else {
+            return None;
+        };
+        if !keywords.is_empty() {
+            return None;
+        }
+        let provider = match self.probe_identity(scope, inner, at) {
+            Value::Provider(provider) => provider,
+            Value::Unknown
+                if matches!(&inner.kind, ExpressionKind::Name(name) if name == "globals")
+                    && matches!(
+                        self.lexical_binding(scope, "globals", at, true),
+                        LexicalBinding::Missing
+                    ) =>
+            {
+                "builtins.globals".into()
+            }
+            _ => return None,
+        };
+        let replacement = match (
+            member.as_str(),
+            provider.as_str(),
+            arguments,
+            inputs.as_slice(),
+        ) {
+            (
+                "update",
+                "builtins.globals",
+                [
+                    Expression {
+                        kind: ExpressionKind::Dictionary(items),
+                        ..
+                    },
+                ],
+                [],
+            ) if matches!(
+                items.as_slice(),
+                [
+                    Expression {
+                        kind: ExpressionKind::Text(_),
+                        ..
+                    },
+                    _
+                ]
+            ) =>
+            {
+                &items[1]
+            }
+            (
+                "start",
+                "unittest.mock.patch",
+                [],
+                [
+                    Expression {
+                        kind: ExpressionKind::Text(_),
+                        ..
+                    },
+                    value,
+                ],
+            ) => value,
+            (
+                "start",
+                "unittest.mock.patch.object",
+                [],
+                [
+                    object,
+                    Expression {
+                        kind: ExpressionKind::Text(_),
+                        ..
+                    },
+                    value,
+                ],
+            ) if matches!(self.probe_identity(scope, object, at), Value::Provider(name) if provider_kind(&name).is_some()) =>
+            {
+                return self
+                    .unbound_module_name(scope, value, at)
+                    .then_some(vec![inner, object]);
+            }
+            _ => return None,
+        };
+        self.unbound_module_name(scope, replacement, at)
+            .then_some(vec![inner])
     }
 
     fn closed_flask_factory_body_failure(&mut self, factory: &Definition, scope: ScopeId) -> bool {
@@ -581,7 +905,7 @@ impl Graph<'_> {
         body.iter().all(|statement| match &statement.kind {
             StatementKind::Import(import) if !import.local.text.starts_with("__") => self.import_module(file, import).is_some_and(|module| {
                 self.modules.contains_key(module.as_str())
-                    || matches!(module.as_str(), "flask" | "flask.app" | "flask_login" | "flask_login.login_manager")
+                    || matches!(module.as_str(), "flask" | "flask.app" | "flask.blueprints" | "flask_login" | "flask_login.login_manager" | "unittest.mock")
             }),
             StatementKind::Define(definition) => (definition.kind != DefinitionKind::Class
                 || (definition.bases.is_empty() && definition.table_keyword.is_none()

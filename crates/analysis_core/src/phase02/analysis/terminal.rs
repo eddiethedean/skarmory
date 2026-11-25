@@ -16,7 +16,8 @@ impl Graph<'_> {
         {
             return false;
         }
-        if self.terminal_django_url_assignment(scope, statement)
+        if self.terminal_failed_flask_provider(scope, statement)
+            || self.terminal_django_url_assignment(scope, statement)
             || self.terminal_django_url_initializer(scope, statement)
             || self.terminal_unbound_flask_initializer(scope, statement)
             || self.terminal_flask_factory_initializer(scope, statement)
