@@ -75,6 +75,51 @@ pub(super) fn is_django_signal_edge(kind: &str) -> bool {
 }
 
 impl Graph<'_> {
+    pub(super) fn register_attrs_fields(&mut self, class: SymbolId) -> bool {
+        let Binding::Definition(definition, class_scope) = self.symbols[class].binding else {
+            return false;
+        };
+        if definition.kind != DefinitionKind::Class
+            || definition.decorators.len() != 1
+            || !definition.bases.is_empty()
+        {
+            return false;
+        }
+        let mut fields = BTreeSet::new();
+        for statement in body_without_docstring(definition) {
+            let StatementKind::Assign {
+                names,
+                value,
+                annotation: Some(annotation),
+            } = &statement.kind
+            else {
+                return false;
+            };
+            let [name] = names.as_slice() else {
+                return false;
+            };
+            if !matches!(self.probe_identity(class_scope, annotation, statement.at),
+                Value::Provider(provider) if matches!(provider.as_str(), "builtins.str" | "builtins.int" | "builtins.bool"))
+                || value.as_ref().is_some_and(|value| {
+                    !self
+                        .probe_identity(class_scope, value, statement.at)
+                        .is_builtin_scalar()
+                })
+            {
+                return false;
+            }
+            let field = self.by_location[&(class_scope, name.at.line, name.at.column)];
+            if self.local(class_scope, &name.text, END) != Some(field) {
+                return false;
+            }
+            fields.insert(field);
+        }
+        for field in fields {
+            self.edge(class_scope, field, "attrs_field", "certain");
+        }
+        true
+    }
+
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
         self.collect_flask_cli_factory();

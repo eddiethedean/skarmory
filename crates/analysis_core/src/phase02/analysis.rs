@@ -64,6 +64,7 @@ enum Value {
     FastapiFieldMarker,
     FastapiMiddleware(Option<SymbolId>),
     PydanticDump(SymbolId),
+    PluggyHookMarker,
     CeleryConfig(Object),
     CeleryBackend(Object),
     DeferredComprehension,
@@ -3452,6 +3453,14 @@ impl<'a> Graph<'a> {
                     ),
                     ObjectKind::CeleryApp,
                 ),
+                Value::Provider(name) if self.phase03 && name == "pluggy.HookimplMarker" => {
+                    match (arguments.as_slice(), keywords.as_slice()) {
+                        ([project], []) if matches!(recurse(self, project), Value::Text(name) if !name.is_empty()) => {
+                            Value::PluggyHookMarker
+                        }
+                        _ => Value::Unknown,
+                    }
+                }
                 Value::Provider(name) if self.phase03 && is_django_signal_constructor(&name) => {
                     if registration_arguments(arguments, keywords, ["use_caching"]).is_some() {
                         Value::DjangoSignal((
@@ -4571,6 +4580,13 @@ impl<'a> Graph<'a> {
                             expr.at,
                         );
                     }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "pluggy.HookimplMarker"
+                            && matches!(
+                                self.identity(scope, expr, before, 0),
+                                Value::PluggyHookMarker
+                            ) => {}
                     Value::Provider(name)
                         if self.phase03
                             && name == "types.SimpleNamespace"
@@ -6360,6 +6376,25 @@ impl<'a> Graph<'a> {
                 );
             }
             Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
+            Value::Provider(name)
+                if self.phase03
+                    && name == "attrs.define"
+                    && args.is_empty()
+                    && keywords.is_empty()
+                    && self.register_attrs_fields(target) => {}
+            Value::PluggyHookMarker
+                if self.phase03
+                    && args.is_empty()
+                    && keywords.is_empty()
+                    && !self.is_class(target)
+                    && matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                        if definition.decorators.len() == 1) =>
+            {
+                // Marking a function stores its HookimplOpts. Execution still
+                // requires registration and a hook call, or a direct caller.
+                self.edge(scope, target, "pluggy_hook_declaration", "certain");
+                return true;
+            }
             Value::Provider(name)
                 if self.phase03
                     && name == "contextlib.asynccontextmanager"
@@ -8152,6 +8187,7 @@ impl<'a> Graph<'a> {
                     "type_reference"
                         | "generator_creation"
                         | "sqlalchemy_hybrid_descriptor"
+                        | "pluggy_hook_declaration"
                         | "celery_backend_default"
                 ) {
                     continue;
@@ -8561,7 +8597,8 @@ impl<'a> Graph<'a> {
             }
             if matches!(
                 kind,
-                "django_setting"
+                "attrs_field"
+                    | "django_setting"
                     | "django_application"
                     | "django_converter_regex"
                     | "fastapi_parameter"

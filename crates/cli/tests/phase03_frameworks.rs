@@ -165,6 +165,110 @@ fn formatted_string_retains_known_special_methods_and_reports_unresolved_dispatc
 }
 
 #[test]
+fn attrs_field_declarations_require_a_resolved_class_transform() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("models.py"),
+        r#"from attrs import define as declare
+
+@declare
+class User:
+    user_id: int
+    label: str = 'user'
+
+def define(cls): return cls
+
+@define
+class Draft:
+    label: str = 'draft'
+"#,
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_variables"),
+        ["models.Draft.label"],
+        "{report}"
+    );
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "models.User.label"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "attrs_field" && edge["certainty"] == "certain")
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn pluggy_marker_retains_metadata_without_executing_an_unregistered_hook() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("hooks.py");
+    let source = r#"import pluggy
+
+marker = pluggy.HookimplMarker('demo')
+
+@marker
+def hook(config): return handle(config)
+
+def handle(config): return config
+
+def hookimpl(callback): return callback
+
+@hookimpl
+def lookalike(config): return config
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["hooks.handle", "hooks.lookalike"],
+        "{report}"
+    );
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "hooks.hook"
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "pluggy_hook_declaration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(path, format!("{source}\nhook('selected')\n")).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["hooks.lookalike"],
+        "{report}"
+    );
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+}
+
+#[test]
 fn sqlalchemy_hybrid_descriptor_retains_the_getter_without_calling_it() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
