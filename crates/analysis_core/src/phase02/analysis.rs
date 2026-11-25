@@ -77,6 +77,7 @@ enum Value {
     Coroutine(Invocation),
     ScheduledTask,
     Module(usize),
+    InitializedStdlibOs,
     CommandNamespace(ScopeId),
     CommandNamespaceGet(ScopeId),
     FrameworkCode(SymbolId),
@@ -666,6 +667,7 @@ pub(super) fn analyze_with_verification(
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
         django_middleware_sites: Vec::new(),
+        logging_os_initializers: BTreeMap::new(),
         logging_record_calls: Vec::new(),
         logging_formatter_methods: BTreeSet::new(),
         django_view_arguments: BTreeMap::new(),
@@ -706,6 +708,9 @@ pub(super) fn analyze_with_verification(
     }
     for (file, source) in files.iter().enumerate() {
         graph.index(file, &source.facts.body);
+    }
+    if phase03 {
+        graph.index_logging_os_initializers();
     }
     for symbol in &graph.symbols {
         if graph.scopes[symbol.scope]
@@ -878,6 +883,7 @@ struct Graph<'a> {
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
     django_middleware_sites: Vec<django_middleware::MiddlewareSite>,
+    logging_os_initializers: BTreeMap<ScopeId, logging_config::OsInitializer>,
     logging_record_calls: Vec<ParameterCall>,
     logging_formatter_methods: BTreeSet<SymbolId>,
     django_view_arguments: django_views::ViewRouteArguments,
@@ -1627,6 +1633,9 @@ impl<'a> Graph<'a> {
             // execution, even though their bindings belong to the hook.
             self.scopes[scope].evaluated_imports.push(id);
         }
+        if self.logging_import_uses_initialized_os(source_scope, import) {
+            return None;
+        }
         let Some(module) = module else {
             self.import_issue(
                 scope,
@@ -2164,6 +2173,9 @@ impl<'a> Graph<'a> {
                 Value::Unknown
             }
             Binding::Import(import) => {
+                if self.logging_import_uses_initialized_os(scope, import) {
+                    return Value::InitializedStdlibOs;
+                }
                 let Some(module) = self.import_module(file, import) else {
                     return Value::Unknown;
                 };
@@ -2773,6 +2785,9 @@ impl<'a> Graph<'a> {
                 ModuleMemberAccess::Attribute,
                 depth,
             ),
+            Value::InitializedStdlibOs if name == "PathLike" => {
+                Value::Provider("os.PathLike".into())
+            }
             Value::Provider(module) => self.module_member_at(
                 &module,
                 name,
@@ -4746,6 +4761,14 @@ impl<'a> Graph<'a> {
         test: &Expression,
         before: Location,
     ) -> Option<bool> {
+        if self.logging_guard_uses_initialized_os(scope, test)
+            && let ExpressionKind::Call { arguments, .. } = &test.kind
+        {
+            for argument in arguments {
+                self.walk(scope, argument, before);
+            }
+            return Some(false);
+        }
         match &test.kind {
             ExpressionKind::Not(operand) => self
                 .walk_if_test(scope, operand, before)

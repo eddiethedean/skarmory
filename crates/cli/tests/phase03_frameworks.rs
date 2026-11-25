@@ -78,6 +78,79 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
     names
 }
 
+#[test]
+fn reached_stdlib_logging_binds_os_before_a_local_pathlike_stub() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let cache = tempfile::tempdir().unwrap();
+    let configure = r#"CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Active'}}}
+if isinstance(CONFIG, os.PathLike):
+    unknown(CONFIG)
+logging.config.dictConfig(CONFIG)
+"#;
+    fs::write(root.join("os.py"), "class PathLike: pass\n").unwrap();
+    fs::write(
+        root.join("formatters.py"),
+        "class Active: pass\nclass Retired: pass\n",
+    )
+    .unwrap();
+    let joined = format!("import logging.config\nimport os\n{configure}");
+    fs::write(&app, &joined).unwrap();
+
+    let factory = |report: &Value| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["qualified_name"] == "formatters.Active"
+                    && entry["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "logging_factory")
+            })
+    };
+    let report = scan(root);
+    assert!(factory(&report), "{report}");
+    let unused = findings(&report, "unused_classes");
+    assert!(unused.contains(&"formatters.Retired"), "{report}");
+    assert!(unused.contains(&"os.PathLike"), "{report}");
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &app,
+        format!("import os\nimport logging.config\n{configure}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(!factory(&report), "{report}");
+
+    fs::write(&app, joined).unwrap();
+    let socket = root.join("socket.py");
+    fs::write(&socket, "").unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(!factory(&report), "{report}");
+    fs::remove_file(socket).unwrap();
+
+    fs::create_dir(root.join("logging")).unwrap();
+    fs::write(root.join("logging/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("logging/config.py"),
+        "def dictConfig(config): return config\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(!factory(&report), "{report}");
+    let report = scan_with_excludes(root, None, None, &["logging"], 2);
+    assert!(!factory(&report), "{report}");
+}
+
 fn unreachable_functions(report: &Value) -> Vec<&str> {
     let mut names = findings(report, "unused_functions");
     names.extend(

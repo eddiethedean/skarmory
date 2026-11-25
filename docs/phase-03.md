@@ -427,7 +427,12 @@ ordered dictionary edits, aliases, and eligible one-argument mutation helpers.
 For source-owned instances used only by that initializer, it follows
 constructor defaults, field edits, and reached method calls. Type guards over
 known values account for reached `os.PathLike.register(dict)` calls and
-short-circuiting. A proven unbound name in the initializer can prevent later
+short-circuiting. A closed initializer that imports genuine
+`logging.config` before `os` can resolve a subsequent literal dictionary
+`PathLike` guard on CPython 3.11 when a passive local `os.py` lacks the
+`os.path` required by logging initialization. A competing logging import
+or another effectful project initializer leaves regular import resolution
+in place. A proven unbound name in the initializer can prevent later
 configuration from running. Effective Django logging configurations can
 select source subclasses of stdlib filters and formatters with the default
 constructor. Selected formatter overrides can format a standard log record
