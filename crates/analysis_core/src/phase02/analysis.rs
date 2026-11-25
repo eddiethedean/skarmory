@@ -857,10 +857,7 @@ pub(super) fn analyze_with_verification(
     let mut possible_roots = Vec::new();
     if phase03 {
         for edge in graph.phase03_framework_edges() {
-            if matches!(
-                edge.kind,
-                "pytest_hook_candidate" | "flask_cli_factory" | "fastapi_deployment_factory"
-            ) {
+            if edge.kind == "pytest_hook_candidate" {
                 possible_roots.push(edge);
             } else {
                 roots.push(edge);
@@ -876,8 +873,7 @@ pub(super) fn analyze_with_verification(
         .map_or_else(Default::default, |snapshot| {
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
-    graph.report_failed_terminal_module_consumers();
-    let mut analysis = graph.finish(roots, possible_roots, verification, framework.templates);
+    let mut analysis = graph.finish(roots, possible_roots, verification);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -7623,42 +7619,6 @@ impl<'a> Graph<'a> {
                         self.annotation(scope, annotation, at, evaluated);
                     }
                 }
-                StatementKind::AssignUnpack { names, value } => {
-                    if !self.phase03 {
-                        self.issue(
-                            self.scopes[scope].file,
-                            at,
-                            "unsupported_construct",
-                            "unpacking is outside the compatibility subset",
-                        );
-                        continue;
-                    }
-                    self.walk(scope, value, at);
-                    let known_length = match &value.kind {
-                        ExpressionKind::Sequence { items, .. } => Some(items.len()),
-                        _ => self
-                            .literal_split_items(scope, value, at, 0)
-                            .map(|items| items.len()),
-                    };
-                    match known_length {
-                        Some(length) if length == names.len() => {}
-                        Some(_) => {
-                            self.scope_issue(
-                                scope,
-                                at,
-                                "invalid_unpack",
-                                "assignment unpacking has a known element count mismatch",
-                            );
-                            return true;
-                        }
-                        _ => self.scope_issue(
-                            scope,
-                            at,
-                            "unresolved_unpack",
-                            "assignment unpacking requires a bounded list or tuple value",
-                        ),
-                    }
-                }
                 StatementKind::AssignDjangoSettings { environment, value } => {
                     self.walk(scope, value, at);
                     self.walk(scope, environment, at);
@@ -7673,149 +7633,6 @@ impl<'a> Graph<'a> {
                             };
                     } else {
                         self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
-                    }
-                }
-                StatementKind::SetGlobalName { value, .. } => {
-                    self.record_django_global_write(scope, value, at);
-                }
-                StatementKind::DjangoSettingsGlobalCall(call) => {
-                    if self.phase03 {
-                        self.walk(scope, call, at);
-                    } else {
-                        self.scope_issue(
-                            scope,
-                            at,
-                            "unsupported_construct",
-                            "global declarations are outside the compatibility subset",
-                        );
-                    }
-                }
-                StatementKind::EditDjangoBackendList { receiver, edit } => {
-                    if let Some(value) = edit.value() {
-                        self.walk(scope, value, at);
-                    }
-                    self.walk(scope, receiver, at);
-                    self.scope_issue(
-                        scope,
-                        at,
-                        "unresolved_setting_mutation",
-                        "Django backend list mutation requires a proven list in the selected settings",
-                    );
-                }
-                StatementKind::DeleteName(name) => {
-                    if !self.phase03
-                        || scope != self.scopes[scope].file
-                        || self.local(scope, &name.text, at).is_none_or(|previous| {
-                            self.binding_depends_on_branch(previous, at)
-                                || matches!(
-                                    self.symbols[previous].binding,
-                                    Binding::Deleted | Binding::Variable(None, _)
-                                )
-                        })
-                    {
-                        self.scope_issue(
-                            scope,
-                            at,
-                            "unsupported_construct",
-                            "deleting a name requires a previously bound module-local name",
-                        );
-                    }
-                }
-                StatementKind::WriteAttribute {
-                    receiver, value, ..
-                }
-                | StatementKind::WriteModuleEntry {
-                    mapping: receiver,
-                    value,
-                    ..
-                } => {
-                    if let Some(value) = value {
-                        self.walk(scope, value, at);
-                    }
-                    self.walk(scope, receiver, at);
-                    if self.phase03
-                        && matches!(&statement.kind, StatementKind::WriteAttribute { member, .. }
-                            if member == "__code__")
-                    {
-                        self.retain_flask_login_code_source(scope, at, receiver);
-                    }
-                    let flask_write = matches!(&statement.kind,
-                        StatementKind::WriteAttribute { member, value: Some(_), .. }
-                        if self.modeled_flask_context_write(scope, receiver, member, at));
-                    let celery_write = self.phase03
-                        && self.record_celery_backend_write(scope, at, &statement.kind);
-                    let fresh_field_write = self.phase03
-                        && (self.is_fresh_field_initializer(scope, statement)
-                            || self.defer_constructor_hook_store(scope, statement));
-                    let form_field_write =
-                        self.phase03 && self.modeled_django_instance_field_write(scope, statement);
-                    let command_write =
-                        self.phase03 && self.modeled_django_command_instance_write(scope, at);
-                    if !flask_write
-                        && !celery_write
-                        && !fresh_field_write
-                        && !form_field_write
-                        && !command_write
-                        && !self.modeled_framework_write(scope, at)
-                    {
-                        if self.phase03
-                            && matches!(&statement.kind, StatementKind::WriteAttribute { .. })
-                        {
-                            self.record_unmodeled_class_write(scope, receiver, at);
-                        }
-                        self.scope_issue(
-                            scope,
-                            at,
-                            "unresolved_attribute_write",
-                            "attribute mutation is outside the bounded framework model",
-                        );
-                    }
-                }
-                StatementKind::ForwardSuperInit {
-                    super_name,
-                    positional,
-                    keywords,
-                } => {
-                    if !self.phase03 {
-                        self.issue(
-                            self.scopes[scope].file,
-                            at,
-                            "unsupported_construct",
-                            "forwarded super initializer is outside the compatibility subset",
-                        );
-                        continue;
-                    }
-                    self.walk(scope, super_name, at);
-                    self.walk(scope, positional, at);
-                    self.walk(scope, keywords, at);
-                    if !self.modeled_django_form_super_init(scope) {
-                        self.scope_issue(
-                            scope,
-                            at,
-                            "unsupported_construct",
-                            "forwarded super initializer is outside the bounded Django form model",
-                        );
-                    }
-                }
-                StatementKind::WriteCeleryConfigEntry {
-                    mapping,
-                    key,
-                    value,
-                } => {
-                    if let Some(value) = value {
-                        self.walk(scope, value, at);
-                    }
-                    self.walk(scope, mapping, at);
-                    self.walk(scope, key, at);
-                    if !self.phase03
-                        || !self.record_celery_config_key(scope, at, mapping, key, value)
-                    {
-                        self.scope_issue(
-                            scope,
-                            at,
-                            "unsupported_construct",
-                            "a computed configuration key requires a resolved Celery settings object",
-                        );
                     }
                 }
                 StatementKind::Return(value) => {
@@ -10807,19 +10624,31 @@ impl<'a> Graph<'a> {
         pending
     }
 
-    fn establish_reachability(
-        &mut self,
-        roots: &[Edge],
-        possible_roots: &[Edge],
+    fn finish(
+        mut self,
+        roots: Vec<Edge>,
+        mut possible_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
-    ) -> (Reachability, Option<Reachability>, Verification, bool) {
+    ) -> Analysis {
+        // Declaration hints retain only the definition in the compatibility
+        // report. Leave them out of the execution graph and parameter analysis.
+        let mut coverage_declarations = BTreeSet::new();
+        possible_roots.retain(|edge| {
+            if edge.kind == runtime_evidence::COVERAGE_DECLARATION {
+                coverage_declarations.insert(edge.target);
+                false
+            } else {
+                true
+            }
+        });
+        self.resolve_class_invocations();
         let mut reach = Reachability {
             scopes: (0..self.files.len()).collect(),
             ..Reachability::default()
         };
         let runtime_targets: BTreeSet<_> = roots
             .iter()
-            .chain(possible_roots)
+            .chain(&possible_roots)
             .filter(|edge| is_runtime_execution_edge(edge.kind))
             .map(|edge| edge.target)
             .collect();
@@ -10865,11 +10694,11 @@ impl<'a> Graph<'a> {
                 static_reach = Some(static_only);
             }
         }
-        let mut converged = self.traverse_with_atexit(&mut reach, pending, &class_bodies);
+        let baseline_converged = self.traverse_with_atexit(&mut reach, pending, &class_bodies);
         if !possible_roots.is_empty()
             && !self.traverse(
                 &mut reach,
-                possible_roots.iter().copied().collect(),
+                possible_roots.into(),
                 &class_bodies,
                 false,
                 true,
@@ -11116,35 +10945,7 @@ impl<'a> Graph<'a> {
             if is_verification_edge(kind) {
                 continue;
             }
-            if matches!(
-                kind,
-                "attrs_field"
-                    | frameworks::CLASS_ATTRIBUTE_DECLARATION
-                    | "marshmallow_schema_options"
-                    | "django_setting"
-                    | "django_application"
-                    | "django_ready_signal_import"
-                    | "django_converter_regex"
-                    | "django_choice_member"
-                    | "django_model_form_help_texts"
-                    | "django_migration_parameter"
-                    | django_migrations::DECLARATION
-                    | "django_admin_parameter"
-                    | "django_field_parameter"
-                    | "django_command_parameter"
-                    | celery_routes::ROUTER_PARAMETER
-                    | celery::LOGGING_PARAMETER
-                    | "fastapi_parameter"
-                    | gunicorn::DECLARATION
-                    | drf::FIELD_DECLARATION
-                    | "drf_exception_default"
-                    | "drf_pagination_option"
-                    | wagtail::FIELD_DECLARATION
-                    | wagtail::BLOCK_METADATA
-                    | wagtail::MODEL_OPTION
-                    | wagtail::SNIPPET_OPTION
-                    | wagtail::CALLBACK_PARAMETER
-            ) {
+            if kind == "django_setting" {
                 self.read.insert(id);
             }
             let symbol = &self.symbols[id];
@@ -11473,42 +11274,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                     expressions.extend(annotation);
                 }
             }
-            StatementKind::AssignUnpack { names, value } => {
-                assigned.extend(names.iter().map(|name| name.text.as_str()));
-                expressions.push(value);
-            }
             StatementKind::AssignDjangoSettings { environment, value } => {
                 expressions.push(environment);
                 expressions.push(value);
-            }
-            StatementKind::EditDjangoBackendList { receiver, edit } => {
-                expressions.push(receiver);
-                expressions.extend(edit.value());
-            }
-            StatementKind::LiteralRouteLoop {
-                path, registration, ..
-            } => {
-                assigned.insert(path.text.as_str());
-                expressions.push(registration);
-            }
-            StatementKind::WriteAttribute {
-                receiver, value, ..
-            }
-            | StatementKind::WriteModuleEntry {
-                mapping: receiver,
-                value,
-                ..
-            } => {
-                expressions.push(receiver);
-                expressions.extend(value);
-            }
-            StatementKind::WriteCeleryConfigEntry {
-                mapping,
-                key,
-                value,
-            } => {
-                expressions.extend([mapping, key]);
-                expressions.extend(value);
             }
             StatementKind::If {
                 test,
@@ -16003,639 +15771,28 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     }
 
     #[test]
-    fn phase03_django_url_table_stops_at_a_proven_invalid_registration() {
-        for invalid in [
-            "path('broken/', view, route='duplicate/')",
-            "path('broken/', view, name='first', **{'name': 'duplicate'})",
-            "path('broken/', view, view=view)",
-            "path('broken/', view, unexpected=True)",
-            "path('broken/', view, None, None, None)",
-            "path('broken/', view, kwargs='invalid')",
-            "path('broken/', view, kwargs=[])",
-            "path('', include('child_urls', arg='child_urls'))",
-            "path('', include('child_urls', unexpected=True))",
-            "path('', include('child_urls', None, None))",
-            "path('', include('child_urls', namespace='missing'))",
-        ] {
-            let urls = format!(
-                "from django.urls import include, path\nfrom views import view, before, after\n\
-                 urlpatterns = [path('good/', before), {invalid}, path('after/', after())]\n\
-                 handler404 = view\n"
-            );
-            let result = analyze_phase03(&django_url_test_files(&urls, ""), &[]);
-            assert!(result.issues.is_empty(), "{invalid}: {:?}", result.issues);
-            for target in ["views.view", "views.before", "views.after", "views.helper"] {
-                assert!(
-                    !result.evidence.iter().any(|edge| edge.full_name == target
-                        && matches!(edge.kind, "django_registration" | "direct_call")),
-                    "{invalid} should not reach {target}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn phase03_django_url_defaults_and_child_namespace_activate_callbacks() {
-        let urls = "from django.urls import include, path\nfrom views import before\n\
-                    urlpatterns = [path('direct/', before, kwargs=None, name=None), \
-                                    path('nested/', include(arg='child_urls', namespace='named'))]\n";
-        let result = analyze_phase03(&django_url_test_files(urls, "app_name = 'child'\n"), &[]);
-        assert!(result.issues.is_empty(), "{:?}", result.issues);
-        for target in ["views.view", "views.before"] {
-            assert!(
-                result
-                    .evidence
-                    .iter()
-                    .any(|edge| { edge.full_name == target && edge.kind == "django_registration" })
-            );
-        }
-    }
-
-    #[test]
-    fn django_view_dispatch_uses_bound_literal_parameters() {
-        let make_files = |view, route, extra: &str| {
-            [
-                module(
-                    "manage.py",
-                    "manage",
-                    "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
-                ),
-                module(
-                    "settings.py",
-                    "settings",
-                    "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
-                ),
-                module(
-                    "urls.py",
-                    "urls",
-                    &format!(
-                        "from django.urls import path\nfrom views import view\nurlpatterns = [{route}]\n"
-                    ),
-                ),
-                module("views.py", "views", view),
-                module(
-                    "pipeline.py",
-                    "pipeline",
-                    &format!(
-                        "from providers import get_client\nclass Pipeline:\n    def __init__(self, client): self.client = client\n    def update(self): return self.client.schedule()\ndef dispatch(slug): return Pipeline(get_client(slug)).update()\n{extra}"
-                    ),
-                ),
-                module(
-                    "providers.py",
-                    "providers",
-                    "class First:\n    def schedule(self): return 1\nclass Second:\n    def schedule(self): return 2\ndef get_client(slug):\n    if slug == 'first': return First()\n    return Second()\n",
-                ),
-            ]
-        };
-        let default = "from pipeline import dispatch\ndef view(request, slug='first'): return dispatch(slug)\n";
-        let required = default.replace("slug='first'", "slug");
-        for (view, route, expected) in [
-            (default, "path('', view)", "providers.First.schedule"),
-            (
-                default,
-                "path('', view, {'slug': 'second'})",
-                "providers.Second.schedule",
-            ),
-            (
-                required.as_str(),
-                "path('', view, {'slug': 'first'})",
-                "providers.First.schedule",
-            ),
-        ] {
-            let report = analyze_phase03(&make_files(view, route, ""), &[]);
-            assert!(report.issues.is_empty(), "{route}: {:?}", report.issues);
-            let reached: Vec<_> = report
-                .evidence
-                .iter()
-                .filter(|edge| edge.kind == "direct_call" && edge.full_name.ends_with(".schedule"))
-                .map(|edge| edge.full_name.as_str())
-                .collect();
-            assert_eq!(reached, [expected], "{route}");
-        }
-        for (route, extra) in [
-            ("path('<str:slug>/', view)", ""),
-            ("path('', view)", "dispatch(input())\n"),
-        ] {
-            let report = analyze_phase03(&make_files(default, route, extra), &[]);
-            assert!(
-                report
-                    .issues
-                    .iter()
-                    .any(|issue| issue.kind == "unresolved_call"),
-                "{route}: {:?}",
-                report.issues
-            );
-        }
-        let mut files = make_files(default, "path('', view)", "");
-        files[2] = module(
-            "urls.py",
-            "urls",
-            "from django.urls import path\nfrom views import view\nfrom external import mutate\nurlpatterns = [path('', view)]\nmutate(urlpatterns)\n",
-        );
-        let report = analyze_phase03(&files, &[]);
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.kind == "unresolved_call")
-        );
-        assert!(
-            !report
-                .evidence
-                .iter()
-                .any(|edge| edge.full_name.ends_with(".schedule"))
-        );
-    }
-
-    #[test]
-    fn django_failed_view_initializer_cannot_register_a_callback() {
-        let urls = "from django.urls import path\nfrom rejected import view\nurlpatterns = [path('', view)]\n";
-        let mut files = django_url_test_files(urls, "");
-        files.push(module(
-            "rejected.py",
-            "rejected",
-            "def view(request): return helper()\ndef helper(): return 1\nraise external_cause()\n",
-        ));
-        let report = analyze_phase03(&files, &[]);
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.path == "urls.py" && issue.kind == "unresolved_registration")
-        );
-        assert!(!report.evidence.iter().any(|edge| edge.kind == "django_registration" && edge.full_name == "rejected.view"));
-        assert!(
-            !report
-                .evidence
-                .iter()
-                .any(|edge| edge.kind == "direct_call" && edge.full_name == "rejected.helper")
-        );
-    }
-
-    #[test]
-    fn django_proven_failed_callback_import_aborts_url_initialization() {
-        let urls = "from django.urls import path\nfrom views import view\nfrom unrelated import after\nurlpatterns = [path('', view), path('after/', after)]\n";
-        let mut files = django_url_test_files(urls, "");
-        files[3] = module(
-            "views.py",
-            "views",
-            "import prefix_effect\ndef view(request): return 1\nraise RuntimeError('cannot load')\n",
-        );
-        let effect = "from django.db.models.signals import post_save\ndef received(sender, **kwargs): pass\npost_save.connect(received)\n";
-        files.extend([
-            module("prefix_effect.py", "prefix_effect", effect),
+    fn phase03_direct_django_settings_assignment_overrides_the_default() {
+        let files = [
+            module("config.py", "config", "DEBUG = True\nunused_value = 1\n"),
+            module("dormant.py", "dormant", "DEBUG = False\n"),
             module(
-                "unrelated.py",
-                "unrelated",
-                &format!("{effect}def after(request): return 2\n"),
+                "wsgi.py",
+                "wsgi",
+                "import os as environment\nimport django\nenvironment.environ.setdefault('DJANGO_SETTINGS_MODULE', 'dormant')\nenvironment.environ['DJANGO_SETTINGS_MODULE'] = 'config'\ndjango.setup()\n",
             ),
-        ]);
-        for _ in 0..2 {
-            let report = analyze_phase03(&files, &[]);
-            assert!(report.issues.is_empty(), "{:?}", report.issues);
-            assert!(
-                !report
-                    .evidence
-                    .iter()
-                    .any(|row| row.kind == "django_registration")
-            );
-            let receivers: BTreeSet<_> = report
-                .evidence
-                .iter()
-                .filter(|row| row.kind == "django_signal" && row.certainty == "certain")
-                .map(|row| row.full_name.as_str())
-                .collect();
-            assert_eq!(receivers, ["prefix_effect.received"].into());
-            files.swap(1, 3);
-        }
-    }
-
-    #[test]
-    fn phase03_django_url_stops_before_an_unbound_view_option() {
-        let urls = "from django.urls import path\nfrom django.views import View\n\
-                    class Page(View):\n    def setup(self, request): return 1\n\
-                    urlpatterns = [path('page/', Page.as_view(model=Missing))]\n";
-        let report = analyze_phase03(&django_url_test_files(urls, ""), &[]);
-        assert!(report.issues.is_empty(), "{:?}", report.issues);
-        assert!(!report.evidence.iter().any(|edge| {
-            (edge.full_name == "urls.Page" && edge.kind == "django_registration")
-                || (edge.full_name == "urls.Page.setup" && edge.kind == "framework_lifecycle")
-        }));
-        for option in ["external()", "ValueError"] {
-            let opaque = urls.replace("Missing", option);
-            let report = analyze_phase03(&django_url_test_files(&opaque, ""), &[]);
-            assert!(
-                report
-                    .issues
-                    .iter()
-                    .any(|issue| issue.kind == "unresolved_call")
-            );
-        }
-    }
-
-    #[test]
-    fn phase03_migration_declarations_require_the_effective_conventional_export() {
-        let source = "from django.db import migrations\nclass Migration(migrations.Migration):\n    dependencies = []\n    operations = []\n    def dormant(self): return 1\n";
-        let mut files = vec![
-            module("app/__init__.py", "app", ""),
-            module("app/migrations/__init__.py", "app.migrations", ""),
-            module(
-                "app/migrations/0001_initial.py",
-                "app.migrations.0001_initial",
-                source,
-            ),
-            module("app/migrations/_old.py", "app.migrations._old", source),
-            module(
-                "app/migrations/0002_retired.py",
-                "app.migrations.0002_retired",
-                &format!("{source}Migration = object\n"),
-            ),
-            module(
-                "app/migrations/0003_fake.py",
-                "app.migrations.0003_fake",
-                "class Migration: pass\n",
-            ),
-            module("app/tools.py", "app.tools", source),
         ];
-        let report = analyze_phase03(&files, &[]);
-        assert!(report.issues.is_empty(), "{:?}", report.issues);
-        let declarations: BTreeSet<_> = report
-            .evidence
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let unused: BTreeSet<_> = result
+            .findings
             .iter()
-            .filter(|row| row.kind == "django_migration_declaration" && row.certainty == "possible")
-            .map(|row| row.full_name.as_str())
+            .filter(|finding| finding.category == Category::Variable)
+            .map(|finding| finding.full_name.as_str())
             .collect();
         assert_eq!(
-            declarations,
-            [
-                "app.migrations.0001_initial.Migration",
-                "app.migrations.0001_initial.Migration.dependencies",
-                "app.migrations.0001_initial.Migration.operations",
-            ]
-            .into()
+            unused,
+            BTreeSet::from(["config.unused_value", "dormant.DEBUG"])
         );
-        assert!(report.findings.iter().any(|finding| {
-            finding.category == Category::Function
-                && finding.full_name == "app.migrations.0001_initial.Migration.dormant"
-        }));
-
-        files.extend([
-            module(
-                "settings.py", "settings",
-                "INSTALLED_APPS = ['app']\nMIGRATION_MODULES = {'app': None}\n",
-            ),
-            module("wsgi.py", "wsgi", "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\napplication = get_wsgi_application()\n"),
-        ]);
-        let report = analyze_phase03(&files, &[]);
-        assert!(
-            !report
-                .evidence
-                .iter()
-                .any(|row| row.kind == "django_migration_declaration")
-        );
-    }
-
-    #[test]
-    fn phase03_django_url_include_preserves_terminal_view_option_failure() {
-        let root = "from django.urls import include, path\nfrom views import view\n\
-                    urlpatterns = [path('valid/', view), path('', include('child_urls'))]\n";
-        for (option, terminal) in [("Missing", true), ("external()", false)] {
-            let mut files = django_url_test_files(root, "");
-            files[2] = module(
-                "child_urls.py",
-                "child_urls",
-                &format!(
-                    "from django.urls import path\nfrom views import Page\nimport included_effect\n\
-                     urlpatterns = [path('page/', Page.as_view(model={option}))]\n"
-                ),
-            );
-            files[3] = module(
-                "views.py",
-                "views",
-                "from django.views.generic import DetailView\nclass Page(DetailView): model = None\ndef view(request): return 1\n",
-            );
-            files.push(module(
-                "included_effect.py",
-                "included_effect",
-                "from django.db.models.signals import post_save\ndef received(sender, **kwargs): pass\npost_save.connect(received)\n",
-            ));
-            for _ in 0..2 {
-                let report = analyze_phase03(&files, &[]);
-                assert_eq!(report.issues.is_empty(), terminal, "{:?}", report.issues);
-                assert_eq!(
-                    report.evidence.iter().any(|edge| {
-                        edge.kind == "django_registration" && edge.full_name == "views.view"
-                    }),
-                    !terminal,
-                );
-                assert!(report.evidence.iter().any(|edge| {
-                    edge.kind == "django_signal"
-                        && edge.certainty == "certain"
-                        && edge.full_name == "included_effect.received"
-                }));
-                files.swap(1, 2);
-            }
-        }
-    }
-
-    #[test]
-    fn phase03_django_class_based_view_uses_only_reached_dispatch_stages() {
-        let prefix = "from django.urls import path\nfrom django.views import View\nclass Parent(View):\n    def get(self, request): return 1\nclass Page(Parent):\n    def post(self, request): return 2\n";
-        let mounted = "urlpatterns = [path('page/', Page.as_view())]\n";
-        for (override_method, registration, expected) in [
-            ("", "Page()\nurlpatterns = []\n", &[][..]),
-            ("", mounted, &["urls.Page.post", "urls.Parent.get"][..]),
-            (
-                "    http_method_names = ['head']\n",
-                mounted,
-                &["urls.Parent.get"][..],
-            ),
-            (
-                "    def dispatch(self, request): return 3\n",
-                mounted,
-                &["urls.Page.dispatch"][..],
-            ),
-            (
-                "    def setup(self, request): pass\n",
-                mounted,
-                &["urls.Page.setup"][..],
-            ),
-            (
-                "    def __init__(self): raise RuntimeError()\n",
-                mounted,
-                &["urls.Page.__init__"][..],
-            ),
-        ] {
-            let result = analyze_phase03(
-                &django_url_test_files(&format!("{prefix}{override_method}{registration}"), ""),
-                &[],
-            );
-            assert!(
-                result.issues.is_empty(),
-                "{override_method} {registration}: {:?}",
-                result.issues
-            );
-            let callbacks: BTreeSet<_> = result
-                .evidence
-                .iter()
-                .filter(|row| row.kind == "framework_lifecycle")
-                .map(|row| row.full_name.as_str())
-                .collect();
-            assert_eq!(
-                callbacks,
-                expected.iter().copied().collect(),
-                "{override_method} {registration}"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "requires the pinned FastAPI import-root fixture"]
-    fn pinned_fastapi_import_roots() {
-        let root = PathBuf::from(std::env::var_os("SKARMORY_PHASE03_IMPORT_ROOT_FIXTURE").unwrap());
-        let options = super::super::Options {
-            profile: super::super::Profile::SkylosPhase03,
-            ..Default::default()
-        };
-        let config = super::super::config::load(&root, &options).unwrap();
-        let project = crate::preview_source::discover_filtered(
-            &root,
-            &[],
-            crate::preview_source::FileEntry::None,
-            Some(&config.selection),
-        );
-        assert!(project.issues.is_empty(), "{:?}", project.issues);
-        let files: Vec<_> = project
-            .files
-            .iter()
-            .map(|file| {
-                module(
-                    &file.label,
-                    file.name.strip_suffix(".__init__").unwrap_or(&file.name),
-                    &std::fs::read_to_string(root.join(&file.label)).unwrap(),
-                )
-            })
-            .collect();
-        let mapped = NestedPackages::index(&files);
-        let file = |path| files.iter().position(|file| file.path == path).unwrap();
-        let package = file("backend/app/api.py");
-        assert_eq!(mapped.roots[package], Some(Path::new("backend")));
-        assert_eq!(mapped.resolve(package, "app.api"), "backend.app.api",);
-
-        let source_layout = file("packages/lib/src/lib_pkg/core.py");
-        assert_eq!(
-            mapped.resolve(source_layout, "lib_pkg.core"),
-            "packages.lib.src.lib_pkg.core",
-        );
-
-        for (path, name) in [("tools/scripts/run.py", "run"), ("top.py", "top")] {
-            let file = file(path);
-            assert!(matches!(mapped.resolve(file, name), Cow::Borrowed(_)));
-            assert!(
-                !mapped
-                    .names
-                    .keys()
-                    .any(|(root, _)| Some(*root) == mapped.roots[file])
-            );
-        }
-    }
-
-    #[test]
-    fn django_url_initializers_distinguish_undefined_calls_and_missing_tables() {
-        let prefix = "from django.urls import path\nfrom views import view\n";
-        for body in [
-            "urlpatterns = [path('selected/', view)]\nmissing(urlpatterns)\n",
-            "unused_patterns = [path('selected/', view)]\n",
-        ] {
-            let report =
-                analyze_phase03(&django_url_test_files(&format!("{prefix}{body}"), ""), &[]);
-            assert!(report.issues.is_empty(), "{body}: {:?}", report.issues);
-            assert!(
-                !report.evidence.iter().any(
-                    |edge| edge.full_name == "views.view" && edge.kind == "django_registration"
-                )
-            );
-        }
-
-        for body in [
-            "urlpatterns = [path('selected/', view)]\nfrom plugin import alter\nalter(urlpatterns)\n",
-            "from plugin import update\nupdate(globals())\n",
-        ] {
-            let report =
-                analyze_phase03(&django_url_test_files(&format!("{prefix}{body}"), ""), &[]);
-            assert!(!report.issues.is_empty(), "{body}");
-        }
-    }
-
-    #[test]
-    fn django_url_callback_observes_a_closed_function_code_replacement() {
-        let urls = "from django.urls import path\nfrom patched import view\n\
-                    urlpatterns = [path('plain/', view)]\n";
-        let source = "def original(): return 1\n\
-                      def view(request): return original()\n\
-                      def replacement(request): return None\n";
-        for receiver in ["view", "selected"] {
-            let mut files = django_url_test_files(urls, "");
-            files.push(module(
-                "patched.py",
-                "patched",
-                &format!("{source}selected = view\n{receiver}.__code__ = replacement.__code__\n"),
-            ));
-            let report = analyze_phase03(&files, &[]);
-            assert!(report.issues.is_empty(), "{receiver}: {:?}", report.issues);
-            assert!(!report.evidence.iter().any(|edge| {
-                (edge.full_name == "patched.view" && edge.kind == "django_registration")
-                    || (edge.full_name == "patched.original" && edge.kind == "direct_call")
-            }));
-
-            files.push(module(
-                "consumer.py",
-                "consumer",
-                "from patched import view\nview(None)\n",
-            ));
-            let report = analyze_phase03(&files, &[]);
-            assert!(report.issues.iter().any(|issue| {
-                issue.path == "patched.py" && issue.kind == "unresolved_attribute_write"
-            }));
-        }
-
-        let mut files = django_url_test_files(urls, "");
-        files.push(module(
-            "patched.py",
-            "patched",
-            &format!("{source}view.__code__ = replacement.__code__\nunknown(view)\n"),
-        ));
-        let report = analyze_phase03(&files, &[]);
-        assert!(report.issues.iter().any(|issue| {
-            issue.path == "patched.py" && issue.kind == "unresolved_attribute_write"
-        }));
-
-        let urls = urls.replace("view)]", "view), path('called/', view(None))]");
-        let mut files = django_url_test_files(&urls, "");
-        files.push(module(
-            "patched.py",
-            "patched",
-            &format!("{source}view.__code__ = replacement.__code__\n"),
-        ));
-        let report = analyze_phase03(&files, &[]);
-        assert!(report.issues.iter().any(|issue| {
-            issue.path == "patched.py" && issue.kind == "unresolved_attribute_write"
-        }));
-    }
-
-    #[test]
-    fn django_url_table_applies_closed_initializer_edits_before_dispatch() {
-        for (edit, selected) in [
-            ("urlpatterns.clear()", None),
-            ("urlpatterns[0].callback = lambda request: None", None),
-            ("urlpatterns[0].callback = before", Some("views.before")),
-        ] {
-            let urls = format!(
-                "from django.urls import path\nfrom views import view, before\n\
-                 urlpatterns = [path('plain/', view)]\n{edit}\n"
-            );
-            let report = analyze_phase03(&django_url_test_files(&urls, ""), &[]);
-            assert!(report.issues.is_empty(), "{edit}: {:?}", report.issues);
-            let routes: Vec<_> = report
-                .evidence
-                .iter()
-                .filter(|edge| edge.kind == "django_registration")
-                .map(|edge| edge.full_name.as_str())
-                .collect();
-            assert_eq!(routes, selected.into_iter().collect::<Vec<_>>());
-        }
-        let urls = "from django.urls import path\nfrom views import view\n\
-                    urlpatterns = [path('plain/', view)]\n\
-                    alias = urlpatterns\nurlpatterns.clear()\nunknown(alias)\n";
-        let report = analyze_phase03(&django_url_test_files(urls, ""), &[]);
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.kind == "unresolved_registration")
-        );
-    }
-
-    #[test]
-    fn phase03_django_url_opaque_options_keep_coverage_incomplete() {
-        for (invalid, child_body) in [
-            ("path('opaque/', view, kwargs=options)", ""),
-            ("path('opaque/', view, Pattern=pattern)", ""),
-            (
-                "path('', include('child_urls', namespace='site'))",
-                "def __getattr__(name):\n    return lookup(name)\n",
-            ),
-        ] {
-            let urls = format!(
-                "from django.urls import include, path\nfrom views import view\n\
-                 urlpatterns = [{invalid}]\n"
-            );
-            let result = analyze_phase03(&django_url_test_files(&urls, child_body), &[]);
-            assert!(
-                result
-                    .issues
-                    .iter()
-                    .any(|issue| issue.kind == "unresolved_registration")
-            );
-            assert!(
-                !result
-                    .evidence
-                    .iter()
-                    .any(|edge| edge.kind == "django_registration")
-            );
-        }
-    }
-
-    #[test]
-    fn phase03_django_url_include_keeps_failed_import_coverage_incomplete() {
-        let urls = "from django.urls import include, path\n\
-                    urlpatterns = [path('', include('child_urls'))]\n";
-        let child = "urlpatterns = [path('', view, unexpected=True)]\n";
-        let result = analyze_phase03(&django_url_test_files(urls, child), &[]);
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.kind == "unresolved_registration")
-        );
-        assert!(
-            !result
-                .evidence
-                .iter()
-                .any(|edge| edge.kind == "django_registration")
-        );
-    }
-
-    fn django_url_test_files(urls: &str, child_tail: &str) -> Vec<AnalyzedFile> {
-        vec![
-            module(
-                "settings.py",
-                "settings",
-                "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
-            ),
-            module("urls.py", "urls", urls),
-            module(
-                "child_urls.py",
-                "child_urls",
-                &format!(
-                    "from django.urls import path\nfrom views import view\n\
-                     urlpatterns = [path('', view)]\n{child_tail}"
-                ),
-            ),
-            module(
-                "views.py",
-                "views",
-                "def view(request): return helper()\ndef helper(): return 1\n\
-                 def before(request): return 2\ndef after(): return view\n",
-            ),
-            module(
-                "manage.py",
-                "manage",
-                "import os\nfrom django.core.management import execute_from_command_line\n\
-                 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n\
-                 execute_from_command_line([])\n",
-            ),
-        ]
     }
 
     #[test]

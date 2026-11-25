@@ -253,97 +253,11 @@ actual provider methods. A registered blueprint exported by a package can
 supply callbacks through a child import when initialization order is proved.
 [Flask registration APIs](https://flask.palletsprojects.com/en/stable/api/)
 
-A regular package in a nested service resolves absolute imports against its
-own source root. Services can use the same package name while retaining
-only the callbacks they register. A missing local submodule keeps coverage
-incomplete when the registration depends on it.
-
-A conventional module-level `create_app` factory that returns its resolved
-FastAPI instance contributes possible deployment evidence. A plain async
-function used as a lifespan provider does not enter its coroutine body.
-Source-owned no-op ASGI middleware receives possible-use evidence and leaves
-an ignored `dispatch` option unrooted.
-FastAPI activation bounds the expansion of resolved synchronous calls from
-application initializers. Repeated call sites on an acyclic path consume the
-call-event budget. An exhausted budget preserves declaration information,
-reports incomplete coverage, and withholds activation through the affected
-initializer.
-[Uvicorn factory setting](https://uvicorn.dev/settings/#application)
-
-FastAPI supports imperative endpoint registration and literal `Depends` or
-`Security` dependencies in defaults, `Annotated` parameters and imported type
-aliases, and route and router registration options. App-wide dependencies apply
-to selected API routes. The analyzer also resolves selected HTTP middleware and
-exception handlers and async context-manager lifespans for active apps and
-included routers. A custom app lifespan supersedes that app's startup and
-shutdown hooks. Constructor startup and shutdown callbacks on included routers
-remain eligible when a merged default lifespan invokes them. FastAPI versions
-before 0.137 copy routes at inclusion. Newer versions retain the router and
-can expose routes added later. Set `fastapi_router_mode` under `[dead_code]`
-in the Phase 0.3 configuration to `snapshot` for the older deployment or
-`live` for the newer one. The analyzer uses the config for the application
-construction site. The default `auto` reports incomplete coverage when the
-two models can select different routes or postponed dependencies.
-The selected mode resolves bounded initializer order and does not infer a
-deployment version from the scanner's own environment. Unproven order stays
-incomplete. In live mode, later routes can become visible while startup
-callbacks still come from the lifecycle list captured at inclusion. It retains constructors of resolved class dependencies. The preview resolves bounded
-leading wildcard imports from the supported FastAPI and typing export tables.
-Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
-incomplete.
-Router discovery bounds work across the reachable graph and visits shared
-routers once before evaluating inclusion order. Unexecuted owners contribute
-no inclusions. A cycle in live snapshot evaluation or exhaustion of a graph
-budget leaves coverage incomplete.
-When a nested regular package shadows a root package, the preview can prove
-that a specific missing submodule stops a FastAPI initializer. This requires
-an inert package initializer, a closed import prefix and a verified package
-directory. Excluded modules, opaque extensions and consumers of the failed
-initializer preserve incomplete coverage. The optional
-`analysis_summary.fastapi_route_declarations` field records identified route
-declaration locations separately from activation evidence.
-For a mounted FastAPI WebSocket route with a capture-free path and one
-required unannotated parameter, the preview can prove that a handler that
-only awaits `accept()` on that query argument stops at the attribute lookup.
-The handler keeps its registration evidence, and independent unused
-definitions remain reportable.
-[FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
-
-A source-owned, inert root Django or Celery package can prove that the
-initializer stops at a missing provider. This requires a checked package
-directory and an import before any executable initializer work. Consumers of
-the failed module retain incomplete coverage.
-
-Django model relationship field subclasses have no class-creation callback
-for rendering choices. A bounded relationship field assignment can construct
-the default lazy choices with `queryset=None` and retain a public form's
-label override as a protocol declaration. Rendering still needs a separate
-execution path.
-[Django relationship fields](https://docs.djangoproject.com/en/5.2/ref/forms/fields/#fields-which-handle-relationships)
-
-FastMCP records possible-use evidence for tool decorators applied through a
-resolved server and a bounded project wrapper. Plain identity, caching and
-forwarding decorators retain their own execution evidence. Duplicate tool
-names use the first reachable registration when declaration order is known.
-Unresolved decorator effects and ambiguous registration order leave coverage
-incomplete.
-
-Django URL discovery follows a reachable, recognized launcher. An explicit
-management `--settings` option takes precedence over the launcher's environment.
-The environment starts with the scan process's `DJANGO_SETTINGS_MODULE`. A
-literal assignment to the genuine `os.environ` entry overrides it, and
-`setdefault` fills an unset entry. With an explicit settings module and
-literal app and URL configuration, a launcher-free scan records possible
-reads of closed uppercase settings declarations. The proof follows effective
-named and finite wildcard imports back to their source values and respects
-the selected configuration branch. Application startup and URL dispatch
-require their own evidence.
-Without a reachable launcher or environment
-selection, one conventional `package.settings` module with literal `INSTALLED_APPS` and
-`ROOT_URLCONF = 'package.urls'` can describe an externally configured project
-when the sibling URL module imports the genuine Django URL API and defines
-bounded `urlpatterns`. This models registration if the configuration is used.
-Ambiguous configurations do not establish activation. Discovery resolves
+Django URL discovery follows a reachable, recognized launcher. A literal
+`--settings` option takes precedence in a management launcher. Otherwise, a
+literal assignment through the resolved `os.environ` provider can override
+the scan process's `DJANGO_SETTINGS_MODULE`, and `setdefault` supplies the
+settings module when unset. Skarmory resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
 class-based views reach their effective `setup()` hook. Function views can

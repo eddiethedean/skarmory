@@ -157,3 +157,46 @@ The pinned reference and candidate passed all 14 CLI cases in a local macOS
 ARM64 CPython 3.11 run, including the original recursive reachability case.
 The release workflow requires its separate Linux receipts. The inventory audit
 and remaining ports still govern the full publication gate.
+
+## Expanded framework, dependency, and cleanup qualification
+
+The inventory adds the exact pytest node IDs and assertion lines for the
+reviewed framework and unused-dependency cases. Framework cases use the
+installed SDK with the original fixtures. A small projection supplies the
+reference unittest report shape only when the native report has certain
+discovery evidence for that same definition. Dependency ports check the
+native rule's coverage and its selected source paths before the original
+assertions evaluate the findings.
+
+The cleanup ports keep the original fixtures and run live native scans. The
+CLI ports cover preview, apply, successful and failing checks, rollback, and
+source and configuration changes. The engine port runs the pinned pytest
+command against the pinned source, then removes that source after the native
+report comparison. It records the Rust test invocation and fixture hashes
+alongside the unchanged pinned reference assertions.
+
+The existing Linux variants are required for release credit. The inventory
+still marks these reviewed cases as blocked, with individual reasons recorded
+beside each case:
+
+| Remaining reviewed cases | Count |
+| --- | ---: |
+| Django signal registration and evidence | 75 |
+| unittest discovery and lifecycle | 31 |
+| Flask and Django web-framework discovery | 21 |
+| Django application regression | 1 |
+| Dependency declaration and project identity | 1 |
+
+The signal cases include settings and AppConfig fixtures without a selected
+Django startup. The remaining unittest and web-framework cases include
+coverage and evidence differences. The dependency case requires parser
+inventory fields that the installed SDK does not expose. The inventory is
+incomplete pending further audit. [Framework workstream #43](https://github.com/eddiethedean/skarmory/issues/43)
+
+In the local macOS ARM64 CPython 3.11.15 run, the gate joined 92 SDK cases,
+27 CLI cases, and one engine case successfully. The original reference
+`xfail` stayed marked; its candidate assertion passed. The decision remained
+blocked for the 129 reviewed cases without receipts and the incomplete audit.
+The six deferred cases did not enter that count. The local wheel and native
+artifacts were development builds. Their receipts do not qualify the Linux
+release variants.

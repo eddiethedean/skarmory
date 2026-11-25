@@ -3,9 +3,10 @@
 The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
-reference runs, and Skarmory ports remain release requirements. The starter
-inventory assigns 38 cases to Phase 0.3 and defers six to later language
-milestones. [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
+reference runs, and Skarmory ports remain release requirements. The reviewed
+inventory assigns 249 cases to Phase 0.3 and defers six to later language
+milestones. Of the required cases, 120 have artifact-backed port mappings.
+[Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
 
 ## Inventory and receipts
@@ -61,11 +62,11 @@ incomplete. The existing Phase 0.2 conformance fixtures and independent
 controls continue to run through the packaging checks.
 
 The release workflow installs the same-run Linux wheel in a clean SDK
-environment and builds the native CLI from the same candidate checkout. The
-[seed adapter](../tests/conformance/run_phase03_seed.py) records separate SDK
-and CLI receipts. It runs the original upstream assertions with their markers
-in the frozen Skylos environment. Candidate runs select `skylos-0.3` and
-disable upstream expected-failure markers.
+environment and builds the native CLI and Rust library test executable from
+the same candidate checkout. The [seed adapter](../tests/conformance/run_phase03_seed.py)
+records separate SDK, CLI, and engine receipts. It runs the original upstream
+assertions with their markers in the frozen Skylos environment. Candidate
+pytest runs select `skylos-0.3` and disable upstream expected-failure markers.
 
 The SDK shard also executes the pinned basic dead-code benchmark with
 the original scorer and staged fixtures. Both score reports are included in
@@ -83,8 +84,16 @@ and options. It reads the native CLI's stdout and report files or verifies
 the CLI error for invalid impact invocations. The adapters require the
 original assertion lines to execute.
 
+The cleanup CLI ports perform live previews, edits, and rescans. They run
+authorized checks in subprocesses, including the pinned configuration and
+source mutations. The engine receipt covers the late-removal case, which
+injects its mutation after report comparison. It stages the pinned fixture,
+runs real pytest and Skarmory analysis, and requires exactly the named
+Rust test to pass. The receipt identifies the test executable and the
+fixture bytes.
+
 For versions below 0.3, matching pull requests and manual workflow runs
-require the mapped SDK and CLI cases to pass and upload the full gate decision.
+require the mapped SDK, CLI, and engine cases to pass and upload the full gate decision.
 The full decision remains blocked while required evidence is missing.
 Publication of 0.3 and later requires that full decision to pass.
 

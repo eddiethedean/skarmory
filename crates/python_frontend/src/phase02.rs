@@ -113,49 +113,9 @@ pub enum StatementKind {
         value: Option<Expression>,
         annotation: Option<Expression>,
     },
-    AssignUnpack {
-        names: Vec<Name>,
-        value: Expression,
-    },
     AssignDjangoSettings {
         environment: Expression,
         value: Expression,
-    },
-    SetGlobalName {
-        name: Name,
-        value: Expression,
-    },
-    DjangoSettingsGlobalCall(Expression),
-    EditDjangoBackendList {
-        receiver: Expression,
-        edit: DjangoBackendListEdit,
-    },
-    DiscardedComprehension(Expression),
-    DeleteName(Name),
-    LiteralRouteLoop {
-        path: Name,
-        last: Expression,
-        registration: Expression,
-    },
-    WriteAttribute {
-        receiver: Expression,
-        member: String,
-        value: Option<Expression>,
-    },
-    WriteModuleEntry {
-        mapping: Expression,
-        module: String,
-        value: Option<Expression>,
-    },
-    WriteCeleryConfigEntry {
-        mapping: Expression,
-        key: Expression,
-        value: Option<Expression>,
-    },
-    ForwardSuperInit {
-        super_name: Expression,
-        positional: Expression,
-        keywords: Expression,
     },
     If {
         test: Expression,
@@ -1129,24 +1089,6 @@ impl Lowering<'_> {
                             environment: expression(&target.value)?,
                             value: expression(&node.value)?,
                         }
-                    } else if let [target] = node.targets.as_slice()
-                        && let Some(targets) = match target {
-                            Expr::Tuple(tuple) => Some(&tuple.elts),
-                            Expr::List(list) => Some(&list.elts),
-                            _ => None,
-                        }
-                    {
-                        StatementKind::AssignUnpack {
-                            names: targets
-                                .iter()
-                                .map(|target| self.target(target))
-                                .collect::<Result<_, _>>()?,
-                            value: expression(&node.value)?,
-                        }
-                    } else if let [target] = node.targets.as_slice()
-                        && matches!(target, Expr::Attribute(_) | Expr::Subscript(_))
-                    {
-                        self.write_target(target, Some(expression(&node.value)?), next)?
                     } else {
                         StatementKind::Assign {
                             names: node
