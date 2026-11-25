@@ -18,18 +18,23 @@ pub(super) fn resolve(project: &Project, files: &mut [AnalyzedFile]) -> Vec<Issu
     let mut issues = Vec::new();
     for (file_index, file) in files.iter().enumerate() {
         for (position, statement) in file.facts.body.iter().enumerate() {
-            let StatementKind::ProjectWildcardImport(module) = &statement.kind else {
+            let StatementKind::ProjectWildcardImport {
+                module,
+                level,
+                optional,
+            } = &statement.kind
+            else {
+                collect_nested_imports(file, statement, &mut issues);
                 continue;
             };
-            let Some(exports) = exports(project, files, &modules, file, position, module) else {
-                issues.push(
-                    Issue::new(
-                        "unsupported_construct",
-                        &file.path,
-                        "star imports cannot resolve finite bindings",
-                    )
-                    .at(statement.at),
-                );
+            let Some((module, exports)) = resolve_module(file, module, *level)
+                .filter(|_| !optional)
+                .and_then(|module| {
+                    let exports = exports(project, files, &modules, file, position, &module)?;
+                    Some((module, exports))
+                })
+            else {
+                issues.push(unresolved(file, statement));
                 continue;
             };
             let imports: Vec<_> = exports
@@ -59,6 +64,50 @@ pub(super) fn resolve(project: &Project, files: &mut [AnalyzedFile]) -> Vec<Issu
     issues
 }
 
+fn collect_nested_imports(file: &AnalyzedFile, statement: &Statement, issues: &mut Vec<Issue>) {
+    match &statement.kind {
+        StatementKind::If {
+            body, otherwise, ..
+        } => {
+            for child in body.iter().chain(otherwise) {
+                collect_nested_imports(file, child, issues);
+            }
+        }
+        StatementKind::With { body, .. } => {
+            for child in body {
+                collect_nested_imports(file, child, issues);
+            }
+        }
+        StatementKind::ProjectWildcardImport { .. } => issues.push(unresolved(file, statement)),
+        _ => {}
+    }
+}
+
+fn unresolved(file: &AnalyzedFile, statement: &Statement) -> Issue {
+    Issue::new(
+        "unsupported_construct",
+        &file.path,
+        "star imports cannot resolve finite bindings",
+    )
+    .at(statement.at)
+}
+
+fn package(file: &AnalyzedFile) -> Option<&str> {
+    if file.is_package {
+        Some(&file.module)
+    } else {
+        file.module.rsplit_once('.').map(|(package, _)| package)
+    }
+}
+
+fn resolve_module(file: &AnalyzedFile, module: &str, level: u32) -> Option<String> {
+    match level {
+        0 => Some(module.to_owned()),
+        1 if !module.is_empty() => Some(format!("{}.{module}", package(file)?)),
+        _ => None,
+    }
+}
+
 fn exports<'a>(
     project: &Project,
     files: &'a [AnalyzedFile],
@@ -69,9 +118,8 @@ fn exports<'a>(
 ) -> Option<BTreeSet<&'a str>> {
     let (package, member) = module.split_once('.')?;
     if member.contains('.')
-        || importer.is_package
         || importer.facts.postponed_annotations
-        || importer.module.rsplit_once('.')?.0 != package
+        || self::package(importer)? != package
         || module == importer.module
         || !importer.facts.body[..position].iter().all(inert_expression)
     {
@@ -83,7 +131,7 @@ fn exports<'a>(
         || provider.is_package
         || package_file.facts.postponed_annotations
         || provider.facts.postponed_annotations
-        || !package_file.facts.body.iter().all(inert_expression)
+        || (!importer.is_package && !package_file.facts.body.iter().all(inert_expression))
         || !project.root_package_source_unambiguous(
             &package_file.path,
             &provider.path,

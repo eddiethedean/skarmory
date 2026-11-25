@@ -582,6 +582,7 @@ pub(super) struct FrameworkInputs<'a> {
     pub(super) settings: Option<&'a OsStr>,
     pub(super) templates: Option<&'a TemplateProject<'a>>,
     pub(super) discovery: Option<&'a crate::preview_source::Project>,
+    pub(super) unresolved_project_wildcards: bool,
 }
 
 pub(super) fn analyze_with_verification(
@@ -715,6 +716,17 @@ pub(super) fn analyze_with_verification(
     }
     for (file, source) in files.iter().enumerate() {
         graph.index(file, &source.facts.body);
+    }
+    if framework.unresolved_project_wildcards {
+        // An unresolved star import may add or replace arbitrary bindings.
+        // Preserve source declarations without inferring any runtime evidence.
+        return Analysis {
+            definitions: (0..graph.symbols.len())
+                .filter_map(|id| graph.definition_context(id))
+                .collect(),
+            issues: graph.issues,
+            ..Analysis::default()
+        };
     }
     if phase03 {
         graph.index_logging_os_initializers();
@@ -1330,6 +1342,32 @@ impl<'a> Graph<'a> {
                 }
             }
         }
+    }
+
+    fn definition_context(&self, id: SymbolId) -> Option<(String, DefinitionContext)> {
+        let symbol = &self.symbols[id];
+        let kind = match symbol.binding {
+            Binding::Deleted => return None,
+            Binding::Import(import) if import.wildcard_member => return None,
+            Binding::Definition(def, _) if def.kind == DefinitionKind::Class => "class",
+            Binding::Definition(..) => "function",
+            Binding::Import(_) => "import",
+            Binding::Variable(..) | Binding::UnpackItem { .. } => "variable",
+            Binding::Parameter => "parameter",
+        };
+        let file = &self.files[self.scopes[symbol.scope].file].path;
+        let Location { line, column } = symbol.name.at;
+        let qualified = self.full_name(id);
+        Some((
+            format!("{file}:{line}:{column}:{qualified}"),
+            DefinitionContext {
+                name: qualified,
+                kind,
+                file: file.clone(),
+                line,
+                column,
+            },
+        ))
     }
 
     fn full_name(&self, id: SymbolId) -> String {
@@ -7455,7 +7493,7 @@ impl<'a> Graph<'a> {
                         );
                     }
                 }
-                StatementKind::ProjectWildcardImport(_) => {
+                StatementKind::ProjectWildcardImport { .. } => {
                     self.scope_issue(
                         scope,
                         at,
@@ -10223,28 +10261,10 @@ impl<'a> Graph<'a> {
             if matches!(symbol.binding, Binding::Import(import) if import.wildcard_member) {
                 continue;
             }
-            if self.phase03 {
-                let kind = match symbol.binding {
-                    Binding::Definition(def, _) if def.kind == DefinitionKind::Class => "class",
-                    Binding::Definition(..) => "function",
-                    Binding::Import(_) => "import",
-                    Binding::Variable(..) | Binding::UnpackItem { .. } => "variable",
-                    Binding::Parameter => "parameter",
-                    Binding::Deleted => unreachable!("deletions do not add definitions"),
-                };
-                let file = &self.files[scope.file].path;
-                let Location { line, column } = symbol.name.at;
-                let qualified = self.full_name(id);
-                definitions.insert(
-                    format!("{file}:{line}:{column}:{qualified}"),
-                    DefinitionContext {
-                        name: qualified,
-                        kind,
-                        file: file.clone(),
-                        line,
-                        column,
-                    },
-                );
+            if self.phase03
+                && let Some((key, definition)) = self.definition_context(id)
+            {
+                definitions.insert(key, definition);
             }
             if name == "_" || (name.starts_with("__") && name.ends_with("__")) {
                 continue;
@@ -10532,7 +10552,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             StatementKind::ProviderWildcardImport(imports) => {
                 assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
             }
-            StatementKind::ProjectWildcardImport(_) => {}
+            StatementKind::ProjectWildcardImport { .. } => {}
             StatementKind::Assign {
                 names,
                 value,

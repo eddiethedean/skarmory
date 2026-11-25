@@ -93,8 +93,10 @@ impl<'a> Python<'a> {
                         bindings.insert(&import.local.text, None);
                     }
                 }
-                Stmt::ProjectWildcardImport(module) => {
-                    self.module(statement.at.line, module, "python_import");
+                Stmt::ProjectWildcardImport { module, level, .. } => {
+                    if *level == 0 {
+                        self.module(statement.at.line, module, "python_import");
+                    }
                 }
                 Stmt::Assign {
                     names,
