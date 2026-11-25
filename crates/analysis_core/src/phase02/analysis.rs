@@ -11492,18 +11492,23 @@ configure()
     #[test]
     fn django_settings_prove_literal_logging_versions_through_named_imports() {
         let formatters = "import logging\nclass Formatter(logging.Formatter):\n    def format(self, record): return record.getMessage()\n";
-        for (version, active) in [(0, false), (1, true), (2, false)] {
-            let logging = format!(
-                "{{'version': {version}, 'formatters': {{'active': {{'()': 'shop.formatters.Formatter'}}}}}}"
-            );
+        let factories = "'formatters': {'active': {'()': 'shop.formatters.Formatter'}}";
+        for version in [None, Some(0), Some(1), Some(2)] {
+            let version_field =
+                version.map_or_else(String::new, |value| format!("'version': {value}, "));
+            let logging = format!("{{{version_field}{factories}}}");
             let base = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n";
             let origin = format!("ORIGINAL = {logging}\n");
+            let updated = if let Some(version) = version {
+                format!(
+                    "{base}VERSION = {version}\nLOGGING = {{'version': VERSION, {factories}}}\n"
+                )
+            } else {
+                format!("{base}LOGGING = {{}}\nLOGGING.update({logging})\n")
+            };
             for settings in [
                 format!("{base}LOGGING = {logging}\n"),
-                format!(
-                    "{base}VERSION = {version}\nLOGGING = {}\n",
-                    logging.replace(&format!("'version': {version}"), "'version': VERSION")
-                ),
+                updated,
                 format!("{base}from shop.reexports import EXPORTED as LOGGING\n"),
                 format!("{base}LOGGING = {logging}\nif enabled:\n    LOGGING = {{}}\n"),
                 format!("{base}if enabled:\n    from shop.reexports import EXPORTED as LOGGING\n"),
@@ -11528,8 +11533,8 @@ configure()
                         .evidence
                         .iter()
                         .any(|row| row.kind == "django_logging_factory"),
-                    active,
-                    "{version}: {settings}"
+                    version == Some(1),
+                    "{version:?}: {settings}"
                 );
             }
         }

@@ -94,7 +94,7 @@ class ServiceTests(TestCase):
 }
 
 #[test]
-fn unittest_module_hooks_follow_the_effective_callable() {
+fn unittest_lifecycle_hooks_require_a_discovered_test() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
     fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
@@ -117,11 +117,22 @@ class ServiceTests(TestCase):
 "#,
     )
     .unwrap();
-    fs::write(
-        root.join("test_empty.py"),
-        "from unittest import TestCase\ndef configure(): return 1\nsetUpModule = configure\nclass Empty(TestCase): pass\n",
-    )
-    .unwrap();
+    let empty_path = root.join("test_empty.py");
+    let empty = r#"from unittest import TestCase
+
+def setUpModule(): return 1
+def tearDownModule(): return 2
+def configure_class(): return 3
+def finish_class(): return 4
+
+class Empty(TestCase):
+    @classmethod
+    def setUpClass(cls): return configure_class()
+
+    @classmethod
+    def tearDownClass(cls): return finish_class()
+"#;
+    fs::write(&empty_path, empty).unwrap();
 
     let report = scan(root, None);
     assert!(discovery(&report, "test_service.create_database"));
@@ -135,13 +146,43 @@ class ServiceTests(TestCase):
         "unused_functions",
         "test_service.unused_cleanup"
     ));
-    assert!(unused(&report, "unused_functions", "test_empty.configure"));
+    let module_hooks = ["test_empty.setUpModule", "test_empty.tearDownModule"];
+    let class_hooks = [
+        "test_empty.Empty.setUpClass",
+        "test_empty.Empty.tearDownClass",
+    ];
+    let helpers = ["test_empty.configure_class", "test_empty.finish_class"];
+    assert!(discovery(&report, "test_empty.Empty"));
+    for hook in module_hooks.into_iter().chain(class_hooks) {
+        assert!(!discovery(&report, hook), "{report}");
+        assert!(unused(&report, "unused_functions", hook), "{report}");
+    }
+    for name in helpers {
+        assert!(unused(&report, "unused_functions", name), "{report}");
+    }
     let cache = tempfile::tempdir().unwrap();
     for _ in 0..2 {
         let mut cached = scan(root, Some(cache.path()));
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(cached, report);
     }
+
+    fs::write(
+        &empty_path,
+        format!("{empty}\n    def test_service(self): pass\n"),
+    )
+    .unwrap();
+    let report = scan(root, None);
+    assert!(discovery(&report, "test_empty.Empty.test_service"));
+    for hook in module_hooks.into_iter().chain(class_hooks) {
+        assert!(discovery(&report, hook), "{report}");
+    }
+    for helper in helpers {
+        assert!(!unused(&report, "unused_functions", helper), "{report}");
+    }
+    let mut cached = scan(root, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
 }
 
 #[test]
