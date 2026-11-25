@@ -5340,6 +5340,15 @@ impl<'a> Graph<'a> {
                             keywords,
                         });
                     }
+                    Value::Provider(name) if self.phase03 && is_django_runpython(&name) => {
+                        self.record_django_runpython(CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        });
+                    }
                     Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
                         match self.verification_member(scope, arguments, keywords, before, 0) {
                             Some((Value::Callable(invocation), at)) => {
@@ -5914,6 +5923,76 @@ impl<'a> Graph<'a> {
                 });
         }
         self.activate_callback(scope, target, "executor_submission", at);
+    }
+
+    fn record_django_runpython(&mut self, call: CallArguments<'_>) {
+        let reject = |graph: &mut Self| {
+            graph.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_registration",
+                "Django RunPython requires a resolved forward callback and optional reverse callback",
+            );
+        };
+        let Some([Some(code), reverse, ..]) = registration_arguments(
+            call.positional,
+            call.keywords,
+            ["code", "reverse_code", "atomic", "hints", "elidable"],
+        ) else {
+            reject(self);
+            return;
+        };
+        let mut callbacks = Vec::new();
+        for expression in [Some(code), reverse].into_iter().enumerate() {
+            let (index, Some(expression)) = expression else {
+                continue;
+            };
+            match self.probe_identity(call.scope, expression, call.before) {
+                Value::None if index == 1 => {}
+                Value::Provider(provider)
+                    if provider
+                        .strip_suffix(".noop")
+                        .is_some_and(is_django_runpython) => {}
+                Value::Callable(invocation) if !self.is_class(invocation.target) => {
+                    callbacks.push(invocation);
+                }
+                _ => {
+                    reject(self);
+                    return;
+                }
+            }
+        }
+        for invocation in callbacks {
+            let target = invocation.target;
+            let Binding::Definition(definition, body) = self.symbols[target].binding else {
+                continue;
+            };
+            let receiver = usize::from(matches!(invocation.receiver, Receiver::Bound(_)));
+            // Construction stores the callable. A later migration supplies
+            // two positional arguments; construction does not run its body.
+            self.edge(
+                call.scope,
+                target,
+                "django_migration_callback_declaration",
+                "possible",
+            );
+            let supplied = receiver + 2;
+            let positional = definition.positional_parameter_count;
+            let bound = if supplied > positional && definition.has_variadic_positional_parameter {
+                positional + 1
+            } else {
+                supplied.min(positional)
+            };
+            for parameter in definition.parameters.iter().take(bound).skip(receiver) {
+                let binding = self.by_location[&(body, parameter.at.line, parameter.at.column)];
+                self.edge(
+                    call.scope,
+                    binding,
+                    "django_migration_parameter",
+                    "possible",
+                );
+            }
+        }
     }
 
     fn activate_argument(
@@ -8571,6 +8650,7 @@ impl<'a> Graph<'a> {
                         | "marshmallow_schema_options"
                         | "marshmallow_hook_declaration"
                         | "celery_backend_default"
+                        | "django_migration_callback_declaration"
                 ) {
                     continue;
                 }
@@ -8976,8 +9056,9 @@ impl<'a> Graph<'a> {
             .iter()
             .filter_map(|&(target, kind, _)| {
                 (self.retain_sanic_listener_parameters(target, kind)
-                    || self.retain_fastapi_callback_parameters(target, kind))
-                .then_some(target)
+                    || self.retain_fastapi_callback_parameters(target, kind)
+                    || kind == "django_migration_callback_declaration")
+                    .then_some(target)
             })
             .collect();
         let django_callback_contracts: BTreeSet<_> = evidence
@@ -9008,6 +9089,7 @@ impl<'a> Graph<'a> {
                     | "django_setting"
                     | "django_application"
                     | "django_converter_regex"
+                    | "django_migration_parameter"
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
             ) {
@@ -9998,7 +10080,21 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
 }
 
 fn framework_managed_base(name: &str) -> bool {
-    framework_class_provider(name).is_some() || is_django_string_converter(name)
+    framework_class_provider(name).is_some()
+        || is_django_string_converter(name)
+        || matches!(
+            name,
+            "django.db.migrations.Migration" | "django.db.migrations.migration.Migration"
+        )
+}
+
+fn is_django_runpython(name: &str) -> bool {
+    matches!(
+        name,
+        "django.db.migrations.RunPython"
+            | "django.db.migrations.operations.RunPython"
+            | "django.db.migrations.operations.special.RunPython"
+    )
 }
 
 fn is_django_string_converter(name: &str) -> bool {
@@ -10038,6 +10134,51 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn django_runpython_preserves_only_supplied_callback_parameters() {
+        let files = [
+            module(
+                "callbacks.py",
+                "callbacks",
+                "def apply_change(apps, editor, /, extra=None): pass\n",
+            ),
+            module(
+                "shop/migrations/0001_data.py",
+                "shop.migrations.0001_data",
+                r#"from django.db import migrations
+from callbacks import apply_change as forwards
+
+def backwards(first, /, *rest, extra=None): pass
+def unused(untouched): pass
+
+class Migration(migrations.Migration):
+    operations = [migrations.RunPython(forwards, reverse_code=backwards)]
+"#,
+            ),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(
+            names(&report, Category::Parameter),
+            ["extra", "extra", "untouched"]
+        );
+        let retained: BTreeSet<_> = report
+            .evidence
+            .iter()
+            .filter(|row| row.kind == "django_migration_parameter" && row.certainty == "possible")
+            .map(|row| row.full_name.as_str())
+            .collect();
+        assert_eq!(
+            retained,
+            BTreeSet::from([
+                "callbacks.apply_change.apps",
+                "callbacks.apply_change.editor",
+                "shop.migrations.0001_data.backwards.first",
+                "shop.migrations.0001_data.backwards.rest",
+            ])
+        );
     }
 
     #[test]

@@ -304,6 +304,11 @@ subclasses named `Command` in the installed apps' public
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
 
+Django `RunPython` operations preserve possible declaration use of resolved
+forward and reverse callbacks. Parameter evidence covers the two positional
+arguments Django supplies. Constructing the operation does not execute the
+callback. [Django migration operations](https://docs.djangoproject.com/en/5.2/ref/migration-operations/#runpython)
+
 The analyzer resolves local classes and functions named by effective authentication,
 storage, logging, and Django template settings. Bounded backend methods and
 context processors contribute possible-use evidence. The model follows named

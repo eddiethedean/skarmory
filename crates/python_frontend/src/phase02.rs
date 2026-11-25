@@ -110,6 +110,7 @@ pub struct Definition {
     pub body_coverage_lines: Vec<usize>,
     pub decorators: Vec<Expression>,
     pub parameters: Vec<Name>,
+    pub positional_parameter_count: usize,
     pub has_positional_parameter: bool,
     pub has_variadic_positional_parameter: bool,
     pub simple_positional_parameters: bool,
@@ -689,6 +690,8 @@ impl Lowering<'_> {
                             .map(|item| expression(&item.expression))
                             .collect::<Result<_, _>>()?,
                         parameters,
+                        positional_parameter_count: node.parameters.posonlyargs.len()
+                            + node.parameters.args.len(),
                         has_positional_parameter: !(node.parameters.posonlyargs.is_empty()
                             && node.parameters.args.is_empty()),
                         has_variadic_positional_parameter: node.parameters.vararg.is_some(),
@@ -737,6 +740,7 @@ impl Lowering<'_> {
                             .map(|item| expression(&item.expression))
                             .collect::<Result<_, _>>()?,
                         parameters: Vec::new(),
+                        positional_parameter_count: 0,
                         has_positional_parameter: false,
                         has_variadic_positional_parameter: false,
                         simple_positional_parameters: false,
