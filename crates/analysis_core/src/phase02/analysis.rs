@@ -230,6 +230,7 @@ enum FrameworkClassRole {
     SqlAlchemyModel,
     SqlModel,
     PydanticModel,
+    MarshmallowSchema,
 }
 
 impl FrameworkClassRole {
@@ -6407,6 +6408,21 @@ impl<'a> Graph<'a> {
             Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
             Value::Provider(name)
                 if self.phase03
+                    && args.is_empty()
+                    && keywords.is_empty()
+                    && matches!(
+                        name.as_str(),
+                        "marshmallow.post_load"
+                            | "marshmallow.decorators.post_load"
+                            | "marshmallow.validates_schema"
+                            | "marshmallow.decorators.validates_schema"
+                    )
+                    && self.record_marshmallow_hook(scope, target) =>
+            {
+                return true;
+            }
+            Value::Provider(name)
+                if self.phase03
                     && name == "attrs.define"
                     && args.is_empty()
                     && keywords.is_empty()
@@ -8222,6 +8238,9 @@ impl<'a> Graph<'a> {
                         | "generator_creation"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
+                        | "marshmallow_schema_registry"
+                        | "marshmallow_schema_options"
+                        | "marshmallow_hook_declaration"
                         | "celery_backend_default"
                 ) {
                     continue;
@@ -8637,6 +8656,7 @@ impl<'a> Graph<'a> {
             if matches!(
                 kind,
                 "attrs_field"
+                    | "marshmallow_schema_options"
                     | "django_setting"
                     | "django_application"
                     | "django_converter_regex"
@@ -9603,6 +9623,9 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         | "pydantic.main.BaseModel"
         | "pydantic_settings.BaseSettings"
         | "pydantic_settings.main.BaseSettings" => Some(FrameworkClassRole::PydanticModel),
+        "marshmallow.Schema" | "marshmallow.schema.Schema" => {
+            Some(FrameworkClassRole::MarshmallowSchema)
+        }
         _ => None,
     }
 }

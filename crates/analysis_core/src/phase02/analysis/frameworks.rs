@@ -154,7 +154,9 @@ impl Graph<'_> {
                     (None, &[][..], false)
                 }
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
-                FrameworkClassRole::CeleryTask => (None, &[][..], false),
+                FrameworkClassRole::CeleryTask | FrameworkClassRole::MarshmallowSchema => {
+                    (None, &[][..], false)
+                }
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
                     &["__declare_first__", "__declare_last__"][..],
@@ -187,6 +189,9 @@ impl Graph<'_> {
             if role == FrameworkClassRole::PydanticModel {
                 self.collect_pydantic_schema_build(class, class_scope);
             }
+            if role == FrameworkClassRole::MarshmallowSchema {
+                self.collect_marshmallow_registration(class, class_scope);
+            }
             for name in lifecycle {
                 if let Some(target) = self.local(class_scope, name, END)
                     && matches!(self.symbols[target].binding, Binding::Definition(_, _))
@@ -207,6 +212,95 @@ impl Graph<'_> {
         }
 
         self.collect_test_frameworks();
+    }
+
+    fn collect_marshmallow_registration(&mut self, class: SymbolId, class_scope: ScopeId) {
+        let (lineage, _) = self.class_lineage(class);
+        match self.marshmallow_register_option(&lineage, class_scope) {
+            Some(true) => self.edge(class_scope, class, "marshmallow_schema_registry", "certain"),
+            Some(false) => {}
+            None => self.scope_issue(
+                class_scope,
+                self.symbols[class].name.at,
+                "unresolved_registration",
+                "Marshmallow SchemaMeta registration options could not be resolved",
+            ),
+        }
+    }
+
+    fn marshmallow_register_option(
+        &mut self,
+        lineage: &[ScopeId],
+        class_scope: ScopeId,
+    ) -> Option<bool> {
+        // A custom OPTIONS_CLASS can determine registration independently of Meta.
+        if lineage
+            .iter()
+            .any(|&scope| self.local(scope, "OPTIONS_CLASS", END).is_some())
+        {
+            return None;
+        }
+        let Some(meta) = lineage
+            .iter()
+            .find_map(|&scope| self.local(scope, "Meta", END))
+        else {
+            return Some(true);
+        };
+        let Value::Callable(meta) = self.binding(meta, END, 0) else {
+            return None;
+        };
+        if !self.is_class(meta.target) {
+            return None;
+        }
+        self.edge(
+            class_scope,
+            meta.target,
+            "marshmallow_schema_options",
+            "certain",
+        );
+        let (meta_lineage, complete) = self.class_lineage(meta.target);
+        for &scope in &meta_lineage {
+            if let Some(option) = self.local(scope, "register", END) {
+                if self.binding_depends_on_branch(option, END) {
+                    return None;
+                }
+                self.edge(class_scope, option, "marshmallow_schema_options", "certain");
+                return match self.binding_value(option, 0) {
+                    Value::Bool(register) => Some(register),
+                    _ => None,
+                };
+            }
+        }
+        complete.then_some(true)
+    }
+
+    pub(super) fn record_marshmallow_hook(&mut self, scope: ScopeId, target: SymbolId) -> bool {
+        let Binding::Definition(definition, _) = self.symbols[target].binding else {
+            return false;
+        };
+        if definition.kind != DefinitionKind::Function || definition.decorators.len() != 1 {
+            return false;
+        }
+        if self.scopes[scope].owner.is_some_and(|class| {
+            self.is_class(class)
+                && self.framework_class_role(class, &mut BTreeSet::new(), 0)
+                    == Some(FrameworkClassRole::MarshmallowSchema)
+        }) && self.local(scope, &definition.name.text, END) == Some(target)
+        {
+            if self.binding_depends_on_branch(target, END) {
+                self.scope_issue(
+                    scope,
+                    definition.name.at,
+                    "unresolved_registration",
+                    "Marshmallow schema hook depends on an unresolved branch",
+                );
+            } else {
+                // SchemaMeta stores the marked method in its hooks table without
+                // executing it. Load/dump dispatch is a separate operation.
+                self.edge(scope, target, "marshmallow_hook_declaration", "certain");
+            }
+        }
+        true
     }
 
     fn collect_pydantic_schema_build(&mut self, class: SymbolId, class_scope: ScopeId) {

@@ -317,6 +317,99 @@ def lookalike(config): return config
 }
 
 #[test]
+fn marshmallow_schema_creation_records_registry_and_hook_metadata() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("schemas.py");
+    let source = r#"from marshmallow import Schema as BaseSchema, post_load, validates_schema
+
+class Active(BaseSchema):
+    @post_load
+    def make_record(self, data, **kwargs): return convert(data)
+
+    @validates_schema()
+    def validate_record(self, data, **kwargs): return None
+
+class Private(BaseSchema):
+    class Meta:
+        register = False
+
+    @post_load
+    def private_load(self, data, **kwargs): return data
+
+class Lookalike:
+    @post_load
+    def make_record(self, data, **kwargs): return data
+
+def convert(data): return data
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["schemas.Lookalike", "schemas.Private"],
+        "{report}"
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["schemas.Lookalike.make_record", "schemas.convert"],
+        "{report}"
+    );
+    for (name, kind) in [
+        ("schemas.Active", "marshmallow_schema_registry"),
+        ("schemas.Active.make_record", "marshmallow_hook_declaration"),
+        (
+            "schemas.Active.validate_record",
+            "marshmallow_hook_declaration",
+        ),
+        (
+            "schemas.Private.private_load",
+            "marshmallow_hook_declaration",
+        ),
+    ] {
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["qualified_name"] == name
+                        && row["evidence"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|edge| edge["kind"] == kind && edge["certainty"] == "certain")
+                }),
+            "{report}"
+        );
+    }
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        path,
+        source.replace(
+            "register = False",
+            "from config import enabled\n        register = enabled",
+        ),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_registration"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn sqlalchemy_hybrid_descriptor_retains_the_getter_without_calling_it() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
