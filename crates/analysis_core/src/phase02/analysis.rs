@@ -585,6 +585,7 @@ pub(super) fn analyze_with_verification(
         django_autoreload_wrappers: Vec::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
+        django_settings_sources: BTreeSet::new(),
         django_registration_issues: Vec::new(),
         framework_route_receivers: BTreeMap::new(),
         registered_django_admin_models: BTreeSet::new(),
@@ -770,6 +771,7 @@ struct Graph<'a> {
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
+    django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
     django_registration_issues: Vec<(Object, Issue)>,
     framework_route_receivers: BTreeMap<(ScopeId, Object, SymbolId), BTreeSet<SymbolId>>,
     registered_django_admin_models: BTreeSet<(ScopeId, SymbolId)>,
@@ -8832,6 +8834,16 @@ impl<'a> Graph<'a> {
             self.resolve_class_invocations();
             (reach, static_reach, verification, converged) =
                 self.establish_reachability(&roots, &possible_roots, snapshot);
+        }
+        if self.phase03 && converged {
+            let protocols = self.django_settings_protocol_roots(&reach);
+            if !protocols.is_empty() {
+                possible_roots.extend(protocols);
+                self.resolve_receiver_calls();
+                self.resolve_class_invocations();
+                (reach, static_reach, verification, converged) =
+                    self.establish_reachability(&roots, &possible_roots, snapshot);
+            }
         }
         if !converged {
             self.issues.push(framework_limit());

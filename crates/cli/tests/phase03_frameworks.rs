@@ -6094,6 +6094,101 @@ fn django_setting_class_declaration_does_not_activate_replaced_protocol_callback
 }
 
 #[test]
+fn django_effective_settings_keep_only_possible_protocol_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let package = root.join("service");
+    fs::create_dir(&package).unwrap();
+    for (name, source) in [
+        ("__init__.py", ""),
+        (
+            "settings.py",
+            "INSTALLED_APPS = ['service']\nSECRET_KEY = 'fixture'\nfrom .config import BACKENDS as AUTHENTICATION_BACKENDS, LOGGING, TEMPLATES\nif enabled:\n    LOGGING = {}\nSTORAGES = {'default': {'BACKEND': 'service.backends.Old'}, 'default': {'BACKEND': 'service.backends.Store'}}\n",
+        ),
+        (
+            "config.py",
+            "BACKENDS = ('service.backends.Configured',)\nLOGGING = {'version': 1, 'filters': {'active': {'()': 'service.backends.Filter'}}}\nTEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', 'OPTIONS': {'context_processors': ['service.backends.context']}}]\n",
+        ),
+        (
+            "backends.py",
+            r#"class Base:
+    def get_user(self, user_id): return False
+class Left(Base):
+    pass
+class Right(Base):
+    def get_user(self, user_id): return lookup(user_id)
+    async def aget_user(self, user_id): return lookup(user_id)
+class Configured(Left, Right):
+    pass
+class Filter:
+    def filter(self, record): return valid(record)
+    def unrelated(self): return True
+class Store:
+    def save(self, name, content): return name
+class Old:
+    def save(self, name, content): return name
+
+def lookup(user_id): return user_id
+def valid(record): return True
+def context(request): return {}
+"#,
+        ),
+    ] {
+        fs::write(package.join(name), source).unwrap();
+    }
+    let report = scan(root);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let edges = |name: &str, kind: &str| {
+        symbols
+            .iter()
+            .filter(|item| item["qualified_name"] == name)
+            .flat_map(|item| item["evidence"].as_array().unwrap())
+            .filter(|edge| edge["kind"] == kind)
+            .map(|edge| edge["certainty"].as_str().unwrap())
+            .collect::<Vec<_>>()
+    };
+    for (name, kind) in [
+        ("service.backends.Right.get_user", "django_auth_backend"),
+        ("service.backends.Right.aget_user", "django_auth_backend"),
+        ("service.backends.Filter.filter", "django_logging_factory"),
+        ("service.backends.Store.save", "django_storage_backend"),
+        ("service.backends.context", "django_setting_reference"),
+        ("service.backends.lookup", "direct_call"),
+    ] {
+        assert_eq!(edges(name, kind), ["possible"], "{name}: {report}");
+    }
+    for (name, kind) in [
+        ("service.backends.Base.get_user", "django_auth_backend"),
+        ("service.backends.Old.save", "django_storage_backend"),
+        (
+            "service.backends.Filter.unrelated",
+            "django_logging_factory",
+        ),
+    ] {
+        assert!(edges(name, kind).is_empty(), "{name}: {report}");
+    }
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        package.join("config.py"),
+        "BACKENDS = []\nLOGGING = {}\nTEMPLATES = []\n",
+    )
+    .unwrap();
+    let edited = scan(root);
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, edited);
+    assert!(
+        findings(&edited, "unused_functions").contains(&"service.backends.lookup"),
+        "{edited}"
+    );
+}
+
+#[test]
 fn phase03_preserves_an_importable_package_named_src() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

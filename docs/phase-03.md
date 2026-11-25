@@ -291,6 +291,15 @@ subclasses named `Command` in the installed apps' public
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
 
+The analyzer resolves local classes and functions named by effective authentication,
+storage, logging, and Django template settings. Bounded backend methods and
+context processors contribute possible-use evidence. The model follows named
+imports, locally defined class inheritance, and finite setting alternatives.
+A unique conventional settings package with literal application and secret-key
+settings can describe an externally selected configuration. Storage and logging
+entries use their effective dictionary keys, and incomplete configuration
+writes retain their coverage diagnostics.
+
 Django admin discovery follows installed apps when `django.contrib.admin` or
 `AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules
 dormant unless the selected application imports them. The analyzer resolves

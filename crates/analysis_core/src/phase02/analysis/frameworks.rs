@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod django_settings;
+
 pub(super) struct DjangoStartup {
     pub(super) at: Location,
     pub(super) settings: Option<String>,
@@ -1278,11 +1280,18 @@ impl Graph<'_> {
     }
 
     fn converter_descriptor(&mut self, target: SymbolId) -> Option<ConverterDescriptor> {
+        if self.is_coroutine(target) {
+            return None;
+        }
+        self.bounded_method_descriptor(target)
+    }
+
+    fn bounded_method_descriptor(&mut self, target: SymbolId) -> Option<ConverterDescriptor> {
         let symbol = &self.symbols[target];
         let Binding::Definition(definition, _) = symbol.binding else {
             return None;
         };
-        if definition.kind != DefinitionKind::Function || definition.is_generator {
+        if definition.kind == DefinitionKind::Class || definition.is_generator {
             return None;
         }
         let scope = symbol.scope;
@@ -1837,6 +1846,7 @@ impl Graph<'_> {
         settings: usize,
         commands: &DjangoCommands,
     ) {
+        self.django_settings_sources.insert((scope, settings));
         let row = &mut self.scopes[scope];
         row.activated_apps.extend([
             django_loaded_module(settings),
