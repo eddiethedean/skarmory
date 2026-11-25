@@ -4,9 +4,10 @@ use super::*;
 
 const MAX_ENUM_MEMBERS: usize = 128;
 const MAX_TEXT_BYTES: usize = 65_536;
+const MAX_SPLIT_ITEMS: usize = 128;
 
 pub(super) struct TextCall<'a> {
-    pub(super) value: String,
+    pub(super) value: Value,
     enum_projection: Option<EnumProjection<'a>>,
 }
 
@@ -161,7 +162,7 @@ impl<'a> Graph<'a> {
         let ExpressionKind::Member(base, method) = &function.kind else {
             return None;
         };
-        if !call.keywords.is_empty() || !matches!(method.as_str(), "format" | "join") {
+        if !call.keywords.is_empty() || !matches!(method.as_str(), "format" | "join" | "split") {
             return None;
         }
         let [argument] = call.positional else {
@@ -184,15 +185,11 @@ impl<'a> Graph<'a> {
             }
             let members: Vec<_> = projection.members.iter().map(|(_, value)| *value).collect();
             return Some(TextCall {
-                value: members.join(&receiver),
+                value: Value::Text(members.join(&receiver)),
                 enum_projection: Some(projection),
             });
         }
 
-        let (prefix, suffix) = receiver.split_once("{}")?;
-        if prefix.contains(['{', '}']) || suffix.contains(['{', '}']) {
-            return None;
-        }
         let Value::Text(argument) = self.identity(call.scope, argument, call.before, depth + 1)
         else {
             return None;
@@ -200,10 +197,69 @@ impl<'a> Graph<'a> {
         if receiver.len().saturating_add(argument.len()) > MAX_TEXT_BYTES {
             return None;
         }
+        let value = if method == "split" {
+            if argument.is_empty() {
+                return None;
+            }
+            let parts: Vec<_> = receiver
+                .split(&argument)
+                .take(MAX_SPLIT_ITEMS + 1)
+                .collect();
+            if parts.len() > MAX_SPLIT_ITEMS {
+                return None;
+            }
+            Value::Sequence(
+                parts
+                    .into_iter()
+                    .map(|part| Value::Text(part.into()))
+                    .collect(),
+            )
+        } else {
+            let (prefix, suffix) = receiver.split_once("{}")?;
+            if prefix.contains(['{', '}']) || suffix.contains(['{', '}']) {
+                return None;
+            }
+            Value::Text([prefix, &argument, suffix].concat())
+        };
         Some(TextCall {
-            value: [prefix, &argument, suffix].concat(),
+            value,
             enum_projection: None,
         })
+    }
+
+    pub(super) fn literal_split_items(
+        &mut self,
+        scope: ScopeId,
+        value: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Option<Vec<Value>> {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &value.kind
+        else {
+            return None;
+        };
+        if !matches!(&function.kind, ExpressionKind::Member(_, member) if member == "split") {
+            return None;
+        }
+        let call = self.literal_text_call(
+            function,
+            CallArguments {
+                scope,
+                before,
+                at: value.at,
+                positional: arguments,
+                keywords,
+            },
+            depth,
+        )?;
+        match call.value {
+            Value::Sequence(items) => Some(items),
+            _ => None,
+        }
     }
 
     pub(super) fn walk_literal_text_call(

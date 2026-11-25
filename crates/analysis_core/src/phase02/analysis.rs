@@ -339,6 +339,12 @@ enum Binding<'a> {
     Definition(&'a Definition, ScopeId),
     Import(&'a Import),
     Variable(Option<&'a Expression>, Location),
+    UnpackItem {
+        value: &'a Expression,
+        arity: usize,
+        index: usize,
+        before: Location,
+    },
     Parameter,
     Deleted,
 }
@@ -979,10 +985,25 @@ impl<'a> Graph<'a> {
                         }
                         _ => None,
                     };
+                    let split = self.phase03
+                        && matches!(&value.kind, ExpressionKind::Call { function, .. }
+                            if matches!(&function.kind, ExpressionKind::Member(_, method) if method == "split"));
                     for (index, name) in names.iter().enumerate() {
                         // Every RHS element sees the namespace before any of the stores.
-                        let item = items.and_then(|items| items.get(index));
-                        self.bind(scope, name, Binding::Variable(item, statement.at));
+                        let binding = if split {
+                            Binding::UnpackItem {
+                                value,
+                                arity: names.len(),
+                                index,
+                                before: statement.at,
+                            }
+                        } else {
+                            Binding::Variable(
+                                items.and_then(|items| items.get(index)),
+                                statement.at,
+                            )
+                        };
+                        self.bind(scope, name, binding);
                     }
                 }
                 StatementKind::DeleteName(name)
@@ -2097,6 +2118,16 @@ impl<'a> Graph<'a> {
             Binding::Variable(Some(value), before) => {
                 self.identity(scope, value, before, depth + 1)
             }
+            Binding::UnpackItem {
+                value,
+                arity,
+                index,
+                before,
+            } => self
+                .literal_split_items(scope, value, before, depth + 1)
+                .filter(|items| items.len() == arity)
+                .and_then(|items| items.into_iter().nth(index))
+                .unwrap_or(Value::Unknown),
             Binding::Variable(None, _) => Value::Unknown,
             Binding::Deleted => Value::DeletedModuleBinding,
             Binding::Parameter => {
@@ -3543,9 +3574,10 @@ impl<'a> Graph<'a> {
                         keywords,
                     },
                     depth,
-                ) =>
+                )
+                && let Value::Text(value) = call.value =>
             {
-                Value::Text(call.value)
+                Value::Text(value)
             }
             ExpressionKind::Call {
                 function,
@@ -4803,26 +4835,28 @@ impl<'a> Graph<'a> {
             .is_some_and(|owner| !self.is_class(owner))
     }
 
-    fn record_formatting(&mut self, scope: ScopeId, value: Value, at: Location) {
+    fn record_formatting(&mut self, scope: ScopeId, value: Value, at: Location, use_format: bool) {
         if value.is_builtin_scalar() {
             return;
         }
         match value {
             Value::Alternatives(values) => {
                 for value in values {
-                    self.record_formatting(scope, value, at);
+                    self.record_formatting(scope, value, at, use_format);
                 }
                 return;
             }
             Value::Instance(class) => {
-                // With an empty format specification, object's default
-                // formatter uses str(value), which can fall back to repr.
-                let hook = [("__format__", 2), ("__str__", 1), ("__repr__", 1)]
-                    .into_iter()
-                    .find_map(|(name, arity)| {
-                        self.class_member_at(class, name, 0, Some((scope, at)))
-                            .map(|value| (value, arity))
-                    });
+                // Object's default formatter uses str(value), which can fall back to repr.
+                let hooks = [("__format__", 2), ("__str__", 1), ("__repr__", 1)];
+                let hook =
+                    hooks[usize::from(!use_format)..]
+                        .iter()
+                        .copied()
+                        .find_map(|(name, arity)| {
+                            self.class_member_at(class, name, 0, Some((scope, at)))
+                                .map(|value| (value, arity))
+                        });
                 match hook {
                     None => return,
                     Some((Value::Callable(invocation), arity))
@@ -4841,15 +4875,15 @@ impl<'a> Graph<'a> {
                     _ => {}
                 }
             }
-            _ if !self.has_format_hooks => return,
+            _ if !use_format || !self.has_format_hooks => return,
             _ => {}
         }
-        self.scope_issue(
-            scope,
-            at,
-            "unresolved_formatting",
-            "formatted string dispatch is outside the bounded model",
-        );
+        let message = if use_format {
+            "formatted string dispatch is outside the bounded model"
+        } else {
+            "str() dispatch is outside the bounded model"
+        };
+        self.scope_issue(scope, at, "unresolved_formatting", message);
     }
 
     fn namespace_is_nonempty(&self, owner: ScopeId, first: [usize; 2]) -> bool {
@@ -5285,6 +5319,14 @@ impl<'a> Graph<'a> {
                             "unresolved_call",
                             format!("{name} can execute code outside the bounded model"),
                         );
+                    }
+                    Value::Provider(name) if self.phase03 && name == "builtins.str" => {
+                        if let [argument] = arguments.as_slice()
+                            && keywords.is_empty()
+                        {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.record_formatting(scope, value, expr.at, false);
+                        }
                     }
                     Value::Provider(name) if name == "builtins.len" => {
                         if let [argument] = arguments.as_slice()
@@ -6054,7 +6096,7 @@ impl<'a> Graph<'a> {
                     self.walk(scope, value, before);
                     if self.phase03 {
                         let formatted = self.identity(scope, value, before, 0);
-                        self.record_formatting(scope, formatted, value.at);
+                        self.record_formatting(scope, formatted, value.at, true);
                     }
                 }
                 if !self.phase03 {
@@ -6940,9 +6982,15 @@ impl<'a> Graph<'a> {
                         continue;
                     }
                     self.walk(scope, value, at);
-                    match &value.kind {
-                        ExpressionKind::Sequence { items, .. } if items.len() == names.len() => {}
-                        ExpressionKind::Sequence { .. } => {
+                    let known_length = match &value.kind {
+                        ExpressionKind::Sequence { items, .. } => Some(items.len()),
+                        _ => self
+                            .literal_split_items(scope, value, at, 0)
+                            .map(|items| items.len()),
+                    };
+                    match known_length {
+                        Some(length) if length == names.len() => {}
+                        Some(_) => {
                             self.scope_issue(
                                 scope,
                                 at,
@@ -6955,7 +7003,7 @@ impl<'a> Graph<'a> {
                             scope,
                             at,
                             "unresolved_unpack",
-                            "assignment unpacking requires a fresh list or tuple literal",
+                            "assignment unpacking requires a bounded list or tuple value",
                         ),
                     }
                 }
@@ -10006,7 +10054,7 @@ impl<'a> Graph<'a> {
                     Binding::Definition(def, _) if def.kind == DefinitionKind::Class => "class",
                     Binding::Definition(..) => "function",
                     Binding::Import(_) => "import",
-                    Binding::Variable(..) => "variable",
+                    Binding::Variable(..) | Binding::UnpackItem { .. } => "variable",
                     Binding::Parameter => "parameter",
                     Binding::Deleted => unreachable!("deletions do not add definitions"),
                 };
@@ -10063,7 +10111,7 @@ impl<'a> Graph<'a> {
                 Binding::Import(_) if !self.read.contains(&id) => {
                     (Category::Import, "SKY-U002", 100, "binding_is_unread")
                 }
-                Binding::Variable(_, _)
+                Binding::Variable(_, _) | Binding::UnpackItem { .. }
                     if !self.read.contains(&id)
                         && !(self.framework_fields.contains(&id)
                             && scope
@@ -11581,6 +11629,76 @@ configure()
                 .iter()
                 .any(|issue| issue.kind == "unresolved_call")
         );
+    }
+
+    #[test]
+    fn django_middleware_preserves_request_metadata_only_after_closed_dispatch() {
+        let settings = r#"INSTALLED_APPS = ['shop']
+SECRET_KEY = 'fixture'
+ROOT_URLCONF = 'shop.urls'
+MIDDLEWARE = ['shop.middleware.Active']
+STORAGES = {'default': {'BACKEND': 'shop.storage.Media'}}
+"#;
+        let middleware = r#"def matched_path(request):
+    path = getattr(request, 'path_info', None) or getattr(request, 'path', '')
+    if not path:
+        return None
+    return path.rstrip('/') or '/'
+
+class Active:
+    def __init__(self, next_handler):
+        self.next_handler = next_handler
+
+    def __call__(self, request):
+        response = self.next_handler(request)
+        if route := matched_path(request):
+            request.META = getattr(request, 'META', {})
+            request.META['app.route'] = route
+        return response
+"#;
+        for (routes, complete) in [
+            ("urlpatterns = []\n", true),
+            (
+                "urlpatterns = []\nhandler404 = 'shop.handlers.custom_not_found'\n",
+                false,
+            ),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("shop/__init__.py", "shop", ""),
+                    module("shop/settings.py", "shop.settings", settings),
+                    module("shop/urls.py", "shop.urls", routes),
+                    module("shop/middleware.py", "shop.middleware", middleware),
+                    module(
+                        "shop/storage.py",
+                        "shop.storage",
+                        "class Media:\n    def save(self, name, content): return name\n",
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                report.issues.is_empty(),
+                complete,
+                "{routes}: {:?}",
+                report.issues
+            );
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name == "shop.middleware.matched_path"
+                        && row.kind == "direct_call"),
+                complete
+            );
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name == "shop.storage.Media.save"
+                        && row.kind == "django_storage_backend")
+            );
+        }
     }
 
     #[test]

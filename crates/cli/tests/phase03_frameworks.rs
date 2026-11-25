@@ -5921,6 +5921,89 @@ else:
 }
 
 #[test]
+fn exact_string_split_supplies_values_and_arity_for_flat_unpacking() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("entry.py");
+    let code = r#"def selected(): return 1
+def dormant(): return 2
+text = 'active::'
+separator = '::'
+first, second = text.split(separator)
+if first == 'active' and second == '':
+    selected()
+else:
+    dormant()
+"#;
+    fs::write(&source, code).unwrap();
+    let report = scan(root);
+    assert_eq!(unreachable_functions(&report), ["entry.dormant"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&source, code.replace("active::", "active::extra::")).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "invalid_unpack" }),
+        "{report}"
+    );
+
+    fs::write(
+        &source,
+        code.replace("text = 'active::'", "text = factory()"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_unpack" }),
+        "{report}"
+    );
+}
+
+#[test]
+fn str_uses_the_instance_string_hook_with_repr_as_a_fallback() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("entry.py"),
+        r#"class Explicit:
+    def __format__(self, specification): return formatted()
+    def __str__(self): return selected()
+    def __repr__(self): return bypassed()
+
+class Fallback:
+    def __repr__(self): return fallback()
+
+def selected(): return 'explicit'
+def fallback(): return 'fallback'
+def formatted(): return 'format'
+def bypassed(): return 'repr'
+
+str(Explicit())
+str(Fallback())
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        unreachable_functions(&report),
+        ["entry.bypassed", "entry.formatted"]
+    );
+}
+
+#[test]
 fn constructor_proves_plain_field_writes_without_bypassing_setattr() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

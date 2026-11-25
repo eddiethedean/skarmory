@@ -54,7 +54,7 @@ enum Protocol {
     Storage,
     Filter { default_constructor: bool },
     Formatter { default_constructor: bool },
-    Middleware,
+    Middleware { singleton: bool },
     ContextProcessor,
 }
 
@@ -71,7 +71,7 @@ impl Protocol {
                 "formatMessage",
                 "formatStack",
             ],
-            Self::Middleware | Self::ContextProcessor => &[],
+            Self::Middleware { .. } | Self::ContextProcessor => &[],
         }
     }
 
@@ -80,7 +80,7 @@ impl Protocol {
             Self::Auth => "django_auth_backend",
             Self::Storage => "django_storage_backend",
             Self::Filter { .. } | Self::Formatter { .. } => "django_logging_factory",
-            Self::Middleware => "django_middleware",
+            Self::Middleware { .. } => "django_middleware",
             Self::ContextProcessor => "django_setting_reference",
         }
     }
@@ -492,16 +492,19 @@ impl Graph<'_> {
             };
             class = replacement.target;
         }
-        if matches!(protocol, Protocol::Middleware) {
+        if let Protocol::Middleware { singleton } = protocol {
             self.read.extend(target.bindings);
             roots.push(possible_edge(class, "django_setting_reference"));
-            match self.prove_django_middleware(class, settings) {
+            match self.prove_django_middleware(class, settings, singleton) {
                 Some(site)
                     if !writes
                         .iter()
                         .any(|writes| writes.classes.contains_key(&class))
                         && !modified_callback_body(site.initializer, &writes, replaced_bodies)
-                        && !modified_callback_body(site.handler, &writes, replaced_bodies) =>
+                        && !modified_callback_body(site.handler, &writes, replaced_bodies)
+                        && !site.metadata_helper().is_some_and(|helper| {
+                            modified_callback_body(helper, &writes, replaced_bodies)
+                        }) =>
                 {
                     for callback in [site.initializer, site.handler] {
                         roots.push(possible_edge(callback, protocol.evidence()));
@@ -698,7 +701,9 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                 Some((
                     path.as_str(),
                     if name == "MIDDLEWARE" {
-                        Protocol::Middleware
+                        Protocol::Middleware {
+                            singleton: items.len() == 1,
+                        }
                     } else {
                         Protocol::Auth
                     },
