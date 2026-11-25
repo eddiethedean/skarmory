@@ -193,6 +193,8 @@ impl Graph<'_> {
                                     | "_post_teardown"
                             ))
                         || role == FrameworkClassRole::DjangoAppConfig && member == "ready"
+                        || role == FrameworkClassRole::DjangoCommand
+                            && matches!(member, "__init__" | "add_arguments" | "handle")
                         || role == FrameworkClassRole::DjangoSignal && member == "connect"
                 })
             }

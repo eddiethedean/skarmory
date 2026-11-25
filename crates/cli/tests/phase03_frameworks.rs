@@ -1484,6 +1484,50 @@ fn django_management_settings_option_selects_the_installed_commands() {
 }
 
 #[test]
+fn django_command_uses_the_effective_handle_after_module_writes() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let commands = root.join("shop/management/commands");
+    fs::create_dir_all(&commands).unwrap();
+    for path in ["shop", "shop/management", "shop/management/commands"] {
+        fs::write(root.join(path).join("__init__.py"), "").unwrap();
+    }
+    fs::write(root.join("settings.py"), "INSTALLED_APPS = ['shop']\n").unwrap();
+    fs::write(
+        root.join("manage.py"),
+        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+    )
+    .unwrap();
+    let command = r#"from django.core.management.base import BaseCommand
+
+class Command(BaseCommand):
+    def handle(self, *args, **options):
+        return retired()
+
+def retired():
+    return 1
+
+def current(self, *args, **options):
+    return 2
+"#;
+    for write in [
+        "Command.handle = current",
+        "setattr(Command, 'handle', current)",
+    ] {
+        fs::write(commands.join("audit.py"), format!("{command}\n{write}\n")).unwrap();
+        let report = scan(root);
+        let unused = findings(&report, "unused_functions");
+        assert_eq!(
+            unused,
+            [
+                "shop.management.commands.audit.Command.handle",
+                "shop.management.commands.audit.retired",
+            ]
+        );
+    }
+}
+
+#[test]
 fn unittest_cases_in_pytest_suffix_modules_are_collected() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -2138,6 +2182,48 @@ def opaque(sender, instance, **kwargs):
     assert_eq!(
         django_signal_evidence(&report),
         [("inventory.signals.registered", "certain")]
+    );
+}
+
+#[test]
+fn django_short_circuit_guards_preserve_signal_certainty() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    django_signal_project(
+        root,
+        r#"from django.db.models.signals import post_save
+from external import enabled
+
+def certain(sender, instance, **kwargs):
+    return 1
+
+def optional_and(sender, instance, **kwargs):
+    return 2
+
+def optional_or(sender, instance, **kwargs):
+    return 3
+
+def inactive(sender, instance, **kwargs):
+    return 4
+
+True and post_save.connect(certain)
+enabled and post_save.connect(optional_and)
+enabled or post_save.connect(optional_or)
+False and post_save.connect(inactive)
+"#,
+    );
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [
+            ("inventory.signals.certain", "certain"),
+            ("inventory.signals.optional_and", "possible"),
+            ("inventory.signals.optional_or", "possible"),
+        ]
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["inventory.signals.inactive"]
     );
 }
 

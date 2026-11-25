@@ -4853,11 +4853,15 @@ impl<'a> Graph<'a> {
                 }
             }
             ExpressionKind::Boolean { and, values } => {
+                let mut conditional = false;
                 for value in values {
+                    self.branch_depth += usize::from(conditional);
                     self.walk(scope, value, before);
-                    if matches!(self.identity(scope, value, before, 0), Value::Bool(result) if result != *and)
-                    {
-                        break;
+                    self.branch_depth -= usize::from(conditional);
+                    match self.identity(scope, value, before, 0) {
+                        Value::Bool(result) if result != *and => break,
+                        Value::Bool(_) => {}
+                        _ => conditional = self.phase03,
                     }
                 }
             }
