@@ -325,6 +325,7 @@ impl Graph<'_> {
                         | "flask.app.Flask"
                         | "flask.Blueprint"
                         | "flask.blueprints.Blueprint"
+                        | "celery.Celery"
                 ) || is_flask_login_constructor(&qualified)
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
@@ -709,6 +710,7 @@ fn provider_module(name: &str) -> bool {
             | "flask.blueprints"
             | "flask_login"
             | "flask_login.login_manager"
+            | "celery"
             | "typer"
             | "typer.main"
             | "django.utils.autoreload"
