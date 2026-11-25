@@ -4440,6 +4440,14 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => {
+                if self.phase03
+                    && arguments.is_empty()
+                    && keywords.is_empty()
+                    && let ExpressionKind::DeferredLambda(body) = &function.kind
+                    && self.fastapi_immediate_route_lambda(scope, body, before)
+                {
+                    return;
+                }
                 self.walk_expression(scope, function, before, true);
                 for expr in arguments
                     .iter()

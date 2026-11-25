@@ -1281,6 +1281,77 @@ registrations = [app.add_api_route('/', endpoint) for item in [] for extra in op
 }
 
 #[test]
+fn fastapi_immediate_route_lambda_executes_while_unconsumed_lambda_stays_dormant() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from fastapi import APIRouter, FastAPI
+
+def active_helper(): return 1
+def dormant_helper(): return 2
+def active(): return active_helper()
+def dormant(): return dormant_helper()
+
+app = FastAPI()
+router = APIRouter()
+(lambda: router.add_api_route('/active', active))()
+stored = lambda: router.add_api_route('/dormant', dormant)
+app.include_router(router)
+"#;
+    fs::write(&file, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dormant", "web.dormant_helper"]
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "web.active"
+                && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                }))
+    );
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+
+    fs::write(&file, format!("{source}stored()\n")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_lambda_execution")
+    );
+
+    fs::write(
+        &file,
+        "from fastapi import FastAPI\n\
+         def endpoint(): return 1\n\
+         class Container:\n    app = FastAPI()\n    (lambda: app.add_api_route('/', endpoint))()\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_lambda_execution")
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["qualified_name"] == "web.endpoint")
+    );
+}
+
+#[test]
 fn conventional_pytest_hooks_have_possible_use_without_discovery() {
     let project = tempfile::tempdir().unwrap();
     for (path, source) in [
