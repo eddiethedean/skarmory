@@ -315,35 +315,50 @@ impl Graph<'_> {
                 let parts = name.rsplit_once(':').or_else(|| name.rsplit_once('.'));
                 if let Some((module, member)) = parts
                     && let Some(&file) = self.modules.get(module)
-                    && let Value::Callable(invocation) = self.module_member_at(
+                {
+                    let provider = self.module_member_at(
                         module,
                         member,
                         END,
                         (scope, at),
                         ModuleMemberAccess::FromImport,
                         0,
-                    )
-                    && !self.is_coroutine(invocation.target)
-                {
-                    if file != self.scopes[scope].file {
-                        self.scopes[scope].imports.push(file);
+                    );
+                    if matches!(provider, Value::DeletedModuleBinding) {
+                        if file != self.scopes[scope].file {
+                            self.scopes[scope].imports.push(file);
+                        }
+                        return;
                     }
-                    if exact_default {
-                        // Configuration proves the default for an uncached
-                        // lookup. An earlier possible load can still win.
-                        self.edge(
-                            scope,
-                            invocation.target,
-                            "celery_backend_default",
-                            "certain",
-                        );
+                    if let Value::Callable(invocation) = provider
+                        && !self.is_coroutine(invocation.target)
+                    {
+                        if file != self.scopes[scope].file {
+                            self.scopes[scope].imports.push(file);
+                        }
+                        if exact_default {
+                            // Configuration proves the default for an uncached
+                            // lookup. An earlier possible load can still win.
+                            self.edge(
+                                scope,
+                                invocation.target,
+                                "celery_backend_default",
+                                "certain",
+                            );
+                        }
+                        let certainty = if certain { "certain" } else { "possible" };
+                        self.invoke(scope, invocation, "celery_backend", certainty, at);
+                        if self.is_class(invocation.target) {
+                            self.constructor(
+                                scope,
+                                invocation.target,
+                                "celery_backend",
+                                certainty,
+                                at,
+                            );
+                        }
+                        return;
                     }
-                    let certainty = if certain { "certain" } else { "possible" };
-                    self.invoke(scope, invocation, "celery_backend", certainty, at);
-                    if self.is_class(invocation.target) {
-                        self.constructor(scope, invocation.target, "celery_backend", certainty, at);
-                    }
-                    return;
                 }
             }
             Setting::Unknown => {}

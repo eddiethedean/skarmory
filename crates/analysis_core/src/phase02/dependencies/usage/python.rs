@@ -115,6 +115,9 @@ impl<'a> Python<'a> {
                         bindings.insert(&name.text, origin.clone());
                     }
                 }
+                Stmt::DeleteName(name) => {
+                    bindings.insert(&name.text, None);
+                }
                 Stmt::LiteralRouteLoop {
                     path, registration, ..
                 } => {
@@ -404,6 +407,27 @@ impl<'a> Python<'a> {
                     self.expression(value, bindings);
                 }
             }
+            Expr::Comprehension {
+                iterators,
+                elements,
+                ..
+            } => {
+                for iterator in iterators {
+                    self.expression(&iterator.iterable, bindings);
+                    for filter in &iterator.filters {
+                        self.expression(filter, bindings);
+                    }
+                }
+                for element in elements {
+                    self.expression(element, bindings);
+                }
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "comprehension-local dependency bindings are outside the bounded model",
+                ));
+            }
             _ => {}
         }
     }
@@ -504,6 +528,9 @@ fn shadow<'a>(body: &'a [Statement], bindings: &mut Bindings<'a>) {
                 for name in names {
                     bindings.insert(&name.text, None);
                 }
+            }
+            Stmt::DeleteName(name) => {
+                bindings.insert(&name.text, None);
             }
             Stmt::LiteralRouteLoop { path, .. } => {
                 bindings.insert(&path.text, None);

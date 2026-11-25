@@ -1285,6 +1285,66 @@ del other.conf['result_backend']
 }
 
 #[test]
+fn celery_backend_lookup_respects_deleted_exports_and_captured_aliases() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let providers = root.join("providers.py");
+    let jobs = root.join("jobs.py");
+    fs::write(&providers, "class Backend: pass\ndel Backend\n").unwrap();
+    fs::write(
+        &jobs,
+        "from celery import Celery\napp = Celery('jobs', backend='providers:Backend')\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["providers.Backend"],
+        "{report}"
+    );
+
+    fs::write(
+        &providers,
+        "class Backend: pass\nSelected = Backend\ndel Backend\n",
+    )
+    .unwrap();
+    fs::write(
+        jobs,
+        "from celery import Celery\napp = Celery('jobs', backend='providers:Selected')\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "providers.Backend"
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "celery_backend" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+
+    fs::write(
+        providers,
+        "class Backend: pass\nSelected = Backend\ndel Backend\nBackend()\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unbound_local"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn celery_backend_reads_follow_comprehension_execution() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

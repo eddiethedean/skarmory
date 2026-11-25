@@ -63,6 +63,7 @@ pub enum StatementKind {
         value: Expression,
     },
     DiscardedComprehension(Expression),
+    DeleteName(Name),
     LiteralRouteLoop {
         path: Name,
         last: Expression,
@@ -746,9 +747,12 @@ impl Lowering<'_> {
                     value: node.value.as_deref().map(expression).transpose()?,
                     annotation: Some(self.annotation(&node.annotation, next)?),
                 },
-                Stmt::Delete(node) if node.targets.len() == 1 => {
-                    self.write_target(&node.targets[0], None, next)?
-                }
+                Stmt::Delete(node) if node.targets.len() == 1 => match &node.targets[0] {
+                    Expr::Name(name) => {
+                        StatementKind::DeleteName(self.binding_name(name.id.as_str(), name)?)
+                    }
+                    target => self.write_target(target, None, next)?,
+                },
                 Stmt::If(node) => {
                     self.check(node, depth.saturating_add(node.elif_else_clauses.len()))?;
                     let mut otherwise = Vec::new();

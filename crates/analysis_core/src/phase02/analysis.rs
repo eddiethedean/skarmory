@@ -89,6 +89,7 @@ enum Value {
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     MissingFrameworkMember,
+    DeletedModuleBinding,
     UnittestComparison,
     OperatorResult,
     Unknown,
@@ -278,6 +279,7 @@ enum Binding<'a> {
     Import(&'a Import),
     Variable(Option<&'a Expression>, Location),
     Parameter,
+    Deleted,
 }
 
 enum LexicalBinding {
@@ -765,6 +767,11 @@ impl<'a> Graph<'a> {
                     for name in names {
                         self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
                     }
+                }
+                StatementKind::DeleteName(name)
+                    if self.phase03 && scope == self.scopes[scope].file =>
+                {
+                    self.bind(scope, name, Binding::Deleted);
                 }
                 StatementKind::LiteralRouteLoop { path, last, .. } => {
                     self.bind(scope, path, Binding::Variable(Some(last), statement.at));
@@ -1466,6 +1473,14 @@ impl<'a> Graph<'a> {
                         .at(import.local.at),
                     ));
                 }
+                ModuleMember::Binding(id, _) if matches!(self.symbols[id].binding, Binding::Deleted) => {
+                    self.import_issue(
+                        scope,
+                        source,
+                        import,
+                        format!("{module:?} deletes the selected binding for {member:?}"),
+                    );
+                }
                 ModuleMember::Ambiguous => self.scope_issues.push((
                     scope,
                     Issue::new("ambiguous_binding", &self.files[source].path,
@@ -1813,6 +1828,7 @@ impl<'a> Graph<'a> {
                 self.identity(scope, value, before, depth + 1)
             }
             Binding::Variable(None, _) => Value::Unknown,
+            Binding::Deleted => Value::DeletedModuleBinding,
             Binding::Parameter => {
                 if let Some(&class) = self.instance_receivers.get(&id) {
                     return if self.subclassed.contains(&class) {
@@ -1967,6 +1983,23 @@ impl<'a> Graph<'a> {
             return match self.selected_module_member(file, member, before, access, mode) {
                 ModuleMember::Binding(id, import) => {
                     self.read.extend(import);
+                    if matches!(self.symbols[id].binding, Binding::Deleted)
+                        && (self.local(file, "__getattr__", before).is_some()
+                            || self.modules.contains_key(submodule.as_str()))
+                    {
+                        self.scope_issue(scope, at, "unresolved_attribute", "module lookup after deletion can invoke a dynamic export or attach a submodule");
+                        return Value::Unknown;
+                    }
+                    if matches!(self.symbols[id].binding, Binding::Deleted)
+                        && matches!(mode, ModuleMemberAccess::Attribute)
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_attribute",
+                            format!("module {module:?} deleted {member:?}"),
+                        );
+                    }
                     self.binding(id, before, depth + 1)
                 }
                 ModuleMember::Submodule(file, import) => {
@@ -2920,6 +2953,15 @@ impl<'a> Graph<'a> {
                         END
                     };
                     let value = self.binding(id, binding_before, depth + 1);
+                    if matches!(value, Value::DeletedModuleBinding) {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unbound_local",
+                            format!("{name} was deleted before this read"),
+                        );
+                        return Value::Unknown;
+                    }
                     if self.phase03
                         && !lazy
                         && binding_scope != scope
@@ -5722,6 +5764,25 @@ impl<'a> Graph<'a> {
                         self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
                     }
                 }
+                StatementKind::DeleteName(name) => {
+                    if !self.phase03
+                        || scope != self.scopes[scope].file
+                        || self.local(scope, &name.text, at).is_none_or(|previous| {
+                            self.binding_depends_on_branch(previous, at)
+                                || matches!(
+                                    self.symbols[previous].binding,
+                                    Binding::Deleted | Binding::Variable(None, _)
+                                )
+                        })
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "deleting a name requires a previously bound module-local name",
+                        );
+                    }
+                }
                 StatementKind::WriteAttribute {
                     receiver, value, ..
                 }
@@ -8287,6 +8348,9 @@ impl<'a> Graph<'a> {
         }
         let mut definitions = BTreeMap::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
+            if matches!(symbol.binding, Binding::Deleted) {
+                continue;
+            }
             let scope = &self.scopes[symbol.scope];
             let name = &symbol.name.text;
             if matches!(symbol.binding, Binding::Import(import) if import.wildcard_member) {
@@ -8299,6 +8363,7 @@ impl<'a> Graph<'a> {
                     Binding::Import(_) => "import",
                     Binding::Variable(..) => "variable",
                     Binding::Parameter => "parameter",
+                    Binding::Deleted => unreachable!("deletions do not add definitions"),
                 };
                 let file = &self.files[scope.file].path;
                 let Location { line, column } = symbol.name.at;
@@ -8603,6 +8668,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 statements.extend(body);
             }
             StatementKind::Return(value) | StatementKind::Raise(value) => expressions.extend(value),
+            StatementKind::DeleteName(name) => {
+                assigned.insert(name.text.as_str());
+            }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
             | StatementKind::DiscardedComprehension(value) => expressions.push(value),
