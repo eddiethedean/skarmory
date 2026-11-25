@@ -82,6 +82,54 @@ fn unreachable_functions(report: &Value) -> Vec<&str> {
 }
 
 #[test]
+fn sanic_worker_listener_requires_resolved_registration_and_app_selection() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        r#"from sanic import Sanic
+
+def helper(): return 1
+async def active(application, loop): return helper()
+async def dormant(application): return None
+async def unregistered(application): return None
+
+app = Sanic('serving')
+unused_app = Sanic('unused')
+app.register_listener(active, 'before_server_start')
+unused_app.register_listener(dormant, 'before_server_start')
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("worker.py"),
+        r#"from sanic.app import Sanic as SanicApp
+
+async def explicit(application): return None
+worker = SanicApp(name='worker')
+worker.register_listener(listener=explicit, event='after_server_stop')
+worker.run()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.dormant", "app.unregistered"]
+    );
+    let unused_parameters = findings(&report, "unused_parameters");
+    assert!(!unused_parameters.contains(&"app.active.application"));
+    assert!(!unused_parameters.contains(&"app.active.loop"));
+    assert!(!unused_parameters.contains(&"worker.explicit.application"));
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for name in ["app.active", "worker.explicit"] {
+        assert!(symbols.iter().any(|row| row["qualified_name"] == name
+            && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                edge["kind"] == "sanic_listener" && edge["certainty"] == "possible"
+            })));
+    }
+}
+
+#[test]
 fn pydantic_computed_fields_follow_dump_and_property_access() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -697,6 +745,29 @@ app.add_exception_handler(Exception, handle_error)
                 .all(|edge| edge["certainty"] == "possible")
         );
     }
+
+    fs::write(
+        project.path().join("fake.py"),
+        r#"class Sanic:
+    def register_listener(self, listener, event): pass
+
+async def unregistered(application): return None
+
+fake = Sanic()
+fake.register_listener(unregistered, 'before_server_start')
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(!symbols.iter().any(|row| {
+        row["qualified_name"] == "fake.unregistered"
+            && row["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "sanic_listener")
+    }));
 }
 
 #[test]

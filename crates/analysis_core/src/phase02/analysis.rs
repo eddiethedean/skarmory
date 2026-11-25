@@ -24,6 +24,7 @@ mod flask;
 mod frameworks;
 mod mutations;
 mod pydantic;
+mod sanic;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -209,6 +210,7 @@ enum ObjectKind {
     FlaskBlueprint,
     FlaskLoginManager,
     TyperApp,
+    SanicApp,
     CeleryApp,
 }
 
@@ -570,6 +572,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
+        graph.collect_sanic_cli_app();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
@@ -3471,6 +3474,9 @@ impl<'a> Graph<'a> {
                         _ => Value::Unknown,
                     }
                 }
+                Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
+                    self.sanic_constructor(scope, expression.at, before, arguments, keywords)
+                }
                 Value::Provider(name) if self.phase03 && is_django_signal_constructor(&name) => {
                     if registration_arguments(arguments, keywords, ["use_caching"]).is_some() {
                         Value::DjangoSignal((
@@ -4721,6 +4727,16 @@ impl<'a> Graph<'a> {
                             .map_or(Value::Unknown, |task| self.identity(scope, task, before, 0));
                         self.register_celery_task(scope, parent, value, expr.at);
                     }
+                    Value::Method(object, ObjectKind::SanicApp, method) if method == "register_listener" => {
+                        self.register_sanic_listener(object, CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
+                    Value::Method(object, ObjectKind::SanicApp, method)
+                        if method == "run" && arguments.is_empty() && keywords.is_empty() =>
+                    {
+                        self.scopes[scope].activated_apps.push(object);
+                    }
                     Value::Method(object, ObjectKind::CeleryApp, method)
                         if self.phase03
                             && matches!(method.as_str(), "conf.update" | "config_from_object") =>
@@ -5074,6 +5090,11 @@ impl<'a> Graph<'a> {
                                 "unresolved_call",
                                 "dynamic member is outside the bounded verification model",
                             ),
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
+                        if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
                         }
                     }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
@@ -8261,7 +8282,11 @@ impl<'a> Graph<'a> {
                         pending.push_back(Edge {
                             target,
                             kind,
-                            certainty: "certain",
+                            certainty: if kind == "sanic_listener" {
+                                "possible"
+                            } else {
+                                "certain"
+                            },
                         });
                     }
                 }
@@ -8578,11 +8603,12 @@ impl<'a> Graph<'a> {
 
         let mut findings = Vec::new();
         let mut retained = Vec::new();
-        let fastapi_callback_contracts: BTreeSet<_> = evidence
+        let registered_callback_contracts: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
-                self.retain_fastapi_callback_parameters(target, kind)
-                    .then_some(target)
+                (self.retain_sanic_listener_parameters(target, kind)
+                    || self.retain_fastapi_callback_parameters(target, kind))
+                .then_some(target)
             })
             .collect();
         let django_callback_contracts: BTreeSet<_> = evidence
@@ -8715,7 +8741,7 @@ impl<'a> Graph<'a> {
                             self.fixtures.contains_key(&owner)
                                 || reachable_symbols.contains(&owner)
                                     && !self.direct.contains(&owner)
-                                    && !fastapi_callback_contracts.contains(&owner)
+                                    && !registered_callback_contracts.contains(&owner)
                                     && !fastapi_route_contracts.contains(&owner)
                                 || django_callback_contracts.contains(&owner)
                         }) =>
@@ -9212,7 +9238,7 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
                 || flask_callback_method(kind, name)
                 || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
-        ObjectKind::FlaskLoginManager | ObjectKind::TyperApp => false,
+        ObjectKind::FlaskLoginManager | ObjectKind::TyperApp | ObjectKind::SanicApp => false,
         ObjectKind::CeleryApp => name == "task",
     }
 }
@@ -9230,7 +9256,7 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
                 || flask_callback_method(kind, method)
         }
         ObjectKind::FlaskLoginManager => flask_login_callback(method),
-        ObjectKind::TyperApp => false,
+        ObjectKind::TyperApp | ObjectKind::SanicApp => false,
         ObjectKind::CeleryApp => method == "task",
     }
 }
@@ -9435,6 +9461,7 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => "flask_registration",
         ObjectKind::FlaskLoginManager => "flask_login_registration",
         ObjectKind::TyperApp => "typer_callback",
+        ObjectKind::SanicApp => "sanic_listener",
         ObjectKind::CeleryApp => "celery_task",
     }
 }
