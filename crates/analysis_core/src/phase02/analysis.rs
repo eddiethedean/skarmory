@@ -25,6 +25,7 @@ mod celery_routes;
 mod comprehension;
 mod django_forms;
 mod django_globals;
+mod django_migrations;
 mod django_template_paths;
 mod django_templates;
 mod django_urls;
@@ -11523,6 +11524,42 @@ class Migration(migrations.Migration):
                 .issues
                 .iter()
                 .any(|issue| issue.kind == "unresolved_registration")
+        );
+    }
+
+    #[test]
+    fn django_runpython_rejects_proven_inert_source_lookalikes_at_startup() {
+        for statements in [
+            "class RunPython: pass\noperation = RunPython(forwards)\n",
+            "from django.db import migrations\nclass Holder:\n    migrations = object()\n    operation = migrations.RunPython(forwards)\n",
+            "from django.db import migrations\nforwards = replacement\noperation = migrations.RunPython(forwards)\n",
+        ] {
+            let source = format!("def forwards(apps, editor): pass\n{statements}");
+            let report = analyze_phase03(&[module("migration.py", "migration", &source)], &[]);
+            assert!(
+                report.issues.is_empty(),
+                "{statements}: {:?}",
+                report.issues
+            );
+            assert_eq!(names(&report, Category::Parameter), ["apps", "editor"]);
+            assert!(
+                !report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_migration_parameter")
+            );
+        }
+
+        let source = "from django.db import migrations\n\
+                      from provider import operations as migrations\n\
+                      def forwards(apps, editor): pass\n\
+                      operation = migrations.RunPython(forwards)\n";
+        let report = analyze_phase03(&[module("migration.py", "migration", source)], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
         );
     }
 
