@@ -35,6 +35,7 @@ _SETTINGS_REASONS = {
     "django_storage_backend": "django_web_storage_backend",
     "django_logging_factory": "django_web_logging_factory",
     "django_setting_reference": "django_web_setting_reference",
+    "django_template_method": "django_web_template_member",
 }
 _SIGNAL_REASONS = {
     ("django_signal", "certain"): "django_web_signal_receiver",
@@ -107,7 +108,10 @@ def framework_report(report, *, source=None, project=None):
                 kind = "framework_root" if certainty == "certain" else native_kind
             elif (reason := _SETTINGS_REASONS.get(native_kind)) is not None:
                 rescued.append({"name": name, "reason": reason})
-                kind = native_kind
+                # The reference uses this evidence kind for settings and
+                # template protocol roots. Keep native certainty and kind
+                # available independently of that representation.
+                kind = "framework_root"
             elif native_kind == "unittest_discovery" and certainty == "certain":
                 kind = "framework_root"
                 reason = "unittest_discovery"

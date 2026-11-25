@@ -87,3 +87,47 @@ def test_admin_stub_projection_uses_the_fixture_root(tmp_path):
     ]
     assert framework_report(report)["unused_files"] == findings
     assert report["unused_files"] == findings
+
+
+def test_django_settings_and_template_roots_preserve_native_certainty():
+    hooks = {
+        "app.Backend.get_user": ("django_auth_backend", "django_web_auth_backend"),
+        "app.Record.label": ("django_template_method", "django_web_template_member"),
+    }
+    definitions = {
+        name: {"name": name, "file": "app.py", "line": line}
+        for line, name in enumerate(hooks, start=1)
+    }
+    report = {
+        "definitions": definitions,
+        "analysis_summary": {},
+        "dead_code_evidence": {
+            "symbols": [
+                {
+                    "qualified_name": name,
+                    "file": "app.py",
+                    "line": definition["line"],
+                    "evidence": [{"kind": hooks[name][0], "certainty": "possible"}],
+                }
+                for name, definition in definitions.items()
+            ]
+        },
+        "unused_functions": [],
+        "unused_classes": [],
+        "unused_variables": [],
+        "unused_parameters": [],
+    }
+    projected = framework_report(report)
+    for symbol in projected["dead_code_evidence"]["symbols"]:
+        native_kind, reason = hooks[symbol["qualified_name"]]
+        assert symbol["classification"] == "uncertain"
+        assert symbol["evidence"] == [{
+            "kind": "framework_root",
+            "native_kind": native_kind,
+            "reason": reason,
+            "certainty": "possible",
+        }]
+    assert all(
+        definition.heuristic_refs == {}
+        for definition in framework_definitions(projected).values()
+    )
