@@ -12804,6 +12804,89 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     }
 
     #[test]
+    fn django_url_initializers_distinguish_undefined_calls_and_missing_tables() {
+        let prefix = "from django.urls import path\nfrom views import view\n";
+        for body in [
+            "urlpatterns = [path('selected/', view)]\nmissing(urlpatterns)\n",
+            "unused_patterns = [path('selected/', view)]\n",
+        ] {
+            let report =
+                analyze_phase03(&django_url_test_files(&format!("{prefix}{body}"), ""), &[]);
+            assert!(report.issues.is_empty(), "{body}: {:?}", report.issues);
+            assert!(
+                !report.evidence.iter().any(
+                    |edge| edge.full_name == "views.view" && edge.kind == "django_registration"
+                )
+            );
+        }
+
+        for body in [
+            "urlpatterns = [path('selected/', view)]\nfrom plugin import alter\nalter(urlpatterns)\n",
+            "from plugin import update\nupdate(globals())\n",
+        ] {
+            let report =
+                analyze_phase03(&django_url_test_files(&format!("{prefix}{body}"), ""), &[]);
+            assert!(!report.issues.is_empty(), "{body}");
+        }
+    }
+
+    #[test]
+    fn django_url_callback_observes_a_closed_function_code_replacement() {
+        let urls = "from django.urls import path\nfrom patched import view\n\
+                    urlpatterns = [path('plain/', view)]\n";
+        let source = "def original(): return 1\n\
+                      def view(request): return original()\n\
+                      def replacement(request): return None\n";
+        for receiver in ["view", "selected"] {
+            let mut files = django_url_test_files(urls, "");
+            files.push(module(
+                "patched.py",
+                "patched",
+                &format!("{source}selected = view\n{receiver}.__code__ = replacement.__code__\n"),
+            ));
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{receiver}: {:?}", report.issues);
+            assert!(!report.evidence.iter().any(|edge| {
+                (edge.full_name == "patched.view" && edge.kind == "django_registration")
+                    || (edge.full_name == "patched.original" && edge.kind == "direct_call")
+            }));
+
+            files.push(module(
+                "consumer.py",
+                "consumer",
+                "from patched import view\nview(None)\n",
+            ));
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.iter().any(|issue| {
+                issue.path == "patched.py" && issue.kind == "unresolved_attribute_write"
+            }));
+        }
+
+        let mut files = django_url_test_files(urls, "");
+        files.push(module(
+            "patched.py",
+            "patched",
+            &format!("{source}view.__code__ = replacement.__code__\nunknown(view)\n"),
+        ));
+        let report = analyze_phase03(&files, &[]);
+        assert!(report.issues.iter().any(|issue| {
+            issue.path == "patched.py" && issue.kind == "unresolved_attribute_write"
+        }));
+
+        let urls = urls.replace("view)]", "view), path('called/', view(None))]");
+        let mut files = django_url_test_files(&urls, "");
+        files.push(module(
+            "patched.py",
+            "patched",
+            &format!("{source}view.__code__ = replacement.__code__\n"),
+        ));
+        let report = analyze_phase03(&files, &[]);
+        assert!(report.issues.iter().any(|issue| {
+            issue.path == "patched.py" && issue.kind == "unresolved_attribute_write"
+        }));
+    }
+
+    #[test]
     fn django_url_table_applies_closed_initializer_edits_before_dispatch() {
         for (edit, selected) in [
             ("urlpatterns.clear()", None),

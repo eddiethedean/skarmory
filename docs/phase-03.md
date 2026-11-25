@@ -302,6 +302,12 @@ its URL table. The preview follows a final literal list's direct `clear()`
 and indexed `URLPattern.callback` edits in a closed initializer. Opaque options,
 escaped table edits, and selected imports of a failed URL module leave coverage
 incomplete.
+In a closed URL initializer, an unbound final call stops before Django can
+serve the constructed table. A selected module that builds a private table
+without exporting `urlpatterns` contributes no callbacks when the namespace is
+closed. A source-owned function whose code is replaced by a compatible no-op
+contributes no original body when its only external consumer is the closed URL
+table.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved

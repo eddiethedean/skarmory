@@ -260,6 +260,209 @@ impl Graph<'_> {
         }
     }
 
+    pub(super) fn terminal_django_url_initializer(
+        &mut self,
+        file: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let Some((last, prefix)) = self.scopes[file].body.split_last() else {
+            return false;
+        };
+        let StatementKind::Evaluate(Expression {
+            kind: ExpressionKind::Call { function, .. },
+            ..
+        }) = &statement.kind
+        else {
+            return false;
+        };
+        if !std::ptr::eq(last, statement) || !self.unbound_module_name(file, function, statement.at)
+        {
+            return false;
+        }
+        let Some((table, imports)) = prefix.split_last() else {
+            return false;
+        };
+        imports
+            .iter()
+            .all(|row| matches!(row.kind, StatementKind::Import(_)))
+            && matches!(&table.kind, StatementKind::Assign { names, value: Some(value), annotation: None }
+                if matches!(names.as_slice(), [name] if name.text == "urlpatterns")
+                    && self.closed_named_url_patterns(file, value, table.at))
+    }
+
+    pub(super) fn django_closed_url_table_missing(&mut self, file: ScopeId) -> bool {
+        if !self.terminal_proofs
+            || self.scopes[file].open_wildcard
+            || self.local(file, "__getattr__", END).is_some()
+            || self
+                .scopes
+                .iter()
+                .any(|scope| scope.file != file && scope.imports.contains(&file))
+        {
+            return false;
+        }
+        let Some((assignment, imports)) = self.scopes[file].body.split_last() else {
+            return false;
+        };
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } = &assignment.kind
+        else {
+            return false;
+        };
+        if !matches!(names.as_slice(), [name] if !name.text.starts_with("__"))
+            || !imports
+                .iter()
+                .all(|row| matches!(row.kind, StatementKind::Import(_)))
+        {
+            return false;
+        }
+        // The URL resolver falls back to the module object when no table is
+        // exported. This initializer cannot turn it into an iterable or
+        // publish the local patterns under another name.
+        let ExpressionKind::Sequence { items, .. } = &value.kind else {
+            return false;
+        };
+        !items.is_empty()
+            && items.iter().all(|item| {
+                let ExpressionKind::Call { arguments, .. } = &item.kind else {
+                    return false;
+                };
+                self.simple_url_pattern(file, item, assignment.at) && {
+                    let callback = self.probe_identity(file, &arguments[1], assignment.at);
+                    self.plain_url_callback(&callback)
+                }
+            })
+    }
+
+    fn closed_named_url_patterns(
+        &mut self,
+        file: ScopeId,
+        value: &Expression,
+        at: Location,
+    ) -> bool {
+        matches!(&value.kind, ExpressionKind::Sequence { items, .. }
+        if items.iter().all(|item| {
+            matches!(&item.kind, ExpressionKind::Call { arguments, .. }
+                if matches!(arguments.as_slice(), [_, Expression {kind: ExpressionKind::Name(_), .. }]))
+                && self.simple_url_pattern(file, item, at)
+        }))
+    }
+
+    pub(super) fn django_constant_callback_code(
+        &mut self,
+        file: ScopeId,
+        target: SymbolId,
+    ) -> bool {
+        let source = self.symbols[target].scope;
+        if !self.terminal_proofs
+            || source == file
+            || source != self.scopes[source].file
+            || self.scopes[source].open_wildcard
+            || self.scopes[file].open_wildcard
+        {
+            return false;
+        }
+        let Binding::Definition(original, _) = self.symbols[target].binding else {
+            return false;
+        };
+        let Some((write, prefix)) = self.scopes[source].body.split_last() else {
+            return false;
+        };
+        let StatementKind::WriteAttribute {
+            receiver,
+            member,
+            value: Some(value),
+        } = &write.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Member(replacement, attribute) = &value.kind else {
+            return false;
+        };
+        if member != "__code__"
+            || attribute != "__code__"
+            || !matches!(receiver.kind, ExpressionKind::Name(_))
+            || !matches!(replacement.kind, ExpressionKind::Name(_))
+            || !plain_code_function(original)
+            || !matches!(self.probe_identity(source, receiver, write.at),
+                Value::Callable(callback) if !callback.verified && callback.target == target)
+            || !prefix
+                .iter()
+                .skip_while(|statement| matches!(statement.kind, StatementKind::Import(_)))
+                .all(|statement| match &statement.kind {
+                    StatementKind::Define(definition) => plain_code_function(definition),
+                    StatementKind::Assign {
+                        names,
+                        value: Some(value),
+                        annotation: None,
+                    } => {
+                        names.len() == 1
+                            && matches!(value.kind, ExpressionKind::Name(_))
+                            && matches!(self.probe_identity(source, value, statement.at),
+                            Value::Callable(call) if self.symbols[call.target].scope == source)
+                    }
+                    _ => false,
+                })
+        {
+            return false;
+        }
+        let Value::Callable(replacement) = self.probe_identity(source, replacement, write.at)
+        else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = self.symbols[replacement.target].binding else {
+            return false;
+        };
+        if replacement.verified
+            || self.symbols[replacement.target].scope != source
+            || !plain_code_function(definition)
+            || definition.parameters.len() != original.parameters.len()
+            || !matches!(
+                body_without_docstring(definition),
+                [Statement {
+                    kind: StatementKind::Return(Some(Expression {
+                        kind: ExpressionKind::None,
+                        ..
+                    })),
+                    ..
+                }]
+            )
+        {
+            return false;
+        }
+        // A direct call or an escape outside this URL initializer can
+        // observe the overwritten code, which needs general call modeling.
+        if self.scopes.iter().any(|scope| {
+            scope.file != file && scope.file != source && scope.imports.contains(&source)
+        }) || !self.scopes[file]
+            .body
+            .iter()
+            .all(|statement| match &statement.kind {
+                StatementKind::Import(_) => true,
+                StatementKind::Assign {
+                    names,
+                    value: Some(value),
+                    annotation: None,
+                } if matches!(names.as_slice(), [name] if name.text == "urlpatterns") => {
+                    self.closed_named_url_patterns(file, value, statement.at)
+                }
+                _ => false,
+            })
+        {
+            return false;
+        }
+        let [line, column] = position(write.at);
+        self.scope_issues.retain(|(scope, issue)| {
+            *scope != source
+                || issue.kind != "unresolved_attribute_write"
+                || (issue.line, issue.column) != (Some(line), Some(column))
+        });
+        true
+    }
+
     pub(super) fn terminal_django_url_assignment(
         &mut self,
         file: usize,
@@ -345,6 +548,15 @@ impl Graph<'_> {
         }
         true
     }
+}
+
+fn plain_code_function(definition: &Definition) -> bool {
+    definition.kind == DefinitionKind::Function
+        && !definition.is_generator
+        && definition.decorators.is_empty()
+        && definition.defaults.is_empty()
+        && definition.annotations.is_empty()
+        && definition.simple_positional_parameters
 }
 
 enum DjangoUrlEdit<'a> {
