@@ -16366,7 +16366,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_decorator, unresolved_registration, unresolved_subclass_hook). Issue #43."
+blocker = "Standard CPython 3.11 resolves site to its frozen non-package module. The original supplies no alternate import configuration or startup for its site checks and signals (#43)"
 
 [[cases]]
 id = "test/test_django_wagtail_conventions.py::test_wagtail_page_fields_attributes_blocks_and_registries_are_live"
@@ -16644,7 +16644,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call). Issue #43."
+blocker = "CPython 3.11 resolves os to the frozen standard-library module in the original fixture. The dict fails the PathLike guard, and dictConfig creates Active despite the pinned unused finding (#43)"
 
 [[cases]]
 id = "test/test_logging_config_liveness.py::test_pathlike_lookalikes_do_not_exclude_possible_mutation[alias = os\\nalias.PathLike = replacement]"
@@ -16921,4 +16921,4 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_subclass_hook). Issue #43."
+blocker = "The original satellite LOGGING dict has no version. CPython dictConfig rejects it before constructing either requested factory (#43)"
