@@ -10484,10 +10484,9 @@ assertions = ["absent:unused_functions:list_accounts", "absent:unused_functions:
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/python_src_package_routes; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/python_src_package_routes/src/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/routes/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/routes/accounts.py", "corpus/fixtures/python_src_package_routes/src/api/routes/stale.py", "corpus/fixtures/python_src_package_routes/src/main.py"]
-blocker = "FastAPI treats the unannotated websocket argument as a query parameter in the pinned fixture (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::python-wrapper-decorator-registration"

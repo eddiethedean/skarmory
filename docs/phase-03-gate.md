@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,260 have port mappings. The reported release
+milestones. Of the required cases, 1,261 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -27,7 +27,6 @@ each original variant.
 | Django command, autoreload and hook tests | The standalone fixtures leave installed apps, command selection, and invocation unspecified. Dispatching `handle`, validation, saving, and queries requires separate lifecycle actions. Escaped callbacks and classes remain unresolved without the external installer's code. |
 | Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. |
 | Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. |
-| FastAPI source-layout corpus case | The unannotated `websocket` argument is treated as a query parameter. The original handler cannot receive a WebSocket object through that argument. |
 | Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. |
 | Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. |
 | Django signature conventions | CPython 3.11 resolves `site` to its frozen non-package module. The original project cannot import `site.checks`, `site.views`, or `site.signals` by name under that interpreter configuration. |
@@ -104,10 +103,14 @@ pytest runs select `skylos-0.3` and disable upstream expected-failure markers.
 
 The SDK shard runs the original framework corpus scorer against the selected
 fixtures and records each original assertion, fixture hash, and outcome.
-The framework corpus maps 32 of 42 cases, including DRF declarations and
+The framework corpus maps 33 of 42 cases, including DRF declarations and
 FastMCP registration through project wrappers. The latest qualified fixtures
 cover Celery task classes, Click command subclasses, and Pydantic computed
 fields.
+The FastAPI source-layout fixture retains its mounted WebSocket handler. A
+request that supplies the unannotated query argument enters the handler with a
+string and fails at `accept()`. The corpus also checks that the unmounted
+route and the unrelated helper are reported as unused.
 The framework audit now includes the FastAPI dependency-parameter tests and
 all 40 nested-project route variants. Thirty-two route variants have SDK
 ports. The remaining eight lack a resolved router. The audit also records
