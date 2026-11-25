@@ -94,6 +94,57 @@ class ServiceTests(TestCase):
 }
 
 #[test]
+fn unittest_module_hooks_follow_the_effective_callable() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("test_service.py"),
+        r#"from unittest import TestCase
+
+def create_database(): return seed_rows()
+def seed_rows(): return 1
+def unused_cleanup(): return 2
+
+setUpModule = create_database
+setUpModule: object
+create_database = None
+tearDownModule = unused_cleanup
+tearDownModule = None
+
+class ServiceTests(TestCase):
+    def test_service(self): return 1
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("test_empty.py"),
+        "from unittest import TestCase\ndef configure(): return 1\nsetUpModule = configure\nclass Empty(TestCase): pass\n",
+    )
+    .unwrap();
+
+    let report = scan(root, None);
+    assert!(discovery(&report, "test_service.create_database"));
+    assert!(!unused(
+        &report,
+        "unused_functions",
+        "test_service.seed_rows"
+    ));
+    assert!(unused(
+        &report,
+        "unused_functions",
+        "test_service.unused_cleanup"
+    ));
+    assert!(unused(&report, "unused_functions", "test_empty.configure"));
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan(root, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
 fn runner_flavors_preserve_callable_lifecycle_and_ignore_unexecuted_bodies() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

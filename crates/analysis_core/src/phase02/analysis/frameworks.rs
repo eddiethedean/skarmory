@@ -374,10 +374,20 @@ impl Graph<'_> {
         }
         if let Some(certain) = runnable {
             for name in ["setUpModule", "tearDownModule"] {
-                if let Some(target) = self.local(file, name, END)
-                    && self.unittest_callable(target)
-                    && !self.is_coroutine(target)
-                {
+                let Some(bindings) = self.scopes[file].names.get(name) else {
+                    continue;
+                };
+                let bindings: Vec<_> = bindings
+                    .iter()
+                    .copied()
+                    .filter(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+                    .collect();
+                for (method, selected) in self.callable_candidates(&bindings) {
+                    let target = method.target;
+                    if !self.unittest_callable(target) || self.is_coroutine(target) {
+                        continue;
+                    }
+                    self.read.extend(method.bindings);
                     self.framework_root(
                         target,
                         if self.is_generator(target) {
@@ -385,7 +395,7 @@ impl Graph<'_> {
                         } else {
                             "unittest_discovery"
                         },
-                        certain && !self.conditional.contains_key(&target),
+                        certain && selected,
                     );
                 }
             }
@@ -401,10 +411,10 @@ impl Graph<'_> {
         if let Some(write) = overrides.get(name) {
             return self.unittest_write(write).into_iter().collect();
         }
-        let Some(bindings) = names.get_key_value(name) else {
+        let Some(bindings) = names.get(name) else {
             return Vec::new();
         };
-        self.pytest_registrations(&BTreeMap::from([(*bindings.0, bindings.1.clone())]), name)
+        self.callable_candidates(bindings)
             .into_iter()
             .filter(|(method, _)| self.unittest_callable(method.target))
             .collect()

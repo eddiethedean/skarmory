@@ -6161,13 +6161,18 @@ impl<'a> Graph<'a> {
         names
             .iter()
             .filter(|(name, _)| name.starts_with(prefix))
-            .flat_map(|(_, bindings)| {
-                let candidates = self.effective_bindings(bindings);
-                candidates.iter().filter_map(move |id| {
-                    let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
-                    self.probe_callable_binding(*id)
-                        .map(|target| (target, certain))
-                })
+            .flat_map(|(_, bindings)| self.callable_candidates(bindings))
+            .collect()
+    }
+
+    fn callable_candidates(&self, bindings: &[SymbolId]) -> Vec<(CallableBinding, bool)> {
+        let candidates = self.effective_bindings(bindings);
+        candidates
+            .iter()
+            .filter_map(|id| {
+                let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
+                self.probe_callable_binding(*id)
+                    .map(|target| (target, certain))
             })
             .collect()
     }
