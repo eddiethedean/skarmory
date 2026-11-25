@@ -10383,10 +10383,9 @@ assertions = ["absent:unused_classes:DemoTask", "absent:unused_functions:run", "
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/celery_task_class.py; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/celery_task_class.py"]
-blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::click-command-subclass"
@@ -10397,10 +10396,9 @@ assertions = ["absent:unused_classes:DemoCommand", "absent:unused_functions:invo
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/click_command_subclass.py; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/click_command_subclass.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::pydantic-computed-field"
@@ -10411,10 +10409,9 @@ assertions = ["absent:unused_classes:User", "absent:unused_functions:full_name",
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/pydantic_computed_field.py; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/pydantic_computed_field.py"]
-blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::pydantic-serializer-hooks"
@@ -12980,9 +12977,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The selected view module raises during URLconf import; no callback is registered and the dependent registration remains incomplete (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[module_failure-80]"
@@ -12993,9 +12989,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The selected view module raises during URLconf import; no callback is registered and the dependent registration remains incomplete (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[unknown_decorator-0]"
@@ -15364,9 +15359,8 @@ assertions = ["test/test_django_template_liveness.py:137", "test/web_framework_f
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call, unresolved_registration) (#43)"
 
 [[cases]]
 id = "test/test_django_template_liveness.py::test_unrouted_view_template_does_not_consume_model_method[unused_patterns = [path('p/', ProductPage.as_view())]]"
@@ -15726,9 +15720,8 @@ assertions = ["test/test_django_admin_stubs.py:81", "test/test_django_admin_stub
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_import). Issue #43."
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_04_called_register_converter_wrapper_is_live"
@@ -15752,9 +15745,8 @@ assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_app
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct). Issue #43."
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_11_reloader_helper_is_live"
@@ -15790,9 +15782,8 @@ assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_app
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct). Issue #43."
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_15_template_only_model_methods_are_live"
@@ -15828,9 +15819,8 @@ assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_app
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_subclass_hook). Issue #43."
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_19_docstring_only_processor_stays_reported"
@@ -15853,9 +15843,8 @@ assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_app
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor, unresolved_subclass_hook). Issue #43."
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_20b_commented_form_field_stays_reported"
@@ -16342,9 +16331,8 @@ assertions = ["test/test_django_quiet_dead_code.py:284", "test/test_django_quiet
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK report disagrees with the pinned assertion at test/test_django_quiet_dead_code.py:284. Issue #43."
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_serializer_method_field_only_covers_declared_fields"
@@ -16924,9 +16912,8 @@ assertions = ["test/test_settings_without_django_import.py:28", "test/test_setti
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK report disagrees with the pinned assertion at test/test_settings_without_django_import.py:28. Issue #43."
 
 [[cases]]
 id = "test/test_settings_without_django_import.py::test_satellite_logging_factories_without_django_import"

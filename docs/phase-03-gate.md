@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,235 have port mappings. The reported release
+milestones. Of the required cases, 1,248 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -103,8 +103,10 @@ pytest runs select `skylos-0.3` and disable upstream expected-failure markers.
 
 The SDK shard runs the original framework corpus scorer against the selected
 fixtures and records each original assertion, fixture hash, and outcome.
-The framework corpus maps 29 of 42 cases, including DRF declarations and
-FastMCP registration through project wrappers.
+The framework corpus maps 32 of 42 cases, including DRF declarations and
+FastMCP registration through project wrappers. The latest qualified fixtures
+cover Celery task classes, Click command subclasses, and Pydantic computed
+fields.
 The framework audit now includes the FastAPI dependency-parameter tests and
 all 40 nested-project route variants. Thirty-two route variants have SDK
 ports. The remaining eight lack a resolved router. The audit also records
