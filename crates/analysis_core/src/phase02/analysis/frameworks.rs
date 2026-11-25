@@ -30,6 +30,12 @@ pub(super) struct DjangoSignalRegistration {
     issue: Option<&'static str>,
 }
 
+impl DjangoSignalRegistration {
+    fn precedes(&self, first_failure: Option<[usize; 2]>) -> bool {
+        first_failure.is_none_or(|at| position(self.at) < at)
+    }
+}
+
 struct DjangoSignalCallback {
     edge: Edge,
     receiver: Option<SymbolId>,
@@ -1888,7 +1894,12 @@ impl Graph<'_> {
                 .active_objects
                 .contains(&django_loaded_module(row.file))
                 || reach.django_signal_modules.contains(&row.file);
-            for registration in &row.django_signals {
+            let first_failure = self.first_terminal_signal_import(scope);
+            for registration in row
+                .django_signals
+                .iter()
+                .filter(|registration| registration.precedes(first_failure))
+            {
                 let issue = if no_startup {
                     Some("Django signal registration has no selected startup")
                 } else if loaded {
@@ -1908,6 +1919,20 @@ impl Graph<'_> {
                 }
             }
         }
+    }
+
+    fn first_terminal_signal_import(&self, scope: ScopeId) -> Option<[usize; 2]> {
+        if self.failed_terminal_modules.is_empty() {
+            return None;
+        }
+        // These import edges carry source locations and are unconditional.
+        // The initialization cycle check has ruled out partial reentry.
+        self.scopes[scope]
+            .initializer_imports
+            .iter()
+            .filter(|(_, target)| self.failed_terminal_modules.contains(target))
+            .map(|(import, _)| position(self.symbols[*import].name.at))
+            .min()
     }
 
     pub(super) fn activate_django_signals(
@@ -1959,9 +1984,11 @@ impl Graph<'_> {
             } else if !possible || self.django_configured_settings.is_none() {
                 continue;
             }
+            let first_failure = self.first_terminal_signal_import(scope);
             for callback in row
                 .django_signals
                 .iter()
+                .filter(|registration| registration.precedes(first_failure))
                 .flat_map(|registration| &registration.callbacks)
             {
                 let mut edge = callback.edge;
@@ -2001,10 +2028,13 @@ impl Graph<'_> {
     pub(super) fn has_reachable_django_signals(&self, reach: &Reachability) -> bool {
         !self.django_startup_scopes.is_disjoint(&reach.scopes)
             && reach.scopes.iter().any(|&scope| {
+                let first_failure = self.first_terminal_signal_import(scope);
                 self.scopes[scope]
                     .django_signals
                     .iter()
-                    .any(|registration| !registration.callbacks.is_empty())
+                    .any(|registration| {
+                        registration.precedes(first_failure) && !registration.callbacks.is_empty()
+                    })
             })
     }
 

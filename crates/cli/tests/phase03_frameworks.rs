@@ -4658,6 +4658,57 @@ def select():
 }
 
 #[test]
+fn django_signal_registration_stops_at_a_proven_terminal_import() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    django_signal_project(
+        root,
+        r#"from django.db.models.signals import post_save
+
+def before_failure(sender, **kwargs): return 1
+def after_failure(sender, **kwargs): return 2
+
+post_save.connect(before_failure)
+from . import broken
+post_save.connect(after_failure)
+"#,
+    );
+    let broken_path = root.join("inventory/broken.py");
+    let broken =
+        "from celery import Celery\napp = Celery('worker')\napp.conf.update(**missing_settings)\n";
+    fs::write(&broken_path, broken).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.before_failure", "certain")],
+        "{report}"
+    );
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["path"] == "inventory/signals.py"
+                && issue["kind"] == "unresolved_import"
+                && issue["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("inventory.broken"))),
+        "{report}"
+    );
+
+    fs::write(broken_path, format!("from . import signals\n{broken}")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "cyclic_imports"),
+        "{report}"
+    );
+}
+
+#[test]
 fn django_signal_global_callback_write_respects_the_module_initializer() {
     let project = tempfile::tempdir().unwrap();
     django_signal_project(
