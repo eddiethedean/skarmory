@@ -1,16 +1,21 @@
+import hashlib
 import json
 import platform
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from run_phase03_seed import (
+    CORPUS_SOURCE,
     AssertionTrace,
     benchmark_assertions,
     check_candidate_wheel,
     environment,
     scan_candidate,
+    write_receipt,
 )
 
 
@@ -120,6 +125,62 @@ class CandidateScanTests(unittest.TestCase):
                 self.assertEqual(
                     payload, ["fixture", {"profile": "skylos-0.3", **expected}]
                 )
+
+
+class CorpusReceiptTests(unittest.TestCase):
+    def test_accepts_only_matching_worker_fixture_hashes(self):
+        case_id = f"{CORPUS_SOURCE}::attrs-define-fields"
+        fixture = "corpus/fixtures/attrs_define.py"
+        lock = b"pinned dependencies\n"
+        lock_digest = hashlib.sha256(lock).hexdigest()
+        revision = "a" * 40
+        variant = {
+            "id": "diagnostic-sdk",
+            "layer": "sdk",
+            "platform": f"{sys.platform}-{platform.machine()}-cp{sys.version_info.major}{sys.version_info.minor}",
+            "environment": lock_digest,
+        }
+        assertions = ["absent:unused_variables:id"]
+        case = {"source": CORPUS_SOURCE, "assertions": assertions, "prerequisites": []}
+        expected = {fixture: "b" * 64}
+        for candidate in (expected, {fixture: "c" * 64}, None):
+            with self.subTest(candidate=candidate), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "uv.lock").write_bytes(lock)
+                artifact = root / "candidate.whl"
+                artifact.write_bytes(b"candidate wheel")
+                args = SimpleNamespace(
+                    artifact=artifact, candidate_revision=revision, inventory=root / "inventory.toml",
+                    output=root / "receipt.json", sdk_python=Path(sys.executable), upstream=root,
+                    variant=variant["id"],
+                )
+
+                def run_worker(command, **_kwargs):
+                    result = {"status": "passed", "assertions": assertions, "prerequisites": {}}
+                    fingerprints = expected if command[-3] == "reference" else candidate
+                    if fingerprints is not None:
+                        result["fixture_sha256"] = fingerprints
+                    Path(command[-1]).write_text(json.dumps({case_id: result}), encoding="utf-8")
+                    return SimpleNamespace(returncode=0)
+
+                with (
+                    patch("run_phase03_seed.port_cases", return_value=(
+                        {"reference_revision": revision}, "digest", variant, {case_id: case},
+                    )),
+                    patch("run_phase03_seed.subprocess.check_output", side_effect=[revision, ""]),
+                    patch("run_phase03_seed.check_candidate_wheel"),
+                    patch("run_phase03_seed.subprocess.run", side_effect=run_worker),
+                ):
+                    write_receipt(args)
+
+                receipt = json.loads(args.output.read_text(encoding="utf-8"))
+                result = receipt["results"][0]
+                if candidate == expected:
+                    self.assertEqual(receipt["runner_status"], "passed")
+                    self.assertEqual(result["fixture_sha256"], expected)
+                else:
+                    self.assertEqual(receipt["runner_status"], "error")
+                    self.assertNotIn("fixture_sha256", result)
 
 
 if __name__ == "__main__":

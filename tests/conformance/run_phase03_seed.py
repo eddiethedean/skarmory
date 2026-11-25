@@ -256,6 +256,7 @@ def run_basic_benchmark(args, case):
 
 
 def run_framework_corpus_cases(args, cases):
+    from check_dead_code_gate import sha256
     from skylos.benchmarks import corpus_ci
 
     manifest = args.upstream / CORPUS_SOURCE
@@ -271,6 +272,8 @@ def run_framework_corpus_cases(args, cases):
         expected = corpus_assertions(originals[case_id])
         if expected != case["assertions"]:
             raise ValueError(f"{key}: inventory changes the original framework corpus assertions")
+        fixtures = {name: args.upstream / name for name in case["fixtures"]}
+        fixture_hashes = {name: sha256(path) for name, path in fixtures.items()}
         scanned = 0
 
         def scan(path, options):
@@ -281,6 +284,8 @@ def run_framework_corpus_cases(args, cases):
         summary = score_corpus(
             corpus_ci, manifest, {case_id}, scan if args.mode == "candidate" else None,
         )
+        if any(sha256(path) != fixture_hashes[name] for name, path in fixtures.items()):
+            raise ValueError(f"{key}: fixture bytes changed during corpus execution")
         if summary["case_count"] != 1 or summary["cases"][0]["id"] != case_id:
             raise ValueError(f"{key}: the original scorer did not run exactly the mapped case")
         outcome = summary["cases"][0]
@@ -305,6 +310,7 @@ def run_framework_corpus_cases(args, cases):
             "status": "passed" if passed else "failed",
             "assertions": reached,
             "prerequisites": prerequisites,
+            "fixture_sha256": fixture_hashes,
             "corpus": outcome,
         }
     return results
@@ -620,6 +626,11 @@ def write_receipt(args):
                 "candidate": candidate.get("benchmark"),
             }
         if case["source"] == CORPUS_SOURCE:
+            fixture_hashes = candidate.get("fixture_sha256")
+            if fixture_hashes and fixture_hashes == reference.get("fixture_sha256"):
+                result["fixture_sha256"] = fixture_hashes
+            else:
+                errors.append(f"{case_id}: missing or different reference and candidate fixture hashes")
             result["corpus"] = {
                 "reference": reference.get("corpus"),
                 "candidate": candidate.get("corpus"),
