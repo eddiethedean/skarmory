@@ -4440,7 +4440,23 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => {
-                self.walk_expression(scope, function, before, true);
+                if self.phase03
+                    && arguments.is_empty()
+                    && keywords.is_empty()
+                    && let ExpressionKind::DeferredLambda(body) = &function.kind
+                    && self.fastapi_immediate_route_lambda(scope, body, before)
+                {
+                    return;
+                }
+                let rebound_converter =
+                    if self.phase03 && arguments.len() == 2 && keywords.is_empty() {
+                        self.django_converter_noop_rebinding(scope, function, expr.at, before)
+                    } else {
+                        None
+                    };
+                if rebound_converter.is_none() {
+                    self.walk_expression(scope, function, before, true);
+                }
                 for expr in arguments
                     .iter()
                     .chain(keywords.iter().map(|(_, value)| value))
@@ -4460,6 +4476,11 @@ impl<'a> Graph<'a> {
                             &Value::DeferredLambda,
                         );
                     }
+                }
+                if let Some(invocation) = rebound_converter {
+                    self.direct.insert(invocation.target);
+                    self.invoke(scope, invocation, "direct_call", "certain", expr.at);
+                    return;
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
                 match callee {

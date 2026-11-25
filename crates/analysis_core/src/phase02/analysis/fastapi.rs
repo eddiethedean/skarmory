@@ -787,6 +787,39 @@ impl<'a> Graph<'a> {
         );
     }
 
+    pub(super) fn fastapi_immediate_route_lambda(
+        &mut self,
+        scope: ScopeId,
+        body: &Expression,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &body.kind
+        else {
+            return false;
+        };
+        // A nullary lambda inherits these simple lexical references outside a
+        // class body and evaluates them at the point of its immediate call.
+        if self.scopes[scope]
+            .owner
+            .is_some_and(|owner| self.is_class(owner))
+            || !keywords.is_empty()
+            || !matches!(&function.kind, ExpressionKind::Member(receiver, _)
+                if matches!(receiver.kind, ExpressionKind::Name(_)))
+            || !matches!(arguments.as_slice(), [Expression { kind: ExpressionKind::Text(path), .. },
+                Expression { kind: ExpressionKind::Name(_), .. }] if path.starts_with('/'))
+            || !matches!(self.probe_identity(scope, function, before),
+                Value::Method(_, ObjectKind::App | ObjectKind::Router, method) if method == "add_api_route")
+        {
+            return false;
+        }
+        self.walk(scope, body, before);
+        true
+    }
+
     pub(super) fn fastapi_literal_route_loop(
         &mut self,
         scope: ScopeId,

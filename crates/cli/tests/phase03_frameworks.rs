@@ -1281,6 +1281,77 @@ registrations = [app.add_api_route('/', endpoint) for item in [] for extra in op
 }
 
 #[test]
+fn fastapi_immediate_route_lambda_executes_while_unconsumed_lambda_stays_dormant() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from fastapi import APIRouter, FastAPI
+
+def active_helper(): return 1
+def dormant_helper(): return 2
+def active(): return active_helper()
+def dormant(): return dormant_helper()
+
+app = FastAPI()
+router = APIRouter()
+(lambda: router.add_api_route('/active', active))()
+stored = lambda: router.add_api_route('/dormant', dormant)
+app.include_router(router)
+"#;
+    fs::write(&file, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dormant", "web.dormant_helper"]
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "web.active"
+                && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                }))
+    );
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+
+    fs::write(&file, format!("{source}stored()\n")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_lambda_execution")
+    );
+
+    fs::write(
+        &file,
+        "from fastapi import FastAPI\n\
+         def endpoint(): return 1\n\
+         class Container:\n    app = FastAPI()\n    (lambda: app.add_api_route('/', endpoint))()\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_lambda_execution")
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["qualified_name"] == "web.endpoint")
+    );
+}
+
+#[test]
 fn conventional_pytest_hooks_have_possible_use_without_discovery() {
     let project = tempfile::tempdir().unwrap();
     for (path, source) in [
@@ -3094,6 +3165,60 @@ register_converter(Diamond, 'diamond')
         ["converters.Base.to_python", "converters.old"]
     );
     assert!(!findings(&report, "unused_variables").contains(&"converters.Base.regex"));
+}
+
+#[test]
+fn django_converter_wrapper_uses_the_module_binding_at_its_call() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let src = r#"from django.urls import register_converter
+
+class Converter:
+    regex = '[a-z]+'
+    def to_python(self, value):
+        return value
+    def to_url(self, value):
+        return value
+
+def configure():
+    register_converter(Converter, 'custom')
+
+def replacement(cls, name):
+    return None
+
+register_converter = replacement
+configure()
+"#;
+    let path = root.join("routes.py");
+    fs::write(&path, src).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["routes.Converter.to_python", "routes.Converter.to_url"]
+    );
+    assert!(findings(&report, "unused_variables").contains(&"routes.Converter.regex"));
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["coverage", "dead_code_evidence", "unused_functions"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+    for mutation in [
+        "from external import opaque\nregister_converter = opaque\nconfigure()\n",
+        "def separately_called():\n    configure()\nseparately_called()\n",
+    ] {
+        fs::write(&path, format!("{src}\n{mutation}")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding"),
+            "{mutation}: {report}"
+        );
+    }
 }
 
 #[test]
