@@ -12,6 +12,24 @@ inseparable mixed-language cases to their [language milestones](../../docs/langu
 Preserve separable Python assertions, upstream expectations, and per-case
 evidence alongside the independent semantic controls described here.
 
+To replay the report-facing Django signal, unittest, Flask, and pytest subset,
+use the pinned Skylos checkout and the Python environment that runs its tests.
+Build and install a Skarmory wheel in a separate environment for the candidate
+run.
+
+```sh
+"$reference_python" tests/conformance/check_phase03_framework.py "$skylos_checkout"
+"$reference_python" tests/conformance/check_phase03_framework.py "$skylos_checkout" \
+  --sdk-python "$installed_sdk_python"
+```
+
+The candidate run exercises the installed native extension on the original
+fixtures. It fails on incomplete coverage, skipped cases, and cases that
+never call the native SDK. The adapter projects evidence by qualified name,
+source file, and line. The default subset excludes private Skylos visitor and
+call-count probes. The release gate tracks full-suite scope and required
+variants separately.
+
 ## Two separate questions
 
 **Compatibility:** does Skarmory reproduce the declared observable behavior of

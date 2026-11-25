@@ -220,21 +220,34 @@ supports the pinned recursive-group and caller-edit cases. [#52](https://github.
 ### Bounded Python framework discovery
 
 The `skylos-0.3` profile uses resolved imports for the framework identities in
-these models. A selected Flask app can register route and request callbacks
-directly or mount a blueprint. Blueprint callbacks require the mount to be
-reached. FastAPI supports imperative endpoint registration and literal
-`Depends` or `Security` dependencies in defaults, `Annotated` parameters, and
-route and router registration options. FastAPI versions before 0.137 copy routes
+these models. A selected Flask app can register routes, request and context
+callbacks, and error handlers directly or mount a blueprint. Blueprint callbacks
+require the mount to be reached.
+[Flask registration APIs](https://flask.palletsprojects.com/en/stable/api/)
+
+FastAPI supports imperative endpoint registration and literal `Depends` or
+`Security` dependencies in defaults, `Annotated` parameters and imported type
+aliases, and route and router registration options. App-wide dependencies apply
+to selected API routes. The analyzer also resolves selected HTTP middleware and
+exception handlers and async context-manager lifespans for active apps and
+included routers. A custom app lifespan supersedes that app's startup and
+shutdown hooks. FastAPI versions before 0.137 copy routes
 at inclusion. Newer versions retain the router and can expose routes added
 later. The analyzer reports incomplete coverage when either model can select
 different routes or postponed dependencies, or when ordering across scopes
 cannot be determined. It retains constructors of resolved class dependencies.
-[FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
+[FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 
-Django URL discovery follows a reachable, recognized launcher. The settings
-module comes from a literal `--settings` option in a management launcher, the
-scan process's `DJANGO_SETTINGS_MODULE`, or the first literal default set in
-the launcher's scope, in that order. It resolves
+Django URL discovery follows a reachable, recognized launcher. An explicit
+management `--settings` option takes precedence over the launcher's environment.
+The environment starts with the scan process's `DJANGO_SETTINGS_MODULE`. A
+literal assignment to the genuine `os.environ` entry overrides it, and
+`setdefault` fills an unset entry. Without a reachable launcher or environment
+selection, one conventional `package.settings` module with literal `INSTALLED_APPS` and
+`ROOT_URLCONF = 'package.urls'` can describe an externally configured project
+when the sibling URL module imports the genuine Django URL API and defines
+bounded `urlpatterns`. This models registration if the configuration is used.
+Ambiguous configurations do not establish activation. Discovery resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
 class-based views reach their effective `setup()` hook. Unresolved URL
@@ -249,14 +262,28 @@ subclasses named `Command` in the installed apps' public
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
 
-Django signal discovery follows modules loaded through startup, including
-imports in an installed app's `ready()` hook. It resolves selected Django
-signal providers, direct `Signal()` instances, and subclasses that inherit
+Django admin discovery follows installed apps when `django.contrib.admin` or
+`AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules
+dormant unless the selected application imports them. The analyzer resolves
+the default site's `register` decorator or method and follows the registered
+`ModelAdmin`'s effective literal `list_display`, `readonly_fields`, and `actions`
+entries that select local callbacks. A local getter can supply a literal
+display or readonly list. `@admin.display` and `@admin.action` attach
+metadata to a callback. A loaded registration with opaque options or an
+unresolved condition produces a coverage diagnostic.
+[Django admin discovery and options](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/#discovery-of-admin-files)
+
+Django signal discovery follows modules loaded through the launcher or selected
+project configuration, including imports in an installed app's `ready()` hook.
+It resolves selected Django signal providers, direct `Signal()` instances, and subclasses that inherit
 Django's `connect()` method. It accepts `@receiver`, a stored receiver
 decorator, and `connect()`, including the named signal and callback arguments
-and literal lists or tuples of signals. Custom signals and registrations inside
-an unresolved branch contribute possible-use evidence. Opaque registrations
-in loaded modules and registrations without a selected startup produce
+and literal lists or tuples of signals. A local signal with a resolved Django
+`connect()` method can establish registration. Registrations inside unresolved
+branches contribute possible-use evidence. A proven registration
+whose module is outside the known load path of an externally configured project
+contributes `django_signal_unknown_loading` possible-use evidence. Opaque
+registrations in loaded modules and registrations without a selected setup produce
 coverage diagnostics. If a reached entry module imports or calls a startup
 helper, registrations in the entry module and its imports are considered
 possible. Opaque registrations on those paths also produce coverage
@@ -264,25 +291,27 @@ diagnostics. Bound receivers contribute to method dispatch when their
 registration is reached. The model does not prove which dispatches occur.
 [Django signal registration](https://docs.djangoproject.com/en/5.2/topics/signals/#connecting-receiver-functions)
 
-The profile also recognizes selected Celery task registrations, SQLAlchemy
-listeners, Pydantic model hooks, unittest test and lifecycle methods through
-effective class bindings, and pytest hooks and fixtures through selected
-conftest modules or literal `pytest_plugins` declarations. pytest autouse fixtures
-also apply to unittest cases collected by pytest. A reachable eager Pydantic
+The profile also recognizes selected Celery task registrations, including
+reached `register_task` calls on a resolved app. It models SQLAlchemy listeners
+and declared fields through a resolved SQLAlchemy or SQLModel base, including
+SQLModel's literal `table` class option. It recognizes Pydantic model hooks,
+unittest tests and lifecycle methods through effective class bindings, and pytest
+hooks and fixtures through selected conftest modules or literal `pytest_plugins`
+declarations. In a conventional unselected plugin module, a bounded hook
+signature and a resolved pytest import can contribute possible-use evidence.
+pytest autouse fixtures also apply to unittest cases collected by pytest. A reachable eager Pydantic
 model declaration can execute its core-schema hook during class creation.
 These are bounded models under
 [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
-Additional Django command dispatch and FastAPI dependency patterns still need
-coverage.
+Additional Django command dispatch, FastAPI dependency patterns, Celery backend
+selection, and Pydantic serializer cases still need coverage.
 
-The pinned `django-urlpatterns`, `django-signal-receiver`, `pytest-plugin-hooks`,
-and `python-unittest-lifecycle` corpus cases currently diverge. The two Django
-fixtures omit startup. Skarmory reports incomplete coverage for each.
-The pytest and unittest fixtures expect retention without an active plugin or a
-discovered test method, respectively. The unittest fixture also expects a
-test-only path whitelist. The reviewed inventory must account for these
-differences before qualification.
+The pinned `django-urlpatterns` and `django-signal-receiver` corpus fixtures
+omit startup and a qualifying settings/URLconf pair, leaving coverage incomplete.
+The `python-unittest-lifecycle` corpus case expects lifecycle retention without a
+discovered test method and a test-only path whitelist. The reviewed inventory must
+account for these differences before qualification.
 
 ### Python shutdown callbacks
 

@@ -15,6 +15,18 @@ use crate::{FrontendError, Lines, Location, parse_source};
 // Limit recursive walks and the depth of serialized facts.
 const MAX_NESTING: usize = 32;
 
+fn lambda_parameter(lambda: &ruff_python_ast::ExprLambda) -> Option<&str> {
+    let parameters = lambda.parameters.as_ref()?;
+    if parameters.len() != 1 || !parameters.kwonlyargs.is_empty() {
+        return None;
+    }
+    let parameter = parameters.iter_non_variadic_params().next()?;
+    parameter
+        .default
+        .is_none()
+        .then(|| parameter.name().as_str())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ModuleFacts {
     pub body: Vec<Statement>,
@@ -45,6 +57,21 @@ pub enum StatementKind {
         value: Option<Expression>,
         annotation: Option<Expression>,
     },
+    AssignDjangoSettings {
+        environment: Expression,
+        value: Expression,
+    },
+    DiscardedComprehension(Expression),
+    WriteAttribute {
+        receiver: Expression,
+        member: String,
+        value: Option<Expression>,
+    },
+    WriteModuleEntry {
+        mapping: Expression,
+        module: String,
+        value: Option<Expression>,
+    },
     If {
         test: Expression,
         body: Vec<Statement>,
@@ -64,6 +91,8 @@ pub enum StatementKind {
 pub struct Definition {
     pub name: Name,
     pub kind: DefinitionKind,
+    pub table_keyword: Option<bool>,
+    pub is_generator: bool,
     pub body: Vec<Statement>,
     pub body_coverage_lines: Vec<usize>,
     pub decorators: Vec<Expression>,
@@ -117,7 +146,10 @@ pub enum ExpressionKind {
     },
     Text(String),
     Bool(bool),
+    None,
     Scalar,
+    ConstantLambda,
+    IdentityDecoratorLambda,
     Sequence(Vec<Expression>),
     Dictionary(Vec<Expression>),
     Subscript {
@@ -275,6 +307,7 @@ struct BodyCoverage<'a> {
     source: &'a Lines,
     lines: BTreeSet<usize>,
     visit_suite: bool,
+    is_generator: bool,
 }
 
 impl BodyCoverage<'_> {
@@ -309,6 +342,9 @@ impl<'ast> Visitor<'ast> for BodyCoverage<'_> {
 
     fn visit_expr(&mut self, expression: &'ast Expr) {
         self.record(expression);
+        if matches!(expression, Expr::Yield(_) | Expr::YieldFrom(_)) {
+            self.is_generator = true;
+        }
         if let Expr::Attribute(attribute) = expression {
             self.record(&attribute.attr);
         }
@@ -341,6 +377,34 @@ impl Lowering<'_> {
     fn target(&self, target: &Expr) -> Result<Name, FrontendError> {
         match target {
             Expr::Name(name) => self.binding_name(name.id.as_str(), name),
+            _ => Err(self
+                .0
+                .unsupported(target, "assignment target must be a simple name")),
+        }
+    }
+
+    fn write_target(
+        &self,
+        target: &Expr,
+        value: Option<Expression>,
+        depth: usize,
+    ) -> Result<StatementKind, FrontendError> {
+        match target {
+            Expr::Attribute(node) => Ok(StatementKind::WriteAttribute {
+                receiver: self.expression(&node.value, depth)?,
+                member: node.attr.to_string(),
+                value,
+            }),
+            Expr::Subscript(node) => {
+                let Expr::StringLiteral(module) = node.slice.as_ref() else {
+                    return Err(self.0.unsupported(target, "mutation key must be literal"));
+                };
+                Ok(StatementKind::WriteModuleEntry {
+                    mapping: self.expression(&node.value, depth)?,
+                    module: module.value.to_str().into(),
+                    value,
+                })
+            }
             _ => Err(self
                 .0
                 .unsupported(target, "assignment target must be a simple name")),
@@ -485,6 +549,7 @@ impl Lowering<'_> {
                         source: self.0,
                         lines: BTreeSet::new(),
                         visit_suite: true,
+                        is_generator: false,
                     };
                     coverage.visit_body(&node.body);
                     StatementKind::Define(Definition {
@@ -494,6 +559,8 @@ impl Lowering<'_> {
                         } else {
                             DefinitionKind::Function
                         },
+                        table_keyword: None,
+                        is_generator: coverage.is_generator,
                         body,
                         body_coverage_lines: coverage.lines.into_iter().collect(),
                         decorators: node
@@ -521,14 +588,26 @@ impl Lowering<'_> {
                     })
                 }
                 Stmt::ClassDef(node)
-                    if node
-                        .arguments
-                        .as_ref()
-                        .is_none_or(|args| args.keywords.is_empty()) =>
+                    if node.arguments.as_ref().is_none_or(|args| {
+                        args.keywords.is_empty()
+                            || matches!(args.keywords.as_slice(), [keyword]
+                                if keyword.arg.as_ref().is_some_and(|name| name.as_str() == "table")
+                                    && matches!(keyword.value, Expr::BooleanLiteral(_)))
+                    }) =>
                 {
                     StatementKind::Define(Definition {
                         name: self.binding_name(node.name.as_str(), &node.name)?,
                         kind: DefinitionKind::Class,
+                        table_keyword: node.arguments.as_ref().and_then(|args| {
+                            if let [keyword] = args.keywords.as_slice()
+                                && let Expr::BooleanLiteral(value) = &keyword.value
+                            {
+                                Some(value.value)
+                            } else {
+                                None
+                            }
+                        }),
+                        is_generator: false,
                         body: Lowering(self.0, SyntaxScope::ModuleOrClass)
                             .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
@@ -552,20 +631,39 @@ impl Lowering<'_> {
                             .unwrap_or_default(),
                     })
                 }
-                Stmt::Assign(node) => StatementKind::Assign {
-                    names: node
-                        .targets
-                        .iter()
-                        .map(|target| self.target(target))
-                        .collect::<Result<_, _>>()?,
-                    value: Some(expression(&node.value)?),
-                    annotation: None,
-                },
+                Stmt::Assign(node) => {
+                    if let [Expr::Subscript(target)] = node.targets.as_slice()
+                        && matches!(target.slice.as_ref(), Expr::StringLiteral(key)
+                            if key.value.to_str() == "DJANGO_SETTINGS_MODULE")
+                    {
+                        StatementKind::AssignDjangoSettings {
+                            environment: expression(&target.value)?,
+                            value: expression(&node.value)?,
+                        }
+                    } else if let [target] = node.targets.as_slice()
+                        && matches!(target, Expr::Attribute(_) | Expr::Subscript(_))
+                    {
+                        self.write_target(target, Some(expression(&node.value)?), next)?
+                    } else {
+                        StatementKind::Assign {
+                            names: node
+                                .targets
+                                .iter()
+                                .map(|target| self.target(target))
+                                .collect::<Result<_, _>>()?,
+                            value: Some(expression(&node.value)?),
+                            annotation: None,
+                        }
+                    }
+                }
                 Stmt::AnnAssign(node) => StatementKind::Assign {
                     names: vec![self.target(&node.target)?],
                     value: node.value.as_deref().map(expression).transpose()?,
                     annotation: Some(self.annotation(&node.annotation, next)?),
                 },
+                Stmt::Delete(node) if node.targets.len() == 1 => {
+                    self.write_target(&node.targets[0], None, next)?
+                }
                 Stmt::If(node) => {
                     self.check(node, depth.saturating_add(node.elif_else_clauses.len()))?;
                     let mut otherwise = Vec::new();
@@ -629,7 +727,20 @@ impl Lowering<'_> {
                     }
                     StatementKind::Assert(expression(&node.test)?)
                 }
-                Stmt::Expr(node) => StatementKind::Evaluate(expression(&node.value)?),
+                Stmt::Expr(node) => {
+                    if let Some(iterable) = discarded_comprehension_iterable(&node.value) {
+                        StatementKind::DiscardedComprehension(expression(iterable)?)
+                    } else if let Expr::Yield(yielded) = &*node.value
+                        && self.1 != SyntaxScope::ModuleOrClass
+                    {
+                        let Some(value) = &yielded.value else {
+                            continue;
+                        };
+                        StatementKind::Evaluate(expression(value)?)
+                    } else {
+                        StatementKind::Evaluate(expression(&node.value)?)
+                    }
+                }
                 _ => {
                     return Err(self
                         .0
@@ -698,10 +809,28 @@ impl Lowering<'_> {
             }
             Expr::StringLiteral(node) => ExpressionKind::Text(node.value.to_str().into()),
             Expr::BooleanLiteral(node) => ExpressionKind::Bool(node.value),
-            Expr::NumberLiteral(_)
-            | Expr::NoneLiteral(_)
-            | Expr::BytesLiteral(_)
-            | Expr::EllipsisLiteral(_) => ExpressionKind::Scalar,
+            Expr::Lambda(node)
+                if lambda_parameter(node).is_some()
+                    && matches!(node.body.as_ref(), Expr::Lambda(inner)
+                        if lambda_parameter(inner).is_some_and(|parameter|
+                            matches!(inner.body.as_ref(), Expr::Name(name) if name.id.as_str() == parameter))) =>
+            {
+                ExpressionKind::IdentityDecoratorLambda
+            }
+            Expr::Lambda(node)
+                if matches!(node.body.as_ref(), Expr::NoneLiteral(_))
+                    && node.parameters.as_ref().is_none_or(|parameters| {
+                        parameters
+                            .iter_non_variadic_params()
+                            .all(|parameter| parameter.default.is_none())
+                    }) =>
+            {
+                ExpressionKind::ConstantLambda
+            }
+            Expr::NoneLiteral(_) => ExpressionKind::None,
+            Expr::NumberLiteral(_) | Expr::BytesLiteral(_) | Expr::EllipsisLiteral(_) => {
+                ExpressionKind::Scalar
+            }
             Expr::Tuple(node) => ExpressionKind::Sequence(self.expressions(&node.elts, next)?),
             Expr::List(node) => ExpressionKind::Sequence(self.expressions(&node.elts, next)?),
             Expr::Dict(node) if node.items.iter().all(|item| item.key.is_some()) => {
@@ -787,6 +916,20 @@ impl Lowering<'_> {
             kind,
         })
     }
+}
+
+fn discarded_comprehension_iterable(expression: &Expr) -> Option<&Expr> {
+    let (generator, must_be_empty) = match expression {
+        Expr::Generator(node) => (node.generators.first()?, false),
+        Expr::ListComp(node) => (node.generators.first()?, true),
+        _ => return None,
+    };
+    let elements = match &generator.iter {
+        Expr::List(list) => &list.elts,
+        Expr::Tuple(tuple) => &tuple.elts,
+        _ => return None,
+    };
+    (!generator.is_async && (!must_be_empty || elements.is_empty())).then_some(&generator.iter)
 }
 
 #[cfg(test)]

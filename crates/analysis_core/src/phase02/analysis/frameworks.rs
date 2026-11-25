@@ -5,7 +5,7 @@ use super::*;
 pub(super) struct DjangoStartup {
     pub(super) at: Location,
     pub(super) settings: Option<String>,
-    pub(super) requires_urlconf: bool,
+    pub(super) creates_application: bool,
     pub(super) commands: DjangoCommands,
 }
 
@@ -35,6 +35,10 @@ struct DjangoSignalCallback {
     receiver: Option<SymbolId>,
 }
 
+pub(super) fn is_django_signal_edge(kind: &str) -> bool {
+    matches!(kind, "django_signal" | "django_signal_unknown_loading")
+}
+
 impl Graph<'_> {
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
@@ -47,9 +51,10 @@ impl Graph<'_> {
                 continue;
             };
             let (root, lifecycle, fields) = match role {
-                FrameworkClassRole::Unittest | FrameworkClassRole::UnittestAsync => {
-                    (None, &[][..], false)
-                }
+                FrameworkClassRole::Unittest
+                | FrameworkClassRole::UnittestAsync
+                | FrameworkClassRole::DjangoTestCase
+                | FrameworkClassRole::DjangoDatabaseTestCase => (None, &[][..], false),
                 FrameworkClassRole::DjangoAppConfig | FrameworkClassRole::DjangoCommand => {
                     (None, &[][..], false)
                 }
@@ -63,19 +68,14 @@ impl Graph<'_> {
                 FrameworkClassRole::DjangoModel | FrameworkClassRole::DjangoSignal => {
                     (None, &[][..], false)
                 }
-                // A ModelAdmin subclass is live only after an actual admin.register
-                // registration. Lifecycle entries are therefore owner-gated.
-                FrameworkClassRole::DjangoAdmin => (
-                    None,
-                    &["get_queryset", "save_model", "delete_model"][..],
-                    true,
-                ),
-                FrameworkClassRole::CeleryTask => (Some("celery_task"), &["run"][..], false),
+                FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
+                FrameworkClassRole::CeleryTask => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
                     &["__declare_first__", "__declare_last__"][..],
                     true,
                 ),
+                FrameworkClassRole::SqlModel => (None, &[][..], true),
                 FrameworkClassRole::PydanticModel => (
                     None,
                     &[
@@ -86,10 +86,7 @@ impl Graph<'_> {
                     true,
                 ),
             };
-            if matches!(
-                role,
-                FrameworkClassRole::Unittest | FrameworkClassRole::UnittestAsync
-            ) {
+            if role.is_unittest() {
                 self.unittest_classes.insert(class, role);
             }
             if let Some(kind) = root {
@@ -218,96 +215,7 @@ impl Graph<'_> {
             {
                 continue;
             }
-            let mut has_cases = false;
-            for (class, certain) in self.pytest_registrations(&self.scopes[file].names, "") {
-                let Some(role) = self.unittest_classes.get(&class.target) else {
-                    continue;
-                };
-                let async_runner = *role == FrameworkClassRole::UnittestAsync;
-                let (lineage, _) = self.class_lineage(class.target);
-                let mut names = BTreeMap::new();
-                for scope in lineage {
-                    for (&name, bindings) in &self.scopes[scope].names {
-                        names.entry(name).or_insert_with(|| bindings.clone());
-                    }
-                }
-                let mut methods = self.pytest_registrations(&names, "test");
-                if methods.is_empty()
-                    && let Some(bindings) = names.get("runTest")
-                {
-                    methods.extend(self.pytest_registrations(
-                        &BTreeMap::from([("runTest", bindings.clone())]),
-                        "runTest",
-                    ));
-                }
-                methods.retain(|(method, _)| self.is_pytest_function(method.target));
-                if methods.is_empty() {
-                    continue;
-                }
-                let certain_case = certain && methods.iter().any(|(_, selected)| *selected);
-                has_cases = true;
-                self.read.extend(class.bindings);
-                self.framework_root(class.target, "unittest_discovery", certain);
-                let lifecycle = [
-                    ("setUp", false),
-                    ("tearDown", false),
-                    ("setUpClass", false),
-                    ("tearDownClass", false),
-                    ("asyncSetUp", true),
-                    ("asyncTearDown", true),
-                ];
-                for (hook, asynchronous) in lifecycle {
-                    if asynchronous && !async_runner {
-                        continue;
-                    }
-                    if let Some(bindings) = names.get(hook) {
-                        methods.extend(
-                            self.pytest_registrations(
-                                &BTreeMap::from([(hook, bindings.clone())]),
-                                hook,
-                            )
-                            .into_iter()
-                            .filter(|(method, _)| self.is_coroutine(method.target) == asynchronous),
-                        );
-                    }
-                }
-                if self.is_pytest_file(file) {
-                    self.pytest_unittest_cases
-                        .entry(file)
-                        .or_default()
-                        .push((names, certain_case));
-                }
-                for (method, selected) in methods {
-                    if self.is_pytest_function(method.target)
-                        && (async_runner || !self.is_coroutine(method.target))
-                    {
-                        self.read.extend(method.bindings);
-                        self.method_receivers
-                            .entry(method.target)
-                            .or_default()
-                            .insert(class.target);
-                        self.framework_root(
-                            method.target,
-                            "unittest_discovery",
-                            certain && selected,
-                        );
-                    }
-                }
-            }
-            if has_cases {
-                for name in ["setUpModule", "tearDownModule"] {
-                    if let Some(target) = self.local(file, name, END)
-                        && self.is_pytest_function(target)
-                        && !self.is_coroutine(target)
-                    {
-                        self.framework_root(
-                            target,
-                            "unittest_discovery",
-                            !self.conditional.contains_key(&target),
-                        );
-                    }
-                }
-            }
+            self.collect_unittest_module(file);
         }
         while let Some(file) = declarations.pop() {
             let Some(binding) = self.local(file, "pytest_plugins", END) else {
@@ -339,6 +247,11 @@ impl Graph<'_> {
                 _ => self.unresolved_pytest_plugins(file, binding),
             }
         }
+        for file in 0..self.files.len() {
+            if !plugins.contains(&file) {
+                self.collect_possible_pytest_hooks(file);
+            }
+        }
         for file in plugins {
             for (hook, certain) in self.pytest_registrations(&self.scopes[file].names, "pytest_") {
                 if self.is_pytest_function(hook.target) {
@@ -347,6 +260,291 @@ impl Graph<'_> {
                 }
             }
         }
+    }
+
+    fn collect_unittest_module(&mut self, file: ScopeId) {
+        let mut runnable = None;
+        for (class, certain) in self.pytest_registrations(&self.scopes[file].names, "") {
+            let Some(&role) = self.unittest_classes.get(&class.target) else {
+                continue;
+            };
+            self.read.extend(class.bindings);
+            self.framework_root(class.target, "unittest_discovery", certain);
+            let (lineage, _) = self.class_lineage(class.target);
+            let mut names = BTreeMap::new();
+            let mut overrides = BTreeMap::new();
+            for scope in lineage {
+                let owner = self.scopes[scope].owner.expect("class scope has an owner");
+                let writes = self.class_discovery_writes(owner, file);
+                for (name, write) in &writes {
+                    if !names.contains_key(name.as_str())
+                        && !matches!(write, mutations::MemberWriteValue::Deleted)
+                    {
+                        overrides.entry(name.clone()).or_insert(write.clone());
+                    }
+                }
+                for (&name, bindings) in &self.scopes[scope].names {
+                    if writes.contains_key(name) || overrides.contains_key(name) {
+                        continue;
+                    }
+                    // A bare annotation changes __annotations__, not the
+                    // actual class attribute consulted by discovery.
+                    let bindings: Vec<_> = bindings
+                        .iter()
+                        .copied()
+                        .filter(|&id| {
+                            !matches!(self.symbols[id].binding, Binding::Variable(None, _))
+                        })
+                        .collect();
+                    if !bindings.is_empty() {
+                        names.entry(name).or_insert(bindings);
+                    }
+                }
+            }
+            let mut tests = self.pytest_registrations(&names, "test");
+            tests.retain(|(method, _)| self.unittest_callable(method.target));
+            let mut opaque_test = false;
+            for (name, write) in &overrides {
+                if name.starts_with("test") {
+                    tests.extend(self.unittest_write(write));
+                    opaque_test |= matches!(
+                        write,
+                        mutations::MemberWriteValue::Replacement(Value::ConstantFunction)
+                    );
+                }
+                if matches!(write, mutations::MemberWriteValue::Ambiguous) {
+                    let symbol = &self.symbols[class.target];
+                    self.scope_issue(
+                        file,
+                        symbol.name.at,
+                        "unresolved_unittest_member",
+                        "unittest member changed by a write with unresolved ordering or value",
+                    );
+                }
+            }
+            if tests.is_empty() && !opaque_test {
+                tests = self.unittest_member(&names, &overrides, "runTest");
+                opaque_test = matches!(
+                    overrides.get("runTest"),
+                    Some(mutations::MemberWriteValue::Replacement(
+                        Value::ConstantFunction
+                    ))
+                );
+            }
+            if tests.is_empty() && !opaque_test {
+                continue;
+            }
+            let certain_case =
+                certain && (opaque_test || tests.iter().any(|(_, selected)| *selected));
+            runnable = Some(runnable.unwrap_or(false) || certain_case);
+            if self.is_pytest_file(file) {
+                self.pytest_unittest_cases
+                    .entry(file)
+                    .or_default()
+                    .push((names.clone(), certain_case));
+            }
+            let asynchronous = role == FrameworkClassRole::UnittestAsync;
+            let django = matches!(
+                role,
+                FrameworkClassRole::DjangoTestCase | FrameworkClassRole::DjangoDatabaseTestCase
+            );
+            for (method, selected) in tests {
+                if asynchronous || django || !self.is_coroutine(method.target) {
+                    self.unittest_method(class.target, method, certain && selected);
+                }
+            }
+            let mut lifecycle = vec!["setUp", "tearDown", "setUpClass", "tearDownClass"];
+            if asynchronous {
+                lifecycle.extend(["asyncSetUp", "asyncTearDown"]);
+            }
+            if django {
+                lifecycle.extend(["_pre_setup", "_post_teardown"]);
+            }
+            if role == FrameworkClassRole::DjangoDatabaseTestCase {
+                lifecycle.push("setUpTestData");
+            }
+            for name in lifecycle {
+                for (method, selected) in self.unittest_member(&names, &overrides, name) {
+                    if self.is_coroutine(method.target) == name.starts_with("async") {
+                        self.unittest_method(class.target, method, certain_case && selected);
+                    }
+                }
+            }
+        }
+        if let Some(certain) = runnable {
+            for name in ["setUpModule", "tearDownModule"] {
+                if let Some(target) = self.local(file, name, END)
+                    && self.unittest_callable(target)
+                    && !self.is_coroutine(target)
+                {
+                    self.framework_root(
+                        target,
+                        if self.is_generator(target) {
+                            "generator_creation"
+                        } else {
+                            "unittest_discovery"
+                        },
+                        certain && !self.conditional.contains_key(&target),
+                    );
+                }
+            }
+        }
+    }
+
+    fn unittest_member(
+        &mut self,
+        names: &PytestNames<'_>,
+        overrides: &BTreeMap<String, mutations::MemberWriteValue>,
+        name: &str,
+    ) -> Vec<(CallableBinding, bool)> {
+        if let Some(write) = overrides.get(name) {
+            return self.unittest_write(write).into_iter().collect();
+        }
+        let Some(bindings) = names.get_key_value(name) else {
+            return Vec::new();
+        };
+        self.pytest_registrations(&BTreeMap::from([(*bindings.0, bindings.1.clone())]), name)
+            .into_iter()
+            .filter(|(method, _)| self.unittest_callable(method.target))
+            .collect()
+    }
+
+    fn unittest_write(
+        &mut self,
+        write: &mutations::MemberWriteValue,
+    ) -> Option<(CallableBinding, bool)> {
+        let mutations::MemberWriteValue::Replacement(Value::Callable(invocation)) = write else {
+            return None;
+        };
+        self.unittest_callable(invocation.target).then_some((
+            CallableBinding {
+                target: invocation.target,
+                bindings: Vec::new(),
+            },
+            true,
+        ))
+    }
+
+    fn unittest_callable(&mut self, target: SymbolId) -> bool {
+        if !self.is_pytest_function(target) {
+            return false;
+        }
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            unreachable!()
+        };
+        let scope = symbol.scope;
+        definition.decorators.iter().all(|decorator| {
+            matches!(
+                self.probe_identity(scope, decorator, definition.name.at),
+                Value::Provider(provider)
+                    if matches!(provider.as_str(), "builtins.classmethod" | "builtins.staticmethod")
+            )
+        })
+    }
+
+    fn unittest_method(&mut self, class: SymbolId, method: CallableBinding, certain: bool) {
+        self.read.extend(method.bindings);
+        if self.is_generator(method.target) {
+            self.framework_root(method.target, "generator_creation", certain);
+            return;
+        }
+        self.method_receivers
+            .entry(method.target)
+            .or_default()
+            .insert(class);
+        self.framework_root(method.target, "unittest_discovery", certain);
+    }
+
+    fn collect_possible_pytest_hooks(&mut self, file: ScopeId) {
+        let basename = self.files[file].path.rsplit('/').next().unwrap_or_default();
+        if !(basename == "plugin.py"
+            || basename.starts_with("pytest_")
+            || basename.ends_with("_plugin.py"))
+            || self.modules.contains_key("pytest")
+            || !self.scopes[file].names.values().any(|bindings| {
+                let &[id] = self.effective_bindings(bindings) else {
+                    return false;
+                };
+                !self.conditional.contains_key(&id)
+                    && matches!(self.symbols[id].binding, Binding::Import(import)
+                        if import.level == 0 && import.module == "pytest" && import.member.is_none())
+            })
+        {
+            return;
+        }
+
+        // A conventionally named plugin can be loaded by an external runner.
+        // Without a registration in the project, its hooks have possible use.
+        self.retain_possible_pytest_hooks(file, false);
+        let classes: Vec<_> = self.scopes[file]
+            .names
+            .iter()
+            .filter_map(|(name, bindings)| {
+                let &[owner] = self.effective_bindings(bindings) else {
+                    return None;
+                };
+                let Binding::Definition(definition, scope) = self.symbols[owner].binding else {
+                    return None;
+                };
+                (name.ends_with("Plugin")
+                    && definition.kind == DefinitionKind::Class
+                    && definition.bases.is_empty()
+                    && definition.decorators.is_empty()
+                    && !self.conditional.contains_key(&owner)
+                    && !self.dormant_classes.contains(&owner))
+                .then_some((owner, scope))
+            })
+            .collect();
+        for (owner, scope) in classes {
+            if self.retain_possible_pytest_hooks(scope, true) {
+                self.framework_root(owner, "pytest_hook_candidate", false);
+            }
+        }
+    }
+
+    fn retain_possible_pytest_hooks(&mut self, scope: ScopeId, method: bool) -> bool {
+        const HOOKS: &[(&str, &[&str])] = &[
+            ("pytest_addhooks", &["pluginmanager"]),
+            (
+                "pytest_assertrepr_compare",
+                &["config", "op", "left", "right"],
+            ),
+            ("pytest_cmdline_main", &["config"]),
+            ("pytest_collection_finish", &["session"]),
+            ("pytest_fixture_setup", &["fixturedef", "request"]),
+            ("pytest_sessionfinish", &["session", "exitstatus"]),
+        ];
+        let mut found = false;
+        for (name, arguments) in HOOKS {
+            let Some(bindings) = self.scopes[scope].names.get(name) else {
+                continue;
+            };
+            let &[target] = self.effective_bindings(bindings) else {
+                continue;
+            };
+            let Binding::Definition(definition, _) = self.symbols[target].binding else {
+                continue;
+            };
+            let expected = method
+                .then_some("self")
+                .into_iter()
+                .chain(arguments.iter().copied());
+            if definition.kind == DefinitionKind::Function
+                && definition.decorators.is_empty()
+                && definition.simple_positional_parameters
+                && definition
+                    .parameters
+                    .iter()
+                    .map(|name| name.text.as_str())
+                    .eq(expected)
+                && !self.conditional.contains_key(&target)
+            {
+                self.framework_root(target, "pytest_hook_candidate", false);
+                found = true;
+            }
+        }
+        found
     }
 
     fn collect_pytest_plugin(
@@ -459,6 +657,77 @@ impl Graph<'_> {
         }
     }
 
+    pub(super) fn register_celery_task(
+        &mut self,
+        scope: ScopeId,
+        object: Object,
+        value: Value,
+        at: Location,
+    ) {
+        let task = match value {
+            Value::Instance(class) => Some(class),
+            Value::Callable(invocation) if self.is_class(invocation.target) => {
+                self.constructor(scope, invocation.target, "constructor", "certain", at);
+                Some(invocation.target)
+            }
+            _ => None,
+        };
+        if let Some(task) = task
+            && self.framework_class_role(task, &mut BTreeSet::new(), 0)
+                == Some(FrameworkClassRole::CeleryTask)
+        {
+            self.scopes[scope]
+                .routes
+                .push((object, task, "celery_task"));
+            // Celery dispatches the task's effective run method, including an inherited one.
+            if let Some(Value::Callable(run)) = self.class_member(task, "run", 0) {
+                self.scopes[scope]
+                    .routes
+                    .push((object, run.target, "celery_task"));
+                self.framework_route_receivers
+                    .entry((scope, object, run.target))
+                    .or_default()
+                    .insert(task);
+                return;
+            }
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_registration",
+            "Celery task registration could not resolve an effective run method",
+        );
+    }
+
+    pub(super) fn register_sqlmodel_table(&mut self, scope: ScopeId, model: SymbolId) {
+        let (lineage, _) = self.class_lineage(model);
+        let mut certain = self.branch_depth == 0;
+        for (index, &class_scope) in lineage.iter().enumerate() {
+            let owner = self.scopes[class_scope]
+                .owner
+                .expect("class scope has an owner");
+            let Binding::Definition(definition, _) = self.symbols[owner].binding else {
+                unreachable!()
+            };
+            // A subclass of an existing table does not create another table
+            // through SQLModel's metaclass.
+            if index > 0 && definition.table_keyword == Some(true) {
+                return;
+            }
+            if self.local(class_scope, "model_config", END).is_some()
+                || self.local(class_scope, "__abstract__", END).is_some()
+            {
+                certain = false;
+            }
+        }
+        self.edge(
+            scope,
+            model,
+            "sqlmodel_table",
+            if certain { "certain" } else { "possible" },
+        );
+    }
+
     fn collect_django_urlconfs(&mut self) {
         for scope in 0..self.scopes.len() {
             let startups = std::mem::take(&mut self.scopes[scope].starts_django);
@@ -479,32 +748,59 @@ impl Graph<'_> {
                     );
                     continue;
                 };
-                let row = &mut self.scopes[scope];
-                row.activated_apps.extend([
-                    django_loaded_module(settings),
-                    django_loaded_module(row.file),
-                ]);
-                self.collect_django_apps(scope, settings, &startup.commands);
-                let binding = self.local(settings, "ROOT_URLCONF", END);
-                let root = binding.and_then(|binding| match self.binding(binding, END, 0) {
-                    Value::Text(module) => self.modules.get(module.as_str()).copied(),
-                    _ => None,
-                });
-                if let Some(file) = root {
-                    let object = framework_module(file);
-                    self.scopes[scope].activated_apps.push(object);
-                    self.django_roots.insert(object);
-                } else if startup.requires_urlconf || binding.is_some() {
-                    self.scope_issue(
-                        scope,
-                        startup.at,
-                        "unresolved_registration",
-                        "Django ROOT_URLCONF could not be resolved",
-                    );
+                self.activate_django_settings(scope, settings, &startup.commands);
+                if startup.creates_application
+                    && scope == self.scopes[scope].file
+                    && matches!(
+                        self.files[scope].module.rsplit('.').next(),
+                        Some("wsgi" | "asgi")
+                    )
+                    && let Some(application) = self.local(scope, "application", END)
+                    && !self.conditional.contains_key(&application)
+                    && matches!(self.symbols[application].binding,
+                        Binding::Variable(Some(value), _) if position(value.at) == position(startup.at))
+                {
+                    self.edge(scope, application, "django_application", "certain");
                 }
             }
         }
 
+        if self.django_startup_scopes.is_empty() {
+            self.select_configured_django_settings();
+        }
+        self.collect_django_root_patterns();
+    }
+
+    pub(super) fn activate_configured_django_after_dormant_startup(
+        &mut self,
+        reach: &Reachability,
+    ) -> bool {
+        if self.django_startup_scopes.is_empty()
+            || !self.django_startup_scopes.is_disjoint(&reach.scopes)
+            || !self.select_configured_django_settings()
+        {
+            return false;
+        }
+        self.collect_django_root_patterns();
+        true
+    }
+
+    fn select_configured_django_settings(&mut self) -> bool {
+        // A deployment can choose settings outside the checked-in launchers.
+        // Prefer any reachable startup or environment selection over convention.
+        if self.initial_django_settings != DjangoSettings::Unset {
+            return false;
+        }
+        let Some(settings) = self.configured_django_settings() else {
+            return false;
+        };
+        self.django_configured_settings = Some(settings);
+        self.django_startup_scopes.insert(settings);
+        self.activate_django_settings(settings, settings, &DjangoCommands::None);
+        true
+    }
+
+    fn collect_django_root_patterns(&mut self) {
         let mut pending: Vec<_> = self.django_roots.iter().copied().collect();
         let mut visited = BTreeSet::new();
         while let Some(object) = pending.pop() {
@@ -535,8 +831,19 @@ impl Graph<'_> {
             let file = object.0;
             for name in ["handler400", "handler403", "handler404", "handler500"] {
                 if let Some(binding) = self.lexical(file, name, END) {
-                    let value = self.binding(binding, END, 0);
-                    if let Value::Callable(invocation) = value {
+                    let value = match self.binding(binding, END, 0) {
+                        Value::Text(path) => path
+                            .rsplit_once('.')
+                            .and_then(|(module, name)| {
+                                self.modules.get(module).map(|file| (*file, name))
+                            })
+                            .and_then(|(file, name)| self.local(file, name, END))
+                            .map_or(Value::Unknown, |id| self.binding(id, END, 0)),
+                        value => value,
+                    };
+                    if let Value::Callable(invocation) = value
+                        && !self.is_class(invocation.target)
+                    {
                         self.scopes[file].routes.push((
                             object,
                             invocation.target,
@@ -550,6 +857,96 @@ impl Graph<'_> {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    fn configured_django_settings(&mut self) -> Option<usize> {
+        if self.modules.contains_key("django") || self.modules.contains_key("django.urls") {
+            return None;
+        }
+        let mut selected = None;
+        for file in 0..self.files.len() {
+            let Some((package, "settings")) = self.files[file].module.rsplit_once('.') else {
+                continue;
+            };
+            let [Some(apps), Some(root)] =
+                ["INSTALLED_APPS", "ROOT_URLCONF"].map(|name| self.local(file, name, END))
+            else {
+                continue;
+            };
+            if [apps, root]
+                .into_iter()
+                .any(|binding| self.conditional.contains_key(&binding))
+                || !matches!(self.binding_value(apps, 0), Value::Sequence(_))
+                || !matches!(self.binding_value(root, 0), Value::Text(module)
+                    if module == format!("{package}.urls"))
+            {
+                continue;
+            }
+            let Some(&urls) = self.modules.get(format!("{package}.urls").as_str()) else {
+                continue;
+            };
+            let Some(patterns) = self.local(urls, "urlpatterns", END) else {
+                continue;
+            };
+            if self.conditional.contains_key(&patterns)
+                || !matches!(self.binding_value(patterns, 0), Value::Sequence(_))
+                || !self.scopes[urls].names.values()
+                    .flat_map(|bindings| self.effective_bindings(bindings))
+                    .any(|&bound| {
+                        !self.conditional.contains_key(&bound)
+                            && matches!(self.symbols[bound].binding, Binding::Import(import)
+                                if import.level == 0 && import.module == "django.urls"
+                                    && matches!(import.member.as_deref(), Some("path" | "re_path" | "include")))
+                    })
+            {
+                continue;
+            }
+            if selected.replace(file).is_some() {
+                return None;
+            }
+        }
+        selected
+    }
+
+    fn activate_django_settings(
+        &mut self,
+        scope: ScopeId,
+        settings: usize,
+        commands: &DjangoCommands,
+    ) {
+        let row = &mut self.scopes[scope];
+        row.activated_apps.extend([
+            django_loaded_module(settings),
+            django_loaded_module(row.file),
+        ]);
+        let settings_bindings: Vec<_> = self.scopes[settings]
+            .names
+            .iter()
+            .filter(|(name, _)| {
+                name.chars().any(char::is_uppercase) && !name.chars().any(char::is_lowercase)
+            })
+            .flat_map(|(_, bindings)| self.effective_bindings(bindings).iter().copied())
+            .filter(|&binding| matches!(self.symbols[binding].binding, Binding::Variable(..)))
+            .collect();
+        for binding in settings_bindings {
+            self.edge(scope, binding, "django_setting", "certain");
+        }
+        self.collect_django_apps(scope, settings, commands);
+        if let Some(binding) = self.local(settings, "ROOT_URLCONF", END) {
+            if let Value::Text(module) = self.binding(binding, END, 0)
+                && let Some(&file) = self.modules.get(module.as_str())
+            {
+                let object = framework_module(file);
+                self.scopes[scope].activated_apps.push(object);
+                self.django_roots.insert(object);
+            } else {
+                self.django_registration_issue(
+                    django_loaded_module(settings),
+                    self.symbols[binding].name.at,
+                    "Django ROOT_URLCONF could not be resolved",
+                );
             }
         }
     }
@@ -615,6 +1012,7 @@ impl Graph<'_> {
                 reach.active_objects.insert(loaded_module);
             }
             let starts_django = self.django_startup_scopes.contains(&scope)
+                && self.django_configured_settings != Some(scope)
                 && row.activated_apps.contains(&loaded_module);
             // An entry point may execute startup in an imported module or a
             // helper. Its other imports can then register receivers too.
@@ -634,15 +1032,16 @@ impl Graph<'_> {
             }
 
             let loaded = reach.active_objects.contains(&loaded_module);
+            let startup_import = reach.django_signal_modules.contains(&row.file);
             if loaded {
                 reach
                     .active_objects
                     .extend(row.imports.iter().copied().map(django_loaded_module));
-            } else if reach.django_signal_modules.contains(&row.file) {
+            } else if startup_import {
                 reach
                     .django_signal_modules
                     .extend(row.imports.iter().copied());
-            } else {
+            } else if !possible || self.django_configured_settings.is_none() {
                 continue;
             }
             for callback in row
@@ -651,6 +1050,16 @@ impl Graph<'_> {
                 .flat_map(|registration| &registration.callbacks)
             {
                 let mut edge = callback.edge;
+                let certain = loaded && edge.certainty == "certain";
+                if !possible && !certain {
+                    continue;
+                }
+                if possible {
+                    edge.certainty = "possible";
+                    if !loaded && !startup_import {
+                        edge.kind = "django_signal_unknown_loading";
+                    }
+                }
                 // A receiver can change method dispatch only after its
                 // registration scope and module are both reached.
                 if let Some(class) = callback.receiver {
@@ -660,17 +1069,28 @@ impl Graph<'_> {
                         .or_default()
                         .insert(class);
                 }
-                if possible || !loaded {
-                    edge.certainty = "possible";
-                }
                 if !reach
                     .evidence
                     .contains(&(edge.target, edge.kind, edge.certainty))
+                    && !(possible
+                        && reach
+                            .evidence
+                            .contains(&(edge.target, "django_signal", "certain")))
                 {
                     pending.push_back(edge);
                 }
             }
         }
+    }
+
+    pub(super) fn has_reachable_django_signals(&self, reach: &Reachability) -> bool {
+        !self.django_startup_scopes.is_disjoint(&reach.scopes)
+            && reach.scopes.iter().any(|&scope| {
+                self.scopes[scope]
+                    .django_signals
+                    .iter()
+                    .any(|registration| !registration.callbacks.is_empty())
+            })
     }
 
     pub(super) fn resolve_deferred_receiver_calls(
@@ -742,9 +1162,25 @@ impl Graph<'_> {
             );
             return;
         };
+        let external_django = !self.modules.contains_key("django");
+        let builtin_admin = |entry: &str| {
+            matches!(
+                entry,
+                "django.contrib.admin"
+                    | "django.contrib.admin.apps.AdminConfig"
+                    | "django.contrib.admin.apps.SimpleAdminConfig"
+            ) && external_django
+        };
+        let autodiscover_admin = apps.iter().any(|app| {
+            matches!(app, Value::Text(entry) if builtin_admin(entry)
+                && entry != "django.contrib.admin.apps.SimpleAdminConfig")
+        });
         let mut registered_commands = BTreeMap::new();
         for app in apps {
             let resolved = if let Value::Text(entry) = app {
+                if builtin_admin(&entry) {
+                    continue;
+                }
                 self.django_app_config(scope, object, &entry, at)
             } else {
                 None
@@ -763,6 +1199,11 @@ impl Graph<'_> {
                 self.modules
                     .get(format!("{prefix}models").as_str())
                     .copied(),
+                if autodiscover_admin {
+                    self.modules.get(format!("{prefix}admin").as_str()).copied()
+                } else {
+                    None
+                },
             ]
             .into_iter()
             .flatten()
@@ -818,6 +1259,301 @@ impl Graph<'_> {
         }
     }
 
+    pub(super) fn django_admin_site_register(
+        &mut self,
+        scope: ScopeId,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        before: Location,
+        at: Location,
+    ) {
+        let options =
+            registration_arguments(arguments, keywords, ["model_or_iterable", "admin_class"]);
+        let object = django_loaded_module(self.scopes[scope].file);
+        match options {
+            Some([Some(models), Some(admin)]) => {
+                let models = self.identity(scope, models, before, 0);
+                let mut local_models = BTreeSet::new();
+                if !self.django_admin_models(&models, &mut local_models) {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django admin model could not be resolved",
+                    );
+                    return;
+                }
+                if let Value::Callable(admin) = self.identity(scope, admin, before, 0) {
+                    self.register_django_admin(scope, admin.target, &local_models, at);
+                } else {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django ModelAdmin could not be resolved",
+                    );
+                }
+            }
+            Some([Some(_), None]) => {}
+            _ => self.django_registration_issue(
+                object,
+                at,
+                "Django admin registration arguments could not be resolved",
+            ),
+        }
+    }
+
+    pub(super) fn django_admin_decorator(
+        &mut self,
+        scope: ScopeId,
+        target: SymbolId,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        before: Location,
+        at: Location,
+    ) {
+        let default_site = match keywords {
+            [] => true,
+            [(name, value)] if name == "site" => {
+                matches!(self.identity(scope, value, before, 0), Value::Provider(provider) if provider == "django.contrib.admin.site")
+            }
+            _ => false,
+        };
+        if arguments.is_empty() || !default_site {
+            self.django_registration_issue(
+                django_loaded_module(self.scopes[scope].file),
+                at,
+                "Django admin decorator arguments could not be resolved",
+            );
+            return;
+        }
+        // The decorator consumes the class even without a known admin loader.
+        self.edge(scope, target, "reference", "certain");
+        let mut local_models = BTreeSet::new();
+        if !arguments.iter().all(|model| {
+            let model = self.identity(scope, model, before, 0);
+            !matches!(model, Value::Sequence(_))
+                && self.django_admin_models(&model, &mut local_models)
+        }) || matches!(self.symbols[target].binding, Binding::Definition(definition, _) if definition.decorators.len() > 1)
+        {
+            self.django_registration_issue(
+                django_loaded_module(self.scopes[scope].file),
+                at,
+                "Django admin models or decorated class could not be resolved",
+            );
+            return;
+        }
+        self.register_django_admin(scope, target, &local_models, at);
+    }
+
+    fn django_admin_models(&mut self, models: &Value, local: &mut BTreeSet<SymbolId>) -> bool {
+        match models {
+            Value::Callable(model)
+                if self.is_class(model.target)
+                    && self.framework_class_role(model.target, &mut BTreeSet::new(), 0)
+                        == Some(FrameworkClassRole::DjangoModel) =>
+            {
+                local.insert(model.target)
+            }
+            Value::Sequence(models) if !models.is_empty() => models.iter().all(|model| {
+                !matches!(model, Value::Sequence(_)) && self.django_admin_models(model, local)
+            }),
+            Value::Provider(name) => matches!(
+                name.as_str(),
+                "django.contrib.auth.models.User" | "django.contrib.auth.models.Group"
+            ),
+            _ => false,
+        }
+    }
+
+    fn register_django_admin(
+        &mut self,
+        scope: ScopeId,
+        target: SymbolId,
+        local_models: &BTreeSet<SymbolId>,
+        at: Location,
+    ) {
+        let object = django_loaded_module(self.scopes[scope].file);
+        if self.branch_depth > 0 {
+            self.django_registration_issue(
+                object,
+                at,
+                "Django ModelAdmin registration is conditional",
+            );
+            return;
+        }
+        if !self.is_class(target)
+            || self.framework_class_role(target, &mut BTreeSet::new(), 0)
+                != Some(FrameworkClassRole::DjangoAdmin)
+        {
+            self.django_registration_issue(object, at, "Django ModelAdmin could not be resolved");
+            return;
+        }
+        if local_models.iter().any(|&model| {
+            self.registered_django_admin_models
+                .contains(&(scope, model))
+        }) {
+            self.django_registration_issue(
+                object,
+                at,
+                "A Django model is already registered on the default admin site in this scope",
+            );
+            return;
+        }
+        self.registered_django_admin_models
+            .extend(local_models.iter().map(|&model| (scope, model)));
+
+        self.scopes[scope]
+            .routes
+            .push((object, target, "django_admin_registration"));
+        for name in ["get_queryset", "save_model", "delete_model"] {
+            self.django_admin_method(scope, object, target, name, at);
+        }
+        for (name, getter) in [
+            ("list_display", "get_list_display"),
+            ("readonly_fields", "get_readonly_fields"),
+            ("actions", "get_actions"),
+        ] {
+            let option = if let Some((override_value, getter_at)) =
+                self.django_admin_option(scope, target, getter, at)
+            {
+                self.django_admin_method(scope, object, target, getter, at);
+                let choices = if let Value::Callable(getter) = override_value
+                    && let Binding::Definition(definition, body) =
+                        self.symbols[getter.target].binding
+                    && definition.kind == DefinitionKind::Function
+                    && !definition.is_generator
+                    && definition.decorators.is_empty()
+                    && let [
+                        Statement {
+                            kind: StatementKind::Return(Some(expression)),
+                            at,
+                        },
+                    ] = body_without_docstring(definition)
+                    && matches!(expression.kind, ExpressionKind::Sequence(_))
+                    && name != "actions"
+                {
+                    self.identity(body, expression, *at, 0)
+                } else {
+                    Value::Unknown
+                };
+                Some((choices, getter_at))
+            } else {
+                self.django_admin_option(scope, target, name, at)
+            };
+            let Some((choices, option_at)) = option else {
+                continue;
+            };
+            let Value::Sequence(choices) = choices else {
+                self.django_registration_issue(
+                    object,
+                    option_at,
+                    "Django ModelAdmin callback options could not be resolved",
+                );
+                continue;
+            };
+            for choice in choices {
+                match choice {
+                    Value::Text(callback) => {
+                        if name != "actions" && callback == "id" {
+                            // An automatic or custom primary key can determine whether Django
+                            // reads a field or falls back to a callable with this spelling.
+                            if self
+                                .django_admin_option(scope, target, &callback, at)
+                                .is_some()
+                                || local_models.iter().any(|&model| {
+                                    matches!(
+                                        self.django_admin_option(scope, model, &callback, at),
+                                        Some((Value::Callable(_), _))
+                                    )
+                                })
+                            {
+                                self.django_registration_issue(object, at, "Django admin id field and callback precedence could not be resolved");
+                            }
+                            continue;
+                        }
+                        let model_only = name != "actions" && callback == "__str__";
+                        let admin_attribute = !model_only
+                            && self.django_admin_method(scope, object, target, &callback, at);
+                        if !admin_attribute && name != "actions" {
+                            for &model in local_models {
+                                self.django_admin_method(scope, object, model, &callback, at);
+                            }
+                        }
+                    }
+                    Value::Callable(callback) => self.scopes[scope].routes.push((
+                        object,
+                        callback.target,
+                        "django_admin_registration",
+                    )),
+                    _ => self.django_registration_issue(
+                        object,
+                        at,
+                        "Django ModelAdmin callback option is outside the bounded model",
+                    ),
+                }
+            }
+        }
+    }
+
+    fn django_admin_method(
+        &mut self,
+        scope: ScopeId,
+        object: Object,
+        class: SymbolId,
+        name: &str,
+        at: Location,
+    ) -> bool {
+        let Some((attribute, option_at)) = self.django_admin_option(scope, class, name, at) else {
+            return false;
+        };
+        match attribute {
+            Value::Callable(callback) if !self.is_class(callback.target) => {
+                self.scopes[scope].routes.push((
+                    object,
+                    callback.target,
+                    "django_admin_registration",
+                ));
+                self.framework_route_receivers
+                    .entry((scope, object, callback.target))
+                    .or_default()
+                    .insert(class);
+            }
+            Value::Unknown | Value::Alternatives(_) => self.django_registration_issue(
+                object,
+                option_at,
+                "Django ModelAdmin method could not be resolved",
+            ),
+            _ => {}
+        }
+        true
+    }
+
+    fn django_admin_option(
+        &mut self,
+        scope: ScopeId,
+        class: SymbolId,
+        name: &str,
+        at: Location,
+    ) -> Option<(Value, Location)> {
+        use mutations::MemberWriteValue;
+
+        let (lineage, _) = self.class_lineage(class);
+        for owner in lineage {
+            if let Some(class) = self.scopes[owner].owner {
+                match self.class_member_write(class, name, (scope, END)) {
+                    Some(MemberWriteValue::Replacement(value)) => return Some((value, at)),
+                    Some(MemberWriteValue::Deleted) => continue,
+                    Some(MemberWriteValue::Ambiguous) => return Some((Value::Unknown, at)),
+                    None => {}
+                }
+            }
+            if let Some(binding) = self.local(owner, name, END) {
+                self.read.insert(binding);
+                return Some((self.binding(binding, END, 0), self.symbols[binding].name.at));
+            }
+        }
+        None
+    }
+
     fn django_app_config(
         &mut self,
         scope: ScopeId,
@@ -847,13 +1583,11 @@ impl Graph<'_> {
                 if self.conditional.contains_key(&binding) {
                     return None;
                 }
-                let default = match self.django_class_attribute(config.target, "default") {
+                let default = match self.django_class_value(config.target, "default", scope) {
                     None => false,
-                    Some(binding) => match self.binding(binding, END, 0) {
-                        Value::Bool(false) => continue,
-                        Value::Bool(true) => true,
-                        _ => return None,
-                    },
+                    Some(Value::Bool(false)) => continue,
+                    Some(Value::Bool(true)) => true,
+                    Some(_) => return None,
                 };
                 configs.push((config, default));
             }
@@ -881,8 +1615,7 @@ impl Graph<'_> {
             )
         };
         let class = config.target;
-        let binding = self.django_class_attribute(class, "name")?;
-        let Value::Text(name) = self.binding(binding, END, 0) else {
+        let Value::Text(name) = self.django_class_value(class, "name", scope)? else {
             return None;
         };
         let app = *self.modules.get(name.as_str())?;
@@ -913,11 +1646,22 @@ impl Graph<'_> {
         .then_some(config)
     }
 
-    fn django_class_attribute(&mut self, class: SymbolId, name: &str) -> Option<SymbolId> {
+    fn django_class_value(&mut self, class: SymbolId, name: &str, scope: ScopeId) -> Option<Value> {
         let (lineage, _) = self.class_lineage(class);
-        lineage
-            .into_iter()
-            .find_map(|scope| self.local(scope, name, END))
+        let reader = self.scopes[scope].file;
+        for body in lineage {
+            let owner = self.scopes[body].owner.expect("class body has an owner");
+            match self.class_discovery_write(owner, name, reader) {
+                Some(mutations::MemberWriteValue::Replacement(value)) => return Some(value),
+                Some(mutations::MemberWriteValue::Ambiguous) => return Some(Value::Unknown),
+                Some(mutations::MemberWriteValue::Deleted) => continue,
+                None => {}
+            }
+            if let Some(binding) = self.local(body, name, END) {
+                return Some(self.binding(binding, END, 0));
+            }
+        }
+        None
     }
 
     fn activate_django_class(
@@ -944,10 +1688,10 @@ impl Graph<'_> {
         kind: &'static str,
         at: Location,
     ) {
-        let Some(binding) = self.django_class_attribute(class, name) else {
+        let Some(value) = self.django_class_value(class, name, scope) else {
             return;
         };
-        if let Value::Callable(invocation) = self.binding(binding, END, 0) {
+        if let Value::Callable(invocation) = value {
             self.scopes[scope]
                 .routes
                 .push((object, invocation.target, kind));
@@ -955,7 +1699,7 @@ impl Graph<'_> {
                 .entry(invocation.target)
                 .or_default()
                 .insert(class);
-        } else {
+        } else if !matches!(value, Value::ConstantFunction) {
             self.django_registration_issue(
                 object,
                 at,
@@ -980,25 +1724,40 @@ impl Graph<'_> {
             return DjangoReceiver::Invalid;
         };
         let value = self.identity(scope, signal, before, depth + 1);
-        self.django_signal_sources(&value)
+        self.django_signal_sources(&value, (scope, before))
     }
 
-    fn django_signal_sources(&mut self, value: &Value) -> DjangoReceiver {
+    fn django_signal_sources(
+        &mut self,
+        value: &Value,
+        access: (ScopeId, Location),
+    ) -> DjangoReceiver {
         match value {
             Value::Sequence(values) if values.is_empty() => DjangoReceiver::Empty,
             Value::Sequence(values) => {
                 let mut source = DjangoReceiver::Certain;
+                let mut registers = false;
                 for value in values {
-                    match self.django_signal_source(value) {
-                        DjangoReceiver::Certain => {}
-                        DjangoReceiver::Possible => source = DjangoReceiver::Possible,
+                    match self.django_signal_source(value, access) {
+                        DjangoReceiver::Empty => {}
+                        DjangoReceiver::Certain => registers = true,
+                        DjangoReceiver::Possible => {
+                            registers = true;
+                            source = DjangoReceiver::Possible;
+                        }
                         _ => return DjangoReceiver::Unresolved,
                     }
                 }
-                source
+                if registers {
+                    source
+                } else {
+                    DjangoReceiver::Empty
+                }
             }
             Value::Alternatives(values) => {
-                let mut sources = values.iter().map(|value| self.django_signal_sources(value));
+                let mut sources = values
+                    .iter()
+                    .map(|value| self.django_signal_sources(value, access));
                 let Some(first) = sources
                     .next()
                     .filter(|first| *first != DjangoReceiver::Unresolved)
@@ -1016,22 +1775,30 @@ impl Graph<'_> {
                 }
                 source
             }
-            _ => self.django_signal_source(value),
+            _ => self.django_signal_source(value, access),
         }
     }
 
-    fn django_signal_source(&mut self, value: &Value) -> DjangoReceiver {
-        match value {
-            Value::Provider(provider) if is_django_signal(provider) => DjangoReceiver::Certain,
-            Value::DjangoSignal => DjangoReceiver::Possible,
-            Value::Instance(class)
-                if matches!(
-                    self.class_member(*class, "connect", 0),
-                    Some(Value::DjangoSignalConnect)
-                ) =>
+    fn django_signal_source(
+        &mut self,
+        value: &Value,
+        access: (ScopeId, Location),
+    ) -> DjangoReceiver {
+        if !matches!(value, Value::DjangoSignal(_) | Value::Instance(_))
+            && !matches!(value, Value::Provider(provider) if is_django_signal(provider))
+        {
+            return DjangoReceiver::Unresolved;
+        }
+        match self.member(value.clone(), "connect", access, 0) {
+            Value::DjangoSignalConnect => DjangoReceiver::Certain,
+            Value::Provider(provider)
+                if provider
+                    .strip_suffix(".connect")
+                    .is_some_and(is_django_signal) =>
             {
-                DjangoReceiver::Possible
+                DjangoReceiver::Certain
             }
+            Value::ConstantFunction => DjangoReceiver::Empty,
             _ => DjangoReceiver::Unresolved,
         }
     }
@@ -1043,7 +1810,6 @@ impl Graph<'_> {
         keywords: &[(String, Expression)],
         before: Location,
         at: Location,
-        builtin: bool,
     ) {
         let callback = registration_arguments(
             args,
@@ -1052,12 +1818,7 @@ impl Graph<'_> {
         )
         .and_then(|[callback, ..]| callback)
         .map(|callback| self.identity(scope, callback, before, 0));
-        let signal = if builtin {
-            DjangoReceiver::Certain
-        } else {
-            DjangoReceiver::Possible
-        };
-        self.record_django_signal(scope, signal, callback, at);
+        self.record_django_signal(scope, DjangoReceiver::Certain, callback, at);
     }
 
     pub(super) fn record_django_signal(

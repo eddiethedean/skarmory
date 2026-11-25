@@ -9,10 +9,14 @@ pub(super) struct Fastapi {
     apps: BTreeMap<Object, ScopeId>,
     events: Vec<Event>,
     by_object: BTreeMap<Object, Vec<usize>>,
-    router_defaults: BTreeMap<Object, ScopeId>,
+    defaults: BTreeMap<Object, ScopeId>,
     default_dependencies: BTreeMap<Object, Vec<SymbolId>>,
     constructor_effects: BTreeMap<SymbolId, ScopeId>,
     parameter_dependencies: BTreeMap<SymbolId, Vec<SymbolId>>,
+    injected_parameters: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    signatures: BTreeMap<SymbolId, BTreeMap<ScopeId, bool>>,
+    lifespans: BTreeMap<Object, (Site, ScopeId)>,
+    observable_objects: BTreeSet<Object>,
 }
 
 #[derive(Clone, Copy)]
@@ -26,6 +30,7 @@ struct Event {
     site: Site,
     effects: ScopeId,
     included_router: Option<Object>,
+    startup_or_shutdown: bool,
     signature_targets: Vec<SymbolId>,
     signatures: BTreeMap<SignatureSite, ScopeId>,
     // Proven execution prefixes before this inclusion. Completed imports use END.
@@ -58,26 +63,198 @@ impl Graph<'_> {
         self.push_scope(self.scopes[site.scope].file, None, None, &[])
     }
 
-    pub(super) fn fastapi_app(&mut self, object: Object, scope: ScopeId, defaults: Vec<SymbolId>) {
+    pub(super) fn fastapi_app(&mut self, object: Object, scope: ScopeId) {
         self.fastapi.apps.insert(object, scope);
-        if !defaults.is_empty() {
-            self.fastapi.default_dependencies.insert(object, defaults);
+    }
+
+    pub(super) fn fastapi_lifespan(&mut self, object: Object, site: Site, expression: &Expression) {
+        let effects = self.fastapi_effect_scope(site);
+        match self.identity(site.scope, expression, site.before, 0) {
+            Value::Callable(invocation) if self.is_fastapi_lifespan(invocation.target) => {
+                self.edge(effects, invocation.target, "fastapi_lifespan", "certain");
+            }
+            _ => self.scope_issue(
+                effects,
+                expression.at,
+                "unresolved_registration",
+                "FastAPI lifespan must resolve to a supported async context manager",
+            ),
+        }
+        self.fastapi.lifespans.insert(object, (site, effects));
+    }
+
+    pub(super) fn is_fastapi_lifespan(&mut self, target: SymbolId) -> bool {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        definition.kind == DefinitionKind::Coroutine
+            && definition.is_generator
+            && matches!(definition.decorators.as_slice(), [decorator]
+                if matches!(self.probe_identity(symbol.scope, decorator, definition.name.at),
+                    Value::Provider(name) if name == "contextlib.asynccontextmanager"))
+    }
+
+    pub(super) fn fastapi_hook_target(&mut self, value: Value) -> Option<SymbolId> {
+        self.fastapi_callable_target(value, false)
+    }
+
+    pub(super) fn fastapi_dependency_target(&mut self, value: Value) -> Option<SymbolId> {
+        self.fastapi_callable_target(value, true)
+    }
+
+    fn fastapi_callable_target(&mut self, value: Value, dependency: bool) -> Option<SymbolId> {
+        let callable = match value {
+            Value::Instance(class) => self.class_member(class, "__call__", 0)?,
+            value => value,
+        };
+        let Value::Callable(invocation) = callable else {
+            return None;
+        };
+        let Binding::Definition(definition, _) = self.symbols[invocation.target].binding else {
+            return None;
+        };
+        ((dependency || definition.kind != DefinitionKind::Class)
+            && (dependency || !definition.is_generator)
+            && definition.decorators.is_empty())
+        .then_some(invocation.target)
+    }
+
+    pub(super) fn fastapi_middleware(
+        &mut self,
+        object: Object,
+        site: Site,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+    ) {
+        if let Some(target) = self.fastapi_middleware_callback(
+            site.scope,
+            site.before,
+            arguments,
+            keywords,
+            "middleware_class",
+        ) {
+            self.fastapi_route(
+                object,
+                target,
+                CallArguments {
+                    scope: site.scope,
+                    before: site.before,
+                    at: site.at,
+                    positional: arguments,
+                    keywords,
+                },
+                "add_middleware",
+            );
+        } else {
+            self.unresolved_fastapi_middleware(site);
         }
     }
 
-    pub(super) fn fastapi_router_defaults(
+    pub(super) fn fastapi_middleware_callback(
+        &mut self,
+        scope: ScopeId,
+        before: Location,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        class_name: &str,
+    ) -> Option<SymbolId> {
+        let [Some(provider), Some(dispatch)] =
+            registration_arguments(arguments, keywords, [class_name, "dispatch"])?
+        else {
+            return None;
+        };
+        if !matches!(self.identity(scope, provider, before, 0),
+            Value::Provider(name) if name == "starlette.middleware.base.BaseHTTPMiddleware")
+        {
+            return None;
+        }
+        let callback = self.identity(scope, dispatch, before, 0);
+        self.fastapi_hook_target(callback)
+    }
+
+    pub(super) fn fastapi_middleware_list(
+        &mut self,
+        object: Object,
+        site: Site,
+        expr: &Expression,
+    ) {
+        let Value::Sequence(entries) = self.identity(site.scope, expr, site.before, 0) else {
+            self.unresolved_fastapi_middleware(site);
+            return;
+        };
+        for entry in entries {
+            if let Value::FastapiMiddleware(Some(target)) = entry {
+                self.fastapi_route(
+                    object,
+                    target,
+                    CallArguments {
+                        scope: site.scope,
+                        before: site.before,
+                        at: site.at,
+                        positional: &[],
+                        keywords: &[],
+                    },
+                    "add_middleware",
+                );
+            } else {
+                self.unresolved_fastapi_middleware(site);
+            }
+        }
+    }
+
+    fn unresolved_fastapi_middleware(&mut self, site: Site) {
+        self.scope_issue(
+            site.scope,
+            site.at,
+            "unresolved_registration",
+            "FastAPI middleware provider or dispatch callback could not be resolved",
+        );
+    }
+
+    pub(super) fn retain_fastapi_callback_parameters(
+        &mut self,
+        target: SymbolId,
+        kind: &str,
+    ) -> bool {
+        let slots = match kind {
+            "fastapi_lifespan" => 1,
+            "fastapi_exception_handler" | "fastapi_middleware" => 2,
+            _ => return false,
+        };
+        let Binding::Definition(definition, scope) = self.symbols[target].binding else {
+            return false;
+        };
+        if !definition.simple_positional_parameters {
+            return false;
+        }
+        let receiver = usize::from(
+            self.scopes[self.symbols[target].scope]
+                .owner
+                .is_some_and(|id| self.is_class(id)),
+        );
+        let parameters = definition.parameters.iter().take(slots + receiver);
+        self.read.extend(
+            parameters.map(|parameter| {
+                self.by_location[&(scope, parameter.at.line, parameter.at.column)]
+            }),
+        );
+        true
+    }
+
+    pub(super) fn fastapi_defaults(
         &mut self,
         object: Object,
         site: Site,
         keywords: &[(String, Expression)],
     ) {
-        if self.fastapi.router_defaults.contains_key(&object)
+        if self.fastapi.defaults.contains_key(&object)
             || !keywords.iter().any(|(name, _)| name == "dependencies")
         {
             return;
         }
         let effects = self.fastapi_effect_scope(site);
-        self.fastapi.router_defaults.insert(object, effects);
+        self.fastapi.defaults.insert(object, effects);
         let defaults = self.fastapi_options(effects, site, keywords);
         if !defaults.is_empty() {
             self.fastapi.default_dependencies.insert(object, defaults);
@@ -87,15 +264,54 @@ impl Graph<'_> {
     pub(super) fn fastapi_route(
         &mut self,
         object: Object,
-        site: Site,
         target: SymbolId,
-        keywords: &[(String, Expression)],
+        call: CallArguments<'_>,
+        method: &str,
     ) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        let site = Site { scope, at, before };
         let effects = self.fastapi_effect_scope(site);
-        self.edge(effects, target, "fastapi_registration", "certain");
-        let mut targets = self.fastapi_options(effects, site, keywords);
-        targets.push(target);
-        self.fastapi_event(object, site, effects, None, targets);
+        let kind = match method {
+            "on_event" => "fastapi_lifecycle",
+            "exception_handler" | "add_exception_handler" => "fastapi_exception_handler",
+            "middleware" | "add_middleware" => "fastapi_middleware",
+            _ => "fastapi_registration",
+        };
+        let certainty = if self.branch_depth == 0 {
+            "certain"
+        } else {
+            "possible"
+        };
+        self.edge(effects, target, kind, certainty);
+        let mut event = Event::new(site, effects);
+        if kind == "fastapi_registration" {
+            event.signature_targets = self.fastapi_options(effects, site, keywords);
+            event.signature_targets.push(target);
+            let path = positional.first().or_else(|| {
+                keywords
+                    .iter()
+                    .find_map(|(name, expr)| (name == "path").then_some(expr))
+            });
+            let plain_path = path.is_some_and(|expr| {
+                matches!(self.probe_identity(scope, expr, before),
+                    Value::Text(path) if !path.contains('{'))
+            });
+            self.fastapi
+                .signatures
+                .entry(target)
+                .or_default()
+                .entry(scope)
+                .and_modify(|bounded| *bounded &= plain_path)
+                .or_insert(plain_path);
+        }
+        event.startup_or_shutdown = method == "on_event";
+        self.fastapi_event(object, event);
     }
 
     pub(super) fn fastapi_mount(
@@ -106,27 +322,15 @@ impl Graph<'_> {
         keywords: &[(String, Expression)],
     ) {
         let effects = self.fastapi_effect_scope(site);
-        let targets = self.fastapi_options(effects, site, keywords);
-        self.fastapi_event(parent, site, effects, Some(child), targets);
+        let mut event = Event::new(site, effects);
+        event.included_router = Some(child);
+        event.signature_targets = self.fastapi_options(effects, site, keywords);
+        self.fastapi_event(parent, event);
     }
 
-    fn fastapi_event(
-        &mut self,
-        object: Object,
-        site: Site,
-        effects: ScopeId,
-        included_router: Option<Object>,
-        signature_targets: Vec<SymbolId>,
-    ) {
+    fn fastapi_event(&mut self, object: Object, event: Event) {
         let id = self.fastapi.events.len();
-        self.fastapi.events.push(Event {
-            site,
-            effects,
-            included_router,
-            signature_targets,
-            signatures: BTreeMap::new(),
-            prior_scopes: BTreeMap::new(),
-        });
+        self.fastapi.events.push(event);
         self.fastapi.by_object.entry(object).or_default().push(id);
     }
 
@@ -182,6 +386,64 @@ impl Graph<'_> {
             .parameter_dependencies
             .get(&owner)
             .map_or(&[], Vec::as_slice)
+    }
+
+    pub(super) fn fastapi_parameter_binding(
+        &self,
+        owner: SymbolId,
+        at: Location,
+    ) -> Option<SymbolId> {
+        let Binding::Definition(definition, scope) = self.symbols[owner].binding else {
+            return None;
+        };
+        let parameter = definition
+            .parameters
+            .iter()
+            .rev()
+            .find(|parameter| position(parameter.at) < position(at))?;
+        Some(self.by_location[&(scope, parameter.at.line, parameter.at.column)])
+    }
+
+    pub(super) fn record_fastapi_injected_parameter(&mut self, owner: SymbolId, at: Location) {
+        if let Some(parameter) = self.fastapi_parameter_binding(owner, at) {
+            self.fastapi
+                .injected_parameters
+                .entry(owner)
+                .or_default()
+                .insert(parameter);
+        }
+    }
+
+    pub(super) fn report_fastapi_signatures(&mut self, reach: &Reachability) -> BTreeSet<SymbolId> {
+        let mut bounded = BTreeSet::new();
+        for (&target, sites) in &self.fastapi.signatures {
+            let mut reachable = sites
+                .iter()
+                .filter(|(scope, _)| reach.scopes.contains(scope))
+                .peekable();
+            if reachable.peek().is_some() {
+                if reachable.all(|(_, bounded)| *bounded) {
+                    bounded.insert(target);
+                }
+                self.read.extend(
+                    self.fastapi
+                        .injected_parameters
+                        .get(&target)
+                        .into_iter()
+                        .flatten(),
+                );
+            }
+        }
+        for target in &reach.fastapi_callbacks {
+            self.read.extend(
+                self.fastapi
+                    .injected_parameters
+                    .get(target)
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+        bounded
     }
 
     pub(super) fn prepare_fastapi_constructor(&mut self, target: SymbolId) {
@@ -247,28 +509,48 @@ impl Graph<'_> {
             .iter()
             .take(definition.parameter_annotation_count)
         {
-            for meta in self.fastapi_annotation_metadata(module, before, annotation) {
-                match self.probe_identity(module, meta, before) {
-                    Value::FastapiDependency(Some(dependency)) if ordered => {
-                        self.fastapi_dependency_edge(effects, dependency);
-                        self.fastapi_deferred_parameters(effects, site, dependency, visited);
+            match self.fastapi_annotation_metadata(module, before, annotation) {
+                Value::FastapiAnnotated(Some(dependency)) if ordered => {
+                    if let Some(parameter) = self.fastapi_parameter_binding(target, annotation.at) {
+                        self.edge(effects, parameter, "fastapi_parameter", "certain");
                     }
-                    Value::FastapiDependency(_) => self.scope_issue(
-                        effects,
-                        site.at,
-                        "unresolved_registration",
-                        "FastAPI postponed dependency could not be resolved at registration",
-                    ),
-                    _ => {}
+                    self.fastapi_dependency_edge(effects, dependency);
+                    self.fastapi_deferred_parameters(effects, site, dependency, visited);
                 }
+                Value::FastapiAnnotated(_) => self.scope_issue(
+                    effects,
+                    site.at,
+                    "unresolved_registration",
+                    "FastAPI postponed dependency could not be resolved at registration",
+                ),
+                _ => {}
             }
         }
     }
 
     pub(super) fn index_fastapi_mounts(&mut self) {
+        let mut parents: BTreeMap<Object, Vec<Object>> = BTreeMap::new();
+        let mut pending: Vec<_> = self.fastapi.lifespans.keys().copied().collect();
+        for (&object, ids) in &self.fastapi.by_object {
+            for &id in ids {
+                if let Some(router) = self.fastapi.events[id].included_router {
+                    parents.entry(router).or_default().push(object);
+                } else {
+                    pending.push(object);
+                }
+            }
+        }
+        while let Some(object) = pending.pop() {
+            if self.fastapi.observable_objects.insert(object) {
+                pending.extend(parents.remove(&object).into_iter().flatten());
+            }
+        }
         for (object, defaults) in &self.fastapi.default_dependencies {
             for &id in self.fastapi.by_object.get(object).into_iter().flatten() {
-                self.fastapi.events[id].signature_targets.extend(defaults);
+                let event = &mut self.fastapi.events[id];
+                if event.carries_routes() {
+                    event.signature_targets.extend(defaults);
+                }
             }
         }
         for event in &mut self.fastapi.events {
@@ -330,6 +612,9 @@ impl Graph<'_> {
         let mut visited = BTreeSet::new();
         let mut evaluations = 0;
         while let Some((object, inclusion)) = pending.pop() {
+            if !self.fastapi.observable_objects.contains(&object) {
+                continue;
+            }
             if visited.len() >= MAX_SNAPSHOTS || evaluations >= MAX_SNAPSHOTS {
                 break;
             }
@@ -422,6 +707,9 @@ impl Graph<'_> {
         depth: usize,
     ) -> bool {
         let key = (object, inclusion);
+        if !self.fastapi.observable_objects.contains(&object) {
+            return false;
+        }
         if let Some(&has_routes) = snapshots.visited.get(&key) {
             return has_routes;
         }
@@ -429,10 +717,27 @@ impl Graph<'_> {
             snapshots.limited = true;
             return false;
         }
+        if let Some(&(site, effects)) = self.fastapi.lifespans.get(&object)
+            && reach.scopes.contains(&site.scope)
+        {
+            self.open_fastapi_effects(effects, reach, pending);
+        }
         let mut has_routes = false;
         for &id in self.fastapi.by_object.get(&object).into_iter().flatten() {
             let event = &self.fastapi.events[id];
             if !reach.scopes.contains(&event.site.scope) {
+                continue;
+            }
+            if event
+                .included_router
+                .is_some_and(|child| !self.fastapi.observable_objects.contains(&child))
+            {
+                continue;
+            }
+            if inclusion.is_none()
+                && event.startup_or_shutdown
+                && self.fastapi.lifespans.contains_key(&object)
+            {
                 continue;
             }
             if let Some(inclusion) = inclusion
@@ -461,12 +766,12 @@ impl Graph<'_> {
                     depth + 1,
                 )
             }) {
-                has_routes = true;
+                has_routes |= event.carries_routes();
                 self.open_fastapi_effects(event.effects, reach, pending);
                 self.open_fastapi_signature(event, inclusion, reach, pending, snapshots);
             }
         }
-        if has_routes && let Some(&scope) = self.fastapi.router_defaults.get(&object) {
+        if has_routes && let Some(&scope) = self.fastapi.defaults.get(&object) {
             self.open_fastapi_effects(scope, reach, pending);
         }
         snapshots.visited.insert(key, has_routes);
@@ -553,5 +858,23 @@ impl Graph<'_> {
                 "FastAPI router inclusion can select different routes or dependencies across framework versions",
             );
         }
+    }
+}
+
+impl Event {
+    fn new(site: Site, effects: ScopeId) -> Self {
+        Self {
+            site,
+            effects,
+            included_router: None,
+            startup_or_shutdown: false,
+            signature_targets: Vec::new(),
+            signatures: BTreeMap::new(),
+            prior_scopes: BTreeMap::new(),
+        }
+    }
+
+    fn carries_routes(&self) -> bool {
+        self.included_router.is_some() || !self.signature_targets.is_empty()
     }
 }

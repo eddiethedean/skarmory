@@ -154,7 +154,47 @@ impl<'a> Python<'a> {
                         self.expression(value, &bindings);
                     }
                 }
-                Stmt::Assert(value) | Stmt::Evaluate(value) => self.expression(value, &bindings),
+                Stmt::AssignDjangoSettings { environment, value } => {
+                    self.expression(value, &bindings);
+                    self.expression(environment, &bindings);
+                    if qualified(environment, &bindings).as_deref() == Some("os.environ")
+                        && let Expr::Text(module) = &value.kind
+                        && is_module(module)
+                    {
+                        self.module(value.at.line, module, "python_configuration");
+                    } else {
+                        self.usage.reasons.push(Reason::new(
+                            "unresolved_dependency_configuration",
+                            self.path,
+                            Some(statement.at.line),
+                            "Django settings assignment could not be resolved",
+                        ));
+                    }
+                }
+                Stmt::WriteAttribute {
+                    receiver, value, ..
+                }
+                | Stmt::WriteModuleEntry {
+                    mapping: receiver,
+                    value,
+                    ..
+                } => {
+                    self.expression(receiver, &bindings);
+                    if let Some(value) = value {
+                        self.expression(value, &bindings);
+                    }
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "mutable Python attributes may change dependency resolution",
+                    ));
+                }
+                Stmt::Assert(value)
+                | Stmt::Evaluate(value)
+                | Stmt::DiscardedComprehension(value) => {
+                    self.expression(value, &bindings);
+                }
             }
         }
         for statement in body {
@@ -196,7 +236,7 @@ impl<'a> Python<'a> {
                     self.configuration(value, bindings);
                 }
             }
-            Expr::Bool(_) | Expr::Scalar => {}
+            Expr::Bool(_) | Expr::Scalar | Expr::IdentityDecoratorLambda => {}
             _ if qualified(value, bindings).is_some_and(|name| name.starts_with("os.environ"))
                 && !self.locals.contains("os") => {}
             _ => self.usage.reasons.push(Reason::new(

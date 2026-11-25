@@ -18,6 +18,7 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
 mod fastapi;
 mod frameworks;
+mod mutations;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -49,10 +50,14 @@ enum Value {
     DjangoPattern(Box<Value>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
-    DjangoSignal,
+    DjangoSignal(Object),
     DjangoSignalConnect,
     DjangoReceiver(frameworks::DjangoReceiver),
     FastapiDependency(Option<SymbolId>),
+    FastapiInferredDependency,
+    FastapiAnnotated(Option<SymbolId>),
+    FastapiFieldMarker,
+    FastapiMiddleware(Option<SymbolId>),
     Executor,
     Submit,
     Process(Box<Value>),
@@ -70,6 +75,10 @@ enum Value {
     /// An exact built-in container with scalar elements and untracked length and order.
     BuiltinIterable,
     Scalar,
+    ConstantFunction,
+    IdentityDecoratorFactory,
+    MissingFrameworkMember,
+    UnittestComparison,
     OperatorResult,
     Unknown,
 }
@@ -189,6 +198,8 @@ enum ObjectKind {
 enum FrameworkClassRole {
     Unittest,
     UnittestAsync,
+    DjangoTestCase,
+    DjangoDatabaseTestCase,
     DjangoAppConfig,
     DjangoCommand,
     DjangoView,
@@ -197,7 +208,20 @@ enum FrameworkClassRole {
     DjangoAdmin,
     CeleryTask,
     SqlAlchemyModel,
+    SqlModel,
     PydanticModel,
+}
+
+impl FrameworkClassRole {
+    fn is_unittest(self) -> bool {
+        matches!(
+            self,
+            Self::Unittest
+                | Self::UnittestAsync
+                | Self::DjangoTestCase
+                | Self::DjangoDatabaseTestCase
+        )
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -276,6 +300,7 @@ struct ReceiverCall {
     parameter: SymbolId,
     member: String,
     at: Location,
+    bounded_comparison: bool,
 }
 
 struct DirectArguments {
@@ -441,14 +466,18 @@ pub(super) fn analyze_with_verification(
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
         phase03,
+        mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
         django_roots: BTreeSet::new(),
+        django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_registration_issues: Vec::new(),
+        framework_route_receivers: BTreeMap::new(),
+        registered_django_admin_models: BTreeSet::new(),
         initial_django_settings: django_settings.map_or(DjangoSettings::Unset, |value| {
             value.to_str().map_or(DjangoSettings::Unknown, |value| {
                 DjangoSettings::Module(value.to_owned())
@@ -488,6 +517,9 @@ pub(super) fn analyze_with_verification(
         }
     }
     graph.index_submodule_imports();
+    if phase03 {
+        graph.index_framework_mutations();
+    }
     graph.index_base_classes();
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
@@ -518,20 +550,26 @@ pub(super) fn analyze_with_verification(
         graph.retain_package_entrypoints(package_entrypoints, &initialization_edges);
     }
     roots.extend(graph.test_edges());
+    let mut possible_roots = Vec::new();
     if phase03 {
-        roots.extend(graph.phase03_framework_edges());
+        for edge in graph.phase03_framework_edges() {
+            if edge.kind == "pytest_hook_candidate" {
+                possible_roots.push(edge);
+            } else {
+                roots.push(edge);
+            }
+        }
     }
     // A dormant consumer must not consume another scope's export traversal.
     for exports in std::mem::take(&mut graph.namespace_exports).into_values() {
         graph.retain_exports(exports, &initialization_edges, "possible");
     }
-    let mut possible_runtime_roots = Vec::new();
     let (observed, rejected) = runtime
         .filter(|snapshot| !snapshot.observations.is_empty())
         .map_or_else(Default::default, |snapshot| {
-            graph.runtime_roots(snapshot, &mut roots, &mut possible_runtime_roots)
+            graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
-    let mut analysis = graph.finish(roots, possible_runtime_roots, verification);
+    let mut analysis = graph.finish(roots, possible_roots, verification);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -578,14 +616,18 @@ struct Graph<'a> {
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
     phase03: bool,
+    mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
     django_roots: BTreeSet<Object>,
+    django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_registration_issues: Vec<(Object, Issue)>,
+    framework_route_receivers: BTreeMap<(ScopeId, Object, SymbolId), BTreeSet<SymbolId>>,
+    registered_django_admin_models: BTreeSet<(ScopeId, SymbolId)>,
     initial_django_settings: DjangoSettings,
     unittest_classes: BTreeMap<SymbolId, FrameworkClassRole>,
     pytest_plugins: Vec<ScopeId>,
@@ -1273,6 +1315,17 @@ impl<'a> Graph<'a> {
             );
         }
         if let (Some(member), Some(lookup)) = (member, lookup) {
+            if let Some(write) =
+                self.module_member_write(module, member, (source_scope, import.local.at))
+            {
+                if matches!(write, mutations::MemberWriteValue::Ambiguous) {
+                    self.scope_issue(
+                        scope, import.local.at, "unresolved_attribute_write",
+                        "import may depend on a module member write with unresolved ordering or value",
+                    );
+                }
+                return None;
+            }
             match lookup {
                 ModuleMember::Lazy(_, branch) => return Some(branch),
                 ModuleMember::Missing => self.import_issue(
@@ -1664,6 +1717,11 @@ impl<'a> Graph<'a> {
                     } else {
                         &module
                     };
+                    if let Some(replacement) =
+                        self.imported_module_write(visible_module, (scope, import.local.at))
+                    {
+                        return replacement;
+                    }
                     self.modules.get(visible_module).map_or_else(
                         || Value::Provider(visible_module.into()),
                         |file| Value::Module(*file),
@@ -1757,6 +1815,26 @@ impl<'a> Graph<'a> {
             ModuleMemberAccess::Export { at, .. } => (access.0, at),
             _ => access,
         };
+        if matches!(mode, ModuleMemberAccess::FromImport)
+            && let Some(replacement) = self.imported_module_write(module, access)
+        {
+            return replacement;
+        }
+        if let Some(write) = self.module_member_write(module, member, access) {
+            return match write {
+                mutations::MemberWriteValue::Replacement(value) => value,
+                mutations::MemberWriteValue::Deleted => Value::MissingFrameworkMember,
+                mutations::MemberWriteValue::Ambiguous => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_attribute_write",
+                        "module lookup may depend on a write with unresolved ordering or value",
+                    );
+                    Value::Unknown
+                }
+            };
+        }
         if let Some(&file) = self.modules.get(module) {
             return match self.selected_module_member(file, member, before, access, mode) {
                 ModuleMember::Binding(id, import) => {
@@ -2033,6 +2111,7 @@ impl<'a> Graph<'a> {
                             && arguments.iter().all(|arg| match &arg.kind {
                                 ExpressionKind::Text(_)
                                 | ExpressionKind::Bool(_)
+                                | ExpressionKind::None
                                 | ExpressionKind::Scalar => true,
                                 ExpressionKind::Name(name) => name == &parameter.text,
                                 _ => false,
@@ -2192,7 +2271,7 @@ impl<'a> Graph<'a> {
                 if self.is_class(class) =>
             {
                 let member = self
-                    .class_member(class, name, depth)
+                    .class_member_at(class, name, depth, Some(access))
                     .unwrap_or(Value::Unknown);
                 if matches!(&member, Value::Provider(provider) if provider == "django.views.View.as_view")
                     && matches!(base, Value::Callable(_))
@@ -2202,6 +2281,19 @@ impl<'a> Graph<'a> {
                 if matches!(member, Value::DjangoSignalConnect)
                     && matches!(base, Value::Callable(_))
                 {
+                    return Value::Unknown;
+                }
+                if let Value::Callable(invocation) = &member
+                    && self.unittest_property(invocation.target)
+                {
+                    if matches!(base, Value::Instance(_)) {
+                        self.scope_issue(
+                            access.0,
+                            access.1,
+                            "unresolved_descriptor",
+                            "explicit property access is outside the unittest model",
+                        );
+                    }
                     return Value::Unknown;
                 }
                 if let Value::Callable(invocation) = member
@@ -2216,7 +2308,13 @@ impl<'a> Graph<'a> {
                     member
                 }
             }
-            Value::DjangoSignal if name == "connect" => Value::DjangoSignalConnect,
+            Value::DjangoSignal(site) if name == "connect" => {
+                match self.signal_member_write(site, name, access) {
+                    Some(mutations::MemberWriteValue::Replacement(value)) => value,
+                    Some(mutations::MemberWriteValue::Deleted) | None => Value::DjangoSignalConnect,
+                    Some(mutations::MemberWriteValue::Ambiguous) => Value::Unknown,
+                }
+            }
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
@@ -2355,6 +2453,16 @@ impl<'a> Graph<'a> {
 
     /// None means the attribute is absent in a fully resolved base chain.
     fn class_member(&mut self, id: SymbolId, name: &str, depth: usize) -> Option<Value> {
+        self.class_member_at(id, name, depth, None)
+    }
+
+    fn class_member_at(
+        &mut self,
+        id: SymbolId,
+        name: &str,
+        depth: usize,
+        access: Option<(ScopeId, Location)>,
+    ) -> Option<Value> {
         if depth >= MAX_BINDING_CHAIN {
             return Some(Value::Unknown);
         }
@@ -2362,14 +2470,31 @@ impl<'a> Graph<'a> {
         let Binding::Definition(definition, class_scope) = symbol.binding else {
             unreachable!()
         };
-        if let Some(attribute) = self.local(class_scope, name, END) {
-            return Some(self.binding(attribute, END, depth + 1));
+        match access.and_then(|site| self.class_member_write(id, name, site)) {
+            Some(mutations::MemberWriteValue::Replacement(value)) => return Some(value),
+            Some(mutations::MemberWriteValue::Ambiguous) => {
+                if let Some((scope, at)) = access {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_attribute_write",
+                        "class attribute may depend on a write with unresolved ordering or value",
+                    );
+                }
+                return Some(Value::Unknown);
+            }
+            Some(mutations::MemberWriteValue::Deleted) => {}
+            None => {
+                if let Some(attribute) = self.local(class_scope, name, END) {
+                    return Some(self.binding(attribute, END, depth + 1));
+                }
+            }
         }
-        match definition.bases.as_slice() {
+        let inherited = match definition.bases.as_slice() {
             [] => None,
             [base] => match self.identity(symbol.scope, base, definition.name.at, depth + 1) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
-                    self.class_member(parent, name, depth + 1)
+                    self.class_member_at(parent, name, depth + 1, access)
                 }
                 Value::Provider(name) if name == "builtins.object" => None,
                 Value::Provider(base)
@@ -2379,10 +2504,14 @@ impl<'a> Graph<'a> {
                 }
                 Value::Provider(base) if self.phase03 && framework_managed_base(&base) => {
                     match (framework_class_provider(&base), name) {
+                        (Some(role), "assertEqual" | "assertNotEqual") if role.is_unittest() => {
+                            Some(Value::UnittestComparison)
+                        }
                         (_, "__init_subclass__")
                         | (
                             Some(
                                 FrameworkClassRole::PydanticModel
+                                | FrameworkClassRole::CeleryTask
                                 | FrameworkClassRole::DjangoSignal,
                             ),
                             "__init__" | "__new__",
@@ -2403,14 +2532,31 @@ impl<'a> Graph<'a> {
                 _ => Some(Value::Unknown),
             },
             _ => Some(Value::Unknown),
+        };
+        if matches!(inherited, Some(Value::UnittestComparison))
+            && [
+                "_getAssertEqualityFunc",
+                "_baseAssertEqual",
+                "assertMultiLineEqual",
+                "_formatMessage",
+                "_truncateMessage",
+                "failureException",
+            ]
+            .iter()
+            .any(|member| self.local(class_scope, member, END).is_some())
+        {
+            Some(Value::Unknown)
+        } else {
+            inherited
         }
     }
 
     fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
         let hook = match base {
             Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
-                self.class_member(id, "__init_subclass__", 0)
+                self.class_member_at(id, "__init_subclass__", 0, Some((scope, at)))
             }
+            Value::MissingFrameworkMember => None,
             Value::Provider(name)
                 if builtin_noop_subclass_hook(&name)
                     || self.phase03 && framework_managed_base(&name) =>
@@ -2612,6 +2758,7 @@ impl<'a> Graph<'a> {
                     return Value::Unknown;
                 }
                 if ((self.grep_verify || lazy) && name == "getattr"
+                    || self.phase03 && matches!(name.as_str(), "setattr" | "delattr")
                     || matches!(
                         name.as_str(),
                         "print"
@@ -2691,6 +2838,7 @@ impl<'a> Graph<'a> {
                         self.with_explicit_receiver(invocation, arguments, keywords, recurse),
                     )
                 }
+                Value::ConstantFunction => Value::Scalar,
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
                     .map_or(Value::Unknown, |(value, _)| value),
@@ -2930,7 +3078,11 @@ impl<'a> Graph<'a> {
                 ),
                 Value::Provider(name) if self.phase03 && is_django_signal_constructor(&name) => {
                     if registration_arguments(arguments, keywords, ["use_caching"]).is_some() {
-                        Value::DjangoSignal
+                        Value::DjangoSignal((
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ))
                     } else {
                         Value::Unknown
                     }
@@ -2990,18 +3142,43 @@ impl<'a> Graph<'a> {
                 }
                 Value::Provider(name)
                     if self.phase03
+                        && is_declarative_base_factory(&name)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::Provider("sqlalchemy.orm.declarative_base.result".into())
+                }
+                Value::Provider(name)
+                    if self.phase03
                         && matches!(name.as_str(), "fastapi.Depends" | "fastapi.Security") =>
                 {
+                    if name == "fastapi.Depends" && arguments.is_empty() && keywords.is_empty() {
+                        return Value::FastapiInferredDependency;
+                    }
                     let dependency = arguments.first().or_else(|| {
                         keywords
                             .iter()
                             .find(|(name, _)| name == "dependency")
                             .map(|(_, value)| value)
                     });
-                    Value::FastapiDependency(match dependency.map(|value| recurse(self, value)) {
-                        Some(Value::Callable(invocation)) => Some(invocation.target),
-                        _ => None,
-                    })
+                    let target = dependency
+                        .map(|value| recurse(self, value))
+                        .and_then(|value| self.fastapi_dependency_target(value));
+                    Value::FastapiDependency(target)
+                }
+                Value::Provider(name) if self.phase03 && is_fastapi_field_marker(&name) => {
+                    Value::FastapiFieldMarker
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && matches!(
+                            name.as_str(),
+                            "starlette.middleware.Middleware" | "fastapi.middleware.Middleware"
+                        ) =>
+                {
+                    Value::FastapiMiddleware(
+                        self.fastapi_middleware_callback(scope, before, arguments, keywords, "cls"),
+                    )
                 }
                 Value::Provider(name)
                     if matches!(
@@ -3023,7 +3200,9 @@ impl<'a> Graph<'a> {
             },
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
-            ExpressionKind::Scalar => Value::Scalar,
+            ExpressionKind::Scalar | ExpressionKind::None => Value::Scalar,
+            ExpressionKind::ConstantLambda => Value::ConstantFunction,
+            ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
             ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
                     && operands
@@ -3043,6 +3222,19 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Subscript { value, index } => {
                 let value = recurse(self, value);
+                if self.phase03
+                    && is_typing_annotated(&value)
+                    && let ExpressionKind::Sequence(arguments) = &index.kind
+                    && let Some((annotation, metadata)) = arguments.split_first()
+                {
+                    return self.fastapi_selected_metadata(
+                        scope,
+                        before,
+                        annotation,
+                        metadata,
+                        depth + 1,
+                    );
+                }
                 let index = recurse(self, index);
                 match (value, index) {
                     (Value::Mapping(items), Value::Text(index)) => items
@@ -3283,7 +3475,10 @@ impl<'a> Graph<'a> {
                     if !self.resolved_receiver_calls.insert((index, class)) {
                         continue;
                     }
-                    match self.class_member(class, &call.member, 0) {
+                    match self.class_member_at(class, &call.member, 0, Some((call.scope, call.at)))
+                    {
+                        Some(Value::ConstantFunction) => {}
+                        Some(Value::UnittestComparison) if call.bounded_comparison => {}
                         Some(Value::Callable(invocation)) => self.invoke(
                             call.scope,
                             invocation.bind_receiver(Receiver::Bound(class)),
@@ -3785,6 +3980,21 @@ impl<'a> Graph<'a> {
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
                 match callee {
+                    Value::ConstantFunction => {}
+                    Value::UnittestComparison => {
+                        if !self.bounded_unittest_comparison(scope, arguments, keywords, before) {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_comparison",
+                                "unittest equality operands are outside the bounded comparison model",
+                            );
+                        }
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
+                            && self.modeled_framework_write(scope, before) => {}
                     Value::Callable(invocation) => {
                         self.call_invocation(
                             invocation,
@@ -3829,11 +4039,17 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::ReceiverMethod(parameter, member) => {
+                        let bounded_comparison =
+                            matches!(member.as_str(), "assertEqual" | "assertNotEqual")
+                                && self.bounded_unittest_comparison(
+                                    scope, arguments, keywords, before,
+                                );
                         self.receiver_calls.push(ReceiverCall {
                             scope,
                             parameter,
                             member,
                             at: expr.at,
+                            bounded_comparison,
                         });
                     }
                     Value::Provider(name)
@@ -3887,6 +4103,11 @@ impl<'a> Graph<'a> {
                             expr.at,
                         );
                     }
+                    Value::Provider(name)
+                        if self.phase03
+                            && is_declarative_base_factory(&name)
+                            && arguments.is_empty()
+                            && keywords.is_empty() => {}
                     Value::Provider(name) if self.phase03 && name == "atexit.register" => {
                         self.register_atexit(CallArguments {
                             scope,
@@ -3972,22 +4193,59 @@ impl<'a> Graph<'a> {
                             );
                         }
                     }
+                    Value::Method(parent, ObjectKind::CeleryApp, method)
+                        if self.phase03 && method == "register_task" =>
+                    {
+                        let value = registration_arguments(arguments, keywords, ["task"])
+                            .and_then(|[task]| task)
+                            .map_or(Value::Unknown, |task| self.identity(scope, task, before, 0));
+                        self.register_celery_task(scope, parent, value, expr.at);
+                    }
                     Value::Method(parent, kind, method)
                         if self.phase03 && is_imperative_registration(kind, &method) =>
                     {
-                        let target = callback_argument(&method, arguments, keywords);
-                        match target.map(|target| self.identity(scope, target, before, 0)) {
+                        let target = callback_argument(kind, &method, arguments, keywords);
+                        let value = target.map(|target| self.identity(scope, target, before, 0));
+                        if method == "add_exception_handler" {
+                            if let Some(target) =
+                                value.and_then(|value| self.fastapi_hook_target(value))
+                            {
+                                self.fastapi_route(
+                                    parent,
+                                    target,
+                                    CallArguments {
+                                        scope,
+                                        before,
+                                        at: expr.at,
+                                        positional: arguments,
+                                        keywords,
+                                    },
+                                    &method,
+                                );
+                            } else {
+                                self.scope_issue(
+                                    scope,
+                                    expr.at,
+                                    "unresolved_registration",
+                                    "FastAPI exception handler could not be resolved",
+                                );
+                            }
+                            return;
+                        }
+                        match value {
                             Some(Value::Callable(invocation)) => {
                                 if matches!(kind, ObjectKind::App | ObjectKind::Router) {
                                     self.fastapi_route(
                                         parent,
-                                        fastapi::Site {
-                                            scope,
-                                            at: expr.at,
-                                            before,
-                                        },
                                         invocation.target,
-                                        keywords,
+                                        CallArguments {
+                                            scope,
+                                            before,
+                                            at: expr.at,
+                                            positional: arguments,
+                                            keywords,
+                                        },
+                                        &method,
                                     );
                                 } else {
                                     self.scopes[scope].routes.push((
@@ -3995,6 +4253,12 @@ impl<'a> Graph<'a> {
                                         invocation.target,
                                         framework_registration_kind(kind),
                                     ));
+                                    if let Some(class) = invocation.receiver.supplied() {
+                                        self.framework_route_receivers
+                                            .entry((scope, parent, invocation.target))
+                                            .or_default()
+                                            .insert(class);
+                                    }
                                 }
                             }
                             _ => self.scope_issue(
@@ -4005,18 +4269,28 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
-                    Value::DjangoSignalConnect => {
-                        self.connect_django_signal(
-                            scope, arguments, keywords, before, expr.at, false,
+                    Value::Method(parent, ObjectKind::App, method)
+                        if self.phase03 && method == "add_middleware" =>
+                    {
+                        self.fastapi_middleware(
+                            parent,
+                            fastapi::Site {
+                                scope,
+                                at: expr.at,
+                                before,
+                            },
+                            arguments,
+                            keywords,
                         );
+                    }
+                    Value::DjangoSignalConnect => {
+                        self.connect_django_signal(scope, arguments, keywords, before, expr.at);
                     }
                     Value::Provider(name)
                         if self.phase03
                             && name.strip_suffix(".connect").is_some_and(is_django_signal) =>
                     {
-                        self.connect_django_signal(
-                            scope, arguments, keywords, before, expr.at, true,
-                        );
+                        self.connect_django_signal(scope, arguments, keywords, before, expr.at);
                     }
                     Value::DjangoReceiver(signal) => {
                         let callback = registration_arguments(arguments, keywords, ["func"])
@@ -4037,6 +4311,13 @@ impl<'a> Graph<'a> {
                             before,
                             "sqlalchemy_listener",
                             expr.at,
+                        );
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && name == "django.contrib.admin.site.register" =>
+                    {
+                        self.django_admin_site_register(
+                            scope, arguments, keywords, before, expr.at,
                         );
                     }
                     Value::Provider(name)
@@ -4122,7 +4403,7 @@ impl<'a> Graph<'a> {
                             .push(frameworks::DjangoStartup {
                                 at: expr.at,
                                 settings,
-                                requires_urlconf: matches!(
+                                creates_application: matches!(
                                     name.as_str(),
                                     "django.core.wsgi.get_wsgi_application"
                                         | "django.core.asgi.get_asgi_application"
@@ -4137,29 +4418,40 @@ impl<'a> Graph<'a> {
                                 "fastapi.FastAPI" | "fastapi.applications.FastAPI"
                             ) =>
                     {
-                        let mut defaults = Vec::new();
+                        let Value::Object(object, ObjectKind::App) =
+                            self.identity(scope, expr, before, 0)
+                        else {
+                            unreachable!()
+                        };
+                        let site = fastapi::Site {
+                            scope,
+                            at: expr.at,
+                            before,
+                        };
+                        let lifespan = keywords.iter().find(|(name, value)| {
+                            name == "lifespan" && !matches!(value.kind, ExpressionKind::None)
+                        });
+                        if let Some((_, lifespan)) = lifespan {
+                            self.fastapi_lifespan(object, site, lifespan);
+                        }
+                        self.fastapi_defaults(object, site, keywords);
                         for (keyword, value) in keywords {
-                            if matches!(
-                                keyword.as_str(),
-                                "dependencies"
-                                    | "lifespan"
-                                    | "on_startup"
-                                    | "on_shutdown"
-                                    | "exception_handlers"
-                            ) {
+                            if keyword == "middleware"
+                                && !matches!(value.kind, ExpressionKind::None)
+                            {
+                                self.fastapi_middleware_list(object, site, value);
+                            }
+                            if keyword == "exception_handlers"
+                                || lifespan.is_none()
+                                    && matches!(keyword.as_str(), "on_startup" | "on_shutdown")
+                            {
                                 let value = self.identity(scope, value, before, 0);
-                                if keyword == "dependencies"
-                                    && let Value::Sequence(dependencies) = &value
-                                {
-                                    defaults.extend(dependencies.iter().filter_map(|dependency| {
-                                        match dependency {
-                                            Value::FastapiDependency(target) => *target,
-                                            _ => None,
-                                        }
-                                    }));
-                                }
-                                if !self.activate_framework_value(scope, value, "fastapi_lifecycle")
-                                {
+                                let kind = if keyword == "exception_handlers" {
+                                    "fastapi_exception_handler"
+                                } else {
+                                    "fastapi_lifecycle"
+                                };
+                                if !self.activate_framework_value(scope, value, kind) {
                                     self.scope_issue(
                                         scope,
                                         expr.at,
@@ -4169,12 +4461,7 @@ impl<'a> Graph<'a> {
                                 }
                             }
                         }
-                        let Value::Object(object, ObjectKind::App) =
-                            self.identity(scope, expr, before, 0)
-                        else {
-                            unreachable!()
-                        };
-                        self.fastapi_app(object, scope, defaults);
+                        self.fastapi_app(object, scope);
                     }
                     Value::Provider(name)
                         if self.phase03
@@ -4186,15 +4473,17 @@ impl<'a> Graph<'a> {
                         if let Value::Object(object, ObjectKind::Router) =
                             self.identity(scope, expr, before, 0)
                         {
-                            self.fastapi_router_defaults(
-                                object,
-                                fastapi::Site {
-                                    scope,
-                                    at: expr.at,
-                                    before,
-                                },
-                                keywords,
-                            );
+                            let site = fastapi::Site {
+                                scope,
+                                at: expr.at,
+                                before,
+                            };
+                            if let Some((_, lifespan)) = keywords.iter().find(|(name, value)| {
+                                name == "lifespan" && !matches!(value.kind, ExpressionKind::None)
+                            }) {
+                                self.fastapi_lifespan(object, site, lifespan);
+                            }
+                            self.fastapi_defaults(object, site, keywords);
                         }
                     }
                     Value::Provider(name)
@@ -4298,6 +4587,9 @@ impl<'a> Graph<'a> {
                 self.walk(scope, base, before);
                 let base = self.identity(scope, base, before, 1);
                 let value = if let Value::Module(file) = base
+                    && self
+                        .module_member_write(&self.files[file].module, name, (scope, before))
+                        .is_none()
                     && let ModuleMember::Lazy(hook, branch) = self.selected_module_member(
                         file,
                         name,
@@ -4361,9 +4653,10 @@ impl<'a> Graph<'a> {
                 self.walk(scope, index, before);
                 let mapping = self.identity(scope, value, before, 0);
                 let key = self.identity(scope, index, before, 0);
-                if !Self::has_literal_mapping_keys(&mapping)
-                    || !(matches!(key, Value::Text(_) | Value::Bool(_) | Value::Scalar)
-                        || self.is_module_getattr_parameter(scope, index, before))
+                if !(self.phase03 && is_typing_annotated(&mapping))
+                    && (!Self::has_literal_mapping_keys(&mapping)
+                        || !(matches!(key, Value::Text(_) | Value::Bool(_) | Value::Scalar)
+                            || self.is_module_getattr_parameter(scope, index, before)))
                 {
                     self.scope_issue(
                         scope,
@@ -4419,6 +4712,16 @@ impl<'a> Graph<'a> {
                 let value = self.identity(scope, expr, before, 0);
                 self.record_class_reference(scope, &value);
             }
+            ExpressionKind::ConstantLambda | ExpressionKind::IdentityDecoratorLambda
+                if !self.phase03 =>
+            {
+                self.scope_issue(
+                    scope,
+                    expr.at,
+                    "unsupported_construct",
+                    "lambda expressions are outside this compatibility profile",
+                )
+            }
             _ => {}
         }
     }
@@ -4437,6 +4740,16 @@ impl<'a> Graph<'a> {
             keywords,
         } = call;
         let id = invocation.target;
+        if self.is_generator(id) {
+            self.edge(scope, id, "generator_creation", certainty);
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_generator_execution",
+                "generator value consumption is outside the bounded model",
+            );
+            return;
+        }
         if !invocation.verified {
             self.direct.insert(id);
         }
@@ -4627,13 +4940,13 @@ impl<'a> Graph<'a> {
         kind: &'static str,
     ) -> bool {
         match value {
-            Value::Callable(invocation) => {
-                self.edge(scope, invocation.target, kind, "certain");
-                true
-            }
-            Value::FastapiDependency(Some(target)) => {
-                self.fastapi_dependency_edge(scope, target);
-                true
+            value @ (Value::Callable(_) | Value::Instance(_)) => {
+                if let Some(target) = self.fastapi_hook_target(value) {
+                    self.edge(scope, target, kind, "certain");
+                    true
+                } else {
+                    false
+                }
             }
             Value::Sequence(values) | Value::Alternatives(values) => {
                 let mut resolved = true;
@@ -4655,20 +4968,22 @@ impl<'a> Graph<'a> {
 
     fn record_fastapi_dependency(
         &mut self,
-        scope: ScopeId,
         owner: SymbolId,
-        before: Location,
         expression: &Expression,
+        value: Value,
     ) {
-        match self.probe_identity(scope, expression, before) {
-            Value::FastapiDependency(Some(target)) => {
+        match value {
+            Value::FastapiDependency(Some(target)) | Value::FastapiAnnotated(Some(target)) => {
+                self.record_fastapi_injected_parameter(owner, expression.at);
                 self.fastapi_parameter_dependency(owner, target);
             }
-            Value::FastapiDependency(None) => self.fastapi_dependency_issues.push((
+            Value::FastapiDependency(None)
+            | Value::FastapiAnnotated(None)
+            | Value::FastapiInferredDependency => self.fastapi_dependency_issues.push((
                 owner,
                 Issue::new(
                     "unresolved_registration",
-                    &self.files[self.scopes[scope].file].path,
+                    &self.files[self.scopes[self.symbols[owner].scope].file].path,
                     "FastAPI parameter dependency could not be resolved",
                 )
                 .at(expression.at),
@@ -4677,25 +4992,56 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn fastapi_annotation_metadata<'expr>(
+    fn fastapi_annotation_metadata(
         &mut self,
         scope: ScopeId,
         before: Location,
-        annotation: &'expr Expression,
-    ) -> &'expr [Expression] {
+        annotation: &Expression,
+    ) -> Value {
         // The frontend lowers subscription and tuple annotations into nested
         // operand groups. Resolve the generic's binding before using metadata.
         if let ExpressionKind::Operands(parts) = &annotation.kind
             && let [generic, arguments] = parts.as_slice()
-            && matches!(self.probe_identity(scope, generic, before), Value::Provider(provider)
-                if matches!(provider.as_str(), "typing.Annotated" | "typing_extensions.Annotated"))
+            && is_typing_annotated(&self.probe_identity(scope, generic, before))
             && let ExpressionKind::Operands(arguments) = &arguments.kind
-            && let Some((_, metadata)) = arguments.split_first()
+            && let Some((annotation, metadata)) = arguments.split_first()
         {
-            metadata
+            self.fastapi_selected_metadata(scope, before, annotation, metadata, 0)
         } else {
-            &[]
+            match self.probe_identity(scope, annotation, before) {
+                value @ Value::FastapiAnnotated(_) => value,
+                _ => Value::Unknown,
+            }
         }
+    }
+
+    fn fastapi_selected_metadata(
+        &mut self,
+        scope: ScopeId,
+        before: Location,
+        annotation: &Expression,
+        metadata: &[Expression],
+        depth: usize,
+    ) -> Value {
+        // FastAPI uses the final supported field or dependency marker.
+        for meta in metadata.iter().rev() {
+            match self.identity(scope, meta, before, depth) {
+                Value::FastapiDependency(target) => return Value::FastapiAnnotated(target),
+                Value::FastapiInferredDependency => {
+                    let annotated = self.identity(scope, annotation, before, depth);
+                    let target = if matches!(annotated, Value::Callable(class) if self.is_class(class.target))
+                    {
+                        self.fastapi_dependency_target(annotated)
+                    } else {
+                        None
+                    };
+                    return Value::FastapiAnnotated(target);
+                }
+                Value::FastapiFieldMarker => return Value::Scalar,
+                _ => {}
+            }
+        }
+        Value::Scalar
     }
 
     fn activate_callback(
@@ -4820,6 +5166,14 @@ impl<'a> Graph<'a> {
             let at = statement.at;
             match &statement.kind {
                 StatementKind::Define(definition) => {
+                    if definition.is_generator && !self.phase03 {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "generator definitions are outside this compatibility profile",
+                        );
+                    }
                     if matches!(
                         definition.name.text.as_str(),
                         "__getattribute__" | "__getattr__"
@@ -4838,9 +5192,6 @@ impl<'a> Graph<'a> {
                     else {
                         unreachable!()
                     };
-                    if definition.kind == DefinitionKind::Class {
-                        self.scopes[scope].class_bodies.push(definition_scope);
-                    }
                     for (index, annotation) in definition.annotations.iter().enumerate() {
                         self.annotation(scope, annotation, at, true);
                         if self.phase03
@@ -4849,24 +5200,50 @@ impl<'a> Graph<'a> {
                                 .facts
                                 .postponed_annotations
                         {
-                            for meta in self.fastapi_annotation_metadata(scope, at, annotation) {
-                                self.record_fastapi_dependency(scope, target, at, meta);
-                            }
+                            let metadata = self.fastapi_annotation_metadata(scope, at, annotation);
+                            self.record_fastapi_dependency(target, annotation, metadata);
                         }
                     }
                     for expression in &definition.defaults {
                         self.walk(scope, expression, at);
                         if self.phase03 {
-                            self.record_fastapi_dependency(scope, target, at, expression);
+                            let value = self.probe_identity(scope, expression, at);
+                            self.record_fastapi_dependency(target, expression, value);
                         }
                     }
+                    let mut valid_bases = true;
                     for base in &definition.bases {
                         self.walk(scope, base, at);
                         let value = self.identity(scope, base, at, 0);
+                        valid_bases &= !matches!(value, Value::MissingFrameworkMember);
                         if let Value::Callable(Invocation { target: id, .. }) = value {
                             self.edge(scope, id, "base_class", "certain");
                         }
                         self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                    }
+                    if definition.kind == DefinitionKind::Class {
+                        if let Some(table) = definition.table_keyword {
+                            if self.phase03
+                                && self.framework_class_role(target, &mut BTreeSet::new(), 0)
+                                    == Some(FrameworkClassRole::SqlModel)
+                            {
+                                if table && valid_bases {
+                                    self.register_sqlmodel_table(scope, target);
+                                }
+                            } else {
+                                self.scope_issue(
+                                    scope,
+                                    at,
+                                    "unsupported_construct",
+                                    "class table keyword requires a resolved SQLModel base",
+                                );
+                            }
+                        }
+                        if valid_bases {
+                            self.scopes[scope].class_bodies.push(definition_scope);
+                        } else {
+                            self.dormant_classes.insert(target);
+                        }
                     }
                     let mut preserves_receiver = true;
                     for decorator in &definition.decorators {
@@ -4892,6 +5269,43 @@ impl<'a> Graph<'a> {
                         self.annotation(scope, annotation, at, evaluated);
                     }
                 }
+                StatementKind::AssignDjangoSettings { environment, value } => {
+                    self.walk(scope, value, at);
+                    self.walk(scope, environment, at);
+                    if self.phase03
+                        && matches!(self.identity(scope, environment, at, 0),
+                            Value::Provider(provider) if provider == "os.environ")
+                    {
+                        self.scopes[scope].django_settings =
+                            match self.identity(scope, value, at, 0) {
+                                Value::Text(module) => DjangoSettings::Module(module),
+                                _ => DjangoSettings::Unknown,
+                            };
+                    } else {
+                        self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
+                    }
+                }
+                StatementKind::WriteAttribute {
+                    receiver, value, ..
+                }
+                | StatementKind::WriteModuleEntry {
+                    mapping: receiver,
+                    value,
+                    ..
+                } => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, receiver, at);
+                    if !self.modeled_framework_write(scope, at) {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_attribute_write",
+                            "attribute mutation is outside the bounded framework model",
+                        );
+                    }
+                }
                 StatementKind::Return(value) => {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
@@ -4912,7 +5326,23 @@ impl<'a> Graph<'a> {
                         return true;
                     }
                 }
-                StatementKind::Evaluate(value) => self.walk(scope, value, at),
+                StatementKind::Evaluate(value) => {
+                    if !self.phase03 || !self.discarded_generator_call(scope, value, at) {
+                        self.walk(scope, value, at);
+                    }
+                }
+                StatementKind::DiscardedComprehension(iterable) => {
+                    if self.phase03 {
+                        self.walk(scope, iterable, at);
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "comprehensions are outside the compatibility subset",
+                        );
+                    }
+                }
                 StatementKind::If {
                     test,
                     body,
@@ -4997,6 +5427,54 @@ impl<'a> Graph<'a> {
         false
     }
 
+    fn discarded_generator_call(
+        &mut self,
+        scope: ScopeId,
+        value: &Expression,
+        before: Location,
+    ) -> bool {
+        if self.scopes[scope]
+            .owner
+            .is_some_and(|owner| self.is_generator(owner))
+        {
+            // A yield statement can also lower to Evaluate in a generator body.
+            return false;
+        }
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &value.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Name(name) = &function.kind else {
+            return false;
+        };
+        let Some(generator) = self.local(scope, name, before) else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = self.symbols[generator].binding else {
+            return false;
+        };
+        if !definition.is_generator
+            || definition.kind != DefinitionKind::Function
+            || !definition.decorators.is_empty()
+            || self.binding_depends_on_branch(generator, before)
+            || (!definition.parameters.is_empty() && !definition.simple_positional_parameters)
+            || definition.parameters.len() != arguments.len()
+            || !keywords.is_empty()
+        {
+            return false;
+        }
+        self.walk_expression(scope, function, before, true);
+        for argument in arguments {
+            self.walk(scope, argument, before);
+        }
+        self.edge(scope, generator, "generator_creation", "certain");
+        true
+    }
+
     /// Returns whether the decorator preserves the function's instance binding.
     fn decorator(
         &mut self,
@@ -5018,17 +5496,52 @@ impl<'a> Graph<'a> {
             self.walk(scope, value, before);
         }
         match self.call_target_identity(scope, function, before, 0) {
-            Value::Method(object, kind, name) if is_route(kind, &name, self.phase03) => {
+            Value::Method(object, ObjectKind::App, name)
+                if self.phase03 && name == "middleware" =>
+            {
+                if let Some([Some(protocol)]) =
+                    registration_arguments(args, keywords, ["middleware_type"])
+                    && matches!(self.identity(scope, protocol, before, 0), Value::Text(protocol) if protocol == "http")
+                {
+                    self.fastapi_route(
+                        object,
+                        target,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: decorator.at,
+                            positional: args,
+                            keywords,
+                        },
+                        &name,
+                    );
+                } else {
+                    self.scope_issue(
+                        scope,
+                        decorator.at,
+                        "unresolved_registration",
+                        "FastAPI middleware protocol could not be resolved",
+                    );
+                }
+            }
+            Value::Method(object, kind, name)
+                if is_route(kind, &name, self.phase03)
+                    && (!matches!(kind, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
+                        || flask_callback_method(kind, &name)
+                            != matches!(decorator.kind, ExpressionKind::Call { .. })) =>
+            {
                 if self.phase03 && matches!(kind, ObjectKind::App | ObjectKind::Router) {
                     self.fastapi_route(
                         object,
-                        fastapi::Site {
-                            scope,
-                            at: decorator.at,
-                            before,
-                        },
                         target,
-                        keywords,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: decorator.at,
+                            positional: args,
+                            keywords,
+                        },
+                        &name,
                     );
                 } else {
                     self.scopes[scope].routes.push((
@@ -5094,6 +5607,10 @@ impl<'a> Graph<'a> {
             Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
             Value::Provider(name)
                 if self.phase03
+                    && name == "contextlib.asynccontextmanager"
+                    && self.is_fastapi_lifespan(target) => {}
+            Value::Provider(name)
+                if self.phase03
                     && matches!(
                         name.as_str(),
                         "pydantic.computed_field"
@@ -5116,8 +5633,28 @@ impl<'a> Graph<'a> {
                         .push((owner, target, "framework_lifecycle"));
                 }
             }
-            Value::Provider(name) if self.phase03 && name == "django.contrib.admin.register" => {
-                self.edge(scope, target, "django_admin_registration", "certain");
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
+                        "django.contrib.admin.register"
+                            | "django.contrib.admin.decorators.register"
+                    ) =>
+            {
+                self.django_admin_decorator(scope, target, args, keywords, before, decorator.at);
+            }
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
+                        "django.contrib.admin.display"
+                            | "django.contrib.admin.decorators.display"
+                            | "django.contrib.admin.action"
+                            | "django.contrib.admin.decorators.action"
+                    ) =>
+            {
+                // These decorators attach metadata to the same callback object.
+                return true;
             }
             Value::Provider(name) if name == "pytest.fixture" => {
                 let registered_name = if let Some((_, expression)) =
@@ -5159,7 +5696,7 @@ impl<'a> Graph<'a> {
             }
             Value::Callable(invocation) => {
                 self.invoke(scope, invocation, "decorator", "certain", decorator.at);
-                let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+                let Binding::Definition(definition, body) = self.symbols[invocation.target].binding
                 else {
                     unreachable!()
                 };
@@ -5168,6 +5705,19 @@ impl<'a> Graph<'a> {
                         && definition.has_positional_parameter
                         && definition.decorators.is_empty()
                         && !matches!(decorator.kind, ExpressionKind::Call { .. });
+                } else if self.phase03
+                    && matches!(invocation.receiver, Receiver::Ordinary)
+                    && definition.kind == DefinitionKind::Function
+                    && definition.decorators.is_empty()
+                    && definition.simple_positional_parameters
+                    && definition.parameters.len() == args.len()
+                    && keywords.is_empty()
+                    && matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && let Some(identity) = identity_decorator_factory(definition)
+                    && let Some(identity) = self.local(body, &identity.name.text, END)
+                {
+                    self.edge(scope, identity, "decorator", "certain");
+                    return true;
                 } else {
                     self.scope_issue(
                         scope,
@@ -5177,6 +5727,12 @@ impl<'a> Graph<'a> {
                     );
                 }
             }
+            Value::IdentityDecoratorFactory
+                if self.phase03 && args.len() == 1 && keywords.is_empty() =>
+            {
+                return true;
+            }
+            Value::ConstantFunction => {}
             Value::Provider(name)
                 if matches!(
                     name.as_str(),
@@ -5187,8 +5743,13 @@ impl<'a> Graph<'a> {
                     && name == "builtins.property"
                     && let Some(owner) = self.scopes[scope].owner
                     && self.is_class(owner)
-                    && self.framework_class_role(owner, &mut BTreeSet::new(), 0)
-                        == Some(FrameworkClassRole::PydanticModel) => {}
+                    && self
+                        .framework_class_role(owner, &mut BTreeSet::new(), 0)
+                        .is_some_and(|role| {
+                            role.is_unittest() || role == FrameworkClassRole::PydanticModel
+                        }) => {}
+            Value::Unknown
+                if self.phase03 && self.empty_flask_lookalike(scope, function, before) => {}
             _ => self.scope_issue(
                 scope,
                 decorator.at,
@@ -5197,6 +5758,28 @@ impl<'a> Graph<'a> {
             ),
         };
         false
+    }
+
+    fn empty_flask_lookalike(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Member(base, name) = &expression.kind else {
+            return false;
+        };
+        if !is_route(ObjectKind::FlaskApp, name, true)
+            && !is_route(ObjectKind::FlaskBlueprint, name, true)
+        {
+            return false;
+        }
+        // A resolved empty local class has no registration method to invoke.
+        // Unresolved receivers and class hierarchies carry the normal diagnostic.
+        matches!(self.identity(scope, base, before, 0), Value::Instance(class)
+            if matches!(self.symbols[class].binding, Binding::Definition(definition, _)
+                if definition.body.is_empty() && definition.bases.is_empty()
+                    && definition.decorators.is_empty()))
     }
 
     fn class_lineage(&mut self, class: SymbolId) -> (Vec<ScopeId>, bool) {
@@ -5288,6 +5871,74 @@ impl<'a> Graph<'a> {
             if definition.kind == DefinitionKind::Coroutine)
     }
 
+    fn is_generator(&self, id: SymbolId) -> bool {
+        matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+            if definition.is_generator)
+    }
+
+    fn bounded_unittest_comparison(
+        &mut self,
+        scope: ScopeId,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        before: Location,
+    ) -> bool {
+        let Some([Some(left), Some(right), message]) =
+            registration_arguments(arguments, keywords, ["first", "second", "msg"])
+        else {
+            return false;
+        };
+        [Some(left), Some(right), message].into_iter().flatten().all(|expr| {
+            if self.probe_identity(scope, expr, before).is_builtin_scalar() {
+                return true;
+            }
+            let ExpressionKind::Call { function, arguments, keywords } = &expr.kind else {
+                return false;
+            };
+            if !arguments.is_empty() || !keywords.is_empty() {
+                return false;
+            }
+            let Value::Callable(invocation) = self.probe_identity(scope, function, before) else {
+                return false;
+            };
+            let Binding::Definition(definition, _) = self.symbols[invocation.target].binding else {
+                return false;
+            };
+            definition.kind == DefinitionKind::Function
+                && !definition.is_generator
+                && definition.parameters.is_empty()
+                && definition.decorators.is_empty()
+                && matches!(
+                    definition.body.as_slice(),
+                    [Statement { kind: StatementKind::Return(Some(result)), .. }]
+                        if matches!(result.kind, ExpressionKind::Text(_) | ExpressionKind::Scalar | ExpressionKind::Bool(_))
+                )
+        })
+    }
+
+    fn unittest_property(&mut self, id: SymbolId) -> bool {
+        let symbol = &self.symbols[id];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        let scope = symbol.scope;
+        let [decorator] = definition.decorators.as_slice() else {
+            return false;
+        };
+        definition.kind != DefinitionKind::Class
+            && self.phase03
+            && self.scopes[scope].owner.is_some_and(|class| {
+                self.is_class(class)
+                    && self
+                        .framework_class_role(class, &mut BTreeSet::new(), 0)
+                        .is_some_and(FrameworkClassRole::is_unittest)
+            })
+            && matches!(
+                self.probe_identity(scope, decorator, definition.name.at),
+                Value::Provider(provider) if provider == "builtins.property"
+            )
+    }
+
     fn is_pytest_file(&self, file: usize) -> bool {
         let filename = self.files[file].path.rsplit('/').next().unwrap_or_default();
         filename.starts_with("test_") || filename.ends_with("_test.py")
@@ -5338,6 +5989,14 @@ impl<'a> Graph<'a> {
                 let source = self.scopes[symbol.scope].file;
                 let module = self.relative_module(source, import)?;
                 if let Some(member) = &import.member {
+                    if let Some(write) =
+                        self.module_member_write(&module, member, (symbol.scope, import.local.at))
+                    {
+                        return match write {
+                            mutations::MemberWriteValue::Replacement(value) => Some(value),
+                            _ => None,
+                        };
+                    }
                     let file = *self.modules.get(module.as_str())?;
                     let before = self
                         .import_member_position(symbol.scope, &module, import)
@@ -5390,6 +6049,14 @@ impl<'a> Graph<'a> {
                 else {
                     return None;
                 };
+                if let Some(write) =
+                    self.module_member_write(&self.files[file].module, member, (scope, before))
+                {
+                    return match write {
+                        mutations::MemberWriteValue::Replacement(value) => Some(value),
+                        _ => None,
+                    };
+                }
                 let selected = self.selected_module_member(
                     file,
                     member,
@@ -6613,7 +7280,7 @@ impl<'a> Graph<'a> {
                 }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
                 reach.symbols.insert(edge.target);
-                if edge.kind == "type_reference" {
+                if matches!(edge.kind, "type_reference" | "generator_creation") {
                     continue;
                 }
                 let Binding::Definition(_, scope) = self.symbols[edge.target].binding else {
@@ -6632,8 +7299,8 @@ impl<'a> Graph<'a> {
                     pending.extend(&self.scopes[scope].edges);
                 }
             }
-            for &scope in &reach.scopes {
-                if possible && let Some(receivers) = self.atexit_receivers.get(&scope) {
+            for &scope_id in &reach.scopes {
+                if possible && let Some(receivers) = self.atexit_receivers.get(&scope_id) {
                     for &(edge, class) in receivers {
                         if verification || !is_verification_edge(edge.kind) {
                             reach
@@ -6644,7 +7311,7 @@ impl<'a> Graph<'a> {
                         }
                     }
                 }
-                let scope = &self.scopes[scope];
+                let scope = &self.scopes[scope_id];
                 reach.active_objects.extend(&scope.activated_apps);
                 for &(parent, child) in &scope.mounts {
                     if reach.active_objects.contains(&parent) {
@@ -6652,13 +7319,25 @@ impl<'a> Graph<'a> {
                     }
                 }
                 for &(object, target, kind) in &scope.routes {
-                    if reach.active_objects.contains(&object)
-                        && if self.phase03 {
-                            !reach.has_evidence(target, kind)
-                        } else {
-                            !reach.symbols.contains(&target)
-                        }
+                    if !reach.active_objects.contains(&object) {
+                        continue;
+                    }
+                    if let Some(receivers) = self
+                        .framework_route_receivers
+                        .get(&(scope_id, object, target))
                     {
+                        reach
+                            .deferred_method_receivers
+                            .entry(target)
+                            .or_default()
+                            .extend(receivers);
+                    }
+                    let pending_route = if self.phase03 {
+                        !reach.has_evidence(target, kind)
+                    } else {
+                        !reach.symbols.contains(&target)
+                    };
+                    if pending_route {
                         pending.push_back(Edge {
                             target,
                             kind,
@@ -6718,7 +7397,8 @@ impl<'a> Graph<'a> {
             .filter(|edge| is_atexit_edge(edge.kind))
             .copied()
             .collect();
-        pending.is_empty() || self.traverse(reach, pending, class_bodies, false, true)
+        (pending.is_empty() && !self.has_reachable_django_signals(reach))
+            || self.traverse(reach, pending, class_bodies, false, true)
     }
 
     fn verification_edges(
@@ -6744,31 +7424,19 @@ impl<'a> Graph<'a> {
         pending
     }
 
-    fn finish(
-        mut self,
-        roots: Vec<Edge>,
-        mut possible_runtime_roots: Vec<Edge>,
+    fn establish_reachability(
+        &mut self,
+        roots: &[Edge],
+        possible_roots: &[Edge],
         snapshot: Option<&grep_verification::Snapshot>,
-    ) -> Analysis {
-        // Declaration hints retain only the definition in the compatibility
-        // report. Leave them out of the execution graph and parameter analysis.
-        let mut coverage_declarations = BTreeSet::new();
-        possible_runtime_roots.retain(|edge| {
-            if edge.kind == runtime_evidence::COVERAGE_DECLARATION {
-                coverage_declarations.insert(edge.target);
-                false
-            } else {
-                true
-            }
-        });
-        self.resolve_class_invocations();
+    ) -> (Reachability, Option<Reachability>, Verification, bool) {
         let mut reach = Reachability {
             scopes: (0..self.files.len()).collect(),
             ..Reachability::default()
         };
         let runtime_targets: BTreeSet<_> = roots
             .iter()
-            .chain(&possible_runtime_roots)
+            .chain(possible_roots)
             .filter(|edge| is_runtime_execution_edge(edge.kind))
             .map(|edge| edge.target)
             .collect();
@@ -6778,7 +7446,7 @@ impl<'a> Graph<'a> {
                     .owner
                     .is_some_and(|owner| runtime_targets.contains(&owner))
             });
-        let mut pending = VecDeque::from(roots);
+        let mut pending: VecDeque<_> = roots.iter().copied().collect();
         // Only visited class declarations execute when their parent is reached.
         let class_bodies: BTreeSet<_> = self
             .scopes
@@ -6814,17 +7482,17 @@ impl<'a> Graph<'a> {
                 static_reach = Some(static_only);
             }
         }
-        let baseline_converged = self.traverse_with_atexit(&mut reach, pending, &class_bodies);
-        if !possible_runtime_roots.is_empty()
+        let mut converged = self.traverse_with_atexit(&mut reach, pending, &class_bodies);
+        if !possible_roots.is_empty()
             && !self.traverse(
                 &mut reach,
-                possible_runtime_roots.into(),
+                possible_roots.iter().copied().collect(),
                 &class_bodies,
                 false,
                 true,
             )
         {
-            self.issues.push(framework_limit());
+            converged = false;
         }
         let mut verification = Verification::default();
         if let Some(snapshot) = snapshot {
@@ -6843,7 +7511,7 @@ impl<'a> Graph<'a> {
             let pending = self.verification_edges(&reach, &verification.roots);
             if !pending.is_empty() && !self.traverse(&mut reach, pending, &class_bodies, true, true)
             {
-                self.issues.push(framework_limit());
+                converged = false;
             }
             for &(scope, target, line, column) in &self.dynamic_references {
                 if reach.scopes.contains(&scope) && reach.symbols.contains(&target) {
@@ -6866,7 +7534,39 @@ impl<'a> Graph<'a> {
                 .copied()
                 .collect();
         }
-        if !baseline_converged {
+        (reach, static_reach, verification, converged)
+    }
+
+    fn finish(
+        mut self,
+        roots: Vec<Edge>,
+        mut possible_roots: Vec<Edge>,
+        snapshot: Option<&grep_verification::Snapshot>,
+    ) -> Analysis {
+        // Declaration hints retain only the definition in the compatibility
+        // report. Leave them out of the execution graph and parameter analysis.
+        let mut coverage_declarations = BTreeSet::new();
+        possible_roots.retain(|edge| {
+            if edge.kind == runtime_evidence::COVERAGE_DECLARATION {
+                coverage_declarations.insert(edge.target);
+                false
+            } else {
+                true
+            }
+        });
+        self.resolve_class_invocations();
+        let (mut reach, mut static_reach, mut verification, mut converged) =
+            self.establish_reachability(&roots, &possible_roots, snapshot);
+        if self.phase03
+            && converged
+            && self.activate_configured_django_after_dormant_startup(&reach)
+        {
+            self.resolve_receiver_calls();
+            self.resolve_class_invocations();
+            (reach, static_reach, verification, converged) =
+                self.establish_reachability(&roots, &possible_roots, snapshot);
+        }
+        if !converged {
             self.issues.push(framework_limit());
         }
         self.report_unbound_receiver_calls(&reach);
@@ -6879,6 +7579,7 @@ impl<'a> Graph<'a> {
                     }),
             );
         self.report_fastapi_coverage(&reach);
+        let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
         }
@@ -6950,6 +7651,19 @@ impl<'a> Graph<'a> {
 
         let mut findings = Vec::new();
         let mut retained = Vec::new();
+        let fastapi_callback_contracts: BTreeSet<_> = evidence
+            .iter()
+            .filter_map(|&(target, kind, _)| {
+                self.retain_fastapi_callback_parameters(target, kind)
+                    .then_some(target)
+            })
+            .collect();
+        let django_callback_contracts: BTreeSet<_> = evidence
+            .iter()
+            .filter_map(|&(target, kind, _)| {
+                frameworks::is_django_signal_edge(kind).then_some(target)
+            })
+            .collect();
         let transitive = verification
             .transitive
             .iter()
@@ -6964,6 +7678,12 @@ impl<'a> Graph<'a> {
         {
             if is_verification_edge(kind) {
                 continue;
+            }
+            if matches!(
+                kind,
+                "django_setting" | "django_application" | "fastapi_parameter"
+            ) {
+                self.read.insert(id);
             }
             let symbol = &self.symbols[id];
             retained.push(Evidence {
@@ -7057,6 +7777,9 @@ impl<'a> Graph<'a> {
                             self.fixtures.contains_key(&owner)
                                 || reachable_symbols.contains(&owner)
                                     && !self.direct.contains(&owner)
+                                    && !fastapi_callback_contracts.contains(&owner)
+                                    && !fastapi_route_contracts.contains(&owner)
+                                || django_callback_contracts.contains(&owner)
                         }) =>
                 {
                     (
@@ -7245,6 +7968,21 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                     expressions.extend(annotation);
                 }
             }
+            StatementKind::AssignDjangoSettings { environment, value } => {
+                expressions.push(environment);
+                expressions.push(value);
+            }
+            StatementKind::WriteAttribute {
+                receiver, value, ..
+            }
+            | StatementKind::WriteModuleEntry {
+                mapping: receiver,
+                value,
+                ..
+            } => {
+                expressions.push(receiver);
+                expressions.extend(value);
+            }
             StatementKind::If {
                 test,
                 body,
@@ -7262,9 +8000,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 statements.extend(body);
             }
             StatementKind::Return(value) | StatementKind::Raise(value) => expressions.extend(value),
-            StatementKind::Assert(value) | StatementKind::Evaluate(value) => {
-                expressions.push(value)
-            }
+            StatementKind::Assert(value)
+            | StatementKind::Evaluate(value)
+            | StatementKind::DiscardedComprehension(value) => expressions.push(value),
         }
     }
     let mut reads = BTreeSet::new();
@@ -7305,7 +8043,12 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             ExpressionKind::Membership {
                 element, container, ..
             } => expressions.extend([element.as_ref(), container.as_ref()]),
-            ExpressionKind::Text(_) | ExpressionKind::Bool(_) | ExpressionKind::Scalar => {}
+            ExpressionKind::Text(_)
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::Scalar
+            | ExpressionKind::None
+            | ExpressionKind::ConstantLambda
+            | ExpressionKind::IdentityDecoratorLambda => {}
         }
     }
     reads.retain(|name| !assigned.contains(name));
@@ -7422,9 +8165,54 @@ fn is_identity_decorator(definition: &Definition) -> bool {
     let [parameter] = definition.parameters.as_slice() else {
         return false;
     };
-    matches!(definition.body.as_slice(), [Statement { kind: StatementKind::Return(Some(Expression {
+    matches!(body_without_docstring(definition), [Statement { kind: StatementKind::Return(Some(Expression {
         kind: ExpressionKind::Name(name), ..
     })), .. }] if name == &parameter.text)
+}
+
+fn identity_decorator_factory(definition: &Definition) -> Option<&Definition> {
+    let [
+        Statement {
+            kind: StatementKind::Define(decorator),
+            ..
+        },
+        Statement {
+            kind:
+                StatementKind::Return(Some(Expression {
+                    kind: ExpressionKind::Name(name),
+                    ..
+                })),
+            ..
+        },
+    ] = body_without_docstring(definition)
+    else {
+        return None;
+    };
+    (name == &decorator.name.text
+        && decorator.kind == DefinitionKind::Function
+        && decorator.decorators.is_empty()
+        && decorator.simple_positional_parameters
+        && decorator.annotations.is_empty()
+        && decorator.defaults.is_empty()
+        && is_identity_decorator(decorator))
+    .then_some(decorator)
+}
+
+fn body_without_docstring(definition: &Definition) -> &[Statement] {
+    match definition.body.as_slice() {
+        [
+            Statement {
+                kind:
+                    StatementKind::Evaluate(Expression {
+                        kind: ExpressionKind::Text(_),
+                        ..
+                    }),
+                ..
+            },
+            rest @ ..,
+        ] => rest,
+        body => body,
+    }
 }
 
 fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
@@ -7440,23 +8228,9 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
             ) || phase03 && matches!(name, "exception_handler" | "on_event")
         }
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => {
-            http || matches!(
-                name,
-                "route"
-                    | "before_request"
-                    | "after_request"
-                    | "teardown_request"
-                    | "errorhandler"
-                    | "context_processor"
-            ) || matches!(kind, ObjectKind::FlaskBlueprint)
-                && matches!(
-                    name,
-                    "before_app_request"
-                        | "after_app_request"
-                        | "teardown_app_request"
-                        | "app_context_processor"
-                        | "app_errorhandler"
-                )
+            http || matches!(name, "route" | "errorhandler")
+                || flask_callback_method(kind, name)
+                || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
         ObjectKind::CeleryApp => name == "task",
     }
@@ -7470,19 +8244,57 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
                 "add_api_route" | "add_api_websocket_route" | "add_route" | "add_websocket_route"
             ) || matches!(kind, ObjectKind::App) && method == "add_exception_handler"
         }
-        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => method == "add_url_rule",
-        ObjectKind::CeleryApp => false,
+        ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => {
+            matches!(method, "add_url_rule" | "register_error_handler")
+                || flask_callback_method(kind, method)
+        }
+        ObjectKind::CeleryApp => method == "task",
     }
+}
+
+fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
+    matches!(kind, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
+        && (matches!(
+            name,
+            "before_request" | "after_request" | "teardown_request" | "context_processor"
+        ) || match kind {
+            ObjectKind::FlaskApp => {
+                matches!(name, "shell_context_processor" | "teardown_appcontext")
+            }
+            ObjectKind::FlaskBlueprint => matches!(
+                name,
+                "before_app_request"
+                    | "after_app_request"
+                    | "teardown_app_request"
+                    | "app_context_processor"
+            ),
+            _ => false,
+        })
 }
 
 fn is_atexit_edge(kind: &str) -> bool {
     matches!(kind, "atexit_registration" | "atexit_argument")
 }
 
+fn is_typing_annotated(value: &Value) -> bool {
+    matches!(value, Value::Provider(name) if matches!(name.as_str(),
+        "typing.Annotated" | "typing_extensions.Annotated"))
+}
+
+fn is_fastapi_field_marker(name: &str) -> bool {
+    name.strip_prefix("fastapi.").is_some_and(|member| {
+        matches!(
+            member,
+            "Path" | "Query" | "Header" | "Cookie" | "Body" | "Form" | "File"
+        )
+    })
+}
+
 fn is_known_call(name: &str, phase03: bool) -> bool {
     name.starts_with("builtins.")
         || phase03
             && (name.starts_with("pydantic.BaseModel.")
+                || is_fastapi_field_marker(name)
                 || is_django_signal_constructor(name)
                 || is_django_receiver(name)
                 || matches!(
@@ -7494,6 +8306,8 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
                         | "celery.Celery"
                         | "fastapi.Depends"
                         | "fastapi.Security"
+                        | "starlette.middleware.Middleware"
+                        | "fastapi.middleware.Middleware"
                         | "django.urls.path"
                         | "django.urls.re_path"
                         | "django.urls.include"
@@ -7506,6 +8320,11 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
                         | "sqlalchemy.event.listens_for"
                         | "sqlalchemy.event.listens_for.callback"
                         | "sqlalchemy.orm.mapped_column"
+                        | "sqlalchemy.Column"
+                        | "sqlalchemy.ForeignKey"
+                        | "sqlalchemy.orm.relationship"
+                        | "sqlmodel.Field"
+                        | "sqlmodel.Relationship"
                         | "django.http.HttpResponse"
                         | "django.http.response.HttpResponse"
                         | "django.http.HttpResponseBadRequest"
@@ -7615,15 +8434,25 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
 }
 
 fn callback_argument<'a>(
+    kind: ObjectKind,
     method: &str,
     arguments: &'a [Expression],
     keywords: &'a [(String, Expression)],
 ) -> Option<&'a Expression> {
     let (position, names): (usize, &[&str]) = match method {
         "add_url_rule" => (2, &["view_func"]),
+        "register_error_handler" => (1, &["f"]),
         "add_api_route" | "add_api_websocket_route" => (1, &["endpoint"]),
         "add_route" | "add_websocket_route" => (1, &["endpoint"]),
         "add_exception_handler" => (1, &["handler"]),
+        "task" if arguments.len() == 1 && keywords.is_empty() => (0, &[]),
+        _ if flask_callback_method(kind, method) => {
+            return match (arguments, keywords) {
+                ([callback], []) => Some(callback),
+                ([], [(name, callback)]) if name == "f" => Some(callback),
+                _ => None,
+            };
+        }
         _ => return None,
     };
     arguments.get(position).or_else(|| {
@@ -7682,13 +8511,41 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
             Some(FrameworkClassRole::UnittestAsync)
         }
+        "django.test.TestCase" | "django.test.testcases.TestCase" => {
+            Some(FrameworkClassRole::DjangoDatabaseTestCase)
+        }
+        "django.test.SimpleTestCase"
+        | "django.test.testcases.SimpleTestCase"
+        | "django.test.TransactionTestCase"
+        | "django.test.testcases.TransactionTestCase"
+        | "django.test.LiveServerTestCase"
+        | "django.test.testcases.LiveServerTestCase"
+        | "django.contrib.staticfiles.testing.StaticLiveServerTestCase" => {
+            Some(FrameworkClassRole::DjangoTestCase)
+        }
         "django.apps.AppConfig" | "django.apps.config.AppConfig" => {
             Some(FrameworkClassRole::DjangoAppConfig)
         }
         "django.core.management.base.BaseCommand" => Some(FrameworkClassRole::DjangoCommand),
-        "django.views.View" | "django.views.generic.View" | "django.views.generic.base.View" => {
-            Some(FrameworkClassRole::DjangoView)
-        }
+        "django.views.View"
+        | "django.views.generic.View"
+        | "django.views.generic.base.View"
+        | "django.views.generic.TemplateView"
+        | "django.views.generic.base.TemplateView"
+        | "django.views.generic.RedirectView"
+        | "django.views.generic.base.RedirectView"
+        | "django.views.generic.DetailView"
+        | "django.views.generic.detail.DetailView"
+        | "django.views.generic.ListView"
+        | "django.views.generic.list.ListView"
+        | "django.views.generic.FormView"
+        | "django.views.generic.edit.FormView"
+        | "django.views.generic.CreateView"
+        | "django.views.generic.edit.CreateView"
+        | "django.views.generic.UpdateView"
+        | "django.views.generic.edit.UpdateView"
+        | "django.views.generic.DeleteView"
+        | "django.views.generic.edit.DeleteView" => Some(FrameworkClassRole::DjangoView),
         "django.db.models.Model" | "django.db.models.base.Model" => {
             Some(FrameworkClassRole::DjangoModel)
         }
@@ -7697,9 +8554,10 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
             Some(FrameworkClassRole::DjangoAdmin)
         }
         "celery.Task" | "celery.app.task.Task" => Some(FrameworkClassRole::CeleryTask),
-        "sqlalchemy.orm.DeclarativeBase" | "sqlalchemy.orm.decl_api.DeclarativeBase" => {
-            Some(FrameworkClassRole::SqlAlchemyModel)
-        }
+        "sqlalchemy.orm.DeclarativeBase"
+        | "sqlalchemy.orm.decl_api.DeclarativeBase"
+        | "sqlalchemy.orm.declarative_base.result" => Some(FrameworkClassRole::SqlAlchemyModel),
+        "sqlmodel.SQLModel" | "sqlmodel.main.SQLModel" => Some(FrameworkClassRole::SqlModel),
         "pydantic.BaseModel"
         | "pydantic.main.BaseModel"
         | "pydantic_settings.BaseSettings"
@@ -7710,6 +8568,15 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
 
 fn framework_managed_base(name: &str) -> bool {
     framework_class_provider(name).is_some()
+}
+
+fn is_declarative_base_factory(name: &str) -> bool {
+    matches!(
+        name,
+        "sqlalchemy.orm.declarative_base"
+            | "sqlalchemy.orm.decl_api.declarative_base"
+            | "sqlalchemy.ext.declarative.declarative_base"
+    )
 }
 
 #[cfg(test)]
@@ -9476,7 +10343,7 @@ print(Status.default)
         let files = [module(
             "example.py",
             "example",
-            "from fastapi import Depends, FastAPI\nfrom external import opaque\ndef known():\n    return 1\napp = FastAPI(dependencies=[Depends(known), Depends(opaque)])\n",
+            "from fastapi import Depends, FastAPI\nfrom external import opaque\ndef known():\n    return 1\napp = FastAPI(dependencies=[Depends(known), Depends(opaque)])\n@app.get('/')\ndef index():\n    return 2\n",
         )];
         let result = analyze_phase03(&files, &[]);
         assert!(

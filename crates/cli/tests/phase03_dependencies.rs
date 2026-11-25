@@ -93,6 +93,41 @@ dev = ["dev-only"]
 }
 
 #[test]
+fn django_settings_assignment_proves_dependency_use_or_abstains() {
+    let tree = tempfile::tempdir().unwrap();
+    let root = tree.path();
+    put(
+        root,
+        "requirements.txt",
+        "django\nexternal-settings\nunused-one\n",
+    );
+    let args = [".", "--select", "SKY-U005"];
+    let assign =
+        "import os as environment\nimport django\nenvironment.environ['DJANGO_SETTINGS_MODULE'] = ";
+    put(
+        root,
+        "app.py",
+        &format!("{assign}'external_settings.production'\ndjango.setup()\n"),
+    );
+    let resolved = scan(root, &args, 0);
+    assert_eq!(findings(&resolved), [("unused-one", 3)]);
+    put(
+        root,
+        "app.py",
+        &format!("{assign}choose_settings()\ndjango.setup()\n"),
+    );
+    let unresolved = scan(root, &args, 2);
+    assert!(findings(&unresolved).is_empty());
+    assert!(
+        unresolved["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_dependency_configuration" })
+    );
+}
+
+#[test]
 fn selecting_python_dependencies_does_not_analyze_javascript_assets() {
     let tree = tempfile::tempdir().unwrap();
     let root = tree.path();
