@@ -27,13 +27,18 @@ each original variant.
 | Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. |
 | Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. |
 | FastAPI source-layout corpus case | The unannotated `websocket` argument is treated as a query parameter. The original handler cannot receive a WebSocket object through that argument. |
+| Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. |
+| Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. |
+| Wagtail snippet settings | The view-set class supplies neither a model nor a `register_snippet` call. The analyzer records the related model and block declarations separately. |
 | unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. The analyzer does not assign test execution evidence to those declarations. |
 
 [Django async views](https://docs.djangoproject.com/en/5.2/topics/async/#async-views) ·
 [Django command dispatch](https://github.com/django/django/blob/stable/5.2.x/django/core/management/base.py) ·
 [Django app population](https://github.com/django/django/blob/stable/5.2.x/django/apps/registry.py) ·
 [Starlette 1.3.1 API](https://github.com/Kludex/starlette/blob/1.3.1/starlette/applications.py#L99-L107) ·
-[unittest test loading](https://docs.python.org/3.11/library/unittest.html#loading-and-running-tests)
+[unittest test loading](https://docs.python.org/3.11/library/unittest.html#loading-and-running-tests) ·
+[Gin configuration](https://github.com/google/gin-config) ·
+[Wagtail snippet configuration](https://docs.wagtail.org/en/stable/topics/snippets/customizing.html)
 
 ## Inventory and receipts
 
