@@ -600,6 +600,57 @@ app.include_router(router)
 }
 
 #[test]
+fn fastapi_stacked_route_decorators_register_the_effective_callback() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import Depends, FastAPI
+
+def erase(callback): return lambda: None
+def keep(): return 1
+def discard(): return 2
+def route_dependency(): return 3
+
+outer_app = FastAPI()
+inner_app = FastAPI(dependencies=[Depends(route_dependency)])
+
+@erase
+@outer_app.get('/outer')
+def outer(): return keep()
+
+@inner_app.get('/inner')
+@erase
+def inner(): return discard()
+
+inner()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.discard", "web.inner"]
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, kind) in [
+        ("web.outer", "fastapi_registration"),
+        ("web.route_dependency", "fastapi_dependency"),
+    ] {
+        assert!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == name
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == kind && edge["certainty"] == "certain")
+            }),
+            "{name} {report}"
+        );
+    }
+}
+
+#[test]
 fn fastapi_wildcard_imports_require_known_external_provider_identity() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

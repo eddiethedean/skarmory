@@ -1825,6 +1825,11 @@ impl<'a> Graph<'a> {
                 {
                     return replacement;
                 }
+                if self.phase03
+                    && let Some(replacement) = self.fastapi_decorated_value(id, depth)
+                {
+                    return replacement;
+                }
                 Value::Callable(Invocation::ordinary(id))
             }
             Binding::Variable(Some(value), before) => {
@@ -5751,9 +5756,12 @@ impl<'a> Graph<'a> {
                             self.dormant_classes.insert(target);
                         }
                     }
-                    let mut preserves_receiver = true;
-                    for decorator in &definition.decorators {
-                        preserves_receiver &= self.decorator(scope, decorator, target, at);
+                    let mut preserves_receiver = false;
+                    if !self.phase03 || !self.apply_fastapi_replacement_stack(target) {
+                        preserves_receiver = true;
+                        for decorator in &definition.decorators {
+                            preserves_receiver &= self.decorator(scope, decorator, target, at);
+                        }
                     }
                     if preserves_receiver
                         && let Some(receiver) = self.receiver_parameter(target)
