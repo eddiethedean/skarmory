@@ -9353,7 +9353,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with ImportError before publishing a callback (cannot import name 'login' from partially initialized module 'providers' (most likely due to a circular import) (/private/tmp/skarmory-flask-pinned-istgsn7o/test_import_cycle_does_not_inv0/providers.py)) (#43)"
+blocker = "The original initializer cannot import login from the partially initialized providers module in a cycle before publishing a callback (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_imported_flask_instance_shell_context_is_a_registered_callback"
@@ -10521,7 +10521,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/python_decorator_factory_registration/trainer/__init__.py", "corpus/fixtures/python_decorator_factory_registration/trainer/components.py", "corpus/fixtures/python_decorator_factory_registration/trainer/main.py", "corpus/fixtures/python_decorator_factory_registration/trainer/wrappers.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+blocker = "The original trainer.components import raises AttributeError at gin.timed() with Gin 0.5.0 before the module can be imported (#43)"
 
 # Additional reviewed Django framework and configuration assertions.
 
@@ -15741,7 +15741,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct). Issue #43."
+blocker = "The exact called fixture runs under CPython; scanner still needs class-valued parameter dispatch, proven text split and enum lookup, and returned-instance flow into str (#43)"
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_04_uncalled_register_converter_wrapper_is_unused"
@@ -15767,7 +15767,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK report disagrees with the pinned assertion at test/test_django_app_repro_liveness.py:50. Issue #43."
+blocker = "The original standalone command never selects settings or dispatches handle, so the autoreload callback remains dormant (#43)"
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_12_auth_backend_hooks_are_live"
@@ -15817,7 +15817,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call). Issue #43."
+blocker = "The original import calls only NcaaProvider.schedule_dates; the asserted NjcaaProvider method remains a declaration, and native instance-result dispatch is unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_18_satellite_logging_factories_are_live"
@@ -16062,7 +16062,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_subclass_hook). Issue #43."
+blocker = "The fixture supplies no local_apps module, so the imported base and its subclass hook stay unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_local_framework_package_is_not_trusted[celery]"
@@ -16305,7 +16305,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call). Issue #43."
+blocker = "The original import calls ConcreteProvider.scoreboard; schedule_dates is declared but never invoked, and native parameter receiver dispatch is unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_historical_consumer_controls.py::test_original_importlib_processor_contract_remains_live"
@@ -16318,7 +16318,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK report disagrees with the pinned assertion at test/test_django_app_repro_liveness.py:50. Issue #43."
+blocker = "The source declares a registry and named loader without calling it; no source selects the processor (#43)"
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_django_framework_names_are_live_and_real_dead_code_remains"
@@ -16331,7 +16331,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct). Issue #43."
+blocker = "The original selected settings imports with DEV=False and publishes neither SESSION_COOKIE_SECURE nor DEBUG_TOOLBAR_CONFIG; project star imports also remain outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_migration_class_needs_the_migration_base"
@@ -16370,7 +16370,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct). Issue #43."
+blocker = "The fixture supplies no DJANGO_SETTINGS_MODULE value to select one of its two settings modules; project star imports are also outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_django_wagtail_conventions.py::test_django_signatures_and_format_files"
@@ -16396,7 +16396,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call, unresolved_decorator, unresolved_subclass_hook). Issue #43."
+blocker = "Native Wagtail model and block declarations resolve; PersonViewSet has no model or register_snippet call to consume the asserted options (#43)"
 
 [[cases]]
 id = "test/test_logging_config_liveness.py::test_class_configuration_and_consistent_module_imports"
