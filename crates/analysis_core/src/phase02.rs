@@ -172,6 +172,7 @@ struct AnalyzedFile {
     path: String,
     module: String,
     is_package: bool,
+    fastapi_router_mode: config::FastapiRouterMode,
     facts: ModuleFacts,
 }
 
@@ -796,7 +797,7 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v24/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v25/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -926,6 +927,9 @@ fn scan_selected(
                                     path: file.label.clone(),
                                     module: module.to_owned(),
                                     is_package,
+                                    fastapi_router_mode: config_index
+                                        .map_or(&config, |index| &local_configs[index])
+                                        .fastapi_router_mode,
                                     facts,
                                 });
                             }

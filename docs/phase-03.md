@@ -237,7 +237,12 @@ these models. A selected Flask app can register routes, request and context
 callbacks, and error handlers directly or mount a blueprint. Blueprint callbacks
 require the mount to be reached. A unique conventional CLI factory that
 returns a resolved Flask app contributes possible-use evidence. Local teardown
-setup helpers can receive that app through a resolved call. The scanner treats
+setup helpers can receive that app through a resolved call. A bounded
+zero-argument factory call can return one fresh Flask app through local aliases.
+Defaulted factory parameters are supported when the factory can allocate the app
+without consulting them. A closed module initializer that stops on a proven
+missing binding or incompatible decorator receiver contributes no later
+registrations. Selected importers of a failed module retain incomplete coverage. The scanner treats
 literal `g.pop(key, None)` as empty only when the selected code establishes
 that the context key has no writers or opaque access. A resolved Flask-Login
 manager records reached loader and error callback registrations through its
@@ -265,11 +270,16 @@ exception handlers and async context-manager lifespans for active apps and
 included routers. A custom app lifespan supersedes that app's startup and
 shutdown hooks. Constructor startup and shutdown callbacks on included routers
 remain eligible when a merged default lifespan invokes them. FastAPI versions
-before 0.137 copy routes
-at inclusion. Newer versions retain the router and can expose routes added
-later. The analyzer reports incomplete coverage when either model can select
-different routes or postponed dependencies, or when ordering across scopes
-cannot be determined. It retains constructors of resolved class dependencies. The preview resolves bounded
+before 0.137 copy routes at inclusion. Newer versions retain the router and
+can expose routes added later. Set `fastapi_router_mode` under `[dead_code]`
+in the Phase 0.3 configuration to `snapshot` for the older deployment or
+`live` for the newer one. The analyzer uses the config for the application
+construction site. The default `auto` reports incomplete coverage when the
+two models can select different routes or postponed dependencies.
+The selected mode resolves bounded initializer order and does not infer a
+deployment version from the scanner's own environment. Unproven order stays
+incomplete. In live mode, later routes can become visible while startup
+callbacks still come from the lifecycle list captured at inclusion. It retains constructors of resolved class dependencies. The preview resolves bounded
 leading wildcard imports from the supported FastAPI and typing export tables.
 Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
 incomplete.
@@ -287,7 +297,10 @@ bounded `urlpatterns`. This models registration if the configuration is used.
 Ambiguous configurations do not establish activation. Discovery resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
-class-based views reach their effective `setup()` hook. Unresolved URL
+class-based views reach their effective `setup()` hook. Function views can
+reach a source-owned provider method when a fresh object receives a provider
+selected by a literal argument. Calling a generator view creates the
+generator and leaves its body dormant. Unresolved URL
 registrations in active URL modules produce coverage diagnostics.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
@@ -305,8 +318,10 @@ context processors contribute possible-use evidence. The model follows named
 imports, locally defined class inheritance, and finite setting alternatives.
 A unique conventional settings package with literal application and secret-key
 settings can describe an externally selected configuration. Storage and logging
-entries use their effective dictionary keys, and incomplete configuration
-writes retain their coverage diagnostics.
+entries use their effective dictionary keys. Bounded literal list and
+dictionary edits follow initializer order, including directly called local
+helpers, reassignments, and finite conditional branches. Unresolved mutations
+retain their coverage diagnostics.
 
 Django admin discovery follows installed apps when `django.contrib.admin` or
 `AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules

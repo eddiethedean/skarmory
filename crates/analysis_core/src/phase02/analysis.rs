@@ -13,7 +13,7 @@ use skarmory_python::phase02::{
     ExpressionKind, Import, Name, Statement, StatementKind,
 };
 
-use super::config::Entrypoint;
+use super::config::{Entrypoint, FastapiRouterMode};
 use super::{Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding};
 use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
@@ -24,6 +24,7 @@ mod celery;
 mod comprehension;
 mod django_globals;
 mod fastapi;
+mod field_dispatch;
 mod flask;
 mod frameworks;
 mod gunicorn;
@@ -86,6 +87,8 @@ enum Value {
     Start(Box<Value>),
     Text(String),
     Bool(bool),
+    Integer(i64),
+    None,
     Sequence(Vec<Value>),
     Mapping(Vec<Value>),
     // Python 3.11 can refresh a previously returned dictionary on a later read.
@@ -102,6 +105,7 @@ enum Value {
     IdentityFunction,
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
+    FlaskConfig,
     MissingFrameworkMember,
     DeletedModuleBinding,
     UnittestComparison,
@@ -540,6 +544,8 @@ pub(super) fn analyze_with_verification(
         atexit_receivers: BTreeMap::new(),
         method_receivers: BTreeMap::new(),
         receiver_calls: Vec::new(),
+        fresh_field_calls: BTreeMap::new(),
+        fresh_field_invocations: Vec::new(),
         resolved_receiver_calls: BTreeSet::new(),
         receiver_call_issues: BTreeSet::new(),
         issues: Vec::new(),
@@ -645,6 +651,7 @@ pub(super) fn analyze_with_verification(
         graph.suite(scope, body);
     }
     if phase03 {
+        graph.resolve_fresh_field_invocations();
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
@@ -728,6 +735,8 @@ struct Graph<'a> {
     atexit_receivers: BTreeMap<ScopeId, Vec<(Edge, SymbolId)>>,
     method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     receiver_calls: Vec<ReceiverCall>,
+    fresh_field_calls: BTreeMap<SymbolId, Location>,
+    fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
     receiver_call_issues: BTreeSet<usize>,
     issues: Vec<Issue>,
@@ -1682,6 +1691,7 @@ impl<'a> Graph<'a> {
             if (matches!(
                 edge.kind,
                 "direct_call"
+                    | field_dispatch::DIRECT
                     | "constructor"
                     | "decorator"
                     | "subclass_hook"
@@ -2406,7 +2416,7 @@ impl<'a> Graph<'a> {
                                 ExpressionKind::Text(_)
                                 | ExpressionKind::Bool(_)
                                 | ExpressionKind::None
-                                | ExpressionKind::Scalar => true,
+                                | ExpressionKind::Scalar(_) => true,
                                 ExpressionKind::Name(name) => name == &parameter.text,
                                 _ => false,
                             })) =>
@@ -3362,10 +3372,10 @@ impl<'a> Graph<'a> {
                     }
                     if arguments.is_empty()
                         && keywords.is_empty()
-                        && let Some(object) =
-                            self.flask_factory_app(invocation, scope, expression.at, depth + 1)
+                        && let Some(value) =
+                            self.flask_factory_result(invocation, scope, expression.at, depth + 1)
                     {
-                        return Value::Object(object, ObjectKind::FlaskApp);
+                        return value;
                     }
                     self.fastapi_conditional_app_result(invocation, arguments, keywords, depth + 1)
                 }
@@ -3511,7 +3521,10 @@ impl<'a> Graph<'a> {
                             Value::BuiltinIterable if !has_element_hooks => Value::BuiltinIterable,
                             Value::Sequence(items)
                                 if (!has_element_hooks
-                                    || matches!(argument.kind, ExpressionKind::Sequence(_)))
+                                    || matches!(
+                                        argument.kind,
+                                        ExpressionKind::Sequence { .. }
+                                    ))
                                     && items.iter().all(Value::is_builtin_scalar) =>
                             {
                                 Value::BuiltinIterable
@@ -3791,7 +3804,7 @@ impl<'a> Graph<'a> {
             },
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
-            ExpressionKind::Scalar | ExpressionKind::None => Value::Scalar,
+            ExpressionKind::Scalar(_) | ExpressionKind::None => Value::Scalar,
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
@@ -3809,7 +3822,7 @@ impl<'a> Graph<'a> {
                     Value::OperatorResult
                 }
             }
-            ExpressionKind::Sequence(items) => {
+            ExpressionKind::Sequence { items, .. } => {
                 Value::Sequence(items.iter().map(|expr| recurse(self, expr)).collect())
             }
             ExpressionKind::Dictionary(items) => {
@@ -3819,7 +3832,9 @@ impl<'a> Graph<'a> {
                 let value = recurse(self, value);
                 if self.phase03
                     && is_typing_annotated(&value)
-                    && let ExpressionKind::Sequence(arguments) = &index.kind
+                    && let ExpressionKind::Sequence {
+                        items: arguments, ..
+                    } = &index.kind
                     && let Some((annotation, metadata)) = arguments.split_first()
                 {
                     return self.fastapi_selected_metadata(
@@ -4737,11 +4752,16 @@ impl<'a> Graph<'a> {
                         if self.phase03
                             && arguments.is_empty()
                             && keywords.is_empty()
-                            && let Some(object) = self.flask_factory_app(invocation, scope, expr.at, 0)
+                            && let Some(Value::Object(object, ObjectKind::FlaskApp)) =
+                                self.flask_factory_result(invocation, scope, expr.at, 0)
                         {
                             self.scopes[scope].activated_apps.push(object);
                         }
-                        self.call_invocation(invocation, call, "certain");
+                        if !self.phase03
+                            || !self.invoke_fresh_field_method(invocation, function, call)
+                        {
+                            self.call_invocation(invocation, call, "certain");
+                        }
                     }
                     Value::Alternatives(values)
                         if self.phase03 && !values.is_empty() && values.iter().all(|value| {
@@ -5430,6 +5450,9 @@ impl<'a> Graph<'a> {
                         {
                             return;
                         }
+                        if self.phase03 && self.defer_fresh_field_call(scope, expr) {
+                            return;
+                        }
                         let parameter = self.parameter_binding(scope, function, before);
                         if let Some(parameter) = parameter {
                             self.parameter_calls.push(ParameterCall {
@@ -5516,7 +5539,7 @@ impl<'a> Graph<'a> {
                     );
                 }
             }
-            ExpressionKind::Sequence(values)
+            ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => {
@@ -6121,7 +6144,7 @@ impl<'a> Graph<'a> {
         match &expr.kind {
             ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values)
-            | ExpressionKind::Sequence(values) => {
+            | ExpressionKind::Sequence { items: values, .. } => {
                 for reference in values {
                     self.annotation(scope, reference, before, evaluated);
                 }
@@ -6331,7 +6354,13 @@ impl<'a> Graph<'a> {
                         if self.modeled_flask_context_write(scope, receiver, member, at));
                     let celery_write = self.phase03
                         && self.record_celery_backend_write(scope, at, &statement.kind);
-                    if !flask_write && !celery_write && !self.modeled_framework_write(scope, at) {
+                    let fresh_field_write =
+                        self.phase03 && self.is_fresh_field_initializer(scope, statement);
+                    if !flask_write
+                        && !celery_write
+                        && !fresh_field_write
+                        && !self.modeled_framework_write(scope, at)
+                    {
                         self.scope_issue(
                             scope,
                             at,
@@ -6993,7 +7022,7 @@ impl<'a> Graph<'a> {
                         kind: ExpressionKind::None
                             | ExpressionKind::Bool(_)
                             | ExpressionKind::Text(_)
-                            | ExpressionKind::Scalar,
+                            | ExpressionKind::Scalar(_),
                         ..
                     })
                 ),
@@ -7158,7 +7187,7 @@ impl<'a> Graph<'a> {
                 && matches!(
                     definition.body.as_slice(),
                     [Statement { kind: StatementKind::Return(Some(result)), .. }]
-                        if matches!(result.kind, ExpressionKind::Text(_) | ExpressionKind::Scalar | ExpressionKind::Bool(_))
+                        if matches!(result.kind, ExpressionKind::Text(_) | ExpressionKind::Scalar(_) | ExpressionKind::Bool(_))
                 )
         })
     }
@@ -8858,6 +8887,7 @@ impl<'a> Graph<'a> {
             self.issues.push(framework_limit());
         }
         self.report_unbound_receiver_calls(&reach);
+        self.report_fresh_field_calls(&reach);
         self.issues
             .extend(
                 self.fastapi_dependency_issues
@@ -9367,7 +9397,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             ExpressionKind::KeywordMappingCall { function, mapping } => {
                 expressions.extend([function.as_ref(), mapping.as_ref()]);
             }
-            ExpressionKind::Sequence(values)
+            ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::FormattedString(values)
             | ExpressionKind::Boolean { values, .. }
@@ -9402,7 +9432,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             ExpressionKind::Text(_)
             | ExpressionKind::IterationVariable(_)
             | ExpressionKind::Bool(_)
-            | ExpressionKind::Scalar
+            | ExpressionKind::Scalar(_)
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
@@ -10003,6 +10033,7 @@ mod tests {
             path: path.into(),
             module: name.into(),
             is_package: path.ends_with("__init__.py"),
+            fastapi_router_mode: FastapiRouterMode::Auto,
             facts: extract(text).unwrap(),
         }
     }
@@ -11809,6 +11840,27 @@ print(Status.default)
         assert!(!result.evidence.iter().any(|entry| {
             entry.full_name == "web.initial" && entry.kind == "fastapi_dependency"
         }));
+    }
+
+    #[test]
+    fn selected_fastapi_router_modes_use_the_matching_dependency_binding() {
+        let source = "from __future__ import annotations\nfrom typing import Annotated\nfrom fastapi import APIRouter, Depends, FastAPI\nrouter = APIRouter()\ndef original(): return 1\nselected = original\n@router.get('/')\ndef endpoint(value: Annotated[int, Depends(selected)]): return value\napp = FastAPI()\napp.include_router(router)\ndef current(): return 2\nselected = current\n";
+        for (mode, expected) in [
+            (FastapiRouterMode::Snapshot, "web.original"),
+            (FastapiRouterMode::Live, "web.current"),
+        ] {
+            let mut file = module("web.py", "web", source);
+            file.fastapi_router_mode = mode;
+            let result = analyze_phase03(&[file], &[]);
+            assert!(result.issues.is_empty(), "{:?}", result.issues);
+            let dependencies: Vec<_> = result
+                .evidence
+                .iter()
+                .filter(|entry| entry.kind == "fastapi_dependency")
+                .map(|entry| entry.full_name.as_str())
+                .collect();
+            assert_eq!(dependencies, [expected]);
+        }
     }
 
     #[test]

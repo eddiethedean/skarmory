@@ -33,13 +33,13 @@ impl Graph<'_> {
         Value::Object((self.scopes[scope].file, at.line, at.column), kind)
     }
 
-    pub(super) fn flask_factory_app(
+    pub(super) fn flask_factory_result(
         &mut self,
         invocation: Invocation,
         caller: ScopeId,
         at: Location,
         depth: usize,
-    ) -> Option<Object> {
+    ) -> Option<Value> {
         let symbol = &self.symbols[invocation.target];
         let Binding::Definition(definition, scope) = symbol.binding else {
             return None;
@@ -52,37 +52,56 @@ impl Graph<'_> {
             || definition.kind != DefinitionKind::Function
             || definition.is_generator
             || !definition.decorators.is_empty()
-            || !definition.parameters.is_empty()
+            || !definition.simple_positional_parameters
+            || definition.parameters.len() != definition.defaults.len()
         {
             return None;
         }
-        // Other statements may mutate or leak the Flask object before it is
-        // returned. Accept only a direct return or a single local assignment.
-        let (constructor, before) = match body_without_docstring(definition) {
-            [
-                Statement {
-                    at,
-                    kind: StatementKind::Return(Some(value)),
-                },
-            ] => (value, *at),
-            [
-                Statement {
-                    at,
-                    kind:
-                        StatementKind::Assign {
-                            names,
-                            value: Some(value),
-                            annotation: None,
-                        },
-                },
-                Statement {
-                    kind: StatementKind::Return(Some(returned)),
-                    ..
-                },
-            ] if matches!((names.as_slice(), &returned.kind), ([name], ExpressionKind::Name(returned)) if &name.text == returned) => {
-                (value, *at)
+        let (returned, setup) = body_without_docstring(definition).split_last()?;
+        let StatementKind::Return(Some(value)) = &returned.kind else {
+            return None;
+        };
+        let configuration =
+            matches!(&value.kind, ExpressionKind::Member(_, name) if name == "config");
+        let returned_object = match &value.kind {
+            ExpressionKind::Member(base, name) if name == "config" => base.as_ref(),
+            _ => value,
+        };
+        // Follow local aliases only through a single allocation and plain
+        // assignments that cannot mutate or expose the returned application.
+        let (constructor, before) = if setup.is_empty() {
+            (returned_object, returned.at)
+        } else {
+            let ExpressionKind::Name(returned) = &returned_object.kind else {
+                return None;
+            };
+            let mut aliases = BTreeSet::new();
+            let mut constructor = None;
+            for statement in setup {
+                let StatementKind::Assign {
+                    names,
+                    value: Some(value),
+                    annotation: None,
+                } = &statement.kind
+                else {
+                    return None;
+                };
+                let [name] = names.as_slice() else {
+                    return None;
+                };
+                match &value.kind {
+                    ExpressionKind::Name(alias) if aliases.contains(alias.as_str()) => {}
+                    ExpressionKind::Call { .. } if constructor.is_none() => {
+                        constructor = Some((value, statement.at));
+                    }
+                    _ => return None,
+                }
+                aliases.insert(name.text.as_str());
             }
-            _ => return None,
+            if !aliases.contains(returned.as_str()) {
+                return None;
+            }
+            constructor?
         };
         let ExpressionKind::Call {
             function,
@@ -95,13 +114,8 @@ impl Graph<'_> {
         let [name] = arguments.as_slice() else {
             return None;
         };
-        let literal_name = match &name.kind {
-            ExpressionKind::Text(_) => true,
-            ExpressionKind::Name(name) => name == "__name__",
-            _ => false,
-        };
         if !keywords.is_empty()
-            || !literal_name
+            || !self.flask_literal_import_name(scope, name, before)
             || !matches!(
                 function.kind,
                 ExpressionKind::Name(_) | ExpressionKind::Member(_, _)
@@ -114,7 +128,212 @@ impl Graph<'_> {
         }
         // The caller can create multiple independent instances from the same
         // constructor. Associate member writes with the specific outer call.
-        Some((self.scopes[caller].file, at.line, at.column))
+        if configuration {
+            return matches!(
+                self.identity(scope, value, returned.at, depth + 1),
+                Value::FlaskConfig
+            )
+            .then_some(Value::FlaskConfig);
+        }
+        Some(Value::Object(
+            (self.scopes[caller].file, at.line, at.column),
+            ObjectKind::FlaskApp,
+        ))
+    }
+
+    fn flask_literal_import_name(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> bool {
+        match &expression.kind {
+            ExpressionKind::Text(_) => true,
+            ExpressionKind::Name(name) if name == "__name__" => {
+                matches!(
+                    self.lexical_binding(scope, name, before, true),
+                    LexicalBinding::Missing
+                ) && !self.scopes[self.scopes[scope].file].open_wildcard
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn terminal_flask_decorator(
+        &mut self,
+        scope: ScopeId,
+        definition: &Definition,
+        at: Location,
+        prefix: &[Statement],
+    ) -> bool {
+        let [decorator] = definition.decorators.as_slice() else {
+            return false;
+        };
+        let ExpressionKind::Member(base, method) = &decorator.kind else {
+            return false;
+        };
+        if definition.kind == DefinitionKind::Class
+            || !definition.annotations.is_empty()
+            || !definition.defaults.is_empty()
+            || !(flask_callback_method(ObjectKind::FlaskApp, method)
+                || flask_login_callback(method))
+        {
+            return false;
+        }
+        let read = std::mem::take(&mut self.read);
+        let wrong_receiver = match self.probe_identity(scope, base, at) {
+            Value::FlaskConfig | Value::Coroutine(_) => true,
+            _ => {
+                if let ExpressionKind::Member(receiver, attribute) = &base.kind
+                    && attribute == "config"
+                    && let Value::Object(site, ObjectKind::FlaskLoginManager) =
+                        self.probe_identity(scope, receiver, at)
+                {
+                    matches!(
+                        self.flask_member(
+                            site,
+                            ObjectKind::FlaskLoginManager,
+                            attribute,
+                            (scope, at)
+                        ),
+                        Value::Method(..)
+                    )
+                } else {
+                    false
+                }
+            }
+        };
+        self.read = read;
+        if !wrong_receiver || !self.closed_flask_initializers(scope, prefix) {
+            return false;
+        }
+        self.walk(scope, base, at);
+        true
+    }
+
+    pub(super) fn terminal_unbound_flask_initializer(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } = &statement.kind
+        else {
+            return false;
+        };
+        if names.len() != 1 {
+            return false;
+        }
+        let at = statement.at;
+        let callable = match &value.kind {
+            ExpressionKind::Name(_) if self.unbound_module_name(scope, value, at) => None,
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } if keywords.is_empty()
+                && matches!(&function.kind, ExpressionKind::Name(_))
+                && matches!(arguments.as_slice(), [argument]
+                        if self.unbound_module_name(scope, argument, at)) =>
+            {
+                Some(function.as_ref())
+            }
+            _ => return false,
+        };
+        let body = self.scopes[scope].body;
+        let Some(index) = body.iter().position(|item| std::ptr::eq(item, statement)) else {
+            return false;
+        };
+        let prefix = &body[..index];
+        if !prefix.iter().any(|item| {
+            matches!(&item.kind, StatementKind::Import(import) if import.level == 0
+                && matches!(import.module.as_str(), "flask" | "flask_login")
+                && !self.modules.contains_key(import.module.as_str()))
+        }) || !self.closed_flask_initializers(scope, prefix)
+        {
+            return false;
+        }
+        // Reading the callable name precedes evaluation of its arguments.
+        // The missing argument raises before the factory body can run.
+        if let Some(callable) = callable {
+            self.walk(scope, callable, at);
+        }
+        true
+    }
+
+    fn closed_flask_initializers(&mut self, scope: ScopeId, prefix: &[Statement]) -> bool {
+        // The absence proof applies to closed initialization. In particular,
+        // an arbitrary call can attach an attribute to a Flask Config object.
+        let read = std::mem::take(&mut self.read);
+        let closed = (0..self.files.len()).all(|file| {
+            let statements = if file == scope {
+                prefix
+            } else {
+                self.scopes[file].body
+            };
+            self.closed_flask_decorator_prefix(file, statements)
+        });
+        self.read = read;
+        closed
+    }
+
+    fn closed_flask_decorator_prefix(&mut self, file: ScopeId, body: &[Statement]) -> bool {
+        body.iter().all(|statement| match &statement.kind {
+            StatementKind::Import(import) if !import.local.text.starts_with("__") => self.import_module(file, import).is_some_and(|module| {
+                self.modules.contains_key(module.as_str())
+                    || matches!(module.as_str(), "flask" | "flask.app" | "flask_login" | "flask_login.login_manager")
+            }),
+            StatementKind::Define(definition) => (definition.kind != DefinitionKind::Class
+                || (definition.bases.is_empty() && definition.table_keyword.is_none()
+                    && body_without_docstring(definition).is_empty()))
+                && !definition.name.text.starts_with("__")
+                && definition.decorators.is_empty()
+                && definition.annotations.is_empty()
+                && definition.defaults.iter().all(|value| safe_flask_literal(&value.kind)),
+            StatementKind::Evaluate(Expression { kind: ExpressionKind::Text(_), .. }) => true,
+            StatementKind::Assign { names, value: Some(value), annotation: None }
+                if matches!(names.as_slice(), [name] if !name.text.starts_with("__")) => {
+                match &value.kind {
+                    ExpressionKind::Name(_) => true,
+                    ExpressionKind::Member(_, member) if member == "config" =>
+                        matches!(self.probe_identity(file, value, statement.at), Value::FlaskConfig),
+                    ExpressionKind::Call { function, arguments, keywords } if keywords.is_empty() => {
+                        let no_arguments = arguments.is_empty();
+                        let at = statement.at;
+                        match self.probe_identity(file, function, at) {
+                            Value::Provider(provider) => provider_kind(&provider).is_some_and(|kind| {
+                                if self.flask_constructor_changed(kind, (file, at)) {
+                                    return false;
+                                }
+                                match kind {
+                                    ObjectKind::FlaskApp => matches!(arguments.as_slice(), [import_name]
+                                        if self.flask_literal_import_name(file, import_name, at)),
+                                    ObjectKind::FlaskBlueprint => matches!(arguments.as_slice(), [
+                                        Expression { kind: ExpressionKind::Text(name), .. }, import_name,
+                                    ] if !name.is_empty() && !name.contains('.')
+                                        && self.flask_literal_import_name(file, import_name, at)),
+                                    ObjectKind::FlaskLoginManager => no_arguments,
+                                    _ => false,
+                                }
+                            }),
+                            Value::Callable(invocation) if no_arguments => {
+                                self.is_coroutine(invocation.target)
+                                    || matches!(
+                                        self.flask_factory_result(invocation, file, value.at, 0),
+                                        Some(Value::FlaskConfig | Value::Object(_, ObjectKind::FlaskApp))
+                                    )
+                            }
+                            _ => false,
+                        }
+                    }
+                    kind => safe_flask_literal(kind),
+                }
+            }
+            _ => false,
+        })
     }
 
     pub(super) fn flask_blueprint_import_position(
@@ -470,7 +689,7 @@ impl Graph<'_> {
                 ExpressionKind::Text(_)
                 | ExpressionKind::Bool(_)
                 | ExpressionKind::None
-                | ExpressionKind::Scalar => {}
+                | ExpressionKind::Scalar(_) => {}
                 _ => return false,
             }
         }
@@ -529,4 +748,14 @@ fn flask_context_pop_key<'a>(
         (ExpressionKind::Text(key), ExpressionKind::None) if !key.starts_with('_') => Some(key),
         _ => None,
     }
+}
+
+fn safe_flask_literal(kind: &ExpressionKind) -> bool {
+    matches!(
+        kind,
+        ExpressionKind::None
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::Text(_)
+            | ExpressionKind::Scalar
+    )
 }

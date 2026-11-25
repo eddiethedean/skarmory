@@ -948,6 +948,229 @@ def direct_hook(): return {}
 }
 
 #[test]
+fn flask_factory_preserves_aliases_and_no_argument_defaults() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("provider.py"),
+        "from flask import Flask
+def create_app(config=None):
+    source = Flask(__name__)
+    alias = source
+    final = alias
+    return final
+",
+    )
+    .unwrap();
+    fs::write(
+        root.join("web.py"),
+        "from provider import create_app
+first = create_app()
+second = create_app()
+alias = first
+alias.shell_context_processor = lambda callback: callback
+@first.shell_context_processor
+def dormant(): return {}
+@second.shell_context_processor
+def served(): return {}
+",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dormant"],
+        "{report}"
+    );
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+}
+
+#[test]
+fn flask_config_and_deferred_factory_results_cannot_register_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let file = root.join("web.py");
+    for (setup, decorator) in [
+        (
+            "from flask import Flask
+app = Flask(__name__)
+config = app.config
+",
+            "config.shell_context_processor",
+        ),
+        (
+            "from flask import Flask
+async def create(): return Flask(__name__)
+config = create()
+",
+            "config.shell_context_processor",
+        ),
+        (
+            "from flask_login import LoginManager
+login = LoginManager()
+",
+            "login.config.user_loader",
+        ),
+    ] {
+        fs::write(
+            &file,
+            format!(
+                "{setup}def helper(): return 1
+@{decorator}
+def dead(): return helper()
+"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        let unused = findings(&report, "unused_functions");
+        for name in ["web.dead", "web.helper"] {
+            assert!(unused.contains(&name), "{report}");
+        }
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+    fs::write(
+        root.join("provider.py"),
+        "from flask import Flask
+def create():
+    app = Flask(__name__)
+    return app.config
+",
+    )
+    .unwrap();
+    fs::write(
+        &file,
+        "from provider import create
+config = create()
+@config.shell_context_processor
+def dead(): return {}
+",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dead"],
+        "{report}"
+    );
+    // An unresolved effect could supply a method on the configuration object.
+    fs::write(
+        &file,
+        "from flask import Flask
+app = Flask(__name__)
+config = app.config
+opaque(config)
+@config.shell_context_processor
+def callback(): return {}
+",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator"),
+        "{report}"
+    );
+    fs::write(
+        &file,
+        "from flask import Flask\napp = Flask(__name__)\nhandler_owner = Flask(__name__)\napp.config = handler_owner\n@app.config.shell_context_processor\ndef active(): return {}\n",
+    ).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["provider.create"],
+        "{report}"
+    );
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "web.active"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "flask_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    for (setup, bootstrap) in [
+        (
+            "app = Flask(__name__)\napp = missing",
+            "@app.shell_context_processor\ndef dead(): return {}",
+        ),
+        (
+            "def factory(value):\n    app = Flask(__name__)\n    @app.shell_context_processor\n    def dead(): return {}\n    return app",
+            "app = factory(missing)",
+        ),
+    ] {
+        fs::write(
+            root.join("web.py"),
+            format!("from flask import Flask\n{setup}\n{bootstrap}\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert!(
+            findings(&report, "unused_functions")
+                .iter()
+                .any(|name| name.ends_with(".dead")),
+            "{report}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+    fs::write(root.join("consumer.py"), "from web import app\n").unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["file"] == "consumer.py" && error["kind"] == "unresolved_import"
+            }),
+        "{report}"
+    );
+    // Imported module hooks can initialize otherwise absent globals.
+    fs::write(
+        root.join("consumer.py"),
+        "def __getattr__(name): return missing
+",
+    )
+    .unwrap();
+    fs::write(
+        root.join("web.py"),
+        "from flask import Flask\nfrom consumer import setup\napp = Flask(__name__)\napp = missing\n@app.shell_context_processor\ndef callback(): return {}\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["file"] == "web.py" && error["kind"] == "unresolved_decorator" }),
+        "{report}"
+    );
+}
+
+#[test]
 fn flask_login_empty_provider_lookalike_has_no_registration_method() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -1113,6 +1336,132 @@ def detached(): return {}
     .unwrap();
     let report = scan(project.path());
     assert_eq!(findings(&report, "unused_functions"), ["app.detached"]);
+}
+
+#[test]
+fn fastapi_router_mode_selects_late_direct_and_nested_routes() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let config = root.join(".skylos.toml");
+    fs::write(
+        root.join("app.py"),
+        r#"from fastapi import APIRouter, FastAPI
+
+app = FastAPI()
+outer = APIRouter()
+inner = APIRouter()
+dormant = APIRouter()
+
+@outer.on_event('startup')
+def early_startup():
+    return 5
+
+app.include_router(outer)
+
+@outer.get('/direct')
+def direct():
+    return 1
+
+@inner.get('/nested')
+def nested():
+    return 2
+
+@dormant.get('/dormant')
+def orphan():
+    return 3
+
+@inner.on_event('startup')
+def nested_startup():
+    return 6
+
+outer.include_router(inner)
+
+@outer.on_event('startup')
+def startup():
+    return 4
+"#,
+    )
+    .unwrap();
+    let scan = |code, cached| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
+        command
+            .current_dir(root)
+            .env_remove("SKYLOS_CONFIG_FILE")
+            .args([
+                "--profile",
+                "skylos-0.3",
+                ".",
+                "--json",
+                "--no-grep-verify",
+                "--confidence",
+                "0",
+            ]);
+        if cached {
+            command
+                .args(["--workers", "4", "--cache-dir"])
+                .arg(cache.path());
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        report.as_object_mut().unwrap().remove("cache");
+        report
+    };
+    fs::write(&config, "root = true\n").unwrap();
+    let unresolved = scan(2, false);
+    assert_eq!(unresolved["coverage"]["status"], "incomplete");
+    assert!(
+        unresolved["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("across framework versions")
+            })
+    );
+
+    fs::write(
+        &config,
+        "root = true\n[dead_code]\nfastapi_router_mode = 'live'\n",
+    )
+    .unwrap();
+    let live = scan(0, false);
+    assert_eq!(
+        findings(&live, "unused_functions"),
+        ["app.nested_startup", "app.orphan", "app.startup"],
+        "{live}"
+    );
+    assert_eq!(live, scan(0, true));
+    assert_eq!(live, scan(0, true));
+
+    fs::write(
+        &config,
+        "root = true\n[dead_code]\nfastapi_router_mode = 'snapshot'\n",
+    )
+    .unwrap();
+    let copied = scan(0, false);
+    assert_eq!(
+        findings(&copied, "unused_functions"),
+        [
+            "app.direct",
+            "app.nested",
+            "app.nested_startup",
+            "app.orphan",
+            "app.startup"
+        ],
+        "{copied}"
+    );
+    assert_eq!(copied, scan(0, true));
 }
 
 #[test]
@@ -6305,4 +6654,293 @@ fn phase03_preserves_an_importable_package_named_src() {
     assert_eq!(report["coverage"], cached["coverage"]);
     assert_eq!(report["unused_functions"], cached["unused_functions"]);
     assert_eq!(report["dead_code_evidence"], cached["dead_code_evidence"]);
+}
+
+#[test]
+fn django_setting_collections_follow_initializer_call_and_reassignment_order() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let package = root.join("service");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        package.join("backends.py"),
+        "class Backend:\n    def get_user(self, user_id): return user(user_id)\n\
+         class Store:\n    def save(self, name, content): return name\n\
+         class Filter:\n    def filter(self, record): return True\n\
+         def user(user_id): return user_id\n",
+    )
+    .unwrap();
+    let settings = package.join("settings.py");
+    let cache = tempfile::tempdir().unwrap();
+    let roots = |report: &Value, name: &str| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == name
+                    && symbol["evidence"].as_array().unwrap().iter().any(|event| {
+                        matches!(
+                            event["kind"].as_str().unwrap(),
+                            "django_auth_backend"
+                                | "django_storage_backend"
+                                | "django_logging_factory"
+                        ) && event["certainty"] == "possible"
+                    })
+            })
+    };
+    for (tail, symbol, active) in [
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             def setup():\n    AUTHENTICATION_BACKENDS.append('service.backends.Backend')\n\
+             AUTHENTICATION_BACKENDS = []\nactivate = setup\nactivate()\n",
+            "service.backends.Backend.get_user",
+            true,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             def setup():\n    AUTHENTICATION_BACKENDS.append('service.backends.Backend')\n\
+             setup()\nAUTHENTICATION_BACKENDS = []\n",
+            "service.backends.Backend.get_user",
+            false,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             def setup(AUTHENTICATION_BACKENDS):\n    AUTHENTICATION_BACKENDS.append('service.backends.Backend')\n\
+             setup([])\n",
+            "service.backends.Backend.get_user",
+            false,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             if enabled:\n    AUTHENTICATION_BACKENDS.insert(0, 'service.backends.Backend')\n",
+            "service.backends.Backend.get_user",
+            true,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = ['service.backends.Backend']\n\
+             AUTHENTICATION_BACKENDS.remove('service.backends.Backend')\n",
+            "service.backends.Backend.get_user",
+            false,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             AUTHENTICATION_BACKENDS.clear()\n\
+             AUTHENTICATION_BACKENDS = ('service.backends.Backend',)\n",
+            "service.backends.Backend.get_user",
+            true,
+        ),
+        (
+            "STORAGES = {}\n\
+             def modify():\n    STORAGES.update({'default': {'BACKEND': 'service.backends.Store'}})\n\
+             STORAGES = {}\nmodify()\n",
+            "service.backends.Store.save",
+            true,
+        ),
+    ] {
+        fs::write(
+            &settings,
+            format!("INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n{tail}"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(roots(&report, symbol), active, "{tail}: {report}");
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    for (version, active) in [("1", true), ("2", false), ("None", false)] {
+        fs::write(
+            &settings,
+            format!(
+                "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\nLOGGING = {{}}\n\
+                 LOGGING.update({{'version': {version}, 'filters': {{'active': {{'()': 'service.backends.Filter'}}}}}})\n",
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(
+            roots(&report, "service.backends.Filter.filter"),
+            active,
+            "{report}"
+        );
+    }
+    for tail in [
+        "AUTHENTICATION_BACKENDS = ('service.backends.Backend',)\nAUTHENTICATION_BACKENDS.clear()\n",
+        "AUTHENTICATION_BACKENDS = ['service.backends.Backend']\nalias = AUTHENTICATION_BACKENDS\nalias.pop()\n",
+    ] {
+        fs::write(
+            &settings,
+            format!("INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n{tail}"),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(!roots(&report, "service.backends.Backend.get_user"));
+    }
+}
+
+#[test]
+fn django_url_callback_dispatches_only_the_fresh_instances_selected_provider() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (file, source) in [
+        (
+            "manage.py",
+            "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+        ),
+        (
+            "settings.py",
+            "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+        ),
+        (
+            "providers.py",
+            "class Base: pass\nclass First(Base):\n    def run(self, value): return value\nclass Second(Base):\n    def run(self, value): return value\ndef choose(name):\n    if name == 'first':\n        return First()\n    return Second()\n",
+        ),
+        (
+            "pipeline.py",
+            "from providers import choose\nclass Pipeline:\n    def __init__(self, provider):\n        self.provider = provider\n    def dispatch(self):\n        return self.provider.run(1)\ndef select():\n    return Pipeline(choose('first')).dispatch()\n",
+        ),
+        (
+            "views.py",
+            "from pipeline import select\ndef view(request): return select()\n",
+        ),
+    ] {
+        fs::write(root.join(file), source).unwrap();
+    }
+    let urls = root.join("urls.py");
+    let registered =
+        "from django.urls import path\nfrom views import view\nurlpatterns = [path('', view)]\n";
+    for (source, live, unused) in [
+        (registered, true, &["providers.Second.run"][..]),
+        (
+            "urlpatterns = []\n",
+            false,
+            &["providers.First.run", "providers.Second.run"][..],
+        ),
+    ] {
+        fs::write(&urls, source).unwrap();
+        let report = scan(root);
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert_eq!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == "providers.First.run"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "direct_call" && edge["certainty"] == "certain")
+            }),
+            live,
+            "{report}"
+        );
+        let unused_functions = unreachable_functions(&report);
+        assert!(
+            unused.iter().all(|name| unused_functions.contains(name)),
+            "{report}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(&urls, registered).unwrap();
+    fs::write(
+        root.join("views.py"),
+        "from pipeline import Pipeline, select\nfrom providers import choose\ndef view(request):\n    select()\n    other = Pipeline(choose('second'))\n    return other.dispatch()\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_call" && error["file"] == "pipeline.py" }),
+        "{report}"
+    );
+
+    fs::write(
+        root.join("views.py"),
+        "from pipeline import select\ndef view(request): return select()\n",
+    )
+    .unwrap();
+    let providers = root.join("providers.py");
+    let mut source = fs::read_to_string(&providers).unwrap();
+    source.push_str("def replacement(self, value): return 0\nsetattr(First.run, '__code__', replacement.__code__)\n");
+    fs::write(&providers, source).unwrap();
+    let edited = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        edited["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_call" && error["file"] == "pipeline.py" }),
+        "{edited}"
+    );
+    assert!(
+        !edited["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "providers.First.run"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["certainty"] == "certain")
+            }),
+        "{edited}"
+    );
+}
+
+#[test]
+fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (file, source) in [
+        (
+            "manage.py",
+            "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+        ),
+        (
+            "settings.py",
+            "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+        ),
+        (
+            "urls.py",
+            "from django.urls import path\nfrom views import stream, ordinary\nurlpatterns = [path('stream/', stream), path('async/', ordinary)]\n",
+        ),
+        (
+            "views.py",
+            "async def ordinary(request): return async_helper()\ndef stream(request): yield generator_helper()\ndef async_helper(): return 1\ndef generator_helper(): return 2\n",
+        ),
+    ] {
+        fs::write(root.join(file), source).unwrap();
+    }
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["views.generator_helper"],
+        "{report}"
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, kind) in [
+        ("views.ordinary", "django_registration"),
+        ("views.stream", "generator_creation"),
+    ] {
+        assert!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == name
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == kind)
+            }),
+            "{report}"
+        );
+    }
 }

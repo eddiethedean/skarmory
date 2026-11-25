@@ -11,17 +11,25 @@ impl Graph<'_> {
         if !self.terminal_proofs || scope != self.scopes[scope].file || self.branch_depth != 0 {
             return false;
         }
-        let Some((last, earlier)) = self.scopes[scope].body.split_last() else {
-            return false;
-        };
-        if !std::ptr::eq(last, statement)
-            || self.is_pytest_file(scope)
+        if self.is_pytest_file(scope)
             || self.files[scope].path.rsplit('/').next() == Some("conftest.py")
         {
             return false;
         }
+        if self.terminal_unbound_flask_initializer(scope, statement) {
+            return true;
+        }
+        let Some((last, earlier)) = self.scopes[scope].body.split_last() else {
+            return false;
+        };
+        if !std::ptr::eq(last, statement) {
+            return false;
+        }
         let before = statement.at;
         match &statement.kind {
+            StatementKind::Define(definition) => {
+                self.terminal_flask_decorator(scope, definition, before, earlier)
+            }
             StatementKind::Evaluate(Expression {
                 kind: ExpressionKind::Call { function, .. },
                 ..
@@ -126,7 +134,7 @@ impl Graph<'_> {
         false
     }
 
-    fn unbound_module_name(
+    pub(super) fn unbound_module_name(
         &self,
         scope: ScopeId,
         expression: &Expression,

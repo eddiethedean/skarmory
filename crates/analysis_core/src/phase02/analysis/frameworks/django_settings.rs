@@ -2,6 +2,15 @@
 
 use super::*;
 
+mod collections;
+
+const PROTOCOL_SETTINGS: [&str; 4] = [
+    "AUTHENTICATION_BACKENDS",
+    "STORAGES",
+    "LOGGING",
+    "TEMPLATES",
+];
+
 const AUTH_METHODS: &[&str] = &[
     "authenticate",
     "aauthenticate",
@@ -95,6 +104,14 @@ impl Graph<'_> {
         let mut roots = Vec::new();
         let mut replaced_bodies = BTreeSet::new();
         for settings in selected {
+            let mut effective_collections = BTreeMap::new();
+            for name in PROTOCOL_SETTINGS {
+                if self.local(settings, name, END).is_some()
+                    && let Some(value) = self.django_collection_values(settings, name, reach)
+                {
+                    effective_collections.insert(name, value);
+                }
+            }
             // An unresolved side effect can change the effective settings.
             let Some(writes) = self.django_settings_initializer_writes(settings) else {
                 continue;
@@ -104,12 +121,7 @@ impl Graph<'_> {
             if !writes.modules.is_empty() {
                 continue;
             }
-            for name in [
-                "AUTHENTICATION_BACKENDS",
-                "STORAGES",
-                "LOGGING",
-                "TEMPLATES",
-            ] {
+            for name in PROTOCOL_SETTINGS {
                 let Some(binding) = self.local(settings, name, END) else {
                     continue;
                 };
@@ -120,7 +132,9 @@ impl Graph<'_> {
                 {
                     continue;
                 }
-                let value = self.binding(binding, END, 0);
+                let value = effective_collections
+                    .remove(name)
+                    .unwrap_or_else(|| self.binding(binding, END, 0));
                 let mut paths = Vec::new();
                 collect_settings_paths(name, &value, &mut paths);
                 for (path, protocol) in paths {
@@ -487,12 +501,12 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                 }
             }
         }
-        // Native values distinguish definitely nonnumeric versions but
-        // do not retain the value of number literals.
+        // Replayed literals keep the exact integer value. Other sources
+        // may still use the coarse scalar model.
         ("LOGGING", _)
             if matches!(
                 get(value, "version"),
-                Some(Value::Scalar | Value::Bool(true))
+                Some(Value::Integer(1) | Value::Scalar | Value::Bool(true))
             ) =>
         {
             for (section, protocol) in [

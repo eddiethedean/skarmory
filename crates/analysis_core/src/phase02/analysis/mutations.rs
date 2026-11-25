@@ -329,10 +329,11 @@ impl Graph<'_> {
             ReceiverKey::Signal(_) => member == "connect",
             ReceiverKey::TyperApp(_) => matches!(member, "callback" | "__class__"),
             ReceiverKey::FlaskLoginManager(_) => {
-                flask_login_callback(member) || matches!(member, "__class__" | "login_view")
+                flask_login_callback(member)
+                    || matches!(member, "__class__" | "config" | "login_view")
             }
             ReceiverKey::FlaskApplication(_) => {
-                matches!(member, "__class__" | "register_blueprint")
+                matches!(member, "__class__" | "config" | "register_blueprint")
                     || [ObjectKind::FlaskApp, ObjectKind::FlaskBlueprint]
                         .into_iter()
                         .any(|kind| {
@@ -348,6 +349,9 @@ impl Graph<'_> {
                     )
                     || matches!(kind, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
                         && member == "register_blueprint"
+                    || *kind == ObjectKind::FlaskApp
+                        && matches!(member, "config" | "config_class" | "make_config")
+                    || *kind == ObjectKind::FlaskLoginManager && member == "config"
             }
             ReceiverKey::Fastapi(_) => {
                 is_route(ObjectKind::App, member, true)
@@ -494,7 +498,17 @@ impl Graph<'_> {
                 if self.member_write(&class, name, access).is_some() {
                     Value::Unknown
                 } else {
-                    Value::Method(site, kind, name.into())
+                    if kind == ObjectKind::FlaskApp
+                        && name == "config"
+                        && ["config_class", "make_config"].iter().all(|name| {
+                            self.member_write(&class, name, access).is_none()
+                                && self.member_write(&receiver, name, access).is_none()
+                        })
+                    {
+                        Value::FlaskConfig
+                    } else {
+                        Value::Method(site, kind, name.into())
+                    }
                 }
             }
         }

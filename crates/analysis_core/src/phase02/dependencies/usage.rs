@@ -633,6 +633,7 @@ fn supplemental_file(
         module,
         facts,
         is_package: false,
+        fastapi_router_mode: config::FastapiRouterMode::Auto,
     })
 }
 

@@ -139,7 +139,7 @@ def run(upstream, sdk_python, selected, backend, diagnostics_path=None):
                     "coverage": report["coverage"],
                     "analysis_errors": report["analysis_errors"],
                 })
-                return json.dumps(framework_report(report))
+                return json.dumps(framework_report(report, source=item.nodeid.split("::", 1)[0]))
 
             with pytest.MonkeyPatch.context() as patch:
                 patch_framework_analysis(patch, item.module, analyze)
