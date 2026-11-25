@@ -202,6 +202,9 @@ class SdkTests(unittest.TestCase):
             project = Path(directory)
             (project / "app.py").write_text("import yaml\n", encoding="utf-8")
             (project / "requirements.txt").write_text("pyyaml\npyserial\n", encoding="utf-8")
+            (project / "pyproject.toml").write_text(
+                '[project]\nname = "Example_Project"\n', encoding="utf-8"
+            )
             options = {"profile": "skylos-0.3", "grep_verify": False}
             default = json.loads(skylos.analyze(project, **options))
             self.assertNotIn("quality", default)
@@ -209,7 +212,12 @@ class SdkTests(unittest.TestCase):
             finding, = result["quality"]
             self.assertEqual((finding["rule_id"], finding["name"], finding["line"]), ("SKY-U005", "pyserial", 2))
             self.assertEqual(Path(finding["file"]), (project / "requirements.txt").resolve())
-            self.assertTrue(result["analysis_summary"]["unused_dependency_analysis"]["complete"])
+            receipt = result["analysis_summary"]["unused_dependency_analysis"]
+            self.assertTrue(receipt["complete"])
+            self.assertEqual(receipt["declarations"], {
+                "dependencies": ["pyserial", "pyyaml"],
+                "project_name": "example-project",
+            })
             if cli := os.environ.get("SKARMORY_TEST_CLI"):
                 result_cli = json.loads(subprocess.check_output([
                     cli, str(project), "--profile", "skylos-0.3", "--no-grep-verify", "--quality", "--all-advice",

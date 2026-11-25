@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from phase03_dependencies import DYNAMIC_IMPORT, VIBE_DEPENDENCIES, unused_dependencies
+from phase03_dependencies import (
+    DYNAMIC_IMPORT,
+    VIBE_DEPENDENCIES,
+    dependency_declarations,
+    unused_dependencies,
+)
 
 
 class DependencyPortTests(unittest.TestCase):
@@ -37,6 +42,10 @@ class DependencyPortTests(unittest.TestCase):
                 VIBE_DEPENDENCIES + "test_no_manifest_no_findings",
                 self.scan(["app.py", "extra.py"]), self.root, [self.source],
             )
+
+    def test_missing_native_declarations_are_not_credited(self):
+        with self.assertRaisesRegex(ValueError, "did not expose its declaration inventory"):
+            dependency_declarations(self.scan(["app.py"]), self.root)
 
     def test_only_the_dynamic_import_node_expects_an_incomplete_receipt(self):
         scan = self.scan(["app.py"], status="incomplete")

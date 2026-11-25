@@ -3629,12 +3629,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_vibe_rules.py"
 assertions = ["test/test_vibe_rules.py:859", "test/test_vibe_rules.py:860", "test/test_vibe_rules.py:861"]
-prerequisites = ["pinned pyproject declaration names", "pinned project identity", "installed-sdk"]
+prerequisites = ["pinned pyproject declaration names", "pinned project identity", "installed-sdk", "native-sdk-unused-dependencies"]
 provenance = "Original commented pyproject.toml and importer from test/test_vibe_rules.py:839-861 in the pinned checkout."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The SDK can exercise the unused-finding assertion, but does not expose the declaration name set and project identity required by the other two assertions."
 
 # Additional reviewed framework cases for #43.
 

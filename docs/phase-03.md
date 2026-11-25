@@ -168,12 +168,14 @@ or network resolution are outside this scope.
 
 JSON reports findings in `quality`, positive references in
 `dependency_usage_evidence`, and rule coverage in
-`analysis_summary.unused_dependency_analysis`. Reported declarations keep
-their manifest line. For a declaration above the report directory, the
-finding uses the report directory and line zero. SARIF omits the location
-for this fallback. The rule abstains when a source, include or dynamic import
-prevents a reliable absence claim. Ambiguous providers only block the
-affected distributions. Explicit single-file scans and scans without
+`analysis_summary.unused_dependency_analysis`. When the rule runs,
+`declarations` in that summary records the normalized runtime dependency names
+and the project name when available. The outcome and reasons describe coverage.
+Reported findings keep their manifest line. For a declaration above the
+report directory, the finding uses the report directory and line zero. SARIF
+omits the location for this fallback. The rule abstains when a source, include
+or dynamic import prevents a reliable absence claim. Ambiguous providers only
+block the affected distributions. Explicit single-file scans and scans without
 eligible Python sources record that the rule did not run. These limits
 affect aggregate coverage and strict exit status. A rule ignored in project
 configuration is outside the requested coverage.
