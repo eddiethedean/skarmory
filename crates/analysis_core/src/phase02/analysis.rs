@@ -7581,14 +7581,105 @@ impl<'a> Graph<'a> {
                         }) => {}
             Value::Unknown
                 if self.phase03 && self.empty_flask_lookalike(scope, function, before) => {}
-            _ => self.scope_issue(
-                scope,
-                decorator.at,
-                "unresolved_decorator",
-                "decorator identity is outside the bounded model",
-            ),
+            value => {
+                if self.phase03
+                    && matches!(value, Value::Provider(_))
+                    && self.opaque_decorator_receives_function(scope, decorator, target, before)
+                {
+                    self.edge(scope, target, "opaque_decorator_argument", "possible");
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_decorator",
+                    "decorator identity is outside the bounded model",
+                );
+            }
         };
         false
+    }
+
+    fn opaque_decorator_receives_function(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Name(name) = &decorator.kind else {
+            return false;
+        };
+        if !self
+            .local(scope, name, before)
+            .is_some_and(|id| matches!(self.symbols[id].binding, Binding::Import(_)))
+        {
+            return false;
+        }
+        let Binding::Definition(definition, _) = self.symbols[target].binding else {
+            return false;
+        };
+        if definition.kind == DefinitionKind::Class {
+            return false;
+        }
+        let Some(layer) = definition
+            .decorators
+            .iter()
+            .position(|item| std::ptr::eq(item, decorator))
+        else {
+            return false;
+        };
+        // Inner decorators apply first. Only pass-through layers can prove
+        // that the opaque decorator receives this function.
+        definition.decorators[layer + 1..].iter().all(|inner| {
+            let ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } = &inner.kind
+            else {
+                let value = self.probe_identity(scope, inner, before);
+                return matches!(value, Value::IdentityFunction)
+                    || self.local_identity_decorator(value, inner);
+            };
+            if !keywords.is_empty()
+                || !arguments.iter().all(|argument| {
+                    matches!(
+                        argument.kind,
+                        ExpressionKind::None
+                            | ExpressionKind::Bool(_)
+                            | ExpressionKind::Text(_)
+                            | ExpressionKind::Scalar(_)
+                    )
+                })
+            {
+                return false;
+            }
+            let Value::Callable(invocation) = self.probe_identity(scope, function, before) else {
+                return false;
+            };
+            let Binding::Definition(factory, _) = self.symbols[invocation.target].binding else {
+                return false;
+            };
+            !invocation.verified
+                && matches!(invocation.receiver, Receiver::Ordinary | Receiver::Bound(_))
+                && factory.kind == DefinitionKind::Function
+                && !factory.is_generator
+                && factory.decorators.is_empty()
+                && factory.simple_positional_parameters
+                && factory.parameters.len()
+                    == arguments.len()
+                        + usize::from(matches!(invocation.receiver, Receiver::Bound(_)))
+                && matches!(
+                    body_without_docstring(factory),
+                    [Statement {
+                        kind: StatementKind::Return(Some(Expression {
+                            kind: ExpressionKind::IdentityLambda,
+                            ..
+                        })),
+                        ..
+                    }]
+                )
+        })
     }
 
     fn local_identity_decorator(&self, value: Value, decorator: &Expression) -> bool {

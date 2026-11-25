@@ -255,6 +255,79 @@ def retired(): return 4
 }
 
 #[test]
+fn opaque_imported_decorator_retains_possible_use_through_an_identity_facade() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let source = "from fastapi import FastAPI\nclass Local:\n    def get(self, path): return lambda function: function\nfake = Local()\nfrom plugin import register_entry\n@register_entry\n@fake.get('/')\ndef endpoint(): return helper()\ndef helper(): return 1\n";
+    fs::write(&app, source).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{report}");
+    assert_eq!(errors[0]["kind"], "unresolved_decorator", "{report}");
+    let evidence = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        evidence
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "app.endpoint"
+                && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "opaque_decorator_argument" && edge["certainty"] == "possible"
+                })),
+        "{report}"
+    );
+    assert!(
+        evidence
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "app.helper"),
+        "{report}"
+    );
+    assert!(
+        !evidence.iter().any(|symbol| {
+            symbol["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "fastapi_registration")
+        }),
+        "{report}"
+    );
+
+    fs::write(
+        &app,
+        source.replace("lambda function: function", "lambda function: None"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "opaque_decorator_argument")
+            }),
+        "{report}"
+    );
+
+    fs::write(&app, source).unwrap();
+    fs::write(
+        root.join("plugin.py"),
+        "def register_entry(function): return function\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.endpoint", "app.helper"],
+        "{report}"
+    );
+}
+
+#[test]
 fn drf_declarations_keep_only_proven_framework_protocol_members() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
