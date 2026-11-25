@@ -680,6 +680,37 @@ def unused_setup():
 }
 
 #[test]
+fn fastapi_route_in_empty_assigned_comprehension_is_dormant() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from fastapi import FastAPI
+
+def endpoint(): return helper()
+def helper(): return 1
+
+app = FastAPI()
+registrations = [app.add_api_route('/', endpoint) for item in [] for extra in opaque()]
+"#;
+    fs::write(&file, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.endpoint", "web.helper"]
+    );
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(&file, source.replace("in []", "in [1]")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert_eq!(
+        report["analysis_errors"][0]["kind"],
+        "unsupported_construct"
+    );
+}
+
+#[test]
 fn conventional_pytest_hooks_have_possible_use_without_discovery() {
     let project = tempfile::tempdir().unwrap();
     for (path, source) in [

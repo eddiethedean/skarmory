@@ -3407,6 +3407,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
+            ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
                     && operands
@@ -5026,6 +5027,12 @@ impl<'a> Graph<'a> {
                     "lambda expressions are outside this compatibility profile",
                 )
             }
+            ExpressionKind::EmptyListComprehension if !self.phase03 => self.scope_issue(
+                scope,
+                expr.at,
+                "unsupported_construct",
+                "comprehensions are outside this compatibility profile",
+            ),
             _ => {}
         }
     }
@@ -8555,6 +8562,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
             | ExpressionKind::IdentityLambda
+            | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}
         }
     }

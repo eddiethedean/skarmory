@@ -185,6 +185,7 @@ pub enum ExpressionKind {
     ConstantLambda,
     IdentityLambda,
     IdentityDecoratorLambda,
+    EmptyListComprehension,
     Sequence(Vec<Expression>),
     Dictionary(Vec<Expression>),
     Subscript {
@@ -908,6 +909,19 @@ impl Lowering<'_> {
                 ExpressionKind::ConstantLambda
             }
             Expr::NoneLiteral(_) => ExpressionKind::None,
+            Expr::ListComp(node)
+                if node.generators.first().is_some_and(|first| {
+                    match &first.iter {
+                        Expr::List(iterable) => iterable.elts.is_empty(),
+                        Expr::Tuple(iterable) => iterable.elts.is_empty(),
+                        _ => false,
+                    }
+                }) && node.generators.iter().all(|generator| !generator.is_async) =>
+            {
+                // A literal empty outer iterator never evaluates the body or
+                // any subsequent iterator or filter.
+                ExpressionKind::EmptyListComprehension
+            }
             Expr::NumberLiteral(_) | Expr::BytesLiteral(_) | Expr::EllipsisLiteral(_) => {
                 ExpressionKind::Scalar
             }
