@@ -391,6 +391,10 @@ arguments Django supplies. Constructing the operation does not execute the
 callback. The analysis stops before registration when a closed initializer
 fails while replacing the callback or evaluating a source-owned, invalid
 consumer. [Django migration operations](https://docs.djangoproject.com/en/5.2/ref/migration-operations/#runpython)
+An effective `Migration` class backed by Django's migration base in a regular
+app's conventional `migrations` package also receives possible declaration
+evidence for the class and its standard metadata. Migration execution requires
+separate activation evidence. [Django migration loader](https://github.com/django/django/blob/stable/5.2.x/django/db/migrations/loader.py)
 
 The analyzer resolves local classes and functions named by effective authentication,
 storage, logging, and Django template settings. Bounded backend methods and

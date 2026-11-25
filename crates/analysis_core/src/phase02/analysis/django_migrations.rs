@@ -1,8 +1,113 @@
-//! Terminal migration initializers with proven callable and receiver identity.
+//! Migration declarations and terminal initializers with proven provider identity.
 
 use super::*;
 
+pub(super) const DECLARATION: &str = "django_migration_declaration";
+
+pub(super) fn is_migration_base(provider: &str) -> bool {
+    matches!(
+        provider,
+        "django.db.migrations.Migration" | "django.db.migrations.migration.Migration"
+    )
+}
+
 impl Graph<'_> {
+    pub(super) fn collect_django_migration_declarations(&mut self) {
+        // Configured custom migration packages need their own loader proof.
+        if self
+            .django_settings_sources
+            .iter()
+            .any(|&(_, settings)| self.local(settings, "MIGRATION_MODULES", END).is_some())
+        {
+            return;
+        }
+        for file in 0..self.files.len() {
+            let source = &self.files[file];
+            let Some((package, name)) = source.module.rsplit_once('.') else {
+                continue;
+            };
+            let Some(app) = package.strip_suffix(".migrations") else {
+                continue;
+            };
+            if source.is_package
+                || name.starts_with(['_', '~'])
+                || ![app, package].into_iter().all(|name| {
+                    self.modules
+                        .get(name)
+                        .is_some_and(|&file| self.files[file].is_package)
+                })
+                || self.failed_terminal_modules.contains(&file)
+                || self.scopes[file].open_wildcard
+                || self.scopes[file]
+                    .body
+                    .iter()
+                    .any(|statement| matches!(statement.kind, StatementKind::Raise(_)))
+                || self
+                    .module_member_write(&source.module, "Migration", (file, END))
+                    .is_some()
+            {
+                continue;
+            }
+            let Some(export) = self.local(file, "Migration", END) else {
+                continue;
+            };
+            let Some(binding) = self.probe_callable_binding(export) else {
+                continue;
+            };
+            if self.binding_depends_on_branch(export, END)
+                || !self.is_class(binding.target)
+                || self.conditional.contains_key(&binding.target)
+                || self.dormant_classes.contains(&binding.target)
+            {
+                continue;
+            }
+            let (lineage, _) = self.class_lineage(binding.target);
+            let Some(&last) = lineage.last() else {
+                continue;
+            };
+            let owner = self.scopes[last].owner.expect("class body has an owner");
+            let symbol = &self.symbols[owner];
+            let Binding::Definition(definition, _) = symbol.binding else {
+                continue;
+            };
+            let [base] = definition.bases.as_slice() else {
+                continue;
+            };
+            if !matches!(self.class_base(symbol.scope, base, definition.name.at, 0),
+                Value::Provider(provider) if is_migration_base(&provider))
+            {
+                continue;
+            }
+            // Conventional discovery establishes a possible protocol use.
+            // The declaration edge does not execute the migration or its callbacks.
+            self.read.extend(binding.bindings);
+            self.edge(file, binding.target, DECLARATION, "possible");
+            for name in [
+                "initial",
+                "dependencies",
+                "operations",
+                "run_before",
+                "replaces",
+                "atomic",
+            ] {
+                for &body in &lineage {
+                    let owner = self.scopes[body].owner.expect("class body has an owner");
+                    if self.class_discovery_write(owner, name, file).is_some() {
+                        break;
+                    }
+                    if let Some(field) = self.local(body, name, END) {
+                        if !self.binding_depends_on_branch(field, END)
+                            && matches!(self.symbols[field].binding, Binding::Variable(_, _))
+                        {
+                            self.edge(file, field, DECLARATION, "possible");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn terminal_django_runpython(
         &mut self,
         scope: ScopeId,

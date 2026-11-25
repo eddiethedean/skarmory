@@ -5921,6 +5921,53 @@ else:
 }
 
 #[test]
+fn constructor_proves_plain_field_writes_without_bypassing_setattr() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("entry.py");
+    let code = r#"class Pair:
+    def __init__(self, name: str, count: int):
+        self.name = name
+        self.count = count
+
+    def __str__(self):
+        return 'pair'
+
+Pair('example', 2)
+"#;
+    fs::write(&source, code).unwrap();
+    let report = scan(root);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|symbol| {
+        symbol["qualified_name"] == "entry.Pair.__init__"
+            && symbol["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "constructor" && edge["certainty"] == "certain")
+    }));
+
+    fs::write(
+        &source,
+        code.replace(
+            "    def __str__",
+            "    def __setattr__(self, field, value):\n        field(value)\n\n    def __str__",
+        ),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_attribute_write" && issue["path"] == "entry.py"
+            })
+    );
+}
+
+#[test]
 fn django_converter_wrappers_resolve_reached_arguments_only() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
