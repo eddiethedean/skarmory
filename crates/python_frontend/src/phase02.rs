@@ -175,9 +175,13 @@ pub struct Definition {
     pub body_coverage_lines: Vec<usize>,
     pub decorators: Vec<Expression>,
     pub parameters: Vec<Name>,
+    pub positional_only_parameter_count: usize,
     pub positional_parameter_count: usize,
+    pub required_positional_parameter_count: usize,
+    pub required_keyword_only_parameters: Vec<usize>,
     pub has_positional_parameter: bool,
     pub has_variadic_positional_parameter: bool,
+    pub has_variadic_keyword_parameter: bool,
     pub simple_positional_parameters: bool,
     pub defaults: Vec<Expression>,
     pub annotations: Vec<Expression>,
@@ -780,11 +784,29 @@ impl Lowering<'_> {
                             .map(|item| expression(&item.expression))
                             .collect::<Result<_, _>>()?,
                         parameters,
+                        positional_only_parameter_count: node.parameters.posonlyargs.len(),
                         positional_parameter_count: node.parameters.posonlyargs.len()
                             + node.parameters.args.len(),
+                        required_positional_parameter_count: node
+                            .parameters
+                            .posonlyargs
+                            .iter()
+                            .chain(&node.parameters.args)
+                            .filter(|parameter| parameter.default.is_none())
+                            .count(),
+                        required_keyword_only_parameters: node
+                            .parameters
+                            .kwonlyargs
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, parameter)| {
+                                parameter.default.is_none().then_some(index)
+                            })
+                            .collect(),
                         has_positional_parameter: !(node.parameters.posonlyargs.is_empty()
                             && node.parameters.args.is_empty()),
                         has_variadic_positional_parameter: node.parameters.vararg.is_some(),
+                        has_variadic_keyword_parameter: node.parameters.kwarg.is_some(),
                         simple_positional_parameters: (node.parameters.posonlyargs.is_empty()
                             && node.parameters.kwonlyargs.is_empty()
                             && node.parameters.vararg.is_none()
@@ -830,9 +852,13 @@ impl Lowering<'_> {
                             .map(|item| expression(&item.expression))
                             .collect::<Result<_, _>>()?,
                         parameters: Vec::new(),
+                        positional_only_parameter_count: 0,
                         positional_parameter_count: 0,
+                        required_positional_parameter_count: 0,
+                        required_keyword_only_parameters: Vec::new(),
                         has_positional_parameter: false,
                         has_variadic_positional_parameter: false,
+                        has_variadic_keyword_parameter: false,
                         simple_positional_parameters: false,
                         defaults: Vec::new(),
                         annotations: Vec::new(),

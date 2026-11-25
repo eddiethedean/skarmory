@@ -21,6 +21,7 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
 mod aiohttp;
 mod celery;
+mod celery_routes;
 mod comprehension;
 mod django_forms;
 mod django_globals;
@@ -611,6 +612,7 @@ pub(super) fn analyze_with_verification(
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
         celery_backends: celery::Backends::default(),
+        celery_routes: celery_routes::Routes::default(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
         flask_hooks: Vec::new(),
@@ -695,6 +697,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
+        graph.collect_celery_routes();
     }
     graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
@@ -802,6 +805,7 @@ struct Graph<'a> {
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
     celery_backends: celery::Backends,
+    celery_routes: celery_routes::Routes,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
     flask_hooks: Vec<flask::ParameterHook>,
@@ -2687,7 +2691,7 @@ impl<'a> Graph<'a> {
                 | ObjectKind::FlaskLoginManager),
             ) if self.phase03 => self.flask_member(object, kind, name, access),
             Value::Object(object, ObjectKind::CeleryApp) if name == "conf" => {
-                Value::CeleryConfig(object)
+                self.celery_config_member(object, access)
             }
             Value::Object(object, ObjectKind::CeleryApp) if name == "backend" => {
                 Value::CeleryBackend(object)
@@ -5104,6 +5108,12 @@ impl<'a> Graph<'a> {
                                 keywords,
                             },
                         );
+                    }
+                    Value::Method(object, ObjectKind::CeleryApp, method)
+                        if self.phase03 && method == "send_task" =>
+                    {
+                        self.record_celery_route_load(object, scope, expr.at);
+                        self.scope_issue(scope, expr.at, "unresolved_call", "Celery task submission is outside the bounded model");
                     }
                     Value::Method(parent, ObjectKind::App, method)
                         if self.phase03 && method == "mount" =>
@@ -9192,6 +9202,7 @@ impl<'a> Graph<'a> {
             .filter_map(|&(target, kind, _)| {
                 (self.retain_sanic_listener_parameters(target, kind)
                     || self.retain_fastapi_callback_parameters(target, kind)
+                    || kind == celery_routes::ROUTER
                     || kind == "django_migration_callback_declaration")
                     .then_some(target)
             })
@@ -9225,6 +9236,7 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_converter_regex"
                     | "django_migration_parameter"
+                    | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
             ) {
@@ -9908,7 +9920,14 @@ fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
 }
 
 fn is_deferred_possible_edge(kind: &str) -> bool {
-    is_atexit_edge(kind) || matches!(kind, django_forms::VALIDATION_HOOK | "logging_factory")
+    is_atexit_edge(kind)
+        || matches!(
+            kind,
+            django_forms::VALIDATION_HOOK
+                | "logging_factory"
+                | celery_routes::ROUTER
+                | celery_routes::ROUTER_PARAMETER
+        )
 }
 
 fn is_atexit_edge(kind: &str) -> bool {
@@ -10582,6 +10601,122 @@ configure()
                 .evidence
                 .iter()
                 .any(|entry| entry.kind == "logging_factory")
+        );
+    }
+
+    #[test]
+    fn celery_routes_use_the_effective_configuration_and_bind_only_router_slots() {
+        let files = [
+            module(
+                "app.py",
+                "app",
+                concat!(
+                    "from celery import Celery as Factory\n",
+                    "from routers import active as route\n",
+                    "app = Factory('shop', task_routes=('routers:stale',))\n",
+                    "alias = app.conf\n",
+                    "alias.update({'task_routes': (route, {'routers.mapping_key': {'queue': 'jobs'}})})\n",
+                    "class Other:\n    app = object()\n",
+                ),
+            ),
+            module(
+                "routers.py",
+                "routers",
+                concat!(
+                    "def stale(name, args, kwargs, options, task=None): pass\n",
+                    "def mapping_key(name, args, kwargs, options, task=None): pass\n",
+                    "def active(name, args, /, *rest, task, extra=None, **kw):\n    helper()\n",
+                    "def helper(): pass\n",
+                ),
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["mapping_key", "stale"]);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.full_name == "routers.active.extra")
+        );
+        let injected: BTreeSet<_> = result
+            .evidence
+            .iter()
+            .filter_map(|edge| {
+                (edge.kind == celery_routes::ROUTER_PARAMETER).then_some(edge.full_name.as_str())
+            })
+            .collect();
+        assert_eq!(
+            injected,
+            BTreeSet::from([
+                "routers.active.args",
+                "routers.active.kw",
+                "routers.active.name",
+                "routers.active.rest",
+                "routers.active.task"
+            ])
+        );
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name == "routers.helper" && edge.certainty == "possible")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name == "routers.helper" && edge.certainty == "certain")
+        );
+    }
+
+    #[test]
+    fn celery_terminal_router_failures_preserve_only_reached_evaluation() {
+        for failure in [
+            "app.conf.update(missing)",
+            "app = object()\napp.conf.task_routes = ('routers.route',)",
+            "app.conf = object()\napp.conf.task_routes = ('routers.route',)",
+        ] {
+            let source = format!(
+                "from celery import Celery\napp = Celery('shop', task_routes=('routers.route',))\n{failure}\n"
+            );
+            let files = [
+                module("app.py", "app", &source),
+                module(
+                    "routers.py",
+                    "routers",
+                    "def route(*args, **kwargs): pass\n",
+                ),
+            ];
+            let result = analyze_phase03(&files, &[]);
+            assert!(result.issues.is_empty(), "{failure}: {:?}", result.issues);
+            assert_eq!(names(&result, Category::Function), ["route"], "{failure}");
+        }
+        let files = [
+            module(
+                "app.py",
+                "app",
+                "from celery import Celery\napp = Celery('shop', task_routes=('routers.route',))\nfrom cfg import cfg\napp.conf.update(cfg)\n",
+            ),
+            module("cfg.py", "cfg", "cfg = object()\n"),
+            module(
+                "routers.py",
+                "routers",
+                "def route(*args, **kwargs): pass\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name == "routers.route" && edge.certainty == "possible")
         );
     }
 
