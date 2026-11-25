@@ -68,6 +68,83 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn pydantic_computed_fields_follow_dump_and_property_access() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("models.py"),
+        concat!(
+            "from pydantic import BaseModel, computed_field\n",
+            "class Dumped(BaseModel):\n",
+            "    @computed_field\n    @property\n",
+            "    def name(self) -> str: return dump_name()\n",
+            "class Accessed(BaseModel):\n",
+            "    @computed_field\n    def name(self) -> str: return accessed_name()\n",
+            "class Constructed(BaseModel):\n",
+            "    @computed_field\n    @property\n",
+            "    def name(self) -> str: return dormant_name()\n",
+            "def dump_name(): return 'dumped'\n",
+            "def accessed_name(): return 'accessed'\n",
+            "def dormant_name(): return 'dormant'\n",
+            "Dumped().model_dump()\n",
+            "Accessed().name\n",
+            "Constructed()\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    for live in [
+        "models.Dumped.name",
+        "models.dump_name",
+        "models.Accessed.name",
+        "models.accessed_name",
+    ] {
+        assert!(!unused.contains(&live), "{live}: {report}");
+    }
+    for dormant in ["models.Constructed.name", "models.dormant_name"] {
+        assert!(unused.contains(&dormant), "{dormant}: {report}");
+    }
+}
+
+#[test]
+fn sqlalchemy_hybrid_descriptor_retains_the_getter_without_calling_it() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("model.py"),
+        concat!(
+            "from sqlalchemy.ext.hybrid import hybrid_property\n",
+            "class User:\n",
+            "    @hybrid_property\n",
+            "    def full_name(self): return make_name()\n",
+            "def make_name(): return 'Ada'\n",
+            "class Profile:\n",
+            "    def render_name(self): return 'Ada'\n",
+            "Profile()\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(!unused.contains(&"model.User.full_name"));
+    assert!(unused.contains(&"model.make_name"));
+    assert!(unused.contains(&"model.Profile.render_name"));
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "model.User.full_name"
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["kind"] == "sqlalchemy_hybrid_descriptor"))
+    );
+}
+
+#[test]
 fn flask_login_callbacks_require_the_real_manager_and_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -342,6 +419,62 @@ if os.getenv('USE_HANDLER'):
 }
 
 #[test]
+fn fastapi_registration_tracks_ordered_method_replacement() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import FastAPI
+
+app = FastAPI()
+@app.get('/live')
+def live(): return 1
+
+app.get = lambda path: lambda callback: callback
+@app.get('/dormant')
+def dormant(): return 2
+
+app.add_exception_handler = lambda *args: None
+def unused_handler(request, exc): return 3
+app.add_exception_handler(Exception, unused_handler)
+
+app.middleware = lambda category: lambda callback: callback
+@app.middleware('http')
+def unused_middleware(request, call_next): return 4
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dormant", "web.unused_handler", "web.unused_middleware"]
+    );
+}
+
+#[test]
+fn fastapi_lookalike_method_returning_identity_lambda_cannot_register() {
+    let project = tempfile::tempdir().unwrap();
+    for setup in [
+        "from fastapi import FastAPI\napp = Fake()\n",
+        "from fastapi import FastAPI\nFastAPI = Fake\napp = FastAPI()\n",
+        "from fastapi import FastAPI\napp = FastAPI()\napp = Fake()\n",
+    ] {
+        let source = format!(
+            "class Fake:\n    def get(self, path):\n        return lambda fn: fn\n\
+             {setup}\
+             @app.get('/')\n\
+             def endpoint(): return helper()\n\
+             def helper(): return 1\n"
+        );
+        fs::write(project.path().join("web.py"), source).unwrap();
+        let report = scan(project.path());
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["web.endpoint", "web.helper"]
+        );
+    }
+}
+
+#[test]
 fn fastapi_mounted_asgi_callback_does_not_activate_api_dependencies() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -544,6 +677,36 @@ def unused_setup():
             assert_eq!(report[key], cached[key], "{key}");
         }
     }
+}
+
+#[test]
+fn fastapi_route_in_empty_assigned_comprehension_is_dormant() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from fastapi import FastAPI
+
+def endpoint(): return helper()
+def helper(): return 1
+
+app = FastAPI()
+registrations = [app.add_api_route('/', endpoint) for item in [] for extra in opaque()]
+"#;
+    fs::write(&file, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.endpoint", "web.helper"]
+    );
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(&file, source.replace("in []", "in [1]")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert_eq!(report["analysis_errors"][0]["kind"], "unresolved_call");
+    assert_eq!(report["analysis_errors"][0]["file"], "web.py");
+    assert_eq!(report["analysis_errors"][0]["line"], 7);
 }
 
 #[test]
@@ -928,6 +1091,100 @@ def replaced_event(): return 1
 }
 
 #[test]
+fn fastapi_router_constructor_hooks_follow_inclusion_and_merged_lifespans() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    for app_custom in [false, true] {
+        for router_custom in [false, true] {
+            for inclusion in [
+                "",
+                "app.include_router(router)\n",
+                "if os.getenv('MOUNT'):\n    app.include_router(router)\n",
+            ] {
+                let app_lifespan = if app_custom { "custom" } else { "None" };
+                let router_lifespan = if router_custom { "custom" } else { "None" };
+                fs::write(
+                    &file,
+                    format!(
+                        r#"import os
+from contextlib import asynccontextmanager
+from fastapi import APIRouter, FastAPI
+
+def setup(): return 1
+def cleanup(): return 2
+def start(): return setup()
+async def stop(): return cleanup()
+starts = (start,)
+
+@asynccontextmanager
+async def custom(app):
+    yield
+
+router = APIRouter(lifespan={router_lifespan}, on_startup=starts, on_shutdown=[stop])
+app = FastAPI(lifespan={app_lifespan})
+{inclusion}"#
+                    ),
+                )
+                .unwrap();
+                let report = scan(project.path());
+                let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+                cached.as_object_mut().unwrap().remove("cache");
+                assert_eq!(cached, report);
+                let live = !inclusion.is_empty() && !(app_custom && router_custom);
+                let certainty = if inclusion.starts_with("if") {
+                    "possible"
+                } else {
+                    "certain"
+                };
+                for name in ["web.start", "web.stop", "web.setup", "web.cleanup"] {
+                    assert_eq!(
+                        !findings(&report, "unused_functions").contains(&name),
+                        live,
+                        "{name} {report}"
+                    );
+                }
+                for name in ["web.start", "web.stop"] {
+                    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+                    let lifecycle = symbols
+                        .iter()
+                        .find(|entry| entry["qualified_name"] == name)
+                        .into_iter()
+                        .flat_map(|entry| entry["evidence"].as_array().unwrap())
+                        .find(|entry| entry["kind"] == "fastapi_lifecycle");
+                    assert_eq!(lifecycle.is_some(), live, "{name} {report}");
+                    if let Some(lifecycle) = lifecycle {
+                        assert_eq!(lifecycle["certainty"], certainty);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fastapi_unresolved_router_constructor_hooks_require_reached_inclusion() {
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = "from external_config import hooks\n\
+                  from fastapi import APIRouter, FastAPI\n\
+                  router = APIRouter(on_startup=hooks)\n\
+                  app = FastAPI()\n";
+    fs::write(&file, source).unwrap();
+    scan(project.path());
+
+    fs::write(&file, format!("{source}app.include_router(router)\n")).unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_registration" && error["line"] == 3 })
+    );
+}
+
+#[test]
 fn fastapi_app_dependencies_need_an_api_route_instead_of_lifecycle_hooks() {
     let project = tempfile::tempdir().unwrap();
     let file = project.path().join("web.py");
@@ -1119,6 +1376,192 @@ del other.conf['result_backend']
     let mut cached = scan_with_settings(root, None, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");
     assert_eq!(cached, changed);
+}
+
+#[test]
+fn celery_backend_lookup_respects_deleted_exports_and_captured_aliases() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let providers = root.join("providers.py");
+    let jobs = root.join("jobs.py");
+    fs::write(&providers, "class Backend: pass\ndel Backend\n").unwrap();
+    fs::write(
+        &jobs,
+        "from celery import Celery\napp = Celery('jobs', backend='providers:Backend')\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["providers.Backend"],
+        "{report}"
+    );
+
+    fs::write(
+        &providers,
+        "class Backend: pass\nSelected = Backend\ndel Backend\n",
+    )
+    .unwrap();
+    fs::write(
+        jobs,
+        "from celery import Celery\napp = Celery('jobs', backend='providers:Selected')\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "providers.Backend"
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "celery_backend" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+
+    fs::write(
+        providers,
+        "class Backend: pass\nSelected = Backend\ndel Backend\nBackend()\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unbound_local"),
+        "{incomplete}"
+    );
+}
+
+#[test]
+fn celery_backend_reads_follow_comprehension_execution() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        "class Prior: pass\nclass Current: pass\n",
+    )
+    .unwrap();
+    let path = root.join("jobs.py");
+    let write = |expression| {
+        fs::write(&path, format!(
+            "from celery import Celery\nfrom settings import enabled\nfrom types import SimpleNamespace\napp = Celery('jobs', backend='providers:Prior')\npending = {expression}\napp.conf.result_backend = 'providers:Current'\n"
+        )).unwrap();
+    };
+    let evidence = |report: &Value, name: &str, kind: &str, certainty: &str| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["qualified_name"] == name)
+            .flat_map(|row| row["evidence"].as_array().unwrap())
+            .any(|edge| edge["kind"] == kind && edge["certainty"] == certainty)
+    };
+
+    for (expression, active) in [
+        (
+            "{key: app.backend for key in ['worker'] if not False}",
+            "Prior",
+        ),
+        ("(key for key in [app.backend])", "Prior"),
+        ("(app.backend for key in ['worker'])", "Current"),
+        ("[app.backend for key in [1] if []]", "Current"),
+        (
+            "[key for app in [SimpleNamespace(backend=1)] for key in [app.backend]]",
+            "Current",
+        ),
+    ] {
+        write(expression);
+        let report = scan(root);
+        let inactive = if active == "Prior" {
+            "Current"
+        } else {
+            "Prior"
+        };
+        assert!(
+            evidence(
+                &report,
+                &format!("providers.{active}"),
+                "celery_backend",
+                "certain"
+            ),
+            "{report}"
+        );
+        assert_eq!(
+            findings(&report, "unused_classes"),
+            [format!("providers.{inactive}")]
+        );
+    }
+
+    write("[app.backend for key in [1] if enabled]");
+    let report = scan(root);
+    assert!(
+        evidence(&report, "providers.Prior", "celery_backend", "possible"),
+        "{report}"
+    );
+    assert!(
+        !evidence(&report, "providers.Prior", "celery_backend", "certain"),
+        "{report}"
+    );
+    assert!(
+        evidence(
+            &report,
+            "providers.Current",
+            "celery_backend_default",
+            "certain"
+        ),
+        "{report}"
+    );
+    assert!(
+        evidence(&report, "providers.Current", "celery_backend", "possible"),
+        "{report}"
+    );
+    assert!(
+        !evidence(&report, "providers.Current", "celery_backend", "certain"),
+        "{report}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    write("(app.backend for key in [1])");
+    let mut source = fs::read_to_string(&path).unwrap();
+    source.push_str("list(pending)\n");
+    fs::write(&path, source).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_generator_execution"),
+        "{incomplete}"
+    );
+
+    write("[key for key in [1] if app.backend for app in [SimpleNamespace(backend=1)]]");
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unbound_local"),
+        "{incomplete}"
+    );
+    assert!(!evidence(
+        &incomplete,
+        "providers.Prior",
+        "celery_backend",
+        "certain"
+    ));
 }
 
 #[test]
@@ -1769,6 +2212,100 @@ reload(main_func=start)
 }
 
 #[test]
+fn django_autoreload_wrapper_activates_only_bound_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("reloads.py"),
+        "from django.utils import autoreload\ndef run(target):\n    autoreload.run_with_reloader(target)\n",
+    )
+    .unwrap();
+    let caller = r#"from reloads import run
+from external import enabled, opaque
+
+def selected():
+    return helper()
+
+def helper():
+    return 1
+
+def optional():
+    return 2
+
+def dormant():
+    return 3
+
+def abandoned():
+    run(dormant)
+
+run(selected)
+if enabled:
+    run(target=optional)
+"#;
+    let path = root.join("startup.py");
+    fs::write(&path, caller).unwrap();
+    let report = scan(root);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let callbacks: Vec<_> = symbols
+        .iter()
+        .flat_map(|symbol| {
+            symbol["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry["kind"] == "django_autoreload")
+                .map(|entry| {
+                    (
+                        symbol["qualified_name"].as_str().unwrap(),
+                        entry["certainty"].as_str().unwrap(),
+                    )
+                })
+        })
+        .collect();
+    assert_eq!(
+        callbacks,
+        [
+            ("startup.optional", "possible"),
+            ("startup.selected", "certain"),
+        ]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"startup.dormant"));
+    assert!(!findings(&report, "unused_functions").contains(&"startup.helper"));
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["coverage", "dead_code_evidence", "unused_functions"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+
+    for unresolved in ["run(opaque)", "run(dormant, invalid=True)"] {
+        fs::write(&path, format!("{caller}\n{unresolved}\n")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_registration"
+                    && issue["path"] == "reloads.py")
+        );
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|symbol| symbol["qualified_name"] == "startup.dormant")
+                .all(|symbol| symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| entry["kind"] != "django_autoreload"))
+        );
+    }
+}
+
+#[test]
 fn django_converter_protocol_requires_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -1786,7 +2323,7 @@ class Child(Converter):
     pass
 
 def parse(value):
-    return value
+    return value.lower()
 
 def install():
     register_converter(Child, 'custom')
@@ -1842,6 +2379,24 @@ inactive_instance = Inactive()
         "unused_variables",
     ] {
         assert_eq!(clean[field], active[field], "{field}");
+    }
+
+    for unknown_caller in ["parse(123)", "instance.to_python(123)"] {
+        fs::write(&path, format!("{src}\ninstall()\n{unknown_caller}\n")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| {
+                    error["kind"] == "unresolved_call"
+                        && error["path"] == "converters.py"
+                        && error["line"] == 14
+                }),
+            "{report}"
+        );
     }
 }
 

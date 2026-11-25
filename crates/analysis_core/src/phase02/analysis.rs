@@ -7,7 +7,8 @@ use std::ops::RangeInclusive;
 
 use skarmory_python::Location;
 use skarmory_python::phase02::{
-    Definition, DefinitionKind, Expression, ExpressionKind, Import, Name, Statement, StatementKind,
+    ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, Expression,
+    ExpressionKind, Import, Name, Statement, StatementKind,
 };
 
 use super::config::Entrypoint;
@@ -17,6 +18,7 @@ use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
 mod celery;
+mod comprehension;
 mod fastapi;
 mod flask;
 mod frameworks;
@@ -64,6 +66,8 @@ enum Value {
     PydanticDump(SymbolId),
     CeleryConfig(Object),
     CeleryBackend(Object),
+    DeferredComprehension,
+    ComprehensionResult,
     Executor,
     Submit,
     Process(Box<Value>),
@@ -85,6 +89,7 @@ enum Value {
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     MissingFrameworkMember,
+    DeletedModuleBinding,
     UnittestComparison,
     OperatorResult,
     Unknown,
@@ -274,6 +279,7 @@ enum Binding<'a> {
     Import(&'a Import),
     Variable(Option<&'a Expression>, Location),
     Parameter,
+    Deleted,
 }
 
 enum LexicalBinding {
@@ -316,6 +322,9 @@ struct DirectArguments {
     caller: ScopeId,
     at: Location,
     values: BTreeMap<String, Value>,
+    forwarded: BTreeMap<String, SymbolId>,
+    conditional: bool,
+    arguments_bound: bool,
 }
 
 struct CallArguments<'a> {
@@ -472,6 +481,8 @@ pub(super) fn analyze_with_verification(
         has_hash_hooks: false,
         has_bool_hooks: false,
         has_length_hooks: false,
+        has_iteration_hooks: false,
+        iteration_locals: Vec::new(),
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
         phase03,
@@ -486,6 +497,8 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_converter: frameworks::DjangoConverter::default(),
+        django_autoreload_wrappers: Vec::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_registration_issues: Vec::new(),
@@ -527,6 +540,7 @@ pub(super) fn analyze_with_verification(
                 "__hash__" => graph.has_hash_hooks = true,
                 "__bool__" => graph.has_bool_hooks = true,
                 "__len__" => graph.has_length_hooks = true,
+                "__iter__" | "__next__" | "__getitem__" => graph.has_iteration_hooks = true,
                 _ => {}
             }
         }
@@ -633,6 +647,8 @@ struct Graph<'a> {
     has_hash_hooks: bool,
     has_bool_hooks: bool,
     has_length_hooks: bool,
+    has_iteration_hooks: bool,
+    iteration_locals: Vec<([usize; 2], Value)>,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
     phase03: bool,
@@ -647,6 +663,8 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_converter: frameworks::DjangoConverter,
+    django_autoreload_wrappers: Vec<frameworks::DjangoAutoreloadWrapper>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_registration_issues: Vec<(Object, Issue)>,
@@ -749,6 +767,11 @@ impl<'a> Graph<'a> {
                     for name in names {
                         self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
                     }
+                }
+                StatementKind::DeleteName(name)
+                    if self.phase03 && scope == self.scopes[scope].file =>
+                {
+                    self.bind(scope, name, Binding::Deleted);
                 }
                 StatementKind::LiteralRouteLoop { path, last, .. } => {
                     self.bind(scope, path, Binding::Variable(Some(last), statement.at));
@@ -1450,6 +1473,14 @@ impl<'a> Graph<'a> {
                         .at(import.local.at),
                     ));
                 }
+                ModuleMember::Binding(id, _) if matches!(self.symbols[id].binding, Binding::Deleted) => {
+                    self.import_issue(
+                        scope,
+                        source,
+                        import,
+                        format!("{module:?} deletes the selected binding for {member:?}"),
+                    );
+                }
                 ModuleMember::Ambiguous => self.scope_issues.push((
                     scope,
                     Issue::new("ambiguous_binding", &self.files[source].path,
@@ -1797,6 +1828,7 @@ impl<'a> Graph<'a> {
                 self.identity(scope, value, before, depth + 1)
             }
             Binding::Variable(None, _) => Value::Unknown,
+            Binding::Deleted => Value::DeletedModuleBinding,
             Binding::Parameter => {
                 if let Some(&class) = self.instance_receivers.get(&id) {
                     return if self.subclassed.contains(&class) {
@@ -1951,6 +1983,23 @@ impl<'a> Graph<'a> {
             return match self.selected_module_member(file, member, before, access, mode) {
                 ModuleMember::Binding(id, import) => {
                     self.read.extend(import);
+                    if matches!(self.symbols[id].binding, Binding::Deleted)
+                        && (self.local(file, "__getattr__", before).is_some()
+                            || self.modules.contains_key(submodule.as_str()))
+                    {
+                        self.scope_issue(scope, at, "unresolved_attribute", "module lookup after deletion can invoke a dynamic export or attach a submodule");
+                        return Value::Unknown;
+                    }
+                    if matches!(self.symbols[id].binding, Binding::Deleted)
+                        && matches!(mode, ModuleMemberAccess::Attribute)
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_attribute",
+                            format!("module {module:?} deleted {member:?}"),
+                        );
+                    }
                     self.binding(id, before, depth + 1)
                 }
                 ModuleMember::Submodule(file, import) => {
@@ -2447,6 +2496,23 @@ impl<'a> Graph<'a> {
             Value::CeleryConfig(object) if name == "update" => {
                 Value::Method(object, ObjectKind::CeleryApp, "conf.update".into())
             }
+            Value::Object(site, kind @ (ObjectKind::App | ObjectKind::Router)) if self.phase03 => {
+                match self.fastapi_member_write(site, name, access) {
+                    Some(mutations::MemberWriteValue::Replacement(value)) => value,
+                    Some(mutations::MemberWriteValue::Deleted) | None => {
+                        Value::Method(site, kind, name.into())
+                    }
+                    Some(mutations::MemberWriteValue::Ambiguous) => {
+                        self.scope_issue(
+                            access.0,
+                            access.1,
+                            "unresolved_attribute_write",
+                            "FastAPI registration method depends on an unresolved write",
+                        );
+                        Value::Unknown
+                    }
+                }
+            }
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
@@ -2797,6 +2863,7 @@ impl<'a> Graph<'a> {
             && matches!(
                 expression.kind,
                 ExpressionKind::Await(_)
+                    | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
                     | ExpressionKind::Operands(_)
@@ -2814,6 +2881,30 @@ impl<'a> Graph<'a> {
             this.expression_value(scope, expression, before, depth + 1, evaluation)
         };
         match &expression.kind {
+            ExpressionKind::IterationVariable(binding) => {
+                let binding = position(*binding);
+                if let Some((_, value)) = self
+                    .iteration_locals
+                    .iter()
+                    .rev()
+                    .find(|(target, _)| *target == binding)
+                {
+                    value.clone()
+                } else {
+                    self.scope_issue(
+                        scope,
+                        expression.at,
+                        "unbound_local",
+                        "comprehension variable has not been bound by its iterator",
+                    );
+                    Value::Unknown
+                }
+            }
+            ExpressionKind::Comprehension {
+                form: ComprehensionForm::Generator,
+                ..
+            } => Value::DeferredComprehension,
+            ExpressionKind::Comprehension { .. } => Value::ComprehensionResult,
             ExpressionKind::Name(name) => {
                 let lazy = matches!(evaluation, ValueEvaluation::Lazy { .. });
                 let binding = self.lexical_binding(
@@ -2862,6 +2953,15 @@ impl<'a> Graph<'a> {
                         END
                     };
                     let value = self.binding(id, binding_before, depth + 1);
+                    if matches!(value, Value::DeletedModuleBinding) {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unbound_local",
+                            format!("{name} was deleted before this read"),
+                        );
+                        return Value::Unknown;
+                    }
                     if self.phase03
                         && !lazy
                         && binding_scope != scope
@@ -3385,7 +3485,9 @@ impl<'a> Graph<'a> {
             ExpressionKind::Bool(value) => Value::Bool(*value),
             ExpressionKind::Scalar | ExpressionKind::None => Value::Scalar,
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
+            ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
+            ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
                     && operands
@@ -3733,6 +3835,10 @@ impl<'a> Graph<'a> {
                     "unresolved_export",
                     "a function namespace escapes through an expression outside the bounded model",
                 );
+                return;
+            }
+            Value::DeferredComprehension | Value::ComprehensionResult => {
+                self.unresolved_comprehension_use(scope, at, &value);
                 return;
             }
             Value::LocalNamespace(..) | Value::NamespaceCopy(_) => {
@@ -4168,6 +4274,14 @@ impl<'a> Graph<'a> {
                     .chain(keywords.iter().map(|(_, value)| value))
                 {
                     self.walk(scope, expr, before);
+                    if let ExpressionKind::Comprehension { form, .. } = expr.kind {
+                        let value = if matches!(form, ComprehensionForm::Generator) {
+                            Value::DeferredComprehension
+                        } else {
+                            Value::ComprehensionResult
+                        };
+                        self.unresolved_comprehension_use(scope, expr.at, &value);
+                    }
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
                 match callee {
@@ -4301,6 +4415,16 @@ impl<'a> Graph<'a> {
                             "scheduled_coroutine",
                             expr.at,
                         );
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "types.SimpleNamespace"
+                            && arguments.is_empty() =>
+                    {
+                        for (_, argument) in keywords {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.expose(scope, value, "passed_callable", argument.at);
+                        }
                     }
                     Value::Provider(name)
                         if self.phase03
@@ -4723,6 +4847,11 @@ impl<'a> Graph<'a> {
                             }) {
                                 self.fastapi_lifespan(object, site, lifespan);
                             }
+                            for (name, callbacks) in keywords {
+                                if matches!(name.as_str(), "on_startup" | "on_shutdown") {
+                                    self.fastapi_router_lifecycle(object, site, callbacks);
+                                }
+                            }
                             self.fastapi_defaults(object, site, keywords);
                         }
                     }
@@ -4819,17 +4948,28 @@ impl<'a> Graph<'a> {
                     }
                     _ => {
                         if self.phase03
+                            && !self.probing_identity
+                            && arguments.is_empty()
+                            && keywords.is_empty()
+                            && let ExpressionKind::Member(base, name) = &function.kind
+                            && name == "lower"
+                            && let Some(parameter) = self.parameter_binding(scope, base, before)
+                        {
+                            self.django_converter.string_calls.push(ParameterCall {
+                                scope,
+                                parameter,
+                                at: expr.at,
+                            });
+                            return;
+                        }
+                        if self.phase03
                             && self.record_flask_parameter_hook(
                                 scope, function, arguments, keywords, before, expr.at,
                             )
                         {
                             return;
                         }
-                        let parameter = match &function.kind {
-                            ExpressionKind::Name(name) => self.lexical(scope, name, before),
-                            _ => None,
-                        }
-                        .filter(|&id| matches!(self.symbols[id].binding, Binding::Parameter));
+                        let parameter = self.parameter_binding(scope, function, before);
                         if let Some(parameter) = parameter {
                             self.parameter_calls.push(ParameterCall {
                                 scope,
@@ -4876,6 +5016,7 @@ impl<'a> Graph<'a> {
                 if let Value::CeleryBackend(object) = value {
                     self.record_celery_backend_read(object, scope, expr.at);
                 }
+                self.read_pydantic_computed_field(scope, &value, expr.at);
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
@@ -4921,6 +5062,13 @@ impl<'a> Graph<'a> {
                 for item in values {
                     self.walk(scope, item, before);
                 }
+            }
+            ExpressionKind::Comprehension {
+                form,
+                iterators,
+                elements,
+            } => {
+                self.walk_comprehension(scope, before, expr.at, *form, iterators, elements);
             }
             ExpressionKind::Subscript { value, index } => {
                 self.walk(scope, value, before);
@@ -4986,11 +5134,14 @@ impl<'a> Graph<'a> {
                     }
                 }
             }
-            ExpressionKind::Name(_) => {
+            ExpressionKind::Name(_) | ExpressionKind::IterationVariable(_) => {
                 let value = self.identity(scope, expr, before, 0);
+                self.unresolved_comprehension_use(scope, expr.at, &value);
                 self.record_class_reference(scope, &value);
             }
-            ExpressionKind::ConstantLambda | ExpressionKind::IdentityDecoratorLambda
+            ExpressionKind::ConstantLambda
+            | ExpressionKind::IdentityLambda
+            | ExpressionKind::IdentityDecoratorLambda
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -5000,6 +5151,12 @@ impl<'a> Graph<'a> {
                     "lambda expressions are outside this compatibility profile",
                 )
             }
+            ExpressionKind::EmptyListComprehension if !self.phase03 => self.scope_issue(
+                scope,
+                expr.at,
+                "unsupported_construct",
+                "comprehensions are outside this compatibility profile",
+            ),
             _ => {}
         }
     }
@@ -5069,11 +5226,66 @@ impl<'a> Graph<'a> {
         keywords: &[(String, Expression)],
     ) {
         if let Some(values) = self.call_argument_values(caller, callee, before, args, keywords) {
+            let conditional = self.branch_depth != 0
+                || self.scopes[caller]
+                    .owner
+                    .is_some_and(|owner| self.conditional.contains_key(&owner));
+            let mut forwarded = BTreeMap::new();
+            let Binding::Definition(definition, _) = self.symbols[callee].binding else {
+                unreachable!("only definitions with bounded signatures have argument values");
+            };
+            let parameters = &definition.parameters;
+            let required = parameters.len() - definition.defaults.len();
+            let arguments_bound = args.len() <= parameters.len()
+                && values.len() == args.len() + keywords.len()
+                && parameters[..required]
+                    .iter()
+                    .all(|parameter| values.contains_key(&parameter.text))
+                && keywords
+                    .iter()
+                    .all(|(name, _)| parameters.iter().any(|parameter| parameter.text == *name));
+            if self.phase03 && arguments_bound {
+                for (parameter, argument) in definition
+                    .parameters
+                    .iter()
+                    .zip(args)
+                    .map(|(parameter, argument)| (&parameter.text, argument))
+                    .chain(
+                        keywords
+                            .iter()
+                            .map(|(parameter, argument)| (parameter, argument)),
+                    )
+                {
+                    if let Some(source) = self.parameter_binding(caller, argument, before) {
+                        forwarded.insert(parameter.clone(), source);
+                    }
+                }
+            }
             self.direct_arguments
                 .entry(callee)
                 .or_default()
-                .push(DirectArguments { caller, at, values });
+                .push(DirectArguments {
+                    caller,
+                    at,
+                    values,
+                    forwarded,
+                    conditional,
+                    arguments_bound,
+                });
         }
+    }
+
+    fn parameter_binding(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> Option<SymbolId> {
+        let ExpressionKind::Name(name) = &expression.kind else {
+            return None;
+        };
+        self.lexical(scope, name, before)
+            .filter(|&id| matches!(self.symbols[id].binding, Binding::Parameter))
     }
 
     fn call_argument_values(
@@ -5194,6 +5406,9 @@ impl<'a> Graph<'a> {
                     caller: scope,
                     at,
                     values,
+                    forwarded: BTreeMap::new(),
+                    conditional: true,
+                    arguments_bound: false,
                 });
         }
         self.activate_callback(scope, target, "executor_submission", at);
@@ -5563,6 +5778,25 @@ impl<'a> Graph<'a> {
                         self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
                     }
                 }
+                StatementKind::DeleteName(name) => {
+                    if !self.phase03
+                        || scope != self.scopes[scope].file
+                        || self.local(scope, &name.text, at).is_none_or(|previous| {
+                            self.binding_depends_on_branch(previous, at)
+                                || matches!(
+                                    self.symbols[previous].binding,
+                                    Binding::Deleted | Binding::Variable(None, _)
+                                )
+                        })
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "deleting a name requires a previously bound module-local name",
+                        );
+                    }
+                }
                 StatementKind::WriteAttribute {
                     receiver, value, ..
                 }
@@ -5886,7 +6120,9 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && matches!(
                         name.as_str(),
-                        "pydantic.field_serializer" | "pydantic.model_serializer"
+                        "pydantic.computed_field"
+                            | "pydantic.field_serializer"
+                            | "pydantic.model_serializer"
                     ) =>
             {
                 self.record_pydantic_serializer(scope, target, &name, args, keywords);
@@ -5932,21 +6168,33 @@ impl<'a> Graph<'a> {
                     && self.is_fastapi_lifespan(target) => {}
             Value::Provider(name)
                 if self.phase03
+                    && name == "sqlalchemy.ext.hybrid.hybrid_property"
+                    && !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && let Some(owner) = self.scopes[scope].owner
+                    && self.is_class(owner) =>
+            {
+                if matches!(self.symbols[target].binding,
+                    Binding::Definition(definition, _) if definition.decorators.len() == 1)
+                {
+                    self.edge(scope, target, "sqlalchemy_hybrid_descriptor", "certain");
+                }
+                self.framework_lifecycle
+                    .push((owner, target, "framework_lifecycle"));
+            }
+            Value::Provider(name)
+                if self.phase03
                     && matches!(
                         name.as_str(),
-                        "pydantic.computed_field"
-                            | "pydantic.field_validator"
+                        "pydantic.field_validator"
                             | "pydantic.model_validator"
                             | "pydantic.root_validator"
                             | "pydantic.validator"
-                            | "sqlalchemy.ext.hybrid.hybrid_property"
                     ) =>
             {
                 if let Some(owner) = self.scopes[scope].owner
                     && self.is_class(owner)
-                    && (name == "sqlalchemy.ext.hybrid.hybrid_property"
-                        || self.framework_class_role(owner, &mut BTreeSet::new(), 0)
-                            == Some(FrameworkClassRole::PydanticModel))
+                    && self.framework_class_role(owner, &mut BTreeSet::new(), 0)
+                        == Some(FrameworkClassRole::PydanticModel)
                 {
                     self.framework_lifecycle
                         .push((owner, target, "framework_lifecycle"));
@@ -6027,26 +6275,41 @@ impl<'a> Graph<'a> {
                 {
                     return false;
                 } else if self.phase03
-                    && matches!(invocation.receiver, Receiver::Ordinary)
                     && definition.kind == DefinitionKind::Function
                     && definition.decorators.is_empty()
                     && definition.simple_positional_parameters
-                    && definition.parameters.len() == args.len()
+                    && definition.parameters.len()
+                        == args.len()
+                            + usize::from(matches!(invocation.receiver, Receiver::Bound(_)))
                     && keywords.is_empty()
                     && matches!(decorator.kind, ExpressionKind::Call { .. })
-                    && let Some(identity) = identity_decorator_factory(definition)
-                    && let Some(identity) = self.local(body, &identity.name.text, END)
                 {
-                    self.edge(scope, identity, "decorator", "certain");
-                    return true;
-                } else {
-                    self.scope_issue(
-                        scope,
-                        decorator.at,
-                        "unresolved_decorator",
-                        "local decorator may replace or invoke the decorated definition",
-                    );
+                    if matches!(
+                        body_without_docstring(definition),
+                        [Statement {
+                            kind: StatementKind::Return(Some(Expression {
+                                kind: ExpressionKind::IdentityLambda,
+                                ..
+                            })),
+                            ..
+                        }]
+                    ) {
+                        return true;
+                    }
+                    if matches!(invocation.receiver, Receiver::Ordinary)
+                        && let Some(identity) = identity_decorator_factory(definition)
+                        && let Some(identity) = self.local(body, &identity.name.text, END)
+                    {
+                        self.edge(scope, identity, "decorator", "certain");
+                        return true;
+                    }
                 }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_decorator",
+                    "local decorator may replace or invoke the decorated definition",
+                );
             }
             Value::IdentityDecoratorFactory
                 if self.phase03 && args.len() == 1 && keywords.is_empty() =>
@@ -7668,7 +7931,13 @@ impl<'a> Graph<'a> {
                 }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
                 reach.symbols.insert(edge.target);
-                if matches!(edge.kind, "type_reference" | "generator_creation") {
+                if matches!(
+                    edge.kind,
+                    "type_reference"
+                        | "generator_creation"
+                        | "sqlalchemy_hybrid_descriptor"
+                        | "celery_backend_default"
+                ) {
                     continue;
                 }
                 let Binding::Definition(_, scope) = self.symbols[edge.target].binding else {
@@ -7736,6 +8005,7 @@ impl<'a> Graph<'a> {
             }
             if self.phase03 {
                 self.activate_django_signals(reach, &mut pending, verification, possible);
+                self.activate_django_autoreload_wrappers(reach, &mut pending, possible);
                 self.activate_fastapi(reach, &mut pending);
                 self.activate_flask_parameter_hooks(reach, &mut pending);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
@@ -7971,6 +8241,8 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.report_converter_string_calls(&reach);
+            self.report_django_autoreload_wrappers(&reach);
             self.report_flask_parameter_hooks(&reach);
         }
         self.issues.extend(
@@ -8090,6 +8362,9 @@ impl<'a> Graph<'a> {
         }
         let mut definitions = BTreeMap::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
+            if matches!(symbol.binding, Binding::Deleted) {
+                continue;
+            }
             let scope = &self.scopes[symbol.scope];
             let name = &symbol.name.text;
             if matches!(symbol.binding, Binding::Import(import) if import.wildcard_member) {
@@ -8102,6 +8377,7 @@ impl<'a> Graph<'a> {
                     Binding::Import(_) => "import",
                     Binding::Variable(..) => "variable",
                     Binding::Parameter => "parameter",
+                    Binding::Deleted => unreachable!("deletions do not add definitions"),
                 };
                 let file = &self.files[scope.file].path;
                 let Location { line, column } = symbol.name.at;
@@ -8277,6 +8553,7 @@ struct Reachability {
     deferred_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
+    fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
     fastapi_limited: bool,
@@ -8406,6 +8683,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 statements.extend(body);
             }
             StatementKind::Return(value) | StatementKind::Raise(value) => expressions.extend(value),
+            StatementKind::DeleteName(name) => {
+                assigned.insert(name.text.as_str());
+            }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
             | StatementKind::DiscardedComprehension(value) => expressions.push(value),
@@ -8434,6 +8714,17 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::Boolean { values, .. }
             | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),
+            ExpressionKind::Comprehension {
+                iterators,
+                elements,
+                ..
+            } => {
+                expressions.extend(elements);
+                for iterator in iterators {
+                    expressions.push(&iterator.iterable);
+                    expressions.extend(&iterator.filters);
+                }
+            }
             ExpressionKind::Compare { left, right, .. }
             | ExpressionKind::OrderingComparison { left, right } => {
                 expressions.extend([left.as_ref(), right.as_ref()]);
@@ -8450,10 +8741,13 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 element, container, ..
             } => expressions.extend([element.as_ref(), container.as_ref()]),
             ExpressionKind::Text(_)
+            | ExpressionKind::IterationVariable(_)
             | ExpressionKind::Bool(_)
             | ExpressionKind::Scalar
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
+            | ExpressionKind::IdentityLambda
+            | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}
         }
     }

@@ -3305,12 +3305,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(app.backend for item in [1])-none-False-80]"
@@ -3318,12 +3317,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(app.backend for item in [1])-none-True-0]"
@@ -3331,12 +3329,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(app.backend for item in [1])-none-True-80]"
@@ -3344,12 +3341,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in (app.backend if enabled else []))-possible-False-0]"
@@ -3357,12 +3353,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in (app.backend if enabled else []))-possible-False-80]"
@@ -3370,12 +3365,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in (app.backend if enabled else []))-possible-True-0]"
@@ -3383,12 +3377,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in (app.backend if enabled else []))-possible-True-80]"
@@ -3396,12 +3389,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [] for other in [app.backend])-none-False-0]"
@@ -3409,12 +3401,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [] for other in [app.backend])-none-False-80]"
@@ -3422,12 +3413,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [] for other in [app.backend])-none-True-0]"
@@ -3435,12 +3425,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [] for other in [app.backend])-none-True-80]"
@@ -3448,12 +3437,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [app.backend])-exact-False-0]"
@@ -3461,12 +3449,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [app.backend])-exact-False-80]"
@@ -3474,12 +3461,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [app.backend])-exact-True-0]"
@@ -3487,12 +3473,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[(item for item in [app.backend])-exact-True-80]"
@@ -3500,12 +3485,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for app in [SimpleNamespace(backend=1)]]-none-False-0]"
@@ -3513,12 +3497,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for app in [SimpleNamespace(backend=1)]]-none-False-80]"
@@ -3526,12 +3509,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for app in [SimpleNamespace(backend=1)]]-none-True-0]"
@@ -3539,12 +3521,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for app in [SimpleNamespace(backend=1)]]-none-True-80]"
@@ -3552,12 +3533,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if False]-none-False-0]"
@@ -3565,12 +3545,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if False]-none-False-80]"
@@ -3578,12 +3557,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if False]-none-True-0]"
@@ -3591,12 +3569,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if False]-none-True-80]"
@@ -3604,12 +3581,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if True]-exact-False-0]"
@@ -3617,12 +3593,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if True]-exact-False-80]"
@@ -3630,12 +3605,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if True]-exact-True-0]"
@@ -3643,12 +3617,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if True]-exact-True-80]"
@@ -3656,12 +3629,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if []]-none-False-0]"
@@ -3669,12 +3641,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if []]-none-False-80]"
@@ -3682,12 +3653,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if []]-none-True-0]"
@@ -3695,12 +3665,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if []]-none-True-80]"
@@ -3708,12 +3677,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if enabled]-possible-False-0]"
@@ -3721,12 +3689,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if enabled]-possible-False-80]"
@@ -3734,12 +3701,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if enabled]-possible-True-0]"
@@ -3747,12 +3713,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if enabled]-possible-True-80]"
@@ -3760,12 +3725,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if not False]-exact-False-0]"
@@ -3773,12 +3737,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if not False]-exact-False-80]"
@@ -3786,12 +3749,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if not False]-exact-True-0]"
@@ -3799,12 +3761,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1] if not False]-exact-True-80]"
@@ -3812,12 +3773,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1]]-exact-False-0]"
@@ -3825,12 +3785,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1]]-exact-False-80]"
@@ -3838,12 +3797,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1]]-exact-True-0]"
@@ -3851,12 +3809,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in [1]]-exact-True-80]"
@@ -3864,12 +3821,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in []]-none-False-0]"
@@ -3877,12 +3833,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in []]-none-False-80]"
@@ -3890,12 +3845,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in []]-none-True-0]"
@@ -3903,12 +3857,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in []]-none-True-80]"
@@ -3916,12 +3869,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in values]-possible-False-0]"
@@ -3929,12 +3881,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in values]-possible-False-80]"
@@ -3942,12 +3893,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in values]-possible-True-0]"
@@ -3955,12 +3905,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[app.backend for item in values]-possible-True-80]"
@@ -3968,12 +3917,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:256", "test/test_celery_backend_precision.py:258"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if False for other in [app.backend]]-none-False-0]"
@@ -3981,12 +3929,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if False for other in [app.backend]]-none-False-80]"
@@ -3994,12 +3941,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if False for other in [app.backend]]-none-True-0]"
@@ -4007,12 +3953,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if False for other in [app.backend]]-none-True-80]"
@@ -4020,12 +3965,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if app.backend]-exact-False-0]"
@@ -4033,12 +3977,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if app.backend]-exact-False-80]"
@@ -4046,12 +3989,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if app.backend]-exact-True-0]"
@@ -4059,12 +4001,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[item for item in [1] if app.backend]-exact-True-80]"
@@ -4072,12 +4013,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[value for app in [SimpleNamespace(backend=1)] for value in [app.backend]]-none-False-0]"
@@ -4085,12 +4025,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[value for app in [SimpleNamespace(backend=1)] for value in [app.backend]]-none-False-80]"
@@ -4098,12 +4037,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[value for app in [SimpleNamespace(backend=1)] for value in [app.backend]]-none-True-0]"
@@ -4111,12 +4049,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[[value for app in [SimpleNamespace(backend=1)] for value in [app.backend]]-none-True-80]"
@@ -4124,12 +4061,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in [1]}-exact-False-0]"
@@ -4137,12 +4073,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in [1]}-exact-False-80]"
@@ -4150,12 +4085,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in [1]}-exact-True-0]"
@@ -4163,12 +4097,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in [1]}-exact-True-80]"
@@ -4176,12 +4109,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in []}-none-False-0]"
@@ -4189,12 +4121,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in []}-none-False-80]"
@@ -4202,12 +4133,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in []}-none-True-0]"
@@ -4215,12 +4145,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{app.backend for item in []}-none-True-80]"
@@ -4228,12 +4157,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1] if False}-none-False-0]"
@@ -4241,12 +4169,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1] if False}-none-False-80]"
@@ -4254,12 +4181,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1] if False}-none-True-0]"
@@ -4267,12 +4193,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1] if False}-none-True-80]"
@@ -4280,12 +4205,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:250", "test/test_celery_backend_precision.py:256"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1]}-exact-False-0]"
@@ -4293,12 +4217,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1]}-exact-False-80]"
@@ -4306,12 +4229,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1]}-exact-True-0]"
@@ -4319,12 +4241,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_comprehension_evaluation_controls_backend_cache[{item: app.backend for item in [1]}-exact-True-80]"
@@ -4332,12 +4253,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:247", "test/test_celery_backend_precision.py:248", "test/test_celery_backend_precision.py:252", "test/test_celery_backend_precision.py:254"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_deleted_backend_export_does_not_root_original[False-0]"
@@ -4345,12 +4265,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:178", "test/test_celery_backend_precision.py:183"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: assignment target must be a simple name (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_deleted_backend_export_does_not_root_original[False-80]"
@@ -4358,12 +4277,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:178", "test/test_celery_backend_precision.py:183"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: assignment target must be a simple name (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_deleted_backend_export_does_not_root_original[True-0]"
@@ -4371,12 +4289,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:178"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: assignment target must be a simple name (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_deleted_backend_export_does_not_root_original[True-80]"
@@ -4384,12 +4301,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_celery_backend_precision.py"
 assertions = ["test/test_celery_backend_precision.py:40", "test/test_celery_backend_precision.py:47", "test/test_celery_backend_precision.py:178"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_celery_backend_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: assignment target must be a simple name (#43)"
 
 [[cases]]
 id = "test/test_celery_backend_precision.py::test_export_alias_retains_the_captured_definition[False-0]"
@@ -6780,12 +6696,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_evidence_boundaries.py"
 assertions = ["test/test_fastapi_evidence_boundaries.py:15", "test/test_fastapi_evidence_boundaries.py:62", "test/test_fastapi_evidence_boundaries.py:63", "test/test_fastapi_evidence_boundaries.py:64"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_evidence_boundaries.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_evidence_boundaries.py::test_reused_analyzer_refreshes_fastapi_provider_evidence"
@@ -6793,12 +6708,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_evidence_boundaries.py"
 assertions = ["test/test_fastapi_evidence_boundaries.py:15", "test/test_fastapi_evidence_boundaries.py:75", "test/test_fastapi_evidence_boundaries.py:78", "test/test_fastapi_evidence_boundaries.py:79"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_evidence_boundaries.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_evidence_boundaries.py::test_unrelated_decorators_keep_their_own_evidence[from celery import shared_task as task_entry-task_entry-True]"
@@ -6806,12 +6720,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_evidence_boundaries.py"
 assertions = ["test/test_fastapi_evidence_boundaries.py:15", "test/test_fastapi_evidence_boundaries.py:104", "test/test_fastapi_evidence_boundaries.py:107"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_evidence_boundaries.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_evidence_boundaries.py::test_unrelated_decorators_keep_their_own_evidence[from plugin import register_entry-register_entry-False]"
@@ -7134,12 +7047,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_hook_precision.py"
 assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_precision.py:154"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_identity_lookalike_decorators_are_not_framework_callbacks[middleware('http')]"
@@ -7147,12 +7059,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_hook_precision.py"
 assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_precision.py:154"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_identity_lookalike_decorators_are_not_framework_callbacks[on_event('startup')]"
@@ -7160,12 +7071,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_hook_precision.py"
 assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_precision.py:154"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_imperative_exception_handler_consumes_its_request_and_exception_parameters"
@@ -7234,12 +7144,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_hook_precision.py"
 assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_precision.py:297"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_replaced_registration_methods_do_not_prove_callbacks_run[exception_handler]"
@@ -7247,12 +7156,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_hook_precision.py"
 assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_precision.py:297"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_replaced_registration_methods_do_not_prove_callbacks_run[middleware]"
@@ -7260,12 +7168,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_hook_precision.py"
 assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_precision.py:297"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_replacing_callback_decorator_cannot_prove_original_body_execution"
@@ -7459,12 +7366,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-erasing_inner_decorator]"
@@ -7498,12 +7404,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-fake_imperative_route]"
@@ -7595,12 +7500,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277", "test/test_fastapi_route_precision.py:279", "test/test_fastapi_route_precision.py:280"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-nested_router_included_late]"
@@ -7645,12 +7549,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-rebound_constructor]"
@@ -7658,12 +7561,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-replaced_route_method]"
@@ -7671,12 +7573,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-router_added_after_include]"
@@ -7760,12 +7661,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-unincluded_router]"
@@ -7872,12 +7772,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-erasing_inner_decorator]"
@@ -7911,12 +7810,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-fake_imperative_route]"
@@ -8008,12 +7906,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277", "test/test_fastapi_route_precision.py:279", "test/test_fastapi_route_precision.py:280"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-nested_router_included_late]"
@@ -8058,12 +7955,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-rebound_constructor]"
@@ -8071,12 +7967,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-replaced_route_method]"
@@ -8084,12 +7979,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-router_added_after_include]"
@@ -8173,12 +8067,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-unincluded_router]"
@@ -8285,12 +8178,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-erasing_inner_decorator]"
@@ -8324,12 +8216,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-fake_imperative_route]"
@@ -8421,12 +8312,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277", "test/test_fastapi_route_precision.py:279", "test/test_fastapi_route_precision.py:280"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-nested_router_included_late]"
@@ -8471,12 +8361,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-rebound_constructor]"
@@ -8484,12 +8373,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-replaced_route_method]"
@@ -8497,12 +8385,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-router_added_after_include]"
@@ -8586,12 +8473,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-unincluded_router]"
@@ -8698,12 +8584,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-erasing_inner_decorator]"
@@ -8737,12 +8622,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-fake_imperative_route]"
@@ -8834,12 +8718,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277", "test/test_fastapi_route_precision.py:279", "test/test_fastapi_route_precision.py:280"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-nested_router_included_late]"
@@ -8884,12 +8767,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-rebound_constructor]"
@@ -8897,12 +8779,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-replaced_route_method]"
@@ -8910,12 +8791,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-router_added_after_include]"
@@ -8999,12 +8879,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_route_precision.py:273", "test/test_fastapi_route_precision.py:275", "test/test_fastapi_route_precision.py:277"]
-prerequisites = ["installed-sdk", "native-framework-evidence"]
+prerequisites = ["installed-sdk", "native-framework-evidence", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-unincluded_router]"

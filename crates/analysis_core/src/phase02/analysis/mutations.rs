@@ -8,6 +8,7 @@ enum ReceiverKey {
     Module(String),
     Signal(Object),
     FlaskLoginManager(Object),
+    Fastapi(Object),
 }
 
 #[derive(Clone)]
@@ -142,7 +143,13 @@ impl Graph<'_> {
         if !self.modeled_mutation_member(&receiver, member) {
             return;
         }
-        let value = if conditional {
+        let deletes_inherited_method = value.is_none()
+            && matches!(receiver, ReceiverKey::Fastapi(_))
+            && !matches!(
+                self.member_write(&receiver, member, (file, at)),
+                Some(MemberWriteValue::Replacement(_))
+            );
+        let value = if conditional || deletes_inherited_method {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
             let value = self.probe_identity(file, value, at);
@@ -224,6 +231,14 @@ impl Graph<'_> {
             ReceiverKey::FlaskLoginManager(_) => {
                 flask_login_callback(member) || matches!(member, "__class__" | "login_view")
             }
+            ReceiverKey::Fastapi(_) => {
+                is_route(ObjectKind::App, member, true)
+                    || is_imperative_registration(ObjectKind::App, member)
+                    || matches!(
+                        member,
+                        "include_router" | "mount" | "middleware" | "add_middleware"
+                    )
+            }
         }
     }
 
@@ -239,6 +254,9 @@ impl Graph<'_> {
             Value::DjangoSignal(site) => Some(ReceiverKey::Signal(*site)),
             Value::Object(site, ObjectKind::FlaskLoginManager) => {
                 Some(ReceiverKey::FlaskLoginManager(*site))
+            }
+            Value::Object(site, ObjectKind::App | ObjectKind::Router) => {
+                Some(ReceiverKey::Fastapi(*site))
             }
             _ => None,
         }
@@ -321,6 +339,15 @@ impl Graph<'_> {
         self.member_write(&ReceiverKey::Signal(site), name, access)
     }
 
+    pub(super) fn fastapi_member_write(
+        &self,
+        site: Object,
+        name: &str,
+        access: (ScopeId, Location),
+    ) -> Option<MemberWriteValue> {
+        self.member_write(&ReceiverKey::Fastapi(site), name, access)
+    }
+
     pub(super) fn imported_module_write(
         &self,
         module: &str,
@@ -342,7 +369,9 @@ impl Graph<'_> {
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
-            ReceiverKey::Signal(site) | ReceiverKey::FlaskLoginManager(site) => Some(site.0),
+            ReceiverKey::Signal(site)
+            | ReceiverKey::FlaskLoginManager(site)
+            | ReceiverKey::Fastapi(site) => Some(site.0),
         };
         self.write_value(
             self.mutations.members.get(receiver)?.get(name)?,

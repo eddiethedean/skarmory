@@ -200,6 +200,27 @@ impl Graph<'_> {
             };
             let scope = creation.scope;
             let conditional_creation = creation.conditional;
+            if events
+                .iter()
+                .filter(|event| matches!(event.operation, Operation::Create(_)))
+                .count()
+                > 1
+            {
+                self.scope_issue(
+                    scope,
+                    creation.at,
+                    "unresolved_registration",
+                    "Celery backend analysis cannot distinguish repeated allocations at one source location",
+                );
+                for event in events {
+                    if let Operation::Create(setting) | Operation::Configure(setting) =
+                        event.operation
+                    {
+                        self.retain_celery_backend(event.scope, event.at, &setting, false, false);
+                    }
+                }
+                continue;
+            }
             let mut ordered = Vec::new();
             let mut external = false;
             for event in events {
@@ -214,11 +235,10 @@ impl Graph<'_> {
                         "Celery backend settings cross an unresolved execution boundary",
                     );
                     if let Operation::Configure(setting) = &event.operation {
-                        self.retain_celery_backend(event.scope, event.at, setting, false);
+                        self.retain_celery_backend(event.scope, event.at, setting, false, false);
                     }
                 }
             }
-            ordered.sort_by_key(|event| position(event.at));
             let mut current = BTreeSet::new();
             let mut possible_load = external || conditional_creation;
             let mut opaque_config = false;
@@ -244,6 +264,7 @@ impl Graph<'_> {
                             event.at,
                             &current,
                             possible_load || event.conditional,
+                            false,
                         );
                         if !event.conditional {
                             last = None;
@@ -254,7 +275,9 @@ impl Graph<'_> {
                 }
             }
             if let Some(at) = last {
-                self.retain_celery_backends(scope, at, &current, possible_load);
+                let exact_default =
+                    possible_load && !external && !conditional_creation && !opaque_config;
+                self.retain_celery_backends(scope, at, &current, possible_load, exact_default);
             }
         }
     }
@@ -265,9 +288,16 @@ impl Graph<'_> {
         at: Location,
         candidates: &BTreeSet<Setting>,
         possible: bool,
+        exact_default: bool,
     ) {
         for setting in candidates {
-            self.retain_celery_backend(scope, at, setting, !possible && candidates.len() == 1);
+            self.retain_celery_backend(
+                scope,
+                at,
+                setting,
+                !possible && candidates.len() == 1,
+                exact_default && candidates.len() == 1,
+            );
         }
     }
 
@@ -277,6 +307,7 @@ impl Graph<'_> {
         at: Location,
         setting: &Setting,
         certain: bool,
+        exact_default: bool,
     ) {
         match setting {
             Setting::Builtin => return,
@@ -284,25 +315,50 @@ impl Graph<'_> {
                 let parts = name.rsplit_once(':').or_else(|| name.rsplit_once('.'));
                 if let Some((module, member)) = parts
                     && let Some(&file) = self.modules.get(module)
-                    && let Value::Callable(invocation) = self.module_member_at(
+                {
+                    let provider = self.module_member_at(
                         module,
                         member,
                         END,
                         (scope, at),
                         ModuleMemberAccess::FromImport,
                         0,
-                    )
-                    && !self.is_coroutine(invocation.target)
-                {
-                    if file != self.scopes[scope].file {
-                        self.scopes[scope].imports.push(file);
+                    );
+                    if matches!(provider, Value::DeletedModuleBinding) {
+                        if file != self.scopes[scope].file {
+                            self.scopes[scope].imports.push(file);
+                        }
+                        return;
                     }
-                    let certainty = if certain { "certain" } else { "possible" };
-                    self.invoke(scope, invocation, "celery_backend", certainty, at);
-                    if self.is_class(invocation.target) {
-                        self.constructor(scope, invocation.target, "celery_backend", certainty, at);
+                    if let Value::Callable(invocation) = provider
+                        && !self.is_coroutine(invocation.target)
+                    {
+                        if file != self.scopes[scope].file {
+                            self.scopes[scope].imports.push(file);
+                        }
+                        if exact_default {
+                            // Configuration proves the default for an uncached
+                            // lookup. An earlier possible load can still win.
+                            self.edge(
+                                scope,
+                                invocation.target,
+                                "celery_backend_default",
+                                "certain",
+                            );
+                        }
+                        let certainty = if certain { "certain" } else { "possible" };
+                        self.invoke(scope, invocation, "celery_backend", certainty, at);
+                        if self.is_class(invocation.target) {
+                            self.constructor(
+                                scope,
+                                invocation.target,
+                                "celery_backend",
+                                certainty,
+                                at,
+                            );
+                        }
+                        return;
                     }
-                    return;
                 }
             }
             Setting::Unknown => {}

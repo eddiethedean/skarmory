@@ -246,7 +246,9 @@ aliases, and route and router registration options. App-wide dependencies apply
 to selected API routes. The analyzer also resolves selected HTTP middleware and
 exception handlers and async context-manager lifespans for active apps and
 included routers. A custom app lifespan supersedes that app's startup and
-shutdown hooks. FastAPI versions before 0.137 copy routes
+shutdown hooks. Constructor startup and shutdown callbacks on included routers
+remain eligible when a merged default lifespan invokes them. FastAPI versions
+before 0.137 copy routes
 at inclusion. Newer versions retain the router and can expose routes added
 later. The analyzer reports incomplete coverage when either model can select
 different routes or postponed dependencies, or when ordering across scopes
@@ -325,8 +327,10 @@ declarations. In a conventional unselected plugin module, a bounded hook
 signature and a resolved pytest import can contribute possible-use evidence.
 pytest autouse fixtures also apply to unittest cases collected by pytest. A reachable eager Pydantic
 model declaration can execute its core-schema hook during class creation.
-A resolved model dump can invoke the selected Pydantic serializers, including
-a bounded wrapping serializer that delegates through its handler argument.
+A resolved model dump can invoke the selected Pydantic serializers and computed
+fields, including a bounded wrapping serializer that delegates through its
+handler argument. A definite instance access also reaches the selected
+computed field.
 These are bounded models under
 [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
@@ -336,9 +340,20 @@ Use the pinned case ledger to assess each contract before claiming parity.
 
 The pinned `django-urlpatterns` and `django-signal-receiver` corpus fixtures
 omit startup and a qualifying settings/URLconf pair, leaving coverage incomplete.
-The `python-unittest-lifecycle` corpus case expects lifecycle retention without a
-discovered test method and a test-only path whitelist. The reviewed inventory must
-account for these differences before qualification.
+The standalone `django-class-based-view`, `django-management-command`, and
+`django-appconfig-ready` fixtures expect retention without a selected
+registration or launcher. The `celery-task-class` fixture declares a task
+without registering it. The `python-unittest-lifecycle` fixture expects hooks
+to be retained without a discovered test method and an unrelated helper to be
+whitelisted by path. These expectations remain required differences in the
+reviewed inventory and do not receive pass credit.
+
+Some pinned Flask and Django lookalike cases deliberately introduce an opaque
+replacement and expect a complete report. Skarmory keeps the missing evidence
+visible when the replacement can affect reachability. FastAPI fixtures whose
+later router registrations depend on the installed FastAPI version still need
+a version-specific qualification variant. Review these differences before
+claiming compatibility for the affected cases.
 
 ### Python shutdown callbacks
 
