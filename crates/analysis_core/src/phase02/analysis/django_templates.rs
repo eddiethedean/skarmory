@@ -312,6 +312,7 @@ impl Graph<'_> {
                 .iter()
                 .map(|item| match item {
                     Value::Text(path) => project.relative_directory(path),
+                    Value::ProjectPath(path) => Some(path.clone()),
                     _ => None,
                 })
                 .collect::<Option<Vec<_>>>()?,

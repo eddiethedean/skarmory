@@ -81,6 +81,38 @@ fn selected_django_template_follows_lexical_context_and_fresh_source() {
             .any(|item| item["kind"] == "unresolved_django_template")
     );
 
+    fs::create_dir_all(root.join("project/pages/app")).unwrap();
+    fs::create_dir_all(root.join("pages/app")).unwrap();
+    fs::write(root.join("project/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("project/loader.py"),
+        "from pathlib import Path as Location\n\
+         BASE = Location(__file__).resolve().parent\n\
+         TEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', \
+                        'DIRS': [BASE / 'pages']}]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("settings.py"),
+        "from project.loader import TEMPLATES\nROOT_URLCONF = 'urls'\nINSTALLED_APPS = ['app']\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("project/pages/app/record_detail.html"),
+        "{{ object.total }}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/app/record_detail.html"),
+        "{{ object.retired }}",
+    )
+    .unwrap();
+    let imported = scan(root, Some(cache.path()));
+    assert_eq!(imported, scan(root, None));
+    assert_eq!(imported["coverage"]["status"], "complete");
+    assert!(!has_unused(&imported, "app.models.Record.total"));
+    assert!(has_unused(&imported, "app.models.Record.retired"));
+
     fs::write(root.join("urls.py"), "urlpatterns = []\n").unwrap();
     let inactive = scan(root, None);
     assert_eq!(inactive["coverage"]["status"], "complete");

@@ -336,9 +336,10 @@ An opaque configuration or consumer leaves coverage incomplete.
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
 Django template directories, literal inheritance and includes, and supported
-template scopes. It applies file exclusions and requires resolved loader
-settings and context. Unsupported markup in a selected template produces a
-coverage diagnostic.
+template scopes. Bounded pathlib paths start at the file that defines them,
+including settings imported from another module. The preview applies file
+exclusions and requires resolved loader settings and context. Unsupported
+markup in a selected template produces a coverage diagnostic.
 [Django generic views](https://docs.djangoproject.com/en/5.2/ref/class-based-views/generic-display/) · [Django template API](https://docs.djangoproject.com/en/5.2/ref/templates/api/)
 
 A supported Django form validation call retains possible `clean` and
