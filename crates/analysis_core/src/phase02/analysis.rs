@@ -20,6 +20,7 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 mod aiohttp;
 mod celery;
 mod comprehension;
+mod django_globals;
 mod fastapi;
 mod flask;
 mod frameworks;
@@ -518,6 +519,7 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
@@ -575,6 +577,7 @@ pub(super) fn analyze_with_verification(
     graph.index_base_classes();
     if phase03 {
         graph.index_flask_context();
+        graph.index_django_global_writes();
     }
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
@@ -696,6 +699,7 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
@@ -1484,6 +1488,9 @@ impl<'a> Graph<'a> {
                 }
                 return None;
             }
+            if let ModuleMember::Binding(id, _) = &lookup {
+                self.record_django_global_read(scope, *id, import.local.at);
+            }
             match lookup {
                 ModuleMember::Lazy(_, branch) => return Some(branch),
                 ModuleMember::Missing => self.import_issue(
@@ -2026,6 +2033,7 @@ impl<'a> Graph<'a> {
             return match self.selected_module_member(file, member, before, access, mode) {
                 ModuleMember::Binding(id, import) => {
                     self.read.extend(import);
+                    self.record_django_global_read(scope, id, at);
                     if matches!(self.symbols[id].binding, Binding::Deleted)
                         && (self.local(file, "__getattr__", before).is_some()
                             || self.modules.contains_key(submodule.as_str()))
@@ -3033,6 +3041,7 @@ impl<'a> Graph<'a> {
                     return Value::Unknown;
                 }
                 if let LexicalBinding::Found(id) = binding {
+                    self.record_django_global_read(scope, id, expression.at);
                     if let ValueEvaluation::Lazy {
                         argument: Some((parameter, text)),
                         ..
@@ -5500,6 +5509,7 @@ impl<'a> Graph<'a> {
         if !invocation.verified {
             self.direct.insert(id);
         }
+        self.record_django_global_call(invocation, call, certainty);
         self.record_direct_arguments(invocation, call, certainty);
         if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
         {
@@ -6090,10 +6100,15 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::Assign {
-                    value, annotation, ..
+                    names,
+                    value,
+                    annotation,
                 } => {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
+                        if annotation.is_none() {
+                            self.record_django_global_initializer(scope, names, value, at);
+                        }
                     }
                     if let Some(annotation) = annotation {
                         let evaluated = self.scopes[scope]
@@ -6117,6 +6132,9 @@ impl<'a> Graph<'a> {
                     } else {
                         self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
                     }
+                }
+                StatementKind::SetGlobalName { value, .. } => {
+                    self.record_django_global_write(scope, value, at);
                 }
                 StatementKind::DeleteName(name) => {
                     if !self.phase03
@@ -8655,6 +8673,7 @@ impl<'a> Graph<'a> {
             }
         });
         self.resolve_class_invocations();
+        self.resolve_django_global_signals(&roots, &possible_roots);
         let (mut reach, mut static_reach, mut verification, mut converged) =
             self.establish_reachability(&roots, &possible_roots, snapshot);
         if self.phase03
@@ -8682,6 +8701,7 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.report_django_global_signals(&reach);
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
@@ -9149,6 +9169,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
+            | StatementKind::SetGlobalName { value, .. }
             | StatementKind::DiscardedComprehension(value) => expressions.push(value),
         }
     }

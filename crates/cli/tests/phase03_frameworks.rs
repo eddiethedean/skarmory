@@ -4343,6 +4343,127 @@ def helper():
 }
 
 #[test]
+fn django_signal_registration_follows_cross_module_global_callback_writes() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"from . import callbacks
+
+def wrapper():
+    callbacks.install()
+
+def dormant_reader():
+    return callbacks.callback
+
+wrapper()
+callbacks.select()
+wrapper()
+"#;
+    django_signal_project(root, source);
+    fs::write(
+        root.join("inventory/callbacks.py"),
+        r#"from django.db.models.signals import post_save
+
+def first(sender, **kwargs):
+    return first_helper()
+
+def first_helper():
+    return 1
+
+def second(sender, **kwargs):
+    return second_helper()
+
+def second_helper():
+    return 2
+
+callback = first
+
+def install():
+    post_save.connect(callback)
+
+def select():
+    global callback
+    callback = second
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [
+            ("inventory.callbacks.first", "certain"),
+            ("inventory.callbacks.second", "certain")
+        ]
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["unused_functions", "coverage", "dead_code_evidence"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+    let signals = root.join("inventory/signals.py");
+    fs::write(
+        &signals,
+        source.replacen("wrapper()\ncallbacks.select()", "callbacks.select()", 1),
+    )
+    .unwrap();
+    let edited = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        django_signal_evidence(&edited),
+        [("inventory.callbacks.second", "certain")]
+    );
+    let clean = scan(root);
+    for field in ["unused_functions", "coverage", "dead_code_evidence"] {
+        assert_eq!(clean[field], edited[field], "{field}");
+    }
+    for unsupported in [
+        source.replace(
+            "callbacks.select()",
+            "from external import enabled\nif enabled:\n    callbacks.select()",
+        ),
+        format!("{source}\nobserved = callbacks.callback\n"),
+    ] {
+        fs::write(&signals, unsupported).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(django_signal_evidence(&report).is_empty(), "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_global_binding")
+        );
+    }
+}
+
+#[test]
+fn django_signal_global_callback_write_respects_the_module_initializer() {
+    let project = tempfile::tempdir().unwrap();
+    django_signal_project(
+        project.path(),
+        r#"from django.db.models.signals import post_save
+
+def first(sender, **kwargs): return 1
+def second(sender, **kwargs): return 2
+
+def select():
+    global callback
+    callback = second
+
+select()
+callback = first
+post_save.connect(callback)
+"#,
+    );
+    let report = scan(project.path());
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.first", "certain")]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"inventory.signals.second"));
+}
+
+#[test]
 fn django_receiver_decorator_factory_can_be_a_local_identity() {
     let project = tempfile::tempdir().unwrap();
     django_signal_project(

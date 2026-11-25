@@ -118,6 +118,9 @@ impl<'a> Python<'a> {
                 Stmt::DeleteName(name) => {
                     bindings.insert(&name.text, None);
                 }
+                Stmt::SetGlobalName { value, .. } => {
+                    self.expression(value, &bindings);
+                }
                 Stmt::LiteralRouteLoop {
                     path, registration, ..
                 } => {

@@ -64,6 +64,10 @@ pub enum StatementKind {
         environment: Expression,
         value: Expression,
     },
+    SetGlobalName {
+        name: Name,
+        value: Expression,
+    },
     DiscardedComprehension(Expression),
     DeleteName(Name),
     LiteralRouteLoop {
@@ -630,7 +634,7 @@ impl Lowering<'_> {
                     }
                     let name = self.binding_name(node.name.as_str(), &node.name)?;
                     let is_async = node.is_async;
-                    let body = Lowering(
+                    let lowering = Lowering(
                         self.0,
                         if is_async {
                             SyntaxScope::AsyncFunction
@@ -638,8 +642,26 @@ impl Lowering<'_> {
                             SyntaxScope::Function
                         },
                         BTreeMap::new(),
-                    )
-                    .suite(&node.body, next)?;
+                    );
+                    let body = if !is_async
+                        && parameters.is_empty()
+                        && node.decorator_list.is_empty()
+                        && let [Stmt::Global(declare), Stmt::Assign(assign)] = node.body.as_slice()
+                        && let [name] = declare.names.as_slice()
+                        && let [Expr::Name(target)] = assign.targets.as_slice()
+                        && target.id.as_str() == name.as_str()
+                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                    {
+                        vec![Statement {
+                            at: self.0.locate(declare.start()),
+                            kind: StatementKind::SetGlobalName {
+                                name: self.binding_name(name.as_str(), target)?,
+                                value: lowering.expression(&assign.value, next + 1)?,
+                            },
+                        }]
+                    } else {
+                        lowering.suite(&node.body, next)?
+                    };
                     let mut coverage = BodyCoverage {
                         source: self.0,
                         lines: BTreeSet::new(),
