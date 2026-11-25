@@ -67,6 +67,12 @@ impl Protocol {
     }
 }
 
+#[derive(Default)]
+struct SettingsWrites {
+    classes: BTreeMap<SymbolId, BTreeSet<String>>,
+    modules: BTreeSet<ScopeId>,
+}
+
 impl Graph<'_> {
     pub(in crate::phase02::analysis) fn django_settings_protocol_roots(
         &mut self,
@@ -88,12 +94,12 @@ impl Graph<'_> {
         let mut roots = Vec::new();
         for settings in selected {
             // An unresolved side effect can change the effective settings.
-            if self.failed_terminal_modules.contains(&settings)
-                || self
-                    .scope_issues
-                    .iter()
-                    .any(|(scope, _)| *scope == settings)
-            {
+            let Some(writes) = self.django_settings_initializer_writes(settings) else {
+                continue;
+            };
+            // An imported module write can change a named setting before its
+            // export is captured, even if the source binding appears stable.
+            if !writes.modules.is_empty() {
                 continue;
             }
             for name in [
@@ -116,11 +122,108 @@ impl Graph<'_> {
                 let mut paths = Vec::new();
                 collect_settings_paths(name, &value, &mut paths);
                 for (path, protocol) in paths {
-                    self.django_settings_protocol(settings, path, protocol, &mut roots);
+                    self.django_settings_protocol(settings, path, protocol, &writes, &mut roots);
                 }
             }
         }
         roots
+    }
+
+    fn django_settings_initializer_writes(&mut self, start: ScopeId) -> Option<SettingsWrites> {
+        let mut reachable = BTreeSet::new();
+        let mut pending = vec![start];
+        while let Some(scope) = pending.pop() {
+            if reachable.insert(scope) {
+                pending.extend(&self.scopes[scope].imports);
+                pending.extend(&self.scopes[scope].class_bodies);
+                pending.extend(self.synchronous_calls(scope, false));
+            }
+        }
+        if !self.failed_terminal_modules.is_disjoint(&reachable)
+            || self
+                .scope_issues
+                .iter()
+                .any(|(scope, _)| reachable.contains(scope))
+        {
+            return None;
+        }
+        let mut writes = SettingsWrites::default();
+        for scope in reachable {
+            self.django_settings_writes_in(scope, self.scopes[scope].body, &mut writes);
+        }
+        Some(writes)
+    }
+
+    fn django_settings_writes_in(
+        &mut self,
+        scope: ScopeId,
+        body: &[Statement],
+        writes: &mut SettingsWrites,
+    ) {
+        for statement in body {
+            let at = statement.at;
+            let (receiver, name) = match &statement.kind {
+                StatementKind::WriteAttribute {
+                    receiver, member, ..
+                } => (receiver, member.as_str()),
+                StatementKind::Evaluate(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }) if keywords.is_empty() => {
+                    let [receiver, name, rest @ ..] = arguments.as_slice() else {
+                        continue;
+                    };
+                    let ExpressionKind::Text(name) = &name.kind else {
+                        continue;
+                    };
+                    if !matches!(self.probe_identity(scope, function, at),
+                        Value::Provider(provider) if matches!((provider.as_str(), rest.len()),
+                            ("builtins.setattr", 1) | ("builtins.delattr", 0)))
+                    {
+                        continue;
+                    }
+                    (receiver, name.as_str())
+                }
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } => {
+                    let outcome = self.indexed_bool(scope, test, at, 0);
+                    if outcome != Some(false) {
+                        self.django_settings_writes_in(scope, body, writes);
+                    }
+                    if outcome != Some(true) {
+                        self.django_settings_writes_in(scope, otherwise, writes);
+                    }
+                    continue;
+                }
+                StatementKind::With { body, .. } => {
+                    self.django_settings_writes_in(scope, body, writes);
+                    continue;
+                }
+                StatementKind::Return(_) | StatementKind::Raise(_) => break,
+                _ => continue,
+            };
+            match self.probe_identity(scope, receiver, at) {
+                Value::Callable(invocation) if self.is_class(invocation.target) => {
+                    writes
+                        .classes
+                        .entry(invocation.target)
+                        .or_default()
+                        .insert(name.to_owned());
+                }
+                Value::Module(module) => {
+                    writes.modules.insert(module);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn conventional_protocol_settings(&mut self) -> Option<ScopeId> {
@@ -164,6 +267,7 @@ impl Graph<'_> {
         settings: ScopeId,
         path: &str,
         protocol: Protocol,
+        settings_writes: &SettingsWrites,
         roots: &mut Vec<Edge>,
     ) {
         let Some((module, name)) = path.rsplit_once('.') else {
@@ -186,12 +290,19 @@ impl Graph<'_> {
         let Some(target) = self.probe_callable_binding(binding) else {
             return;
         };
+        let Some(provider_writes) = self.django_settings_initializer_writes(file) else {
+            return;
+        };
+        if provider_writes.modules.contains(&file) {
+            return;
+        }
+        let writes = [settings_writes, &provider_writes];
         let class = target.target;
         if matches!(protocol, Protocol::ContextProcessor) {
             if !self.is_class(class)
                 && !self.is_coroutine(class)
                 && !self.is_generator(class)
-                && self.bounded_method_descriptor(class).is_some()
+                && self.bounded_method_descriptor(class) == Some(ConverterDescriptor::Instance)
             {
                 self.read.extend(target.bindings);
                 roots.push(possible_edge(class, protocol.evidence()));
@@ -205,27 +316,42 @@ impl Graph<'_> {
             return;
         };
         // Creation or instance lookup can replace any method on the object.
-        if ["__new__", "__init__", "__getattr__", "__getattribute__"]
-            .iter()
-            .any(|name| {
-                !matches!(
-                    self.django_protocol_member(&mro, name, settings),
-                    Some(None)
-                )
-            })
-        {
+        if [
+            "__new__",
+            "__init__",
+            "__getattr__",
+            "__getattribute__",
+            "__bases__",
+            "__class__",
+            "__dict__",
+        ]
+        .iter()
+        .any(|name| {
+            !matches!(
+                self.django_protocol_member(&mro, name, settings, &writes),
+                Some(None)
+            )
+        }) {
             return;
         }
 
         self.read.extend(target.bindings);
         roots.push(possible_edge(class, "django_setting_reference"));
         for name in protocol.methods() {
-            let Some(Some(method)) = self.django_protocol_member(&mro, name, settings) else {
+            let Some(Some(method)) = self.django_protocol_member(&mro, name, settings, &writes)
+            else {
                 continue;
             };
             let Some(target) = self.probe_callable_binding(method) else {
                 continue;
             };
+            if self.is_coroutine(target.target)
+                && !(matches!(protocol, Protocol::Auth)
+                    && name.starts_with('a')
+                    && *name != "authenticate")
+            {
+                continue;
+            }
             let Some(descriptor) = self.bounded_method_descriptor(target.target) else {
                 continue;
             };
@@ -249,6 +375,7 @@ impl Graph<'_> {
         mro: &[ConverterBase],
         name: &str,
         settings: ScopeId,
+        writes: &[&SettingsWrites],
     ) -> Option<Option<SymbolId>> {
         for &base in mro {
             let ConverterBase::Source(class) = base else {
@@ -257,6 +384,14 @@ impl Graph<'_> {
                 }
                 return None;
             };
+            if writes.iter().any(|writes| {
+                writes
+                    .classes
+                    .get(&class)
+                    .is_some_and(|members| members.contains(name))
+            }) {
+                return None;
+            }
             let Binding::Definition(_, body) = self.symbols[class].binding else {
                 unreachable!()
             };
@@ -309,7 +444,14 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                 }
             }
         }
-        ("LOGGING", _) if get(value, "version").is_some() => {
+        // Native values distinguish definitely nonnumeric versions but
+        // do not retain the value of number literals.
+        ("LOGGING", _)
+            if matches!(
+                get(value, "version"),
+                Some(Value::Scalar | Value::Bool(true))
+            ) =>
+        {
             for (section, protocol) in [
                 ("filters", Protocol::Filter),
                 ("formatters", Protocol::Formatter),

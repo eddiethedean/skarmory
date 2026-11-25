@@ -6190,6 +6190,52 @@ def context(request): return {}
         findings(&edited, "unused_functions").contains(&"service.backends.lookup"),
         "{edited}"
     );
+    let settings = fs::read_to_string(package.join("settings.py")).unwrap();
+    fs::write(
+        package.join("settings.py"),
+        format!("{settings}from . import backends\nsetattr(backends.Right, 'get_user', None)\n"),
+    )
+    .unwrap();
+    fs::write(
+        package.join("config.py"),
+        "BACKENDS = ['service.backends.Configured']\nLOGGING = {}\nTEMPLATES = []\n",
+    )
+    .unwrap();
+    let replaced = scan(root);
+    let symbols = replaced["dead_code_evidence"]["symbols"]
+        .as_array()
+        .unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Right.aget_user")
+    );
+    assert!(
+        !symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Right.get_user")
+    );
+
+    fs::write(
+        package.join("config.py"),
+        concat!(
+            "BACKENDS = ['service.backends.Configured']\n",
+            "LOGGING = {'version': 1, 'filters': {'live': {'()': 'service.backends.Filter'}}}\n",
+            "TEMPLATES = []\n",
+            "def reset():\n    LOGGING.clear()\n",
+            "reset()\n",
+        ),
+    )
+    .unwrap();
+    let mutated = scan_with_exit(root, None, None, 2);
+    assert_eq!(mutated["coverage"]["status"], "incomplete");
+    assert!(
+        !mutated["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Filter.filter")
+    );
 }
 
 #[test]
