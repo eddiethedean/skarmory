@@ -28,6 +28,7 @@ impl Graph<'_> {
                 && (self.terminal_shadowed_framework_package(scope, statement)
                     || self.terminal_shadowed_flat_django_provider(scope, statement)
                     || self.terminal_missing_django_reloader(scope, statement)
+                    || self.terminal_django_application_initializer(scope, statement)
                     || self.terminal_django_auth_initializer(scope, statement)
                     || self.terminal_django_backend_replacement(scope, statement)
                     || self.terminal_django_runpython(scope, statement)
@@ -85,6 +86,77 @@ impl Graph<'_> {
             }
             _ => false,
         }
+    }
+
+    fn terminal_django_application_initializer(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        if !matches!(
+            self.files[scope].path.rsplit('/').next(),
+            Some("wsgi.py" | "asgi.py")
+        ) {
+            return false;
+        }
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } = &statement.kind
+        else {
+            return false;
+        };
+        let [target] = names.as_slice() else {
+            return false;
+        };
+        let missing = match &value.kind {
+            ExpressionKind::Name(_) => value,
+            ExpressionKind::Call { function, .. } if target.text == "application" => function,
+            _ => return false,
+        };
+        if !self.unbound_module_name(scope, missing, statement.at) {
+            return false;
+        }
+        let body = self.scopes[scope].body;
+        let Some(index) = body.iter().position(|item| std::ptr::eq(item, statement)) else {
+            return false;
+        };
+        let read = std::mem::take(&mut self.read);
+        let mut selected_settings = false;
+        let closed = body[..index].iter().all(|item| match &item.kind {
+            StatementKind::Import(import) => {
+                let allowed = matches!((import.module.as_str(), import.member.as_deref()),
+                    ("os" | "django", None)
+                    | ("django.core.wsgi", Some("get_wsgi_application"))
+                    | ("django.core.asgi", Some("get_asgi_application")));
+                if !allowed || import.level != 0 || self.import_module(scope, import).as_deref() != Some(import.module.as_str()) {
+                    return false;
+                }
+                let root = import.module.split('.').next().unwrap_or(&import.module);
+                !self.modules.contains_key(root) && self.nested_packages.resolve(scope, root) == root
+            }
+            StatementKind::Evaluate(Expression { kind: ExpressionKind::Call { function, arguments, keywords }, .. }) => {
+                let settings = keywords.is_empty()
+                    && matches!(arguments.as_slice(), [Expression { kind: ExpressionKind::Text(key), .. }, Expression { kind: ExpressionKind::Text(_), .. }]
+                        if key == "DJANGO_SETTINGS_MODULE")
+                    && matches!(self.probe_identity(scope, function, item.at), Value::Provider(provider) if provider == "os.environ.setdefault");
+                selected_settings |= settings;
+                settings
+            }
+            _ => literal_initializer_statement(item),
+        });
+        let terminal = closed
+            && selected_settings
+            && (target.text == "application"
+                || self.local(scope, &target.text, statement.at).is_some_and(|binding| {
+                    matches!(self.binding(binding, statement.at, 0), Value::Provider(provider)
+                        if matches!(provider.as_str(), "django" | "django.core.wsgi.get_wsgi_application" | "django.core.asgi.get_asgi_application"))
+                }));
+        self.read = read;
+        // Earlier imports and settings selection ran in the ordinary walk.
+        // The missing name prevents the replacement or application assignment.
+        terminal
     }
 
     fn terminal_shadowed_framework_package(
