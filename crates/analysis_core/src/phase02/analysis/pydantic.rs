@@ -7,6 +7,7 @@ const SERIALIZER: &str = "pydantic_serializer";
 #[derive(Clone, Copy)]
 enum Callback {
     Field,
+    Computed,
     Model,
     Wrap { delegate: Option<SymbolId> },
     Opaque,
@@ -16,6 +17,7 @@ enum Callback {
 pub(super) struct Serialization {
     callbacks: BTreeMap<SymbolId, Callback>,
     dumps: Vec<(SymbolId, ScopeId, Location, bool)>,
+    reads: Vec<(Invocation, ScopeId, Location)>,
 }
 
 impl Graph<'_> {
@@ -51,6 +53,15 @@ impl Graph<'_> {
         let Binding::Definition(definition, body) = self.symbols[target].binding else {
             unreachable!("serializer decorators apply to definitions");
         };
+        let computed = provider == "pydantic.computed_field";
+        let supported_decorators = match definition.decorators.as_slice() {
+            [_] => true,
+            [_, property] if computed => {
+                matches!(self.identity(scope, property, definition.name.at, 0),
+                    Value::Provider(name) if name == "builtins.property")
+            }
+            _ => false,
+        };
         let mode = match keywords {
             [] => Some("plain"),
             [(key, mode)] if key == "mode" => match &mode.kind {
@@ -60,13 +71,16 @@ impl Graph<'_> {
             _ => None,
         };
         let callback = if definition.kind != DefinitionKind::Function
-            || definition.decorators.len() != 1
+            || !supported_decorators
             || !definition.simple_positional_parameters
             || definition.is_generator
         {
             Callback::Opaque
         } else {
             match (provider, mode, args, definition.parameters.as_slice()) {
+                ("pydantic.computed_field", Some("plain"), [], [_]) if keywords.is_empty() => {
+                    Callback::Computed
+                }
                 ("pydantic.model_serializer", Some("plain"), [], [_, ..]) => Callback::Model,
                 ("pydantic.model_serializer", Some("wrap"), [], [receiver, handler, ..]) => {
                     Callback::Wrap {
@@ -90,7 +104,35 @@ impl Graph<'_> {
             .insert(target, callback);
     }
 
+    pub(super) fn read_pydantic_computed_field(
+        &mut self,
+        scope: ScopeId,
+        value: &Value,
+        at: Location,
+    ) {
+        if self.phase03
+            && let Value::Callable(invocation) = value
+            && let Receiver::Bound(class) = invocation.receiver
+            && self.framework_class_role(class, &mut BTreeSet::new(), 0)
+                == Some(FrameworkClassRole::PydanticModel)
+        {
+            self.pydantic_serialization
+                .reads
+                .push((*invocation, scope, at));
+        }
+    }
+
     pub(super) fn collect_pydantic_serialization(&mut self) {
+        for (invocation, scope, at) in std::mem::take(&mut self.pydantic_serialization.reads) {
+            if matches!(
+                self.pydantic_serialization
+                    .callbacks
+                    .get(&invocation.target),
+                Some(Callback::Computed)
+            ) {
+                self.invoke(scope, invocation, SERIALIZER, "certain", at);
+            }
+        }
         for (class, scope, at, default_options) in
             std::mem::take(&mut self.pydantic_serialization.dumps)
         {
@@ -114,7 +156,7 @@ impl Graph<'_> {
                             continue;
                         }
                         match callback {
-                            Callback::Field => fields.push(target),
+                            Callback::Field | Callback::Computed => fields.push(target),
                             Callback::Model | Callback::Wrap { .. } => models.push(target),
                             Callback::Opaque => unresolved.push(target),
                         }

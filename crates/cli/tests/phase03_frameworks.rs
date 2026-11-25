@@ -68,6 +68,46 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn pydantic_computed_fields_follow_dump_and_property_access() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("models.py"),
+        concat!(
+            "from pydantic import BaseModel, computed_field\n",
+            "class Dumped(BaseModel):\n",
+            "    @computed_field\n    @property\n",
+            "    def name(self) -> str: return dump_name()\n",
+            "class Accessed(BaseModel):\n",
+            "    @computed_field\n    def name(self) -> str: return accessed_name()\n",
+            "class Constructed(BaseModel):\n",
+            "    @computed_field\n    @property\n",
+            "    def name(self) -> str: return dormant_name()\n",
+            "def dump_name(): return 'dumped'\n",
+            "def accessed_name(): return 'accessed'\n",
+            "def dormant_name(): return 'dormant'\n",
+            "Dumped().model_dump()\n",
+            "Accessed().name\n",
+            "Constructed()\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    for live in [
+        "models.Dumped.name",
+        "models.dump_name",
+        "models.Accessed.name",
+        "models.accessed_name",
+    ] {
+        assert!(!unused.contains(&live), "{live}: {report}");
+    }
+    for dormant in ["models.Constructed.name", "models.dormant_name"] {
+        assert!(unused.contains(&dormant), "{dormant}: {report}");
+    }
+}
+
+#[test]
 fn sqlalchemy_hybrid_descriptor_retains_the_getter_without_calling_it() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

@@ -4898,6 +4898,7 @@ impl<'a> Graph<'a> {
                 if let Value::CeleryBackend(object) = value {
                     self.record_celery_backend_read(object, scope, expr.at);
                 }
+                self.read_pydantic_computed_field(scope, &value, expr.at);
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
@@ -5949,7 +5950,9 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && matches!(
                         name.as_str(),
-                        "pydantic.field_serializer" | "pydantic.model_serializer"
+                        "pydantic.computed_field"
+                            | "pydantic.field_serializer"
+                            | "pydantic.model_serializer"
                     ) =>
             {
                 self.record_pydantic_serializer(scope, target, &name, args, keywords);
@@ -6012,8 +6015,7 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && matches!(
                         name.as_str(),
-                        "pydantic.computed_field"
-                            | "pydantic.field_validator"
+                        "pydantic.field_validator"
                             | "pydantic.model_validator"
                             | "pydantic.root_validator"
                             | "pydantic.validator"
