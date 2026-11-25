@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,227 have port mappings. The reported release
+milestones. Of the required cases, 1,235 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -80,7 +80,9 @@ eight import-scope cases where a project-local package has no such submodule.
 Those cases now replay the original declaration, activation and unused-route
 assertions through the installed SDK. The import-root alias engine port stages
 the original nested project and verifies both negative controls through the
-native index. The graph limit and cycle handling cases still need ports.
+native index. Two router graph ports run the original budget and cycle
+assertions against the native traversal. The receipts preserve the original
+edges, the uncalled-owner control, and the fixture-specific work limit.
 
 The eight version-sensitive FastAPI variants use a separate live-router
 receipt. The runner verifies the FastAPI 0.141.1 runtime wheels against a
@@ -96,12 +98,12 @@ Django settings protocols and ordered collection mutations.
 
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
-| URL function callbacks and view providers | 41 | 10 |
+| URL function callbacks and view providers | 43 | 8 |
 | Path converter registration and protocol | 59 | 1 |
 | Authentication backend selection and hooks | 69 | 2 |
 | Named settings imports and overrides | 26 | 2 |
 | Model, command, and form hook provenance | 37 | 10 |
-| Management command reachability | 23 | 13 |
+| Management command reachability | 24 | 12 |
 | Python template liveness | 48 | 1 |
 | Form hook evidence after source edits | 2 | 0 |
 | Autoreload callback selection | 29 | 3 |

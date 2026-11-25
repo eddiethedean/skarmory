@@ -6417,9 +6417,8 @@ assertions = ["test/test_django_management_command_reachability.py:33", "test/te
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_import: no source selected for submodule \"django.core.management.base\" (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_invalid_discovery_never_roots_the_original_handle[wrong-location]"
@@ -13215,9 +13214,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unmodeled_view_binding_does_not_consume_an_unselected_provider[literal_kwargs]"
@@ -13228,9 +13226,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_configured_backend_keeps_only_documented_sync_and_async_hooks"
@@ -15620,9 +15617,8 @@ assertions = ["test/test_fastapi_import_scope_boundaries.py:76", "test/test_fast
 prerequisites = ["original twenty-edge router graph and bounded step limit"]
 provenance = "Original twenty-edge possible router inclusion graph and ten-step abstraction budget."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "An engine port must stage the original graph and verify its bounded failure and incomplete status (#43)"
 
 [[cases]]
 id = "test/test_fastapi_import_scope_boundaries.py::test_possible_include_graph_retains_cycles_and_rejects_uncalled_owner"
@@ -15633,9 +15629,8 @@ assertions = ["test/test_fastapi_import_scope_boundaries.py:95"]
 prerequisites = ["original router graph with cycle and uncalled owner"]
 provenance = "Original router inclusion graph with its cycle, unconditional child, and uncalled factory."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "An engine port must exercise cycle termination and distinguish reached inclusions from the uncalled factory (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_import_roots_name_package_and_project_roots"
@@ -15871,9 +15866,8 @@ assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_app
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct). Issue #43."
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_actual_celery_router_and_signature_are_live[app = Factory(\"shop\")\\napp.conf.task_routes = (\"routers.route_task\",)]"
@@ -16079,9 +16073,8 @@ assertions = ["test/test_django_celery_entrypoints.py:359"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call, unresolved_import). Issue #43."
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_local_framework_package_is_not_trusted[django]"
@@ -16092,9 +16085,8 @@ assertions = ["test/test_django_celery_entrypoints.py:357"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_import). Issue #43."
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_overwritten_ready_method_does_not_rescue_stale_import[def ready(self): pass]"
