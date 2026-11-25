@@ -15,6 +15,7 @@ _ROOT_KINDS = {
     "fastapi_lifespan",
     "fastapi_middleware",
     "fastapi_registration",
+    "flask_login_registration",
     "flask_registration",
     "sqlalchemy_listener",
 }

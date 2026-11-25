@@ -7,6 +7,7 @@ enum ReceiverKey {
     Class(SymbolId),
     Module(String),
     Signal(Object),
+    FlaskLoginManager(Object),
 }
 
 #[derive(Clone)]
@@ -211,11 +212,15 @@ impl Graph<'_> {
                 }
                 let qualified = format!("{module}.{member}");
                 framework_class_provider(&qualified).is_some_and(FrameworkClassRole::is_unittest)
+                    || is_flask_login_constructor(&qualified)
                     || is_django_receiver(&qualified)
                     || is_django_signal_constructor(&qualified)
                     || member == "connect" && is_django_signal(module)
             }
             ReceiverKey::Signal(_) => member == "connect",
+            ReceiverKey::FlaskLoginManager(_) => {
+                flask_login_callback(member) || matches!(member, "__class__" | "login_view")
+            }
         }
     }
 
@@ -229,6 +234,9 @@ impl Graph<'_> {
                 Some(ReceiverKey::Module(module.clone()))
             }
             Value::DjangoSignal(site) => Some(ReceiverKey::Signal(*site)),
+            Value::Object(site, ObjectKind::FlaskLoginManager) => {
+                Some(ReceiverKey::FlaskLoginManager(*site))
+            }
             _ => None,
         }
     }
@@ -282,6 +290,25 @@ impl Graph<'_> {
         self.member_write(&ReceiverKey::Module(module.into()), name, access)
     }
 
+    pub(super) fn flask_login_member(
+        &self,
+        site: Object,
+        name: &str,
+        access: (ScopeId, Location),
+    ) -> Value {
+        let receiver = ReceiverKey::FlaskLoginManager(site);
+        if self.member_write(&receiver, "__class__", access).is_some() {
+            return Value::Unknown;
+        }
+        match self.member_write(&receiver, name, access) {
+            Some(MemberWriteValue::Replacement(value)) => value,
+            Some(MemberWriteValue::Ambiguous) => Value::Unknown,
+            Some(MemberWriteValue::Deleted) | None => {
+                Value::Method(site, ObjectKind::FlaskLoginManager, name.into())
+            }
+        }
+    }
+
     pub(super) fn signal_member_write(
         &self,
         site: Object,
@@ -312,7 +339,7 @@ impl Graph<'_> {
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
-            ReceiverKey::Signal(site) => Some(site.0),
+            ReceiverKey::Signal(site) | ReceiverKey::FlaskLoginManager(site) => Some(site.0),
         };
         self.write_value(
             self.mutations.members.get(receiver)?.get(name)?,
@@ -381,5 +408,7 @@ fn provider_module(name: &str) -> bool {
             | "django.dispatch"
             | "django.dispatch.dispatcher"
             | "django.db.models.signals"
+            | "flask_login"
+            | "flask_login.login_manager"
     )
 }

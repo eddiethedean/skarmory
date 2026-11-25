@@ -193,6 +193,7 @@ enum ObjectKind {
     Router,
     FlaskApp,
     FlaskBlueprint,
+    FlaskLoginManager,
     CeleryApp,
 }
 
@@ -2343,6 +2344,9 @@ impl<'a> Graph<'a> {
                     Some(mutations::MemberWriteValue::Ambiguous) => Value::Unknown,
                 }
             }
+            Value::Object(object, ObjectKind::FlaskLoginManager) => {
+                self.flask_login_member(object, name, access)
+            }
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
@@ -3104,6 +3108,25 @@ impl<'a> Graph<'a> {
                             expression.at.column,
                         ),
                         ObjectKind::FlaskBlueprint,
+                    )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && is_flask_login_constructor(&name)
+                        && registration_arguments(
+                            arguments,
+                            keywords,
+                            ["app", "add_context_processor"],
+                        )
+                        .is_some() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::FlaskLoginManager,
                     )
                 }
                 Value::Provider(name) if self.phase03 && name == "celery.Celery" => Value::Object(
@@ -4595,7 +4618,10 @@ impl<'a> Graph<'a> {
                         if let Value::Object(object, kind) = self.identity(scope, expr, before, 0)
                             && matches!(
                                 kind,
-                                ObjectKind::App | ObjectKind::FlaskApp | ObjectKind::CeleryApp
+                                ObjectKind::App
+                                    | ObjectKind::FlaskApp
+                                    | ObjectKind::FlaskLoginManager
+                                    | ObjectKind::CeleryApp
                             )
                         {
                             self.scopes[scope].activated_apps.push(object);
@@ -5591,6 +5617,15 @@ impl<'a> Graph<'a> {
                         "FastAPI middleware protocol could not be resolved",
                     );
                 }
+            }
+            Value::Method(object, ObjectKind::FlaskLoginManager, name)
+                if !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && flask_login_callback(&name) =>
+            {
+                self.scopes[scope]
+                    .routes
+                    .push((object, target, "flask_login_registration"));
+                return true;
             }
             Value::Method(object, kind, name)
                 if is_route(kind, &name, self.phase03)
@@ -8326,6 +8361,7 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
                 || flask_callback_method(kind, name)
                 || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
+        ObjectKind::FlaskLoginManager => false,
         ObjectKind::CeleryApp => name == "task",
     }
 }
@@ -8342,8 +8378,23 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
             matches!(method, "add_url_rule" | "register_error_handler")
                 || flask_callback_method(kind, method)
         }
+        ObjectKind::FlaskLoginManager => flask_login_callback(method),
         ObjectKind::CeleryApp => method == "task",
     }
+}
+
+fn is_flask_login_constructor(name: &str) -> bool {
+    matches!(
+        name,
+        "flask_login.LoginManager" | "flask_login.login_manager.LoginManager"
+    )
+}
+
+fn flask_login_callback(name: &str) -> bool {
+    matches!(
+        name,
+        "user_loader" | "request_loader" | "unauthorized_handler" | "needs_refresh_handler"
+    )
 }
 
 fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
@@ -8390,6 +8441,7 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
             && (name.starts_with("pydantic.BaseModel.")
                 || is_fastapi_field_marker(name)
                 || is_django_signal_constructor(name)
+                || is_flask_login_constructor(name)
                 || is_django_receiver(name)
                 || matches!(
                     name,
@@ -8523,6 +8575,7 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::App | ObjectKind::Router => "fastapi_registration",
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => "flask_registration",
+        ObjectKind::FlaskLoginManager => "flask_login_registration",
         ObjectKind::CeleryApp => "celery_task",
     }
 }
@@ -8540,6 +8593,10 @@ fn callback_argument<'a>(
         "add_route" | "add_websocket_route" => (1, &["endpoint"]),
         "add_exception_handler" => (1, &["handler"]),
         "task" if arguments.len() == 1 && keywords.is_empty() => (0, &[]),
+        _ if matches!(kind, ObjectKind::FlaskLoginManager) && flask_login_callback(method) => {
+            return registration_arguments(arguments, keywords, ["callback"])
+                .and_then(|[callback]| callback);
+        }
         _ if flask_callback_method(kind, method) => {
             return match (arguments, keywords) {
                 ([callback], []) => Some(callback),

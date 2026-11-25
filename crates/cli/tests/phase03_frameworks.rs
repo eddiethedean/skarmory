@@ -68,6 +68,63 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn flask_login_callbacks_require_the_real_manager_and_a_reached_registration() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        concat!(
+            "from flask_login import LoginManager as Manager\n",
+            "login = Manager()\n",
+            "login.login_view = 'auth.login'\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("web.py"),
+        concat!(
+            "from providers import login\n",
+            "@login.user_loader\ndef load_user(user_id): return lookup(user_id)\n",
+            "def lookup(user_id): return user_id\n",
+            "def other_user(user_id): return user_id\n",
+            "def dormant():\n",
+            "    login.user_loader(other_user)\n",
+            "def user_loader(function): return function\n",
+            "@user_loader\ndef lookalike(user_id): return user_id\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(!unused.contains(&"web.load_user"));
+    assert!(!unused.contains(&"web.lookup"));
+    assert!(unused.contains(&"web.other_user"));
+    assert!(unused.contains(&"web.lookalike"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(
+        root.join("web.py"),
+        concat!(
+            "from providers import login\n",
+            "def passthrough(function): return function\n",
+            "login.user_loader = passthrough\n",
+            "@login.user_loader\ndef replaced(user_id): return user_id\n",
+        ),
+    )
+    .unwrap();
+    let edited = scan(root);
+    assert!(findings(&edited, "unused_functions").contains(&"web.replaced"));
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(edited, cached);
+}
+
+#[test]
 fn flask_cli_factory_reaches_bound_setup_and_context_hooks() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
