@@ -756,6 +756,6 @@ fn safe_flask_literal(kind: &ExpressionKind) -> bool {
         ExpressionKind::None
             | ExpressionKind::Bool(_)
             | ExpressionKind::Text(_)
-            | ExpressionKind::Scalar
+            | ExpressionKind::Scalar(_)
     )
 }
