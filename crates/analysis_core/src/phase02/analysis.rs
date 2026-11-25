@@ -4211,6 +4211,7 @@ impl<'a> Graph<'a> {
             .iter()
             .chain(&reach.resolved_deferred_receiver_calls)
             .map(|&(index, _)| index)
+            .chain(reach.resolved_django_reloader_parameters.iter().copied())
             .collect();
         for (index, call) in self.receiver_calls.iter().enumerate() {
             if reach.scopes.contains(&call.scope) && !resolved.contains(&index) {
@@ -5558,6 +5559,25 @@ impl<'a> Graph<'a> {
                         }
                     }
                     _ => {
+                        if self.phase03
+                            && !self.probing_identity
+                            && self.branch_depth == 0
+                            && let ExpressionKind::Member(base, member) = &function.kind
+                            && member == "run_with_reloader"
+                            && let Some(parameter) = self.parameter_binding(scope, base, before)
+                            && self.scopes[scope].parent.is_some_and(|parent| {
+                                self.scopes[parent].owner.is_none_or(|owner| !self.is_class(owner))
+                            })
+                        {
+                            self.receiver_calls.push(ReceiverCall {
+                                scope,
+                                parameter,
+                                member: member.clone(),
+                                at: expr.at,
+                                bounded_comparison: false,
+                            });
+                            return;
+                        }
                         if self.phase03
                             && !self.probing_identity
                             && arguments.is_empty()
@@ -8901,6 +8921,7 @@ impl<'a> Graph<'a> {
                 self.activate_fastapi(reach, &mut pending);
                 self.activate_flask_parameter_hooks(reach, &mut pending);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
+                self.resolve_django_reloader_parameter_receivers(reach, &mut pending, possible);
             }
             for &(owner, target, kind) in &self.framework_lifecycle {
                 if reach.symbols.contains(&owner) && !reach.has_evidence(target, kind) {
@@ -9491,6 +9512,7 @@ struct Reachability {
     django_signal_modules: BTreeSet<usize>,
     deferred_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
+    resolved_django_reloader_parameters: BTreeSet<usize>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
@@ -12860,6 +12882,90 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                 .map(|entry| entry.full_name.as_str())
                 .collect();
             assert_eq!(found, expected.iter().copied().collect(), "{argv}");
+        }
+    }
+
+    #[test]
+    fn phase03_django_command_dispatch_follows_effective_lifecycle() {
+        let base = "from django.core.management.base import BaseCommand\nclass Parent(BaseCommand):\n    def handle(self, *args, **options):\n        return None\n";
+        let module_name = "demo.management.commands.audit";
+        for (source, expected) in [
+            ("class Command(Parent):\n    pass\n", vec!["Parent.handle"]),
+            (
+                "class Command(Parent):\n    def __init__(self):\n        raise RuntimeError()\n",
+                vec!["Command.__init__"],
+            ),
+            (
+                "class Command(Parent):\n    def __init__(self, required):\n        return None\n",
+                vec![],
+            ),
+            (
+                "class Command(Parent):\n    def add_arguments(self, parser):\n        raise RuntimeError()\n",
+                vec!["Command.add_arguments"],
+            ),
+            (
+                "class Command(Parent):\n    def run_from_argv(self, argv):\n        pass\n",
+                vec!["Command.run_from_argv"],
+            ),
+            (
+                "class Command(Parent):\n    def execute(self, *args, **options):\n        pass\n",
+                vec!["Command.execute"],
+            ),
+            (
+                "class Command(Parent):\n    pass\ndef replacement(self, *args, **options):\n    return None\nCommand.handle = replacement\n",
+                vec!["replacement"],
+            ),
+            (
+                "class Command(Parent):\n    def handle(self, *args, **options):\n        return None\ndel Command.handle\n",
+                vec!["Parent.handle"],
+            ),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        module_name,
+                        &format!("{base}{source}"),
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{source}: {:?}", result.issues);
+            let dispatches: Vec<_> = result
+                .evidence
+                .iter()
+                .filter(|entry| entry.kind == "django_command")
+                .map(|entry| {
+                    entry
+                        .full_name
+                        .strip_prefix(module_name)
+                        .unwrap()
+                        .trim_start_matches('.')
+                })
+                .filter(|name| *name != "Command")
+                .collect();
+            assert_eq!(dispatches, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn phase03_deleted_django_autoreload_member_stops_before_arguments_and_following_code() {
+        let first = "from django.utils import autoreload\ndef callback():\n    return 1\ndef argument():\n    return callback\ndelattr(autoreload, 'run_with_reloader')\n";
+        for failing in [
+            "reloader = autoreload.run_with_reloader\nreloader(callback)",
+            "autoreload.run_with_reloader(argument())",
+        ] {
+            let source = format!("{first}{failing}\ncallback()\n");
+            let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+            assert!(result.issues.is_empty(), "{failing}: {:?}", result.issues);
+            assert_eq!(names(&result, Category::Function), ["argument", "callback"]);
         }
     }
 

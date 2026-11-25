@@ -311,6 +311,11 @@ subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
+The selected command follows its effective lifecycle after module initialization.
+Proven construction or argument setup failures leave later stages dormant.
+Custom dispatch that may delegate through an unresolved path produces a coverage
+diagnostic. An isolated command module does not establish an installed app.
+[Django management implementation](https://github.com/django/django/tree/stable/5.2.x/django/core/management)
 
 Django `RunPython` operations preserve possible declaration use of resolved
 forward and reverse callbacks. Parameter evidence covers the two positional

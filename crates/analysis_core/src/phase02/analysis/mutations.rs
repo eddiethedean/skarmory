@@ -358,7 +358,21 @@ impl Graph<'_> {
                             ))
                         || role == FrameworkClassRole::DjangoAppConfig && member == "ready"
                         || role == FrameworkClassRole::DjangoCommand
-                            && matches!(member, "__init__" | "add_arguments" | "handle")
+                            && (matches!(
+                                member,
+                                "__new__"
+                                    | "__init__"
+                                    | "__getattribute__"
+                                    | "run_from_argv"
+                                    | "create_parser"
+                                    | "add_arguments"
+                                    | "execute"
+                                    | "handle"
+                            ) || self
+                                .class_lineage(*class)
+                                .0
+                                .into_iter()
+                                .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoSignal && member == "connect"
                 })
             }
@@ -373,6 +387,8 @@ impl Graph<'_> {
                                 .is_some_and(|role| {
                                     role.is_unittest()
                                         || role == FrameworkClassRole::DjangoAppConfig
+                                        || role == FrameworkClassRole::DjangoCommand
+                                            && member == "Command"
                                 })
                         });
                 }

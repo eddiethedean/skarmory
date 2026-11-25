@@ -1591,6 +1591,106 @@ impl Graph<'_> {
         }
     }
 
+    pub(super) fn resolve_django_reloader_parameter_receivers(
+        &mut self,
+        reach: &mut Reachability,
+        pending: &mut VecDeque<Edge>,
+        possible: bool,
+    ) {
+        for index in 0..self.receiver_calls.len() {
+            let call = &self.receiver_calls[index];
+            if call.member != "run_with_reloader"
+                || !reach.scopes.contains(&call.scope)
+                || self.scopes[call.scope].parent.is_some_and(|parent| {
+                    self.scopes[parent]
+                        .owner
+                        .is_some_and(|owner| self.is_class(owner))
+                })
+            {
+                continue;
+            }
+            let Some(owner) = self.scopes[self.symbols[call.parameter].scope].owner else {
+                continue;
+            };
+            reach.resolved_django_reloader_parameters.remove(&index);
+            if reach
+                .evidence
+                .range((owner, "", "")..)
+                .take_while(|&&(target, _, _)| target == owner)
+                .any(|&(_, kind, _)| !matches!(kind, "direct_call" | "type_reference"))
+            {
+                continue;
+            }
+            let name = &self.symbols[call.parameter].name.text;
+            let candidates: Option<Vec<_>> = self
+                .direct_arguments
+                .get(&owner)
+                .into_iter()
+                .flatten()
+                .filter(|invocation| reach.scopes.contains(&invocation.caller))
+                .map(|invocation| match invocation.values.get(name) {
+                    Some(Value::Instance(class)) if invocation.arguments_bound => {
+                        Some((*class, invocation.conditional))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let Some(candidates) = candidates else {
+                continue;
+            };
+            let call = call.clone();
+            let mut resolved = Vec::new();
+            for (class, conditional) in candidates {
+                let access = Some((call.scope, call.at));
+                if ["__new__", "__init__", "__getattribute__", "__getattr__"]
+                    .into_iter()
+                    .any(|name| self.class_member_at(class, name, 0, access).is_some())
+                {
+                    resolved.clear();
+                    break;
+                }
+                let target = match self.class_member_at(class, &call.member, 0, access) {
+                    Some(Value::ConstantFunction) => None,
+                    Some(Value::Callable(invocation))
+                        if self.bounded_framework_function(invocation.target) =>
+                    {
+                        Some(invocation.target)
+                    }
+                    _ => {
+                        resolved.clear();
+                        break;
+                    }
+                };
+                resolved.push((class, conditional, target));
+            }
+            if !resolved.is_empty() {
+                reach.resolved_django_reloader_parameters.insert(index);
+            }
+            for (class, conditional, target) in resolved {
+                let Some(target) = target else {
+                    continue;
+                };
+                let certainty = if possible || conditional {
+                    "possible"
+                } else {
+                    "certain"
+                };
+                if !reach.evidence.contains(&(target, "direct_call", certainty)) {
+                    pending.push_back(Edge {
+                        target,
+                        kind: "direct_call",
+                        certainty,
+                    });
+                }
+                reach
+                    .deferred_method_receivers
+                    .entry(target)
+                    .or_default()
+                    .insert(class);
+            }
+        }
+    }
+
     pub(super) fn framework_class_role(
         &mut self,
         class: SymbolId,
@@ -2226,31 +2326,156 @@ impl Graph<'_> {
             if matches!(commands, DjangoCommands::Selected(command) if *command != name) {
                 continue;
             }
-            let command = self.local(file, "Command", END).and_then(|binding| {
-                if self.conditional.contains_key(&binding) {
-                    return None;
+            let module = &self.files[file].module;
+            let command = match self.module_member_write(module, "Command", (file, END)) {
+                Some(mutations::MemberWriteValue::Replacement(Value::Callable(invocation)))
+                    if self.is_class(invocation.target)
+                        && self.framework_class_role(
+                            invocation.target,
+                            &mut BTreeSet::new(),
+                            0,
+                        ) == Some(FrameworkClassRole::DjangoCommand) =>
+                {
+                    Some(CallableBinding {
+                        target: invocation.target,
+                        bindings: Vec::new(),
+                    })
                 }
-                self.django_class_binding(binding, FrameworkClassRole::DjangoCommand)
-            });
+                Some(_) => None,
+                None => self.local(file, "Command", END).and_then(|binding| {
+                    if self.conditional.contains_key(&binding) {
+                        return None;
+                    }
+                    self.django_class_binding(binding, FrameworkClassRole::DjangoCommand)
+                }),
+            };
+            self.scopes[scope]
+                .activated_apps
+                .push(django_loaded_module(file));
+            if self.failed_terminal_modules.contains(&file) {
+                self.django_registration_issue(
+                    object,
+                    at,
+                    "Django command module cannot finish initialization",
+                );
+                continue;
+            }
             if let Some(command) = command {
                 self.read.extend(command.bindings);
-                self.scopes[scope]
-                    .activated_apps
-                    .push(django_loaded_module(file));
-                self.activate_django_class(
-                    scope,
-                    object,
-                    command.target,
-                    &["__init__", "add_arguments", "handle"],
-                    "django_command",
-                    at,
-                );
+                self.activate_django_command(scope, file, object, command.target, at);
             } else {
                 self.django_registration_issue(
                     object,
                     at,
                     "Django command module has no resolved BaseCommand subclass named Command",
                 );
+            }
+        }
+    }
+
+    fn activate_django_command(
+        &mut self,
+        launcher: ScopeId,
+        module: ScopeId,
+        object: Object,
+        class: SymbolId,
+        at: Location,
+    ) {
+        let kind = "django_command";
+        self.scopes[launcher].routes.push((object, class, kind));
+        // Django constructs the exported class before dispatch. The default
+        // run_from_argv path creates the parser before invoking execute.
+        for (name, positional) in [
+            ("__new__", Some(1)),
+            ("__init__", Some(1)),
+            ("__getattribute__", Some(2)),
+            ("run_from_argv", Some(2)),
+            ("create_parser", Some(3)),
+            ("add_arguments", Some(2)),
+            ("execute", None),
+            ("handle", None),
+        ] {
+            let Some(value) = self.django_class_value(class, name, module) else {
+                continue;
+            };
+            let unknown_dispatch = matches!(
+                name,
+                "__new__" | "__getattribute__" | "run_from_argv" | "create_parser" | "execute"
+            );
+            if let Value::Callable(invocation) = value
+                && self.bounded_framework_function(invocation.target)
+                && let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+            {
+                if positional.is_some_and(|count| {
+                    definition.required_positional_parameter_count > count
+                        || definition.positional_parameter_count < count
+                            && !definition.has_variadic_positional_parameter
+                        || !definition.required_keyword_only_parameters.is_empty()
+                }) {
+                    break;
+                }
+                if name == "__new__" {
+                    self.scopes[launcher]
+                        .routes
+                        .push((object, invocation.target, kind));
+                } else {
+                    self.record_django_hook(launcher, object, class, invocation, kind);
+                }
+                let body = body_without_docstring(definition);
+                let stop = body
+                    .iter()
+                    .find(|stmt| {
+                        matches!(
+                            stmt.kind,
+                            StatementKind::Raise(_)
+                                | StatementKind::Return(_)
+                                | StatementKind::If { .. }
+                                | StatementKind::With { .. }
+                        )
+                    })
+                    .is_some_and(|stmt| matches!(stmt.kind, StatementKind::Raise(_)));
+                if stop {
+                    break;
+                }
+                if unknown_dispatch {
+                    // A closed no-op cannot delegate to the next stage.
+                    if !body.is_empty() {
+                        self.django_registration_issue(
+                            object,
+                            at,
+                            "Django command override may change subsequent dispatch",
+                        );
+                    }
+                    break;
+                }
+            } else if matches!(
+                value,
+                Value::ConstantFunction | Value::NullaryConstantFunction
+            ) {
+                if matches!(name, "__init__" | "add_arguments")
+                    && matches!(value, Value::ConstantFunction)
+                {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django command stage has an unresolved lambda signature",
+                    );
+                }
+                break;
+            } else {
+                if !value.is_builtin_scalar()
+                    && !matches!(
+                        value,
+                        Value::None | Value::Integer(_) | Value::MissingFrameworkMember
+                    )
+                {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django command callback could not be resolved",
+                    );
+                }
+                break;
             }
         }
     }
@@ -2708,13 +2933,7 @@ impl Graph<'_> {
             return;
         };
         if let Value::Callable(invocation) = value {
-            self.scopes[scope]
-                .routes
-                .push((object, invocation.target, kind));
-            self.method_receivers
-                .entry(invocation.target)
-                .or_default()
-                .insert(class);
+            self.record_django_hook(scope, object, class, invocation, kind);
         } else if !matches!(value, Value::ConstantFunction) {
             self.django_registration_issue(
                 object,
@@ -2722,6 +2941,23 @@ impl Graph<'_> {
                 "Django lifecycle callback could not be resolved",
             );
         }
+    }
+
+    fn record_django_hook(
+        &mut self,
+        scope: ScopeId,
+        object: Object,
+        class: SymbolId,
+        invocation: Invocation,
+        kind: &'static str,
+    ) {
+        self.scopes[scope]
+            .routes
+            .push((object, invocation.target, kind));
+        self.method_receivers
+            .entry(invocation.target)
+            .or_default()
+            .insert(class);
     }
 
     pub(super) fn django_receiver(

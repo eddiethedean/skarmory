@@ -20,6 +20,7 @@ impl Graph<'_> {
             || self.terminal_unbound_flask_initializer(scope, statement)
             || self.terminal_flask_factory_initializer(scope, statement)
             || self.terminal_flask_global_initializer(scope, statement)
+            || self.phase03 && self.terminal_deleted_django_reloader(scope, statement)
             || self.phase03 && self.terminal_celery_router_failure(scope, statement)
         {
             return true;
@@ -67,6 +68,42 @@ impl Graph<'_> {
             }
             _ => false,
         }
+    }
+
+    fn terminal_deleted_django_reloader(&mut self, scope: ScopeId, statement: &Statement) -> bool {
+        let access = match &statement.kind {
+            StatementKind::Assign {
+                value: Some(value),
+                annotation: None,
+                ..
+            } => value,
+            StatementKind::Evaluate(Expression {
+                kind: ExpressionKind::Call { function, .. },
+                ..
+            }) => function,
+            _ => return false,
+        };
+        let ExpressionKind::Member(receiver, member) = &access.kind else {
+            return false;
+        };
+        if member != "run_with_reloader" {
+            return false;
+        }
+        let at = statement.at;
+        let reads = std::mem::take(&mut self.read);
+        let deleted = matches!(self.probe_identity(scope, receiver, at),
+            Value::Provider(provider) if provider == "django.utils.autoreload")
+            && matches!(
+                self.probe_identity(scope, access, at),
+                Value::MissingFrameworkMember
+            );
+        self.read = reads;
+        if deleted {
+            // The receiver lookup runs, but fails before binding the alias
+            // or evaluating any arguments of an attempted call.
+            self.walk(scope, receiver, at);
+        }
+        deleted
     }
 
     fn is_celery_assignment_receiver(
