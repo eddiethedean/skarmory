@@ -190,6 +190,7 @@ struct NamespaceCopy {
 struct Invocation {
     target: SymbolId,
     receiver: Receiver,
+    implicit_descriptor_receiver: bool,
     verified: bool,
 }
 
@@ -198,6 +199,7 @@ impl Invocation {
         Self {
             target,
             receiver: Receiver::Ordinary,
+            implicit_descriptor_receiver: false,
             verified: false,
         }
     }
@@ -360,6 +362,7 @@ struct ReceiverCall {
 struct DirectArguments {
     caller: ScopeId,
     at: Location,
+    implicit_receiver: bool,
     values: BTreeMap<String, Value>,
     forwarded: BTreeMap<String, SymbolId>,
     conditional: bool,
@@ -2667,6 +2670,16 @@ impl<'a> Graph<'a> {
                         _ => Receiver::Bound(class),
                     };
                     Value::Callable(invocation.bind_receiver(receiver))
+                } else if let Value::Callable(invocation) = member
+                    && matches!(base, Value::Instance(_))
+                    && !self.is_class(invocation.target)
+                {
+                    // A function assigned to the class namespace still binds
+                    // on instance access when declared outside the class.
+                    Value::Callable(Invocation {
+                        implicit_descriptor_receiver: true,
+                        ..invocation
+                    })
                 } else {
                     member
                 }
@@ -4133,6 +4146,7 @@ impl<'a> Graph<'a> {
             if self.receiver_conflicts(Invocation {
                 target: call.edge.target,
                 receiver: call.receiver,
+                implicit_descriptor_receiver: false,
                 verified: false,
             }) {
                 self.scope_issue(
@@ -5941,6 +5955,8 @@ impl<'a> Graph<'a> {
                 .push(DirectArguments {
                     caller,
                     at,
+                    implicit_receiver: invocation.implicit_descriptor_receiver
+                        || matches!(invocation.receiver, Receiver::Bound(_)),
                     values,
                     forwarded,
                     conditional,
@@ -6079,6 +6095,7 @@ impl<'a> Graph<'a> {
                 .push(DirectArguments {
                     caller: scope,
                     at,
+                    implicit_receiver: false,
                     values,
                     forwarded: BTreeMap::new(),
                     conditional: true,
@@ -13189,6 +13206,49 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
         );
         assert!(result.issues.is_empty(), "{:?}", result.issues);
         assert_eq!(names(&result, Category::Function), ["callback"]);
+    }
+
+    #[test]
+    fn phase03_autoreload_parameter_proof_excludes_descriptor_bound_arguments() {
+        let definitions = "\
+def callback():
+    return None
+def start(loader, optional=None):
+    loader.run_with_reloader(callback)
+class Target:
+    def run_with_reloader(self, callback):
+        return None
+class Command:
+    start = start
+    def run_with_reloader(self, callback):
+        return None
+";
+        for (calls, bounded) in [
+            ("start(Target())\n", true),
+            ("Command().start(Target())\n", false),
+            ("saved = Command().start\nsaved(Target())\n", false),
+            ("start(Target())\nCommand().start(Target())\n", false),
+        ] {
+            let result = analyze_phase03(
+                &[module("app.py", "app", &format!("{definitions}{calls}"))],
+                &[],
+            );
+            assert_eq!(
+                result.issues.is_empty(),
+                bounded,
+                "{calls}: {:?}",
+                result.issues
+            );
+            assert_eq!(
+                result.evidence.iter().any(|entry| {
+                    entry.full_name == "app.Target.run_with_reloader"
+                        && entry.kind == "direct_call"
+                        && entry.certainty == "certain"
+                }),
+                bounded,
+                "{calls}"
+            );
+        }
     }
 
     #[test]

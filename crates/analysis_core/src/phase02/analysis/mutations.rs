@@ -222,6 +222,7 @@ impl Graph<'_> {
                 target,
                 receiver: Receiver::Ordinary,
                 verified: false,
+                ..
             }) if depth < MAX_BINDING_CHAIN && visited.insert(target) => {
                 let file = self.symbols[target].scope;
                 if file != self.scopes[file].file {

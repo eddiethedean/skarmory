@@ -372,6 +372,7 @@ impl Graph<'_> {
         let Value::Callable(Invocation {
             target,
             receiver: Receiver::Ordinary,
+            implicit_descriptor_receiver: false,
             verified: false,
         }) = found
         else {
