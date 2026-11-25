@@ -158,6 +158,7 @@ enum ConverterBase {
     Source(SymbolId),
     String,
     Object,
+    Logging(logging_config::LoggingBase),
 }
 
 enum ConverterMember {
@@ -1315,7 +1316,7 @@ impl Graph<'_> {
         let kind = "django_path_converter";
         let certainty = if conditional { "possible" } else { "certain" };
         self.edge(scope, class, kind, certainty);
-        let Some(mro) = self.converter_mro(class, &mut BTreeMap::new(), 0) else {
+        let Some(mro) = self.source_protocol_mro(class, &mut BTreeMap::new(), 0, false) else {
             self.scope_issue(
                 scope,
                 at,
@@ -1424,18 +1425,21 @@ impl Graph<'_> {
                         return Some(ConverterMember::Source(binding));
                     }
                 }
-                ConverterBase::String => return Some(ConverterMember::Builtin),
+                ConverterBase::String | ConverterBase::Logging(_) => {
+                    return Some(ConverterMember::Builtin);
+                }
                 ConverterBase::Object => {}
             }
         }
         None
     }
 
-    fn converter_mro(
+    fn source_protocol_mro(
         &mut self,
         class: SymbolId,
         memo: &mut BTreeMap<SymbolId, Vec<ConverterBase>>,
         depth: usize,
+        allow_logging_base: bool,
     ) -> Option<Vec<ConverterBase>> {
         if let Some(lineage) = memo.get(&class) {
             return Some(lineage.clone());
@@ -1462,14 +1466,26 @@ impl Graph<'_> {
             let mut orders = Vec::new();
             for base in &definition.bases {
                 let order = match self.probe_identity(scope, base, definition.name.at) {
-                    Value::Callable(invocation) if self.is_class(invocation.target) => {
-                        self.converter_mro(invocation.target, memo, depth + 1)?
-                    }
+                    Value::Callable(invocation) if self.is_class(invocation.target) => self
+                        .source_protocol_mro(
+                            invocation.target,
+                            memo,
+                            depth + 1,
+                            allow_logging_base,
+                        )?,
                     Value::Provider(provider) if provider == "builtins.object" => {
                         vec![ConverterBase::Object]
                     }
                     Value::Provider(provider) if is_django_string_converter(&provider) => {
                         vec![ConverterBase::String, ConverterBase::Object]
+                    }
+                    Value::Provider(provider) if allow_logging_base => {
+                        vec![
+                            ConverterBase::Logging(logging_config::LoggingBase::provider(
+                                &provider,
+                            )?),
+                            ConverterBase::Object,
+                        ]
                     }
                     _ => return None,
                 };

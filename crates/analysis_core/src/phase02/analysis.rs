@@ -28,6 +28,7 @@ mod celery_routes;
 mod comprehension;
 mod django_forms;
 mod django_globals;
+mod django_middleware;
 mod django_migrations;
 mod django_template_paths;
 mod django_templates;
@@ -650,6 +651,9 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_middleware_sites: Vec::new(),
+        logging_record_calls: Vec::new(),
+        logging_formatter_methods: BTreeSet::new(),
         django_view_arguments: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
@@ -852,6 +856,9 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_middleware_sites: Vec<django_middleware::MiddlewareSite>,
+    logging_record_calls: Vec<ParameterCall>,
+    logging_formatter_methods: BTreeSet<SymbolId>,
     django_view_arguments: django_views::ViewRouteArguments,
     django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
@@ -5781,6 +5788,9 @@ impl<'a> Graph<'a> {
                         if self.phase03 && name == "pathlib.Path"
                             && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
                     Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "json.dumps"
+                        && arguments.len() == 1 && keywords.is_empty()
+                        && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -5859,6 +5869,11 @@ impl<'a> Graph<'a> {
                             return;
                         }
                         if self.phase03 && self.defer_fresh_field_call(scope, expr) {
+                            return;
+                        }
+                        if self.phase03 && arguments.is_empty() && keywords.is_empty()
+                            && self.defer_log_record_message(scope, function, before, expr.at)
+                        {
                             return;
                         }
                         let parameter = self.parameter_binding(scope, function, before);
@@ -9718,6 +9733,8 @@ impl<'a> Graph<'a> {
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
+            self.report_django_middleware_calls(&reach);
+            self.report_log_record_calls(&reach);
             self.report_flask_parameter_hooks(&reach);
         }
         self.issues.extend(
@@ -10933,6 +10950,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
 fn framework_managed_base(name: &str) -> bool {
     framework_class_provider(name).is_some()
         || is_django_string_converter(name)
+        || logging_config::LoggingBase::provider(name).is_some()
         || matches!(
             name,
             "django.db.migrations.Migration" | "django.db.migrations.migration.Migration"
@@ -11111,6 +11129,133 @@ configure()
                 .collect();
             assert_eq!(hooks, expected.into_iter().collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn django_logging_settings_follow_inherited_standard_formatter_hooks() {
+        let source = |version| {
+            format!(
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nLOGGING = {{{version}}}\n\
+             def configure():\n    global LOGGING\n    LOGGING.update({{'formatters': {{'active': {{'()': 'shop.formatters.Formatter'}}}}}})\nconfigure()\n"
+            )
+        };
+        for (version, selected) in [("'version': 1", true), ("", false)] {
+            let settings = source(version);
+            let report = analyze_phase03(
+                &[
+                    module("shop/__init__.py", "shop", ""),
+                    module("shop/settings.py", "shop.settings", &settings),
+                    module(
+                        "shop/formatters.py",
+                        "shop.formatters",
+                        "import json\nimport logging\nclass Base(logging.Formatter):\n    def format(self, record):\n        helper()\n        return json.dumps({'name': record.name, 'message': record.getMessage()})\nclass Formatter(Base):\n    def retired(self): return 1\ndef helper(): return 'message'\n",
+                    ),
+                ],
+                &[],
+            );
+            assert!(report.issues.is_empty(), "{version}: {:?}", report.issues);
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_logging_factory"
+                        && row.full_name == "shop.formatters.Base.format"),
+                selected
+            );
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "direct_call"
+                        && row.full_name == "shop.formatters.helper"),
+                selected
+            );
+        }
+    }
+
+    #[test]
+    fn log_record_processing_requires_the_selected_formatter_contract() {
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module(
+                    "shop/settings.py",
+                    "shop.settings",
+                    "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nLOGGING = {'version': 1, 'formatters': {'active': {'()': 'shop.formatters.Formatter'}}}\n",
+                ),
+                module(
+                    "shop/formatters.py",
+                    "shop.formatters",
+                    "import logging\nclass Formatter(logging.Formatter):\n    def format(self, record): return record.getMessage()\nclass Custom:\n    def getMessage(self): return 'test'\nFormatter().format(Custom())\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+    }
+
+    #[test]
+    fn django_middleware_preserves_only_the_configured_continuation() {
+        let middleware = "class Active:\n    def __init__(self, next_handler): self.next = next_handler\n    def __call__(self, request): return self.next(request)\nclass Retired:\n    def __init__(self, next_handler): self.next = next_handler\n    def __call__(self, request): return self.next(request)\n";
+        for (setting, selected) in [
+            ("MIDDLEWARE = ['shop.middleware.Active']\n", true),
+            (
+                "MIDDLEWARE = ['shop.middleware.Active']\nMIDDLEWARE = []\n",
+                false,
+            ),
+        ] {
+            let settings = format!("INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n{setting}");
+            let report = analyze_phase03(
+                &[
+                    module("shop/__init__.py", "shop", ""),
+                    module("shop/settings.py", "shop.settings", &settings),
+                    module("shop/middleware.py", "shop.middleware", middleware),
+                ],
+                &[],
+            );
+            assert!(report.issues.is_empty(), "{setting}: {:?}", report.issues);
+            let callbacks: Vec<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == "django_middleware").then_some(row.full_name.as_str())
+                })
+                .collect();
+            if selected {
+                assert_eq!(
+                    callbacks,
+                    [
+                        "shop.middleware.Active.__init__",
+                        "shop.middleware.Active.__call__"
+                    ]
+                );
+            } else {
+                assert!(callbacks.is_empty());
+            }
+        }
+
+        let settings = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nMIDDLEWARE = ['shop.middleware.Active']\n";
+        let middleware =
+            format!("{middleware}from external import callback\nActive(callback)(None)\n");
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", settings),
+                module("shop/middleware.py", "shop.middleware", &middleware),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
     }
 
     #[test]

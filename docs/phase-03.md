@@ -399,7 +399,10 @@ and unbound backend replacements can stop initialization before Django consumes
 the setting. A closed source
 decorator can replace a backend class with another initialized class or
 discard a hook without executing its body. Source importers of a mutated list
-and unresolved mutations retain their coverage diagnostics.
+and unresolved mutations retain their coverage diagnostics. Selected Django
+middleware with a plain constructor and a request method forwarding the
+framework continuation contributes possible-use evidence. Middleware with
+opaque constructor or request behavior retains an incomplete dispatch diagnostic.
 
 The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
 module initialization. It follows literal formatter and filter declarations,
@@ -408,8 +411,11 @@ For source-owned instances used only by that initializer, it follows
 constructor defaults, field edits, and reached method calls. Type guards over
 known values account for reached `os.PathLike.register(dict)` calls and
 short-circuiting. A proven unbound name in the initializer can prevent later
-configuration from running. An opaque configuration or consumer leaves
-coverage incomplete.
+configuration from running. Effective Django logging configurations can
+select source subclasses of stdlib filters and formatters with the default
+constructor. Selected formatter overrides can format a standard log record
+and serialize its literal string fields. An opaque configuration or consumer
+leaves coverage incomplete.
 
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
