@@ -342,6 +342,52 @@ if os.getenv('USE_HANDLER'):
 }
 
 #[test]
+fn fastapi_mounted_asgi_callback_does_not_activate_api_dependencies() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import Depends, FastAPI
+
+def api_only(): return 1
+def side_effect(): return 2
+def dormant_effect(): return 3
+
+async def active(scope, receive, send): return side_effect()
+async def dormant(scope, receive, send): return dormant_effect()
+
+app = FastAPI(dependencies=[Depends(api_only)])
+app.mount('/active', app=active)
+
+def unused_setup():
+    app.mount('/dormant', dormant)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "web.api_only",
+            "web.dormant",
+            "web.dormant_effect",
+            "web.unused_setup"
+        ]
+    );
+    assert!(
+        findings(&report, "unused_parameters")
+            .iter()
+            .all(|name| !name.starts_with("web.active."))
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|row| {
+        row["qualified_name"] == "web.active"
+            && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                edge["kind"] == "fastapi_asgi_application" && edge["certainty"] == "certain"
+            })
+    }));
+}
+
+#[test]
 fn fastapi_dependency_uses_the_effective_replacement_binding() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

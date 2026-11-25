@@ -4416,6 +4416,20 @@ impl<'a> Graph<'a> {
                             },
                         );
                     }
+                    Value::Method(parent, ObjectKind::App, method)
+                        if self.phase03 && method == "mount" =>
+                    {
+                        self.fastapi_asgi_mount(
+                            parent,
+                            CallArguments {
+                                scope,
+                                before,
+                                at: expr.at,
+                                positional: arguments,
+                                keywords,
+                            },
+                        );
+                    }
                     Value::Method(parent, kind, method)
                         if self.phase03 && is_imperative_registration(kind, &method) =>
                     {
