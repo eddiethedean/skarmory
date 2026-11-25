@@ -12859,6 +12859,57 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     }
 
     #[test]
+    #[ignore = "requires the pinned FastAPI import-root fixture"]
+    fn pinned_fastapi_import_roots() {
+        let root = PathBuf::from(std::env::var_os("SKARMORY_PHASE03_IMPORT_ROOT_FIXTURE").unwrap());
+        let options = super::super::Options {
+            profile: super::super::Profile::SkylosPhase03,
+            ..Default::default()
+        };
+        let config = super::super::config::load(&root, &options).unwrap();
+        let project = crate::preview_source::discover_filtered(
+            &root,
+            &[],
+            crate::preview_source::FileEntry::None,
+            Some(&config.selection),
+        );
+        assert!(project.issues.is_empty(), "{:?}", project.issues);
+        let files: Vec<_> = project
+            .files
+            .iter()
+            .map(|file| {
+                module(
+                    &file.label,
+                    file.name.strip_suffix(".__init__").unwrap_or(&file.name),
+                    &std::fs::read_to_string(root.join(&file.label)).unwrap(),
+                )
+            })
+            .collect();
+        let mapped = NestedPackages::index(&files);
+        let file = |path| files.iter().position(|file| file.path == path).unwrap();
+        let package = file("backend/app/api.py");
+        assert_eq!(mapped.roots[package], Some(Path::new("backend")));
+        assert_eq!(mapped.resolve(package, "app.api"), "backend.app.api",);
+
+        let source_layout = file("packages/lib/src/lib_pkg/core.py");
+        assert_eq!(
+            mapped.resolve(source_layout, "lib_pkg.core"),
+            "packages.lib.src.lib_pkg.core",
+        );
+
+        for (path, name) in [("tools/scripts/run.py", "run"), ("top.py", "top")] {
+            let file = file(path);
+            assert!(matches!(mapped.resolve(file, name), Cow::Borrowed(_)));
+            assert!(
+                !mapped
+                    .names
+                    .keys()
+                    .any(|(root, _)| Some(*root) == mapped.roots[file])
+            );
+        }
+    }
+
+    #[test]
     fn django_url_initializers_distinguish_undefined_calls_and_missing_tables() {
         let prefix = "from django.urls import path\nfrom views import view\n";
         for body in [
