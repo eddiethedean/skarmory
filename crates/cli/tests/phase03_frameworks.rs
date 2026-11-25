@@ -6444,6 +6444,7 @@ fn django_setting_collections_follow_initializer_call_and_reassignment_order() {
         package.join("backends.py"),
         "class Backend:\n    def get_user(self, user_id): return user(user_id)\n\
          class Store:\n    def save(self, name, content): return name\n\
+         class Filter:\n    def filter(self, record): return True\n\
          def user(user_id): return user_id\n",
     )
     .unwrap();
@@ -6459,7 +6460,9 @@ fn django_setting_collections_follow_initializer_call_and_reassignment_order() {
                     && symbol["evidence"].as_array().unwrap().iter().any(|event| {
                         matches!(
                             event["kind"].as_str().unwrap(),
-                            "django_auth_backend" | "django_storage_backend"
+                            "django_auth_backend"
+                                | "django_storage_backend"
+                                | "django_logging_factory"
                         ) && event["certainty"] == "possible"
                     })
             })
@@ -6523,6 +6526,22 @@ fn django_setting_collections_follow_initializer_call_and_reassignment_order() {
         let mut cached = scan_with_settings(root, None, Some(cache.path()));
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(cached, report);
+    }
+    for (version, active) in [("1", true), ("2", false), ("None", false)] {
+        fs::write(
+            &settings,
+            format!(
+                "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\nLOGGING = {{}}\n\
+                 LOGGING.update({{'version': {version}, 'filters': {{'active': {{'()': 'service.backends.Filter'}}}}}})\n",
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(
+            roots(&report, "service.backends.Filter.filter"),
+            active,
+            "{report}"
+        );
     }
     for tail in [
         "AUTHENTICATION_BACKENDS = ('service.backends.Backend',)\nAUTHENTICATION_BACKENDS.clear()\n",

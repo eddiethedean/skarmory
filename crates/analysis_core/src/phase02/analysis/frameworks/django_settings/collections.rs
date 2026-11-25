@@ -116,7 +116,9 @@ fn literal(expression: &Expression) -> Option<Value> {
     match &expression.kind {
         ExpressionKind::Text(value) if value.len() <= MAX_ITEMS => Some(Value::Text(value.clone())),
         ExpressionKind::Bool(value) => Some(Value::Bool(*value)),
-        ExpressionKind::Scalar(_) | ExpressionKind::None => Some(Value::Scalar),
+        ExpressionKind::Scalar(Some(value)) => Some(Value::Integer(*value)),
+        ExpressionKind::Scalar(None) => Some(Value::Scalar),
+        ExpressionKind::None => Some(Value::None),
         ExpressionKind::Sequence { items, .. } if items.len() <= MAX_ITEMS => Some(
             Value::Sequence(items.iter().map(literal).collect::<Option<_>>()?),
         ),

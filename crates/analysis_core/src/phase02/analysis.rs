@@ -87,6 +87,8 @@ enum Value {
     Start(Box<Value>),
     Text(String),
     Bool(bool),
+    Integer(i64),
+    None,
     Sequence(Vec<Value>),
     Mapping(Vec<Value>),
     // Python 3.11 can refresh a previously returned dictionary on a later read.

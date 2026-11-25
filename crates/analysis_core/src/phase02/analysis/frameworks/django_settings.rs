@@ -501,12 +501,12 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                 }
             }
         }
-        // Native values distinguish definitely nonnumeric versions but
-        // do not retain the value of number literals.
+        // Replayed literals keep the exact integer value. Other sources
+        // may still use the coarse scalar model.
         ("LOGGING", _)
             if matches!(
                 get(value, "version"),
-                Some(Value::Scalar | Value::Bool(true))
+                Some(Value::Integer(1) | Value::Scalar | Value::Bool(true))
             ) =>
         {
             for (section, protocol) in [
