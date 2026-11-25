@@ -351,7 +351,7 @@ def convert(data): return data
         "{report}"
     );
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         ["schemas.Lookalike.make_record", "schemas.convert"],
         "{report}"
     );
