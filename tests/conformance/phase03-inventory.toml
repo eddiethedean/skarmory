@@ -16079,7 +16079,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The fixture defines ready without any selected Django app startup (#43)"
+blocker = "The AppConfig declaration supplies no app name and the fixture selects no startup or installed app to invoke ready (#43)"
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_celery_fake_private_and_stale_configuration_does_not_rescue[class Celery:\\n    def __init__(self):\\n        self.task_routes = (\"routers.route_task\",)\\napp = Celery()]"
@@ -16262,7 +16262,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The fixture defines ready without any selected Django app startup (#43)"
+blocker = "The AppConfig declaration supplies no app name and the fixture selects no startup or installed app to invoke ready (#43)"
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_ready_literal_branch_exit_prevents_signal_import[raise RuntimeError('not ready')]"
@@ -16496,7 +16496,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call, unresolved_subclass_hook). Issue #43."
+blocker = "The method field retains the inherited getter with complete analysis. The dormant Plain class is reported as a whole; the original expects its method as an independent finding (#43)"
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_settings_module_found_without_a_launcher"
