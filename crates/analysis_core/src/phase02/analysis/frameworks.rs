@@ -230,9 +230,7 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoForm
                 | FrameworkClassRole::DjangoModelForm
                 | FrameworkClassRole::DjangoFormField
-                | FrameworkClassRole::DjangoSignal => {
-                    (None, &[][..], false)
-                }
+                | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask | FrameworkClassRole::MarshmallowSchema => {
                     (None, &[][..], false)
