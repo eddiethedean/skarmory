@@ -1474,7 +1474,7 @@ impl Graph<'_> {
         result
     }
 
-    fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
+    pub(super) fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
         let symbol = &self.symbols[target];
         let Binding::Definition(definition, _) = symbol.binding else {
             return false;
@@ -2440,6 +2440,21 @@ impl Graph<'_> {
             let Some(value) = self.django_class_value(class, name, module) else {
                 continue;
             };
+            if let Value::Callable(invocation) = value
+                && let Some(write) =
+                    self.django_command_code_write(invocation.target, (module, END))
+            {
+                if !matches!(write, mutations::MemberWriteValue::Replacement(_)) {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django command handle code depends on an unresolved write",
+                    );
+                }
+                // The bounded replacement is an inert return, so the
+                // original function's body is never entered here.
+                break;
+            }
             let unknown_dispatch = matches!(
                 name,
                 "__new__" | "__getattribute__" | "run_from_argv" | "create_parser" | "execute"

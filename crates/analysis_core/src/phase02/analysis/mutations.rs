@@ -34,6 +34,7 @@ pub(super) struct Mutations {
     modules: BTreeMap<String, Vec<Write>>,
     command_namespaces: BTreeSet<ScopeId>,
     command_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
+    command_code: BTreeMap<SymbolId, Vec<Write>>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     flask_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
@@ -356,6 +357,14 @@ impl Graph<'_> {
         conditional: bool,
     ) {
         let receiver = self.probe_identity(file, receiver, at);
+        if member == "__code__"
+            && let Value::Callable(invocation) = receiver
+            && !matches!(invocation.receiver, Receiver::Bound(_))
+            && !invocation.implicit_descriptor_receiver
+            && self.index_django_command_code(file, at, invocation.target, value, conditional)
+        {
+            return;
+        }
         if matches!(receiver, Value::Module(owner) if owner == file)
             && self.has_command_namespace(file)
             && let Some(value) = value
@@ -456,6 +465,119 @@ impl Graph<'_> {
             .or_default()
             .push(Write { file, at, value });
         true
+    }
+
+    fn index_django_command_code(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        target: SymbolId,
+        value: Option<&Expression>,
+        conditional: bool,
+    ) -> bool {
+        let symbol = &self.symbols[target];
+        let Some(class) = self.scopes[symbol.scope].owner else {
+            return false;
+        };
+        if symbol.name.text != "handle"
+            || !self.is_class(class)
+            || self.framework_class_role(class, &mut BTreeSet::new(), 0)
+                != Some(FrameworkClassRole::DjangoCommand)
+        {
+            return false;
+        }
+        let replacement = value.and_then(|value| {
+            let Value::FrameworkCode(replacement) = self.probe_identity(file, value, at) else {
+                return None;
+            };
+            self.closed_django_command_code(target, replacement, file)
+                .then_some(replacement)
+        });
+        let value = match replacement {
+            Some(replacement) if !conditional => {
+                self.mutations.modeled.insert((file, position(at)));
+                MemberWriteValue::Replacement(Value::FrameworkCode(replacement))
+            }
+            _ => MemberWriteValue::Ambiguous,
+        };
+        self.mutations
+            .command_code
+            .entry(target)
+            .or_default()
+            .push(Write { file, at, value });
+        true
+    }
+
+    fn closed_django_command_code(
+        &self,
+        target: SymbolId,
+        replacement: SymbolId,
+        file: ScopeId,
+    ) -> bool {
+        let Binding::Definition(original, _) = self.symbols[target].binding else {
+            return false;
+        };
+        let replacement = &self.symbols[replacement];
+        let Binding::Definition(code, _) = replacement.binding else {
+            return false;
+        };
+        let original_class = self.scopes[self.symbols[target].scope]
+            .owner
+            .expect("command method has a class");
+        let original_file = self.scopes[self.symbols[original_class].scope].file;
+        // A module function's inert code has no free variables. A method in
+        // a module class can still close over Python's implicit __class__ cell.
+        replacement.scope == file
+            && self.symbols[original_class].scope == original_file
+            && original.kind == DefinitionKind::Function
+            && code.kind == DefinitionKind::Function
+            && !original.is_generator
+            && !code.is_generator
+            && original.decorators.is_empty()
+            && code.decorators.is_empty()
+            && !namespace_free_names(
+                original,
+                self.files[original_file].facts.postponed_annotations,
+            )
+            .iter()
+            .any(|name| matches!(*name, "__class__" | "super"))
+            && original
+                .parameters
+                .iter()
+                .map(|p| &p.text)
+                .eq(code.parameters.iter().map(|p| &p.text))
+            && original.positional_parameter_count == code.positional_parameter_count
+            && original.positional_only_parameter_count == code.positional_only_parameter_count
+            && original.has_variadic_positional_parameter == code.has_variadic_positional_parameter
+            && original.has_variadic_keyword_parameter == code.has_variadic_keyword_parameter
+            && matches!(
+                body_without_docstring(code),
+                [Statement {
+                    kind: StatementKind::Return(None)
+                        | StatementKind::Return(Some(Expression {
+                            kind: ExpressionKind::None,
+                            ..
+                        })),
+                    ..
+                }]
+            )
+    }
+
+    pub(super) fn django_command_code_write(
+        &self,
+        target: SymbolId,
+        access: (ScopeId, Location),
+    ) -> Option<MemberWriteValue> {
+        let original = self.scopes[self.symbols[target].scope].file;
+        self.write_value(
+            self.mutations.command_code.get(&target)?,
+            Some(original),
+            access,
+        )
+    }
+
+    pub(super) fn django_command_has_code_write(&self, target: SymbolId) -> bool {
+        self.mutations.command_code.contains_key(&target)
     }
 
     fn index_django_form_table_field(

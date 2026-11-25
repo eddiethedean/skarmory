@@ -67,6 +67,7 @@ enum Value {
     Module(usize),
     CommandNamespace(ScopeId),
     CommandNamespaceGet(ScopeId),
+    FrameworkCode(SymbolId),
     Provider(String),
     Object(Object, ObjectKind),
     Method(Object, ObjectKind, String),
@@ -2607,6 +2608,29 @@ impl<'a> Graph<'a> {
                 Value::ReceiverMethod(parameter, name.to_owned())
             }
             Value::CommandNamespace(file) if name == "get" => Value::CommandNamespaceGet(file),
+            Value::FrameworkCode(target) if name == "co_name" => {
+                Value::Text(self.symbols[target].name.text.clone())
+            }
+            Value::Callable(invocation)
+                if name == "__code__"
+                    && !invocation.verified
+                    && self.has_command_namespace(self.scopes[access.0].file)
+                    && self.bounded_framework_function(invocation.target) =>
+            {
+                match self.django_command_code_write(invocation.target, access) {
+                    Some(mutations::MemberWriteValue::Replacement(code)) => code,
+                    Some(_) => {
+                        self.scope_issue(
+                            access.0,
+                            access.1,
+                            "unresolved_attribute_write",
+                            "Django command code object may depend on an unresolved write",
+                        );
+                        Value::Unknown
+                    }
+                    None => Value::FrameworkCode(invocation.target),
+                }
+            }
             Value::Module(file) => self.module_member_at(
                 &self.files[file].module,
                 name,
@@ -4141,6 +4165,9 @@ impl<'a> Graph<'a> {
         certainty: &'static str,
         at: Location,
     ) {
+        if self.skip_changed_command_body(scope, invocation.target, at, kind) {
+            return;
+        }
         let atexit = is_atexit_edge(kind);
         let (kind, certainty) = match (invocation.verified, kind) {
             (true, "direct_call") => ("grep_dynamic_call", "possible"),
@@ -4180,6 +4207,32 @@ impl<'a> Graph<'a> {
                 deferred_atexit_receiver,
             });
         }
+    }
+
+    fn skip_changed_command_body(
+        &mut self,
+        scope: ScopeId,
+        target: SymbolId,
+        at: Location,
+        kind: &str,
+    ) -> bool {
+        if !self.django_command_has_code_write(target) {
+            return false;
+        }
+        if kind == "direct_call" {
+            match self.django_command_code_write(target, (scope, at)) {
+                Some(mutations::MemberWriteValue::Replacement(_)) => return true,
+                None => return false,
+                _ => {}
+            }
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_call",
+            "Django command code can change before this invocation",
+        );
+        true
     }
 
     fn receiver_conflicts(&self, invocation: Invocation) -> bool {
@@ -5733,6 +5786,9 @@ impl<'a> Graph<'a> {
                 }
                 self.read_pydantic_computed_field(scope, &value, expr.at);
                 self.record_class_reference(scope, &value);
+                if let Value::FrameworkCode(code) = value {
+                    self.edge(scope, code, "code_reference", "certain");
+                }
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
             ExpressionKind::Compare {
@@ -5913,6 +5969,9 @@ impl<'a> Graph<'a> {
             keywords,
         } = call;
         let id = invocation.target;
+        if self.skip_changed_command_body(scope, id, at, "direct_call") {
+            return;
+        }
         if self.is_generator(id) {
             self.edge(scope, id, "generator_creation", certainty);
             self.scope_issue(
@@ -9029,6 +9088,7 @@ impl<'a> Graph<'a> {
                 if matches!(
                     edge.kind,
                     "type_reference"
+                        | "code_reference"
                         | "generator_creation"
                         | "flask_factory_failed_call"
                         | "flask_initializer_failed_call"
@@ -13645,6 +13705,90 @@ class Replacement(BaseCommand):\n    def handle(self, *args, **options):\n      
                 "{write}"
             );
         }
+    }
+
+    #[test]
+    fn phase03_django_command_code_aliases_observe_ordered_replacement() {
+        let source = "from django.core.management.base import BaseCommand\n\
+def original(): return 1\n\
+class Command(BaseCommand):\n    def handle(self, *args, **options):\n        return original()\n\
+def replacement(self, *args, **options): return None\n\
+selected = Command.handle\n";
+        for (actions, dispatched, direct) in [
+            ("metadata = selected.__code__.co_name\n", true, true),
+            (
+                "Command.handle.__code__ = replacement.__code__\n",
+                false,
+                false,
+            ),
+            (
+                "selected.__code__ = replacement.__code__\nselected(None)\n",
+                false,
+                false,
+            ),
+            (
+                "selected(None)\nselected.__code__ = replacement.__code__\nselected(None)\n",
+                false,
+                true,
+            ),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        &format!("{source}{actions}"),
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{actions}: {:?}", result.issues);
+            assert_eq!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "django_command"
+                        && entry.full_name.ends_with(".Command.handle")),
+                dispatched,
+                "{actions}"
+            );
+            assert_eq!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "direct_call"
+                        && entry.full_name.ends_with(".original")),
+                direct,
+                "{actions}"
+            );
+        }
+        let opaque = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                &format!("{source}selected.__code__ = unknown\nselected(None)\n"),
+            )],
+            &[],
+        );
+        assert!(
+            opaque
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+        assert!(
+            !opaque
+                .evidence
+                .iter()
+                .any(|entry| entry.kind == "direct_call" && entry.full_name.ends_with(".original"))
+        );
     }
 
     #[test]
