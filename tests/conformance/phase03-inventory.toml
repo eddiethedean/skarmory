@@ -6260,7 +6260,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_command_helpers_require_the_original_handle_body[replaced-code]"
@@ -6285,7 +6285,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The external installer can change an escaped command or callback, so the selected dispatch remains unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_command_namespace_escape_does_not_establish_dispatch[writer-alias]"
@@ -6358,7 +6358,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[constructor-chain]"
@@ -6371,7 +6371,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[module-helper]"
@@ -6384,7 +6384,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[nested-alias]"
@@ -6397,7 +6397,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[nested-chain]"
@@ -6410,7 +6410,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[nested-helper]"
@@ -6423,7 +6423,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_escaped_handle_alias_does_not_supply_a_stable_body"
@@ -6436,7 +6436,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The external installer can change an escaped command or callback, so the selected dispatch remains unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_export_module_namespace_is_checked_for_an_imported_command"
@@ -6557,7 +6557,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_management_discovery_selects_the_effective_inherited_handle[True]"
@@ -6570,7 +6570,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_management_export_alias_and_unrelated_constructor_do_not_lose_identity"
@@ -6583,7 +6583,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
+blocker = "The original standalone command fixture has no selected app settings or command dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_module_namespace_replacement_cannot_root_old_command[globals-alias]"
@@ -7148,7 +7148,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
+blocker = "The original plugin module is absent; the callback and helper retain possible-use evidence with incomplete coverage (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_actual_constructor_callbacks_and_required_parameters_are_live[exception_handlers]"
@@ -9328,7 +9328,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports cyclic_imports: cyclic module initialization cannot use final module bindings to prove non-use (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_blueprint_exports.py::test_unregistered_replaced_or_fake_blueprint_does_not_rescue_hook[options2]"
@@ -9341,7 +9341,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports cyclic_imports: cyclic module initialization cannot use final module bindings to prove non-use (#43)"
+blocker = "The original consuming initializer fails with TypeError before publishing a callback (Blueprint() takes no arguments) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_attributes_of_framework_objects_are_not_the_provider_itself[from flask import Flask\\napp = Flask(__name__)\\n-app.config.shell_context_processor]"
@@ -9486,7 +9486,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports analysis_limit: binding resolution limit exceeded (#43)"
+blocker = "The original consuming initializer fails with ImportError before publishing a callback (cannot import name 'login' from partially initialized module 'providers' (most likely due to a circular import) (/private/tmp/skarmory-flask-pinned-istgsn7o/test_import_cycle_does_not_inv0/providers.py)) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_imported_flask_instance_shell_context_is_a_registered_callback"
@@ -9655,7 +9655,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nLoginManager.__new__ = replacement\\nlogin = LoginManager()\\n]"
@@ -9668,7 +9668,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nLoginManager.user_loader = replacement\\nlogin = LoginManager()\\n]"
@@ -9681,7 +9681,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nLoginManager.user_loader.__code__ = replacement.__code__\\n]"
@@ -9694,7 +9694,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\ndef replace():\\n    global login\\n    login = replacement\\nreplace()\\n]"
@@ -9707,7 +9707,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: statement is outside the compatibility subset (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\ndef replace():\\n    login.user_loader = replacement\\nopaque(replace)\\n]"
@@ -9720,7 +9720,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'opaque' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nfrom unittest.mock import patch\\npatch('providers.login.user_loader', replacement).start()\\n]"
@@ -9733,7 +9733,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nfrom unittest.mock import patch\\npatch.object(LoginManager, 'user_loader', replacement).start()\\n]"
@@ -9746,7 +9746,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nglobals().update({'login': replacement})\\n]"
@@ -9759,7 +9759,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin = replacement\\n]"
@@ -9772,7 +9772,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_decorator: decorator identity is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin.__class__ = replacement\\n]"
@@ -9785,7 +9785,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin.__dict__['user_loader'] = replacement\\n]"
@@ -9798,7 +9798,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin.user_loader = replacement\\n]"
@@ -9811,7 +9811,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nopaque(LoginManager)\\n]"
@@ -9824,7 +9824,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'opaque' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nopaque(login)\\n]"
@@ -9837,7 +9837,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'opaque' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nsetattr(login, 'user_loader', replacement)\\n]"
@@ -9850,7 +9850,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_decorator: decorator identity is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[import flask_login\\nflask_login.LoginManager = replacement\\nlogin = flask_login.LoginManager()\\n]"
@@ -9863,7 +9863,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_mutated_or_escaped_factory_objects_do_not_prove_shell_hooks[alias = app; alias.shell_context_processor = replacement]"
@@ -9972,7 +9972,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_decorator: decorator identity is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'decorator' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks[from flask import Flask\\nasync def create_app():\\n    app = Flask(__name__)\\n    return app\\n]"
@@ -9997,7 +9997,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Candidate reports unresolved_call: call target is outside the bounded model (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks[from flask import Flask\\ndef create_app():\\n    app = Flask(__name__)\\n    yield 1\\n    return app\\n]"
@@ -10189,7 +10189,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/starlette_add_route/app.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+blocker = "Pinned Starlette 1.3.1 rejects the endpoint keyword on Starlette.add_route before the handler is registered (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::sanic-register-listener"
@@ -10217,7 +10217,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/django_urlpatterns.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+blocker = "The original URL table has no selected settings or ROOT_URLCONF (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::django-error-handlers"
@@ -10231,7 +10231,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/django_error_handlers/pyproject.toml", "corpus/fixtures/django_error_handlers/urls.py"]
-blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+blocker = "The original error handler aliases have no selected root URLconf (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::django-path-converter"
@@ -10271,7 +10271,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/django_cbv.py"]
-blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+blocker = "The original view is not mounted through as_view or a selected URLconf (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::drf-viewset"
@@ -10443,7 +10443,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/django_management_command.py"]
-blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+blocker = "The original command has no selected app, command namespace or invocation (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::django-signal-receiver"
@@ -10457,7 +10457,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/django_signal_receiver.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+blocker = "The original receiver module has no selected Django startup path (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::sqlalchemy-listens-for"
@@ -10511,7 +10511,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/django_appconfig.py"]
-blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+blocker = "The original AppConfig has no selected app population path (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::celery-task-class"
@@ -10606,7 +10606,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/python_unittest_lifecycle/support.py", "corpus/fixtures/python_unittest_lifecycle/test_case.py"]
-blocker = "The original framework corpus assertions differ from the installed SDK report (#43)"
+blocker = "CPython discovers zero tests in the original module, and the pinned path whitelist is a separate reporting expectation (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::pydantic-model-use-boundary"
@@ -10633,7 +10633,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 fixtures = ["corpus/fixtures/python_src_package_routes/src/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/routes/__init__.py", "corpus/fixtures/python_src_package_routes/src/api/routes/accounts.py", "corpus/fixtures/python_src_package_routes/src/api/routes/stale.py", "corpus/fixtures/python_src_package_routes/src/main.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
+blocker = "FastAPI treats the unannotated websocket argument as a query parameter in the pinned fixture (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::python-wrapper-decorator-registration"
@@ -10843,7 +10843,7 @@ provenance = "Unmodified temporary project written by the pinned test/test_djang
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
+blocker = "The remaining original command fixture never selects a command that can invoke the autoreload callback (#43)"
 
 [[cases]]
 id = "test/test_django_autoreload_precision.py::test_inactive_or_replaced_command_handle_is_not_callback_execution[class BaseCommand: pass\\nclass Command(BaseCommand):\\n    def handle(self): autoreload.run_with_reloader(callback)\\n]"
@@ -10916,7 +10916,7 @@ provenance = "Unmodified temporary project written by the pinned test/test_djang
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
+blocker = "The remaining original command fixture never selects a command that can invoke the autoreload callback (#43)"
 
 [[cases]]
 id = "test/test_django_autoreload_precision.py::test_captured_reloader_remains_real_after_provider_attribute_is_replaced"
@@ -11049,7 +11049,7 @@ provenance = "Unmodified temporary project written by the pinned test/test_djang
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
+blocker = "The remaining original command fixture never selects a command that can invoke the autoreload callback (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_replaced_dictionary_does_not_supply_protocol_roots[{setting} = {{}}\\n-LOGGING-False]"
@@ -12215,7 +12215,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Nested service has no selected provider for the imported router (#43)"
+blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-requirements_service_package]"
@@ -12264,7 +12264,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-uv_member_included]"
@@ -12337,7 +12337,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Nested service has no selected provider for the imported router (#43)"
+blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-requirements_service_package]"
@@ -12386,7 +12386,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-uv_member_included]"
@@ -12459,7 +12459,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Nested service has no selected provider for the imported router (#43)"
+blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-requirements_service_package]"
@@ -12508,7 +12508,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-uv_member_included]"
@@ -12581,7 +12581,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Nested service has no selected provider for the imported router (#43)"
+blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-requirements_service_package]"
@@ -12630,7 +12630,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-uv_member_included]"
@@ -13121,7 +13121,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
+blocker = "The selected view module raises during URLconf import; no callback is registered and the dependent registration remains incomplete (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[module_failure-80]"
@@ -13134,7 +13134,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
+blocker = "The selected view module raises during URLconf import; no callback is registered and the dependent registration remains incomplete (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[unknown_decorator-0]"
@@ -13173,7 +13173,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
+blocker = "Django supports the mounted async function view and can dispatch its provider; the original test expects dormant evidence (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[async_view-80]"
@@ -13186,7 +13186,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
+blocker = "Django supports the mounted async function view and can dispatch its provider; the original test expects dormant evidence (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[generator_view-0]"
@@ -14497,7 +14497,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct) (#43)"
+blocker = "Python dictConfig rejects the original LOGGING dictionary without a version before installing its filter (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_called_setting_mutation_helper_uses_the_module_binding[global-STORAGES-Storage.save]"
@@ -14522,7 +14522,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call) (#43)"
+blocker = "Python dictConfig rejects the original LOGGING dictionary without a version before installing its filter (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_called_setting_mutation_helper_uses_the_module_binding[read-global-STORAGES-Storage.save]"
@@ -14607,7 +14607,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_genuine_imported_django_hooks_remain_recognized[django.forms-Form-clean]"
@@ -14620,7 +14620,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor, unresolved_subclass_hook) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_genuine_imported_django_hooks_remain_recognized[django.db.models-Model-save]"
@@ -14633,7 +14633,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_form_clean_hook_requires_a_corresponding_field[True]"
@@ -14706,7 +14706,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_rebinding_a_provider_keeps_only_captured_genuine_base[True]"
@@ -14719,7 +14719,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_constructor, unresolved_subclass_hook) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_rebinding_a_provider_keeps_only_captured_genuine_base[False]"
@@ -15068,7 +15068,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor, unresolved_subclass_hook) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.forms-Form-save-False]"
@@ -15093,7 +15093,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.db.models-Manager-get_queryset-True]"
@@ -15106,7 +15106,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor, unresolved_subclass_hook) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.db.models-Model-save-True]"
@@ -15119,7 +15119,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.forms-ModelForm-save-True]"
@@ -15132,7 +15132,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_constructor, unresolved_subclass_hook) (#43)"
+blocker = "The original fixture constructs the source class without the framework action that dispatches the asserted hook (#43)"
 
 [[cases]]
 id = "test/test_django_template_liveness.py::test_routed_detail_template_resolves_specific_model_and_helpers"
@@ -16079,7 +16079,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK report disagrees with the pinned assertion at test/test_django_celery_entrypoints.py:230. Issue #43."
+blocker = "The fixture defines ready without any selected Django app startup (#43)"
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_celery_fake_private_and_stale_configuration_does_not_rescue[class Celery:\\n    def __init__(self):\\n        self.task_routes = (\"routers.route_task\",)\\napp = Celery()]"
@@ -16176,7 +16176,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK report disagrees with the pinned assertion at test/test_django_celery_entrypoints.py:320. Issue #43."
+blocker = "The original callback accepts four positional parameters, while Celery appends the task keyword at dispatch (#43)"
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_fake_appconfig_ready_import_stays_unused[class AppConfig: pass]"
@@ -16262,7 +16262,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK report disagrees with the pinned assertion at test/test_django_celery_entrypoints.py:307. Issue #43."
+blocker = "The fixture defines ready without any selected Django app startup (#43)"
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_ready_literal_branch_exit_prevents_signal_import[raise RuntimeError('not ready')]"
