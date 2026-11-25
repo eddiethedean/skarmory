@@ -242,6 +242,7 @@ struct Scope<'a> {
     owner: Option<SymbolId>,
     body: &'a [Statement],
     names: BTreeMap<&'a str, Vec<SymbolId>>,
+    open_wildcard: bool,
     namespace_reads: BTreeMap<[usize; 2], NamespaceRead>,
     namespace_copy_cutoffs: BTreeMap<[usize; 2], [usize; 2]>,
     namespace_captures: OnceCell<Vec<SymbolId>>,
@@ -666,6 +667,7 @@ impl<'a> Graph<'a> {
             owner,
             body,
             names: BTreeMap::new(),
+            open_wildcard: false,
             namespace_reads: BTreeMap::new(),
             namespace_copy_cutoffs: BTreeMap::new(),
             namespace_captures: OnceCell::new(),
@@ -728,6 +730,11 @@ impl<'a> Graph<'a> {
                 StatementKind::ProviderWildcardImport(imports)
                     if self.supported_provider_wildcard(scope, statement.at, imports) =>
                 {
+                    // typing has a finite __all__. FastAPI additionally exposes
+                    // implementation modules and other undocumented names.
+                    self.scopes[scope].open_wildcard = imports
+                        .first()
+                        .is_some_and(|import| import.module == "fastapi");
                     for import in imports {
                         self.bind(scope, &import.local, Binding::Import(import));
                     }
@@ -2864,6 +2871,17 @@ impl<'a> Graph<'a> {
                     return value;
                 }
                 if self.is_namespace_builtin(name) {
+                    let file = self.scopes[scope].file;
+                    if self.scopes[file].open_wildcard
+                        && (scope == file || matches!(name.as_str(), "eval" | "exec"))
+                    {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unresolved_import",
+                            "namespace inspection may read unmodeled FastAPI star imports",
+                        );
+                    }
                     return match binding {
                         LexicalBinding::Missing => Value::Provider(format!("builtins.{name}")),
                         _ => Value::Unknown,
@@ -2902,6 +2920,17 @@ impl<'a> Graph<'a> {
                     && !self.scopes[scope].names.contains_key(name.as_str())
                 {
                     return Value::Provider(format!("builtins.{name}"));
+                }
+                if matches!(binding, LexicalBinding::Missing)
+                    && self.scopes[self.scopes[scope].file].open_wildcard
+                    && !name.starts_with('_')
+                {
+                    self.scope_issue(
+                        scope,
+                        expression.at,
+                        "unresolved_import",
+                        format!("{name} may be an unmodeled FastAPI star import"),
+                    );
                 }
                 Value::Unknown
             }

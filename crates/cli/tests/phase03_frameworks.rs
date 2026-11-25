@@ -395,6 +395,20 @@ fn fastapi_wildcard_imports_require_known_external_provider_identity() {
         );
         fs::remove_file(lookalike).unwrap();
     }
+
+    fs::write(
+        project.path().join("app.py"),
+        "from fastapi import *\napp = FastAPI()\nmetadata = routing\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_import" && error["line"] == 3 })
+    );
 }
 
 #[test]
