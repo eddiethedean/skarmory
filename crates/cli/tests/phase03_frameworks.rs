@@ -334,6 +334,41 @@ fn drf_declarations_keep_only_proven_framework_protocol_members() {
 }
 
 #[test]
+fn phase03_named_conditions_bind_before_testing_and_keep_phase02_coverage() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("entry.py"),
+        "def called(): return 1\ndef skipped(): return 2\nif (first := False):\n    skipped()\nelif (callback := called):\n    callback()\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["entry.skipped"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    let phase02 = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+        .current_dir(root)
+        .env_remove("SKYLOS_CONFIG_FILE")
+        .args(["--profile", "skylos", ".", "--json"])
+        .output()
+        .unwrap();
+    let phase02_report: Value = serde_json::from_slice(&phase02.stdout).unwrap();
+    assert_eq!(phase02.status.code(), Some(2), "{phase02_report}");
+    assert!(
+        phase02_report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unsupported_construct" && error["line"] == 3 }),
+        "{phase02_report}"
+    );
+}
+
+#[test]
 fn click_command_declarations_and_reference_safe_helpers_have_distinct_dispositions() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

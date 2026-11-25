@@ -1,5 +1,6 @@
 //! Serializable source facts for the bounded Python 3.11 compatibility profile.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ruff_python_ast::{
@@ -75,6 +76,8 @@ pub struct ModuleFacts {
     pub empty: bool,
     pub inline_ignores: Vec<InlineIgnore>,
     pub postponed_annotations: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_named_condition: Option<Location>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -400,8 +403,17 @@ pub fn extract(source: &str) -> Result<ModuleFacts, FrontendError> {
     let empty = syntax.body.is_empty()
         || (syntax.body.len() == 1
             && matches!(&syntax.body[0], Stmt::Expr(node) if node.value.is_string_literal_expr()));
+    let named_condition = Cell::new(None);
+    let body = Lowering(
+        &lines,
+        SyntaxScope::ModuleOrClass,
+        BTreeMap::new(),
+        &named_condition,
+    )
+    .suite(&syntax.body, 0)?;
     Ok(ModuleFacts {
-        body: Lowering(&lines, SyntaxScope::ModuleOrClass, BTreeMap::new()).suite(&syntax.body, 0)?,
+        body,
+        first_named_condition: named_condition.get(),
         empty,
         inline_ignores,
         postponed_annotations: syntax.body.iter().any(|statement|
@@ -466,7 +478,12 @@ enum SyntaxScope {
     AsyncFunction,
 }
 
-struct Lowering<'a>(&'a Lines, SyntaxScope, BTreeMap<String, Location>);
+struct Lowering<'a>(
+    &'a Lines,
+    SyntaxScope,
+    BTreeMap<String, Location>,
+    &'a Cell<Option<Location>>,
+);
 
 struct BodyCoverage<'a> {
     source: &'a Lines,
@@ -630,6 +647,52 @@ impl Lowering<'_> {
         }
     }
 
+    fn conditional_statements(
+        &self,
+        start: Location,
+        test: &Expr,
+        body: Vec<Statement>,
+        otherwise: Vec<Statement>,
+        depth: usize,
+    ) -> Result<Vec<Statement>, FrontendError> {
+        let (at, prefix, test) = if let Expr::Named(named) = test {
+            let name = self.target(&named.target)?;
+            let prefix_at = self.0.locate(named.start());
+            if self.3.get().is_none_or(|previous| {
+                (prefix_at.line, prefix_at.column) < (previous.line, previous.column)
+            }) {
+                self.3.set(Some(prefix_at));
+            }
+            let at = self.0.locate(named.end());
+            let test = Expression {
+                at,
+                kind: ExpressionKind::Name(name.text.clone()),
+            };
+            let prefix = Statement {
+                at: prefix_at,
+                kind: StatementKind::Assign {
+                    names: vec![name],
+                    value: Some(self.expression(&named.value, depth)?),
+                    annotation: None,
+                },
+            };
+            (at, Some(prefix), test)
+        } else {
+            (start, None, self.expression(test, depth)?)
+        };
+        Ok(prefix
+            .into_iter()
+            .chain([Statement {
+                at,
+                kind: StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                },
+            }])
+            .collect())
+    }
+
     fn expressions(
         &self,
         expressions: &[Expr],
@@ -790,6 +853,7 @@ impl Lowering<'_> {
                             SyntaxScope::Function
                         },
                         BTreeMap::new(),
+                        self.3,
                     );
                     let body = if !is_async
                         && parameters.is_empty()
@@ -908,7 +972,7 @@ impl Lowering<'_> {
                             }
                         }),
                         is_generator: false,
-                        body: Lowering(self.0, SyntaxScope::ModuleOrClass, BTreeMap::new())
+                        body: Lowering(self.0, SyntaxScope::ModuleOrClass, BTreeMap::new(), self.3)
                             .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
                         decorators: node
@@ -1000,22 +1064,24 @@ impl Lowering<'_> {
                     for clause in node.elif_else_clauses.iter().rev() {
                         let body = self.suite(&clause.body, next)?;
                         otherwise = match &clause.test {
-                            Some(test) => vec![Statement {
-                                at: self.0.locate(clause.start()),
-                                kind: StatementKind::If {
-                                    test: expression(test)?,
-                                    body,
-                                    otherwise,
-                                },
-                            }],
+                            Some(test) => self.conditional_statements(
+                                self.0.locate(clause.start()),
+                                test,
+                                body,
+                                otherwise,
+                                next,
+                            )?,
                             None => body,
                         };
                     }
-                    StatementKind::If {
-                        test: expression(&node.test)?,
-                        body: self.suite(&node.body, next)?,
+                    result.extend(self.conditional_statements(
+                        self.0.locate(node.start()),
+                        &node.test,
+                        self.suite(&node.body, next)?,
                         otherwise,
-                    }
+                        next,
+                    )?);
+                    continue;
                 }
                 Stmt::For(node) => {
                     let Some((last, registration)) = literal_route_loop(node) else {
@@ -1416,7 +1482,7 @@ impl Lowering<'_> {
                 .or_insert_with(|| self.0.locate(target.start()));
             targets.push(target);
         }
-        let mut child = Self(self.0, self.1, self.2.clone());
+        let mut child = Self(self.0, self.1, self.2.clone(), self.3);
         child.2.extend(local_targets);
         let iterators = generators
             .iter()

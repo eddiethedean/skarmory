@@ -803,7 +803,7 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v35/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v36/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -920,6 +920,14 @@ fn scan_selected(
                         sources.insert(file.label.clone(), source);
                         match facts {
                             FileFacts::Python(facts) => {
+                                if !phase03 && let Some(at) = facts.first_named_condition {
+                                    issues.push(Issue::new(
+                                        "unsupported_construct",
+                                        &file.label,
+                                        "assignment expressions are outside the compatibility subset",
+                                    ).at(at));
+                                    continue;
+                                }
                                 let is_package = Path::new(&file.label).file_name()
                                     == Some(OsStr::new("__init__.py"));
                                 // The loose-file identity includes the initializer's
