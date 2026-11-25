@@ -22,6 +22,8 @@ from phase03_dependencies import (
 from phase03_engine import CASE as ENGINE_CASE
 from phase03_engine import engine_case
 from phase03_framework import framework_report, patch_framework_analysis
+from phase03_framework_corpus import MANIFEST as CORPUS_SOURCE
+from phase03_framework_corpus import corpus_assertions, framework_cases, score_corpus
 
 PORT = "tests/conformance/run_phase03_seed.py"
 BENCHMARK_SOURCE = "benchmarks/dead_code/manifest.json"
@@ -140,6 +142,8 @@ def port_cases(args):
         for case in cases.values()
     ):
         raise ValueError("missing native SDK adapter for a mapped dependency case")
+    if layer != "sdk" and any(case["source"] == CORPUS_SOURCE for case in cases.values()):
+        raise ValueError("the framework corpus requires a native SDK variant")
     return inventory, digest, variant, cases
 
 
@@ -251,6 +255,61 @@ def run_basic_benchmark(args, case):
     }
 
 
+def run_framework_corpus_cases(args, cases):
+    from skylos.benchmarks import corpus_ci
+
+    manifest = args.upstream / CORPUS_SOURCE
+    original = corpus_ci.load_manifest(manifest)
+    selected = framework_cases(original)
+    originals = {case["id"]: case for case in original["cases"] if case["id"] in selected}
+
+    results = {}
+    for key, case in cases.items():
+        prefix, separator, case_id = key.partition("::")
+        if prefix != CORPUS_SOURCE or not separator or case_id not in originals:
+            raise ValueError(f"{key}: inventory points outside the pinned framework corpus")
+        expected = corpus_assertions(originals[case_id])
+        if expected != case["assertions"]:
+            raise ValueError(f"{key}: inventory changes the original framework corpus assertions")
+        scanned = 0
+
+        def scan(path, options):
+            nonlocal scanned
+            scanned += 1
+            return json.loads(scan_candidate(args.sdk_python, path, options))
+
+        summary = score_corpus(
+            corpus_ci, manifest, {case_id}, scan if args.mode == "candidate" else None,
+        )
+        if summary["case_count"] != 1 or summary["cases"][0]["id"] != case_id:
+            raise ValueError(f"{key}: the original scorer did not run exactly the mapped case")
+        outcome = summary["cases"][0]
+        prerequisites = {
+            name: "passed" if (
+                name == "pinned-framework-corpus" and outcome["analyzed_source_count"]
+                or name == "installed-sdk" and scanned == 1
+            ) else "blocked"
+            for name in case["prerequisites"]
+        }
+        executed = outcome["scored"] and outcome["checked_expectation_count"] == len(expected)
+        failed = {
+            f"{failure['mode']}:{failure['category']}:{failure['expected']}"
+            for failure in outcome["failures"]
+        }
+        reached = [label for label in expected if executed and label not in failed]
+        passed = executed and not failed and (
+            args.mode == "reference"
+            or all(status == "passed" for status in prerequisites.values())
+        )
+        results[key] = {
+            "status": "passed" if passed else "failed",
+            "assertions": reached,
+            "prerequisites": prerequisites,
+            "corpus": outcome,
+        }
+    return results
+
+
 def pytest_worker(args):
     _, _, variant, cases = port_cases(args)
     if args.mode == "candidate" and variant["layer"] == "engine":
@@ -261,6 +320,8 @@ def pytest_worker(args):
     import pytest
 
     benchmark = cases.pop(BENCHMARK_CASE, None)
+    corpus = {key: case for key, case in cases.items() if case["source"] == CORPUS_SOURCE}
+    cases = {key: case for key, case in cases.items() if key not in corpus}
     sys.path.insert(0, str(args.upstream))
     sys.modules["skylos_fast"] = None
     from skylos.core.fast import FAST_AVAILABLE
@@ -470,9 +531,12 @@ def pytest_worker(args):
         }
     if benchmark is not None:
         report[BENCHMARK_CASE] = run_basic_benchmark(args, benchmark)
+    corpus_results = run_framework_corpus_cases(args, corpus)
+    report.update(corpus_results)
     args.output.write_text(json.dumps(report), encoding="utf-8")
     return int(status) or int(
         benchmark is not None and report[BENCHMARK_CASE]["status"] != "passed"
+        or any(result["status"] != "passed" for result in corpus_results.values())
     )
 
 
@@ -554,6 +618,11 @@ def write_receipt(args):
             result["benchmark"] = {
                 "reference": reference.get("benchmark"),
                 "candidate": candidate.get("benchmark"),
+            }
+        if case["source"] == CORPUS_SOURCE:
+            result["corpus"] = {
+                "reference": reference.get("corpus"),
+                "candidate": candidate.get("corpus"),
             }
         if case_id == ENGINE_CASE:
             result["native_test"] = candidate.get("native_test")
