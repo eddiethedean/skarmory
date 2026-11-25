@@ -704,10 +704,9 @@ registrations = [app.add_api_route('/', endpoint) for item in [] for extra in op
 
     fs::write(&file, source.replace("in []", "in [1]")).unwrap();
     let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
-    assert_eq!(
-        report["analysis_errors"][0]["kind"],
-        "unsupported_construct"
-    );
+    assert_eq!(report["analysis_errors"][0]["kind"], "unresolved_call");
+    assert_eq!(report["analysis_errors"][0]["file"], "web.py");
+    assert_eq!(report["analysis_errors"][0]["line"], 7);
 }
 
 #[test]
