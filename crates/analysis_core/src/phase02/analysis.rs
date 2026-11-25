@@ -9495,6 +9495,7 @@ impl<'a> Graph<'a> {
                         | "marshmallow_hook_declaration"
                         | "celery_backend_default"
                         | "django_migration_callback_declaration"
+                        | django_migrations::DECLARATION
                         | drf::PROTOCOL_DECLARATION
                         | drf::FIELD_DECLARATION
                         | wagtail::FIELD_DECLARATION
@@ -9959,6 +9960,7 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_converter_regex"
                     | "django_migration_parameter"
+                    | django_migrations::DECLARATION
                     | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
@@ -11069,10 +11071,7 @@ fn framework_managed_base(name: &str) -> bool {
     framework_class_provider(name).is_some()
         || is_django_string_converter(name)
         || logging_config::LoggingBase::provider(name).is_some()
-        || matches!(
-            name,
-            "django.db.migrations.Migration" | "django.db.migrations.migration.Migration"
-        )
+        || django_migrations::is_migration_base(name)
 }
 
 fn is_django_runpython(name: &str) -> bool {
@@ -14354,6 +14353,68 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                     .any(|issue| issue.kind == "unresolved_call")
             );
         }
+    }
+
+    #[test]
+    fn phase03_migration_declarations_require_the_effective_conventional_export() {
+        let source = "from django.db import migrations\nclass Migration(migrations.Migration):\n    dependencies = []\n    operations = []\n    def dormant(self): return 1\n";
+        let mut files = vec![
+            module("app/__init__.py", "app", ""),
+            module("app/migrations/__init__.py", "app.migrations", ""),
+            module(
+                "app/migrations/0001_initial.py",
+                "app.migrations.0001_initial",
+                source,
+            ),
+            module("app/migrations/_old.py", "app.migrations._old", source),
+            module(
+                "app/migrations/0002_retired.py",
+                "app.migrations.0002_retired",
+                &format!("{source}Migration = object\n"),
+            ),
+            module(
+                "app/migrations/0003_fake.py",
+                "app.migrations.0003_fake",
+                "class Migration: pass\n",
+            ),
+            module("app/tools.py", "app.tools", source),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let declarations: BTreeSet<_> = report
+            .evidence
+            .iter()
+            .filter(|row| row.kind == "django_migration_declaration" && row.certainty == "possible")
+            .map(|row| row.full_name.as_str())
+            .collect();
+        assert_eq!(
+            declarations,
+            [
+                "app.migrations.0001_initial.Migration",
+                "app.migrations.0001_initial.Migration.dependencies",
+                "app.migrations.0001_initial.Migration.operations",
+            ]
+            .into()
+        );
+        assert!(report.findings.iter().any(|finding| {
+            finding.category == Category::Function
+                && finding.full_name == "app.migrations.0001_initial.Migration.dormant"
+        }));
+
+        files.extend([
+            module(
+                "settings.py", "settings",
+                "INSTALLED_APPS = ['app']\nMIGRATION_MODULES = {'app': None}\n",
+            ),
+            module("wsgi.py", "wsgi", "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\napplication = get_wsgi_application()\n"),
+        ]);
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind == "django_migration_declaration")
+        );
     }
 
     #[test]
