@@ -321,6 +321,8 @@ struct DirectArguments {
     at: Location,
     values: BTreeMap<String, Value>,
     forwarded: BTreeMap<String, SymbolId>,
+    conditional: bool,
+    arguments_bound: bool,
 }
 
 struct CallArguments<'a> {
@@ -494,6 +496,7 @@ pub(super) fn analyze_with_verification(
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
+        django_autoreload_wrappers: Vec::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_registration_issues: Vec::new(),
@@ -659,6 +662,7 @@ struct Graph<'a> {
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
     django_converter: frameworks::DjangoConverter,
+    django_autoreload_wrappers: Vec<frameworks::DjangoAutoreloadWrapper>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_registration_issues: Vec<(Object, Issue)>,
@@ -5166,12 +5170,25 @@ impl<'a> Graph<'a> {
         keywords: &[(String, Expression)],
     ) {
         if let Some(values) = self.call_argument_values(caller, callee, before, args, keywords) {
+            let conditional = self.branch_depth != 0
+                || self.scopes[caller]
+                    .owner
+                    .is_some_and(|owner| self.conditional.contains_key(&owner));
             let mut forwarded = BTreeMap::new();
-            if self.phase03
-                && let Binding::Definition(definition, _) = self.symbols[callee].binding
-                && args.len() <= definition.parameters.len()
+            let Binding::Definition(definition, _) = self.symbols[callee].binding else {
+                unreachable!("only definitions with bounded signatures have argument values");
+            };
+            let parameters = &definition.parameters;
+            let required = parameters.len() - definition.defaults.len();
+            let arguments_bound = args.len() <= parameters.len()
                 && values.len() == args.len() + keywords.len()
-            {
+                && parameters[..required]
+                    .iter()
+                    .all(|parameter| values.contains_key(&parameter.text))
+                && keywords
+                    .iter()
+                    .all(|(name, _)| parameters.iter().any(|parameter| parameter.text == *name));
+            if self.phase03 && arguments_bound {
                 for (parameter, argument) in definition
                     .parameters
                     .iter()
@@ -5196,6 +5213,8 @@ impl<'a> Graph<'a> {
                     at,
                     values,
                     forwarded,
+                    conditional,
+                    arguments_bound,
                 });
         }
     }
@@ -5332,6 +5351,8 @@ impl<'a> Graph<'a> {
                     at,
                     values,
                     forwarded: BTreeMap::new(),
+                    conditional: true,
+                    arguments_bound: false,
                 });
         }
         self.activate_callback(scope, target, "executor_submission", at);
@@ -7909,6 +7930,7 @@ impl<'a> Graph<'a> {
             }
             if self.phase03 {
                 self.activate_django_signals(reach, &mut pending, verification, possible);
+                self.activate_django_autoreload_wrappers(reach, &mut pending, possible);
                 self.activate_fastapi(reach, &mut pending);
                 self.activate_flask_parameter_hooks(reach, &mut pending);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
@@ -8145,6 +8167,7 @@ impl<'a> Graph<'a> {
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
             self.report_converter_string_calls(&reach);
+            self.report_django_autoreload_wrappers(&reach);
             self.report_flask_parameter_hooks(&reach);
         }
         self.issues.extend(

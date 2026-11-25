@@ -41,6 +41,15 @@ pub(super) struct DjangoConverter {
     pub(super) string_calls: Vec<ParameterCall>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct DjangoAutoreloadWrapper {
+    site: ScopeId,
+    parameter: SymbolId,
+    owner: SymbolId,
+    at: Location,
+    conditional: bool,
+}
+
 pub(super) fn is_django_signal_edge(kind: &str) -> bool {
     matches!(kind, "django_signal" | "django_signal_unknown_loading")
 }
@@ -792,19 +801,31 @@ impl Graph<'_> {
             keywords,
         } = call;
         if let Some([Some(callback)]) = registration_arguments(positional, keywords, ["main_func"])
-            && let Value::Callable(invocation) =
-                self.identity_with_dormant_declarations(scope, callback, before, 0)
-            && !invocation.verified
-            && !matches!(invocation.receiver, Receiver::Explicit(_))
-            && self.bounded_framework_function(invocation.target)
         {
-            let certainty = if self.branch_depth == 0 {
-                "certain"
-            } else {
-                "possible"
-            };
-            self.invoke(scope, invocation, "django_autoreload", certainty, at);
-            return;
+            let conditional = self.branch_depth != 0
+                || self.scopes[scope]
+                    .owner
+                    .is_some_and(|owner| self.conditional.contains_key(&owner));
+            let value = self.identity_with_dormant_declarations(scope, callback, before, 0);
+            if let Some(invocation) = self.django_autoreload_invocation(value) {
+                let certainty = if conditional { "possible" } else { "certain" };
+                self.invoke(scope, invocation, "django_autoreload", certainty, at);
+                return;
+            }
+            if let Some(parameter) = self.parameter_binding(scope, callback, before)
+                && self.symbols[parameter].scope == scope
+                && let Some(owner) = self.scopes[scope].owner
+            {
+                self.django_autoreload_wrappers
+                    .push(DjangoAutoreloadWrapper {
+                        site: scope,
+                        parameter,
+                        owner,
+                        at,
+                        conditional,
+                    });
+                return;
+            }
         }
         self.scope_issue(
             scope,
@@ -812,6 +833,108 @@ impl Graph<'_> {
             "unresolved_registration",
             "Django autoreload requires a bounded synchronous callback",
         );
+    }
+
+    fn django_autoreload_invocation(&mut self, value: Value) -> Option<Invocation> {
+        let Value::Callable(invocation) = value else {
+            return None;
+        };
+        (!invocation.verified
+            && !matches!(invocation.receiver, Receiver::Explicit(_))
+            && self.bounded_framework_function(invocation.target))
+        .then_some(invocation)
+    }
+
+    fn django_autoreload_wrapper_targets(
+        &mut self,
+        hook: DjangoAutoreloadWrapper,
+        reach: &Reachability,
+    ) -> (Vec<(Invocation, bool)>, bool) {
+        let parameter = &self.symbols[hook.parameter].name.text;
+        let candidates: Vec<_> = self
+            .direct_arguments
+            .get(&hook.owner)
+            .into_iter()
+            .flatten()
+            .filter(|call| reach.scopes.contains(&call.caller))
+            .map(|call| {
+                (
+                    call.arguments_bound
+                        .then(|| call.values.get(parameter).cloned())
+                        .flatten()
+                        .unwrap_or(Value::Unknown),
+                    call.conditional || self.scopes[call.caller].owner.is_some(),
+                )
+            })
+            .collect();
+        let independent = reach
+            .evidence
+            .range((hook.owner, "", "")..)
+            .take_while(|&&(owner, _, _)| owner == hook.owner)
+            .any(|&(_, kind, _)| !matches!(kind, "direct_call" | "type_reference"));
+        let mut complete = !independent && !candidates.is_empty();
+        let mut targets = Vec::new();
+        for (value, conditional_call) in candidates {
+            if let Some(invocation) = self.django_autoreload_invocation(value) {
+                targets.push((invocation, hook.conditional || conditional_call));
+            } else {
+                complete = false;
+            }
+        }
+        (targets, complete)
+    }
+
+    pub(super) fn activate_django_autoreload_wrappers(
+        &mut self,
+        reach: &mut Reachability,
+        pending: &mut VecDeque<Edge>,
+        possible: bool,
+    ) {
+        for index in 0..self.django_autoreload_wrappers.len() {
+            let hook = self.django_autoreload_wrappers[index];
+            if !reach.scopes.contains(&hook.site) {
+                continue;
+            }
+            for (invocation, conditional) in self.django_autoreload_wrapper_targets(hook, reach).0 {
+                let certainty = if possible || conditional {
+                    "possible"
+                } else {
+                    "certain"
+                };
+                let kind = "django_autoreload";
+                let target = invocation.target;
+                if let Some(class) = invocation.receiver.supplied() {
+                    reach
+                        .deferred_method_receivers
+                        .entry(target)
+                        .or_default()
+                        .insert(class);
+                }
+                if !reach.evidence.contains(&(target, kind, certainty)) {
+                    pending.push_back(Edge {
+                        target,
+                        kind,
+                        certainty,
+                    });
+                }
+            }
+        }
+    }
+
+    pub(super) fn report_django_autoreload_wrappers(&mut self, reach: &Reachability) {
+        for index in 0..self.django_autoreload_wrappers.len() {
+            let hook = self.django_autoreload_wrappers[index];
+            if reach.scopes.contains(&hook.site)
+                && !self.django_autoreload_wrapper_targets(hook, reach).1
+            {
+                self.issue(
+                    self.scopes[hook.site].file,
+                    hook.at,
+                    "unresolved_registration",
+                    "Django autoreload wrapper has an unresolved callback argument",
+                );
+            }
+        }
     }
 
     pub(super) fn framework_class_role(

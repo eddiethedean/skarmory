@@ -2059,6 +2059,100 @@ reload(main_func=start)
 }
 
 #[test]
+fn django_autoreload_wrapper_activates_only_bound_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("reloads.py"),
+        "from django.utils import autoreload\ndef run(target):\n    autoreload.run_with_reloader(target)\n",
+    )
+    .unwrap();
+    let caller = r#"from reloads import run
+from external import enabled, opaque
+
+def selected():
+    return helper()
+
+def helper():
+    return 1
+
+def optional():
+    return 2
+
+def dormant():
+    return 3
+
+def abandoned():
+    run(dormant)
+
+run(selected)
+if enabled:
+    run(target=optional)
+"#;
+    let path = root.join("startup.py");
+    fs::write(&path, caller).unwrap();
+    let report = scan(root);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let callbacks: Vec<_> = symbols
+        .iter()
+        .flat_map(|symbol| {
+            symbol["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry["kind"] == "django_autoreload")
+                .map(|entry| {
+                    (
+                        symbol["qualified_name"].as_str().unwrap(),
+                        entry["certainty"].as_str().unwrap(),
+                    )
+                })
+        })
+        .collect();
+    assert_eq!(
+        callbacks,
+        [
+            ("startup.optional", "possible"),
+            ("startup.selected", "certain"),
+        ]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"startup.dormant"));
+    assert!(!findings(&report, "unused_functions").contains(&"startup.helper"));
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["coverage", "dead_code_evidence", "unused_functions"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+
+    for unresolved in ["run(opaque)", "run(dormant, invalid=True)"] {
+        fs::write(&path, format!("{caller}\n{unresolved}\n")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_registration"
+                    && issue["path"] == "reloads.py")
+        );
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|symbol| symbol["qualified_name"] == "startup.dormant")
+                .all(|symbol| symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| entry["kind"] != "django_autoreload"))
+        );
+    }
+}
+
+#[test]
 fn django_converter_protocol_requires_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
