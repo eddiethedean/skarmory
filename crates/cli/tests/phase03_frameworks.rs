@@ -1116,6 +1116,132 @@ def detached(): return {}
 }
 
 #[test]
+fn fastapi_router_mode_selects_late_direct_and_nested_routes() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let config = root.join(".skylos.toml");
+    fs::write(
+        root.join("app.py"),
+        r#"from fastapi import APIRouter, FastAPI
+
+app = FastAPI()
+outer = APIRouter()
+inner = APIRouter()
+dormant = APIRouter()
+
+@outer.on_event('startup')
+def early_startup():
+    return 5
+
+app.include_router(outer)
+
+@outer.get('/direct')
+def direct():
+    return 1
+
+@inner.get('/nested')
+def nested():
+    return 2
+
+@dormant.get('/dormant')
+def orphan():
+    return 3
+
+@inner.on_event('startup')
+def nested_startup():
+    return 6
+
+outer.include_router(inner)
+
+@outer.on_event('startup')
+def startup():
+    return 4
+"#,
+    )
+    .unwrap();
+    let scan = |code, cached| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
+        command
+            .current_dir(root)
+            .env_remove("SKYLOS_CONFIG_FILE")
+            .args([
+                "--profile",
+                "skylos-0.3",
+                ".",
+                "--json",
+                "--no-grep-verify",
+                "--confidence",
+                "0",
+            ]);
+        if cached {
+            command
+                .args(["--workers", "4", "--cache-dir"])
+                .arg(cache.path());
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        report.as_object_mut().unwrap().remove("cache");
+        report
+    };
+    fs::write(&config, "root = true\n").unwrap();
+    let unresolved = scan(2, false);
+    assert_eq!(unresolved["coverage"]["status"], "incomplete");
+    assert!(
+        unresolved["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("across framework versions")
+            })
+    );
+
+    fs::write(
+        &config,
+        "root = true\n[dead_code]\nfastapi_router_mode = 'live'\n",
+    )
+    .unwrap();
+    let live = scan(0, false);
+    assert_eq!(
+        findings(&live, "unused_functions"),
+        ["app.nested_startup", "app.orphan", "app.startup"],
+        "{live}"
+    );
+    assert_eq!(live, scan(0, true));
+    assert_eq!(live, scan(0, true));
+
+    fs::write(
+        &config,
+        "root = true\n[dead_code]\nfastapi_router_mode = 'snapshot'\n",
+    )
+    .unwrap();
+    let copied = scan(0, false);
+    assert_eq!(
+        findings(&copied, "unused_functions"),
+        [
+            "app.direct",
+            "app.nested",
+            "app.nested_startup",
+            "app.orphan",
+            "app.startup"
+        ],
+        "{copied}"
+    );
+    assert_eq!(copied, scan(0, true));
+}
+
+#[test]
 fn fastapi_deployment_factory_preserves_possible_routes() {
     let project = tempfile::tempdir().unwrap();
     let path = project.path().join("app.py");

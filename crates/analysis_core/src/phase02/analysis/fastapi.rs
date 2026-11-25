@@ -76,7 +76,9 @@ struct Inclusion {
     cutoff: usize,
     outer_mount: usize,
     legacy_default_reached: bool,
+    lifecycle_reached: bool,
     conditional: bool,
+    mode: FastapiRouterMode,
 }
 
 #[derive(Default)]
@@ -1583,7 +1585,9 @@ impl<'a> Graph<'a> {
                             cutoff: mount,
                             outer_mount: mount,
                             legacy_default_reached: false,
+                            lifecycle_reached: true,
                             conditional: false,
+                            mode: self.files[object.0].fastapi_router_mode,
                         },
                     ));
                 }
@@ -1605,18 +1609,27 @@ impl<'a> Graph<'a> {
                 continue;
             };
             for id in events {
-                if !self.fastapi_event_precedes(id, inclusion.cutoff) {
+                if !(self.fastapi_event_precedes(id, inclusion.cutoff)
+                    || inclusion.mode == FastapiRouterMode::Live
+                        && self.fastapi_event_follows_in_initializer(id, inclusion.cutoff)
+                        && self.fastapi.events[id].carries_routes())
+                {
                     continue;
                 }
                 if evaluations >= MAX_SNAPSHOTS {
                     break;
                 }
-                if self
-                    .prepare_fastapi_signatures(id, SignatureSite::AppMount(inclusion.outer_mount))
-                {
-                    self.prepare_fastapi_signatures(id, SignatureSite::ModuleEnd);
-                    evaluations += 1;
+                let mut prepared = false;
+                if inclusion.mode != FastapiRouterMode::Live {
+                    prepared |= self.prepare_fastapi_signatures(
+                        id,
+                        SignatureSite::AppMount(inclusion.outer_mount),
+                    );
                 }
+                if inclusion.mode != FastapiRouterMode::Snapshot {
+                    prepared |= self.prepare_fastapi_signatures(id, SignatureSite::ModuleEnd);
+                }
+                evaluations += usize::from(prepared);
                 if let Some(router) = self.fastapi.events[id].included_router {
                     pending.push((
                         router,
@@ -1667,6 +1680,14 @@ impl<'a> Graph<'a> {
             .is_some_and(|&before| position(event.site.at) < position(before))
     }
 
+    fn fastapi_event_follows_in_initializer(&self, id: usize, mount: usize) -> bool {
+        let site = self.fastapi.events[id].site;
+        let inclusion = self.fastapi.events[mount].site;
+        site.scope == inclusion.scope
+            && site.scope == self.scopes[site.scope].file
+            && position(site.at) > position(inclusion.at)
+    }
+
     pub(super) fn activate_fastapi(&self, reach: &mut Reachability, pending: &mut VecDeque<Edge>) {
         let mut snapshots = Snapshots::default();
         for (&object, &scope) in &self.fastapi.apps {
@@ -1703,15 +1724,19 @@ impl<'a> Graph<'a> {
             snapshots.limited = true;
             return false;
         }
-        if let Some(&(site, effects)) = self.fastapi.lifespans.get(&object)
+        let lifecycle_reached = inclusion.is_none_or(|inclusion| inclusion.lifecycle_reached);
+        if lifecycle_reached
+            && let Some(&(site, effects)) = self.fastapi.lifespans.get(&object)
             && reach.scopes.contains(&site.scope)
         {
             self.open_fastapi_effects(effects, reach, pending);
         }
-        // include_router copies legacy callbacks and merges the included
-        // lifespan context. A default lifespan on either path runs the list.
-        let legacy_default_reached = !self.fastapi.lifespans.contains_key(&object)
-            || inclusion.is_some_and(|inclusion| inclusion.legacy_default_reached);
+        // The lifecycle lists and context are merged at inclusion, even when
+        // dispatch consults the child router later.
+        let legacy_default_reached = lifecycle_reached
+            && (!self.fastapi.lifespans.contains_key(&object)
+                || inclusion.is_some_and(|inclusion| inclusion.legacy_default_reached));
+        let mode = inclusion.map_or(self.files[object.0].fastapi_router_mode, |item| item.mode);
         let conditional = inclusion.is_some_and(|inclusion| inclusion.conditional);
         let mut has_routes = false;
         for &id in self.fastapi.by_object.get(&object).into_iter().flatten() {
@@ -1728,18 +1753,35 @@ impl<'a> Graph<'a> {
             if event.startup_or_shutdown && !legacy_default_reached {
                 continue;
             }
+            let mut child_lifecycle = lifecycle_reached;
             if let Some(inclusion) = inclusion
                 && !self.fastapi_event_precedes(id, inclusion.cutoff)
             {
-                if event.site.scope != self.fastapi.events[inclusion.cutoff].site.scope {
-                    snapshots.unordered_mounts.insert(inclusion.cutoff);
+                if self.fastapi_event_follows_in_initializer(id, inclusion.cutoff) {
+                    if mode == FastapiRouterMode::Snapshot
+                        || mode == FastapiRouterMode::Live && event.startup_or_shutdown
+                    {
+                        continue;
+                    }
+                    if mode == FastapiRouterMode::Live
+                        && !conditional
+                        && !event.conditional_include
+                        && event.carries_routes()
+                    {
+                        child_lifecycle = false;
+                    } else {
+                        snapshots.version_sensitive_mounts.insert(inclusion.cutoff);
+                        continue;
+                    }
                 } else {
-                    snapshots.version_sensitive_mounts.insert(inclusion.cutoff);
+                    if event.site.scope != self.fastapi.events[inclusion.cutoff].site.scope {
+                        snapshots.unordered_mounts.insert(inclusion.cutoff);
+                    } else {
+                        snapshots.version_sensitive_mounts.insert(inclusion.cutoff);
+                    }
+                    continue;
                 }
-                continue;
             }
-            // include_router copies only the routes present at this call. Its
-            // dependencies apply once at least one route is copied.
             if event.included_router.is_none_or(|child| {
                 let outer_mount = inclusion.map_or(id, |outer| outer.outer_mount);
                 self.fastapi_snapshot(
@@ -1748,7 +1790,9 @@ impl<'a> Graph<'a> {
                         cutoff: id,
                         outer_mount,
                         legacy_default_reached,
+                        lifecycle_reached: child_lifecycle,
                         conditional: conditional || event.conditional_include,
+                        mode,
                     }),
                     reach,
                     pending,
@@ -1780,9 +1824,11 @@ impl<'a> Graph<'a> {
         pending: &mut VecDeque<Edge>,
         snapshots: &mut Snapshots,
     ) {
-        let timing = inclusion.map_or(SignatureSite::Original, |outer| {
-            SignatureSite::AppMount(outer.outer_mount)
-        });
+        let timing = match inclusion {
+            Some(item) if item.mode == FastapiRouterMode::Live => SignatureSite::ModuleEnd,
+            Some(item) => SignatureSite::AppMount(item.outer_mount),
+            None => SignatureSite::Original,
+        };
         let Some(&scope) = event.signatures.get(&timing) else {
             snapshots.limited |= !event.signature_targets.is_empty();
             return;
@@ -1793,23 +1839,24 @@ impl<'a> Graph<'a> {
             reach
                 .scopes
                 .insert(event.signatures[&SignatureSite::Original]);
-            let later = event.signatures[&SignatureSite::ModuleEnd];
-            reach.scopes.insert(later);
-            // FastAPI 0.137+ can build the included route context lazily.
-            // Avoid asserting a dependency when copies and live routers differ.
-            let targets = |scope: ScopeId| {
-                self.scopes[scope]
-                    .edges
-                    .iter()
-                    .map(|edge| edge.target)
-                    .collect::<BTreeSet<_>>()
-            };
-            if targets(scope) != targets(later) {
-                reach.scopes.insert(scope);
-                snapshots
-                    .version_sensitive_mounts
-                    .insert(inclusion.outer_mount);
-                return;
+            if inclusion.mode == FastapiRouterMode::Auto {
+                let later = event.signatures[&SignatureSite::ModuleEnd];
+                reach.scopes.insert(later);
+                // Both models must agree when the framework mode is unknown.
+                let targets = |scope: ScopeId| {
+                    self.scopes[scope]
+                        .edges
+                        .iter()
+                        .map(|edge| edge.target)
+                        .collect::<BTreeSet<_>>()
+                };
+                if targets(scope) != targets(later) {
+                    reach.scopes.insert(scope);
+                    snapshots
+                        .version_sensitive_mounts
+                        .insert(inclusion.outer_mount);
+                    return;
+                }
             }
         }
         self.open_fastapi_effects(scope, reach, pending);

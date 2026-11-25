@@ -13,7 +13,7 @@ use skarmory_python::phase02::{
     ExpressionKind, Import, Name, Statement, StatementKind,
 };
 
-use super::config::Entrypoint;
+use super::config::{Entrypoint, FastapiRouterMode};
 use super::{Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding};
 use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
@@ -9994,6 +9994,7 @@ mod tests {
             path: path.into(),
             module: name.into(),
             is_package: path.ends_with("__init__.py"),
+            fastapi_router_mode: FastapiRouterMode::Auto,
             facts: extract(text).unwrap(),
         }
     }
@@ -11741,6 +11742,27 @@ print(Status.default)
         assert!(!result.evidence.iter().any(|entry| {
             entry.full_name == "web.initial" && entry.kind == "fastapi_dependency"
         }));
+    }
+
+    #[test]
+    fn selected_fastapi_router_modes_use_the_matching_dependency_binding() {
+        let source = "from __future__ import annotations\nfrom typing import Annotated\nfrom fastapi import APIRouter, Depends, FastAPI\nrouter = APIRouter()\ndef original(): return 1\nselected = original\n@router.get('/')\ndef endpoint(value: Annotated[int, Depends(selected)]): return value\napp = FastAPI()\napp.include_router(router)\ndef current(): return 2\nselected = current\n";
+        for (mode, expected) in [
+            (FastapiRouterMode::Snapshot, "web.original"),
+            (FastapiRouterMode::Live, "web.current"),
+        ] {
+            let mut file = module("web.py", "web", source);
+            file.fastapi_router_mode = mode;
+            let result = analyze_phase03(&[file], &[]);
+            assert!(result.issues.is_empty(), "{:?}", result.issues);
+            let dependencies: Vec<_> = result
+                .evidence
+                .iter()
+                .filter(|entry| entry.kind == "fastapi_dependency")
+                .map(|entry| entry.full_name.as_str())
+                .collect();
+            assert_eq!(dependencies, [expected]);
+        }
     }
 
     #[test]

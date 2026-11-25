@@ -257,11 +257,16 @@ exception handlers and async context-manager lifespans for active apps and
 included routers. A custom app lifespan supersedes that app's startup and
 shutdown hooks. Constructor startup and shutdown callbacks on included routers
 remain eligible when a merged default lifespan invokes them. FastAPI versions
-before 0.137 copy routes
-at inclusion. Newer versions retain the router and can expose routes added
-later. The analyzer reports incomplete coverage when either model can select
-different routes or postponed dependencies, or when ordering across scopes
-cannot be determined. It retains constructors of resolved class dependencies. The preview resolves bounded
+before 0.137 copy routes at inclusion. Newer versions retain the router and
+can expose routes added later. Set `fastapi_router_mode` under `[dead_code]`
+in the Phase 0.3 configuration to `snapshot` for the older deployment or
+`live` for the newer one. The analyzer uses the config for the application
+construction site. The default `auto` reports incomplete coverage when the
+two models can select different routes or postponed dependencies.
+The selected mode resolves bounded initializer order and does not infer a
+deployment version from the scanner's own environment. Unproven order stays
+incomplete. In live mode, later routes can become visible while startup
+callbacks still come from the lifecycle list captured at inclusion. It retains constructors of resolved class dependencies. The preview resolves bounded
 leading wildcard imports from the supported FastAPI and typing export tables.
 Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
 incomplete.

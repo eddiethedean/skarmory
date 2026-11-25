@@ -170,6 +170,7 @@ struct AnalyzedFile {
     path: String,
     module: String,
     is_package: bool,
+    fastapi_router_mode: config::FastapiRouterMode,
     facts: ModuleFacts,
 }
 
@@ -919,6 +920,9 @@ fn scan_selected(
                                     path: file.label.clone(),
                                     module: module.to_owned(),
                                     is_package,
+                                    fastapi_router_mode: config_index
+                                        .map_or(&config, |index| &local_configs[index])
+                                        .fastapi_router_mode,
                                     facts,
                                 });
                             }
