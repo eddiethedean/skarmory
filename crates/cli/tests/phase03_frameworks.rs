@@ -2826,6 +2826,99 @@ def abandoned():
 }
 
 #[test]
+fn fastapi_subclasses_preserve_inherited_and_overridden_route_methods() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import FastAPI as App
+
+class WorkerApp(App):
+    @classmethod
+    def build(cls):
+        return cls()
+
+class Overridden(App):
+    def get(self, path):
+        return lambda callback: callback
+
+primary = WorkerApp.build()
+overridden = Overridden()
+
+@primary.get('/live')
+def endpoint(): return helper()
+
+@overridden.get('/unused')
+def detached(): return abandoned()
+
+def helper(): return 1
+def abandoned(): return 2
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.abandoned", "web.detached"]
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "web.endpoint"
+                && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                }))
+    );
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import FastAPI
+
+class Custom(FastAPI):
+    def __init__(self):
+        pass
+
+    @classmethod
+    def build(cls):
+        return cls()
+
+app = Custom.build()
+@app.get('/')
+def endpoint(): return 1
+"#,
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_call" || issue["kind"] == "unresolved_decorator"
+            })
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "web.endpoint"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "fastapi_registration")
+            })
+    );
+}
+
+#[test]
 fn fastapi_uses_registration_time_for_postponed_but_not_eager_annotations() {
     for (postponed, nested, app_default) in [
         (false, false, false),

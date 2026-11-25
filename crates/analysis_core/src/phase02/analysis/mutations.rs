@@ -199,6 +199,13 @@ impl Graph<'_> {
     fn modeled_mutation_member(&mut self, receiver: &ReceiverKey, member: &str) -> bool {
         match receiver {
             ReceiverKey::Class(class) => {
+                if self.fastapi_direct_subclass_scope(*class, 0).is_some() {
+                    return fastapi::is_supported_app_method(member)
+                        || matches!(
+                            member,
+                            "__new__" | "__init__" | "__getattr__" | "__getattribute__"
+                        );
+                }
                 let role = self.framework_class_role(*class, &mut BTreeSet::new(), 0);
                 role.is_some_and(|role| {
                     role.is_unittest()
@@ -292,7 +299,8 @@ impl Graph<'_> {
                 | ObjectKind::Router
                 | ObjectKind::StarletteApp
                 | ObjectKind::AiohttpRouteTable,
-            ) => Some(ReceiverKey::Fastapi(*site)),
+            )
+            | Value::FastapiSubclassApp(site, _) => Some(ReceiverKey::Fastapi(*site)),
             _ => None,
         }
     }

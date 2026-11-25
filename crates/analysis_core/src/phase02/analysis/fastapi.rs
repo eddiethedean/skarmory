@@ -4,6 +4,19 @@ use super::*;
 
 const MAX_SNAPSHOTS: usize = 16_384;
 
+pub(super) fn is_app_constructor(provider: &str) -> bool {
+    matches!(provider, "fastapi.FastAPI" | "fastapi.applications.FastAPI")
+}
+
+pub(super) fn is_supported_app_method(method: &str) -> bool {
+    is_route(ObjectKind::App, method, true)
+        || is_imperative_registration(ObjectKind::App, method)
+        || matches!(
+            method,
+            "include_router" | "mount" | "middleware" | "add_middleware"
+        )
+}
+
 #[derive(Default)]
 pub(super) struct Fastapi {
     apps: BTreeMap<Object, ScopeId>,
@@ -96,6 +109,193 @@ impl<'a> Graph<'a> {
 
     pub(super) fn fastapi_app(&mut self, object: Object, scope: ScopeId) {
         self.fastapi.apps.insert(object, scope);
+    }
+
+    pub(super) fn fastapi_direct_subclass_scope(
+        &mut self,
+        class: SymbolId,
+        depth: usize,
+    ) -> Option<ScopeId> {
+        let symbol = &self.symbols[class];
+        let Binding::Definition(definition, scope) = symbol.binding else {
+            return None;
+        };
+        let [base] = definition.bases.as_slice() else {
+            return None;
+        };
+        (depth < MAX_BINDING_CHAIN
+            && definition.kind == DefinitionKind::Class
+            && definition.decorators.is_empty()
+            && definition.table_keyword.is_none()
+            && matches!(self.class_base(symbol.scope, base, definition.name.at, depth + 1),
+                Value::Provider(provider) if is_app_constructor(&provider)))
+        .then_some(scope)
+    }
+
+    pub(super) fn fastapi_class_factory(
+        &mut self,
+        class: SymbolId,
+        method: SymbolId,
+        depth: usize,
+    ) -> bool {
+        let Some(class_scope) = self.fastapi_direct_subclass_scope(class, depth + 1) else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = self.symbols[method].binding else {
+            return false;
+        };
+        let [decorator] = definition.decorators.as_slice() else {
+            return false;
+        };
+        self.symbols[method].scope == class_scope
+            && definition.kind == DefinitionKind::Function
+            && !definition.is_generator
+            && definition.simple_positional_parameters
+            && definition.parameters.len() == 1
+            && definition.defaults.is_empty()
+            && matches!(body_without_docstring(definition), [Statement {
+                kind: StatementKind::Return(Some(Expression {
+                    kind: ExpressionKind::Call { function, arguments, keywords }, ..
+                })), ..
+            }] if arguments.is_empty() && keywords.is_empty()
+                && matches!(&function.kind, ExpressionKind::Name(name) if name == &definition.parameters[0].text))
+            && matches!(self.probe_identity(class_scope, decorator, definition.name.at),
+                Value::Provider(name) if name == "builtins.classmethod")
+    }
+
+    pub(super) fn fastapi_class_factory_allocation(
+        &mut self,
+        scope: ScopeId,
+        function: &Expression,
+    ) -> bool {
+        let (ExpressionKind::Name(name), Some(method)) = (&function.kind, self.scopes[scope].owner)
+        else {
+            return false;
+        };
+        let symbol = &self.symbols[method];
+        let Some(class) = self.scopes[symbol.scope].owner else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        definition
+            .parameters
+            .first()
+            .is_some_and(|parameter| &parameter.text == name)
+            && self.fastapi_class_factory(class, method, 0)
+            && self
+                .fastapi_default_subclass_scope(class, (scope, function.at), 0)
+                .is_some()
+    }
+
+    pub(super) fn fastapi_subclass_app(
+        &mut self,
+        invocation: Invocation,
+        call: CallArguments<'_>,
+        depth: usize,
+    ) -> Option<Value> {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        if invocation.verified
+            || self.scopes[scope].owner.is_some()
+            || !positional.is_empty()
+            || !keywords.is_empty()
+        {
+            return None;
+        }
+        let class = match invocation.receiver {
+            Receiver::Ordinary if self.is_class(invocation.target) => invocation.target,
+            Receiver::Bound(class)
+                if self.fastapi_class_factory(class, invocation.target, depth) =>
+            {
+                class
+            }
+            _ => return None,
+        };
+        self.fastapi_default_subclass_scope(class, (scope, before), depth)?;
+        Some(Value::FastapiSubclassApp(
+            (self.scopes[scope].file, at.line, at.column),
+            class,
+        ))
+    }
+
+    fn fastapi_default_subclass_scope(
+        &mut self,
+        class: SymbolId,
+        access: (ScopeId, Location),
+        depth: usize,
+    ) -> Option<ScopeId> {
+        let class_scope = self.fastapi_direct_subclass_scope(class, depth)?;
+        if [
+            "__new__",
+            "__init__",
+            "__getattr__",
+            "__getattribute__",
+            "__slots__",
+        ]
+        .into_iter()
+        .any(|name| {
+            self.local(class_scope, name, END).is_some()
+                || self.class_member_write(class, name, access).is_some()
+        }) {
+            return None;
+        }
+        Some(class_scope)
+    }
+
+    pub(super) fn fastapi_subclass_member(
+        &mut self,
+        object: Object,
+        class: SymbolId,
+        name: &str,
+        access: (ScopeId, Location),
+        depth: usize,
+    ) -> Value {
+        if ["__getattr__", "__getattribute__"]
+            .into_iter()
+            .any(|attribute| self.class_member_write(class, attribute, access).is_some())
+        {
+            self.scope_issue(
+                access.0,
+                access.1,
+                "unresolved_attribute_write",
+                "FastAPI subclass attribute lookup depends on a replaced accessor",
+            );
+            return Value::Unknown;
+        }
+        match self.fastapi_member_write(object, name, access) {
+            Some(mutations::MemberWriteValue::Replacement(value)) => return value,
+            Some(mutations::MemberWriteValue::Ambiguous) => {
+                self.scope_issue(
+                    access.0,
+                    access.1,
+                    "unresolved_attribute_write",
+                    "FastAPI registration method depends on an unresolved write",
+                );
+                return Value::Unknown;
+            }
+            Some(mutations::MemberWriteValue::Deleted) | None => {}
+        }
+        match self.class_member_at(class, name, depth + 1, Some(access)) {
+            Some(Value::FastapiInheritedMethod) => {
+                Value::Method(object, ObjectKind::App, name.into())
+            }
+            Some(Value::Callable(invocation))
+                if matches!(self.symbols[invocation.target].binding,
+                Binding::Definition(definition, _) if definition.decorators.is_empty()
+                    && self.scopes[self.symbols[invocation.target].scope].owner == Some(class)
+                    && self.receiver_parameter(invocation.target).is_some()) =>
+            {
+                Value::Callable(invocation.bind_receiver(Receiver::Bound(class)))
+            }
+            _ => Value::Unknown,
+        }
     }
 
     pub(super) fn fastapi_lifespan(&mut self, object: Object, site: Site, expression: &Expression) {

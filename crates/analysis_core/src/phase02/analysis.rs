@@ -68,6 +68,8 @@ enum Value {
     FastapiInferredDependency,
     FastapiAnnotated(Option<SymbolId>),
     FastapiFieldMarker,
+    FastapiSubclassApp(Object, SymbolId),
+    FastapiInheritedMethod,
     FastapiMiddleware(Option<SymbolId>),
     PydanticDump(SymbolId),
     PluggyHookMarker,
@@ -2520,6 +2522,12 @@ impl<'a> Graph<'a> {
                     && self.receiver_parameter(invocation.target).is_some()
                 {
                     let receiver = match base {
+                        Value::Callable(_)
+                            if self.phase03
+                                && self.fastapi_class_factory(class, invocation.target, depth) =>
+                        {
+                            Receiver::Bound(class)
+                        }
                         Value::Callable(_) => Receiver::Explicit(None),
                         _ => Receiver::Bound(class),
                     };
@@ -2527,6 +2535,9 @@ impl<'a> Graph<'a> {
                 } else {
                     member
                 }
+            }
+            Value::FastapiSubclassApp(object, class) => {
+                self.fastapi_subclass_member(object, class, name, access, depth)
             }
             Value::DjangoSignal(site) if name == "connect" => {
                 match self.signal_member_write(site, name, access) {
@@ -2756,6 +2767,17 @@ impl<'a> Graph<'a> {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
                 Value::Provider(name) if name == "builtins.object" => None,
+                Value::Provider(provider)
+                    if self.phase03 && fastapi::is_app_constructor(&provider) =>
+                {
+                    match name {
+                        "__init__" | "__new__" | "__init_subclass__" => None,
+                        _ if fastapi::is_supported_app_method(name) => {
+                            Some(Value::FastapiInheritedMethod)
+                        }
+                        _ => Some(Value::Unknown),
+                    }
+                }
                 Value::Provider(base) if self.phase03 && is_django_string_converter(&base) => {
                     match name {
                         "__init__" | "__new__" | "__init_subclass__" => None,
@@ -2868,7 +2890,9 @@ impl<'a> Graph<'a> {
             Value::MissingFrameworkMember => None,
             Value::Provider(name)
                 if builtin_noop_subclass_hook(&name)
-                    || self.phase03 && framework_managed_base(&name) =>
+                    || self.phase03
+                        && (framework_managed_base(&name)
+                            || fastapi::is_app_constructor(&name)) =>
             {
                 None
             }
@@ -3193,9 +3217,25 @@ impl<'a> Graph<'a> {
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
                 }
-                Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => self
-                    .allocation_class(id, depth + 1)
-                    .map_or(Value::Unknown, Value::Instance),
+                Value::Callable(invocation) if self.is_class(invocation.target) => {
+                    if self.phase03
+                        && let Some(app) = self.fastapi_subclass_app(
+                            invocation,
+                            CallArguments {
+                                scope,
+                                at: expression.at,
+                                before,
+                                positional: arguments,
+                                keywords,
+                            },
+                            depth + 1,
+                        )
+                    {
+                        return app;
+                    }
+                    self.allocation_class(invocation.target, depth + 1)
+                        .map_or(Value::Unknown, Value::Instance)
+                }
                 Value::Alternatives(values) => {
                     let mut instances = Vec::new();
                     for value in values {
@@ -3218,6 +3258,19 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::Callable(invocation) if self.phase03 => {
+                    if let Some(app) = self.fastapi_subclass_app(
+                        invocation,
+                        CallArguments {
+                            scope,
+                            at: expression.at,
+                            before,
+                            positional: arguments,
+                            keywords,
+                        },
+                        depth + 1,
+                    ) {
+                        return app;
+                    }
                     if arguments.is_empty()
                         && keywords.is_empty()
                         && let Some(object) =
@@ -4567,6 +4620,13 @@ impl<'a> Graph<'a> {
                     return;
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
+                if self.phase03
+                    && arguments.is_empty()
+                    && keywords.is_empty()
+                    && self.fastapi_class_factory_allocation(scope, function)
+                {
+                    return;
+                }
                 match callee {
                     Value::Provider(name)
                         if self.empty_flask_context_pop(&name, arguments, keywords) => {}
@@ -4598,6 +4658,14 @@ impl<'a> Graph<'a> {
                             && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && self.modeled_framework_write(scope, before) => {}
                     Value::Callable(invocation) => {
+                        let call = CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        };
+                        if self.phase03 && let Some(Value::FastapiSubclassApp(object, _)) =
+                            self.fastapi_subclass_app(invocation, call, 0)
+                        {
+                            self.fastapi_app(object, scope);
+                        }
                         if self.phase03
                             && arguments.is_empty()
                             && keywords.is_empty()
@@ -4605,17 +4673,7 @@ impl<'a> Graph<'a> {
                         {
                             self.scopes[scope].activated_apps.push(object);
                         }
-                        self.call_invocation(
-                            invocation,
-                            CallArguments {
-                                scope,
-                                before,
-                                at: expr.at,
-                                positional: arguments,
-                                keywords,
-                            },
-                            "certain",
-                        );
+                        self.call_invocation(invocation, call, "certain");
                     }
                     Value::Alternatives(values)
                         if self.phase03 && !values.is_empty() && values.iter().all(|value| {
