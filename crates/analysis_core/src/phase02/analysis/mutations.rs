@@ -38,6 +38,7 @@ pub(super) struct Mutations {
     command_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
     command_code: BTreeMap<SymbolId, Vec<Write>>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
+    unmodeled_class_writes: BTreeSet<SymbolId>,
     framework_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
@@ -392,6 +393,9 @@ impl Graph<'_> {
             return;
         };
         if !self.modeled_mutation_member(&receiver, member) {
+            if let ReceiverKey::Class(class) = receiver {
+                self.mutations.unmodeled_class_writes.insert(class);
+            }
             return;
         }
         let deletes_inherited_method = value.is_none()
@@ -892,6 +896,25 @@ impl Graph<'_> {
 
     pub(super) fn modeled_framework_write(&self, scope: ScopeId, at: Location) -> bool {
         self.mutations.modeled.contains(&(scope, position(at)))
+    }
+
+    pub(super) fn record_unmodeled_class_write(
+        &mut self,
+        scope: ScopeId,
+        receiver: &Expression,
+        before: Location,
+    ) {
+        if let Value::Callable(invocation) = self.probe_identity(scope, receiver, before)
+            && self.is_class(invocation.target)
+        {
+            self.mutations
+                .unmodeled_class_writes
+                .insert(invocation.target);
+        }
+    }
+
+    pub(super) fn has_unmodeled_class_write(&self, class: SymbolId) -> bool {
+        self.mutations.unmodeled_class_writes.contains(&class)
     }
 
     pub(super) fn class_discovery_write(
