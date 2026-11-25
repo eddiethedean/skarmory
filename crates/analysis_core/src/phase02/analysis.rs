@@ -48,6 +48,7 @@ mod metaclasses;
 mod mutations;
 mod pydantic;
 mod sanic;
+mod source_provider_calls;
 mod starlette;
 mod terminal;
 mod wagtail;
@@ -394,6 +395,8 @@ struct DirectArguments {
     implicit_receiver: bool,
     values: BTreeMap<String, Value>,
     forwarded: BTreeMap<String, SymbolId>,
+    fresh_provider: Option<SymbolId>,
+    verified: bool,
     conditional: bool,
     arguments_bound: bool,
 }
@@ -618,6 +621,8 @@ pub(super) fn analyze_with_verification(
         receiver_calls: Vec::new(),
         fresh_field_calls: BTreeMap::new(),
         fresh_field_invocations: Vec::new(),
+        source_provider_calls: BTreeMap::new(),
+        source_provider_invalidated: None,
         resolved_receiver_calls: BTreeSet::new(),
         receiver_call_issues: BTreeSet::new(),
         issues: Vec::new(),
@@ -836,6 +841,8 @@ struct Graph<'a> {
     receiver_calls: Vec<ReceiverCall>,
     fresh_field_calls: BTreeMap<SymbolId, Location>,
     fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
+    source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
+    source_provider_invalidated: Option<BTreeSet<SymbolId>>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
     receiver_call_issues: BTreeSet<usize>,
     issues: Vec<Issue>,
@@ -6049,7 +6056,10 @@ impl<'a> Graph<'a> {
                         {
                             return;
                         }
-                        if self.phase03 && self.defer_fresh_field_call(scope, expr) {
+                        if self.phase03
+                            && (self.defer_fresh_field_call(scope, expr)
+                                || self.defer_source_provider_call(scope, expr))
+                        {
                             return;
                         }
                         if self.phase03 && arguments.is_empty() && keywords.is_empty()
@@ -6413,6 +6423,9 @@ impl<'a> Graph<'a> {
                     }
                 }
             }
+            let fresh_provider = (self.phase03 && arguments_bound && !invocation.verified)
+                .then(|| self.fresh_provider_argument(definition, call, &values))
+                .flatten();
             self.direct_arguments
                 .entry(callee)
                 .or_default()
@@ -6423,6 +6436,8 @@ impl<'a> Graph<'a> {
                         || matches!(invocation.receiver, Receiver::Bound(_)),
                     values,
                     forwarded,
+                    fresh_provider,
+                    verified: invocation.verified,
                     conditional,
                     arguments_bound,
                 });
@@ -6562,6 +6577,8 @@ impl<'a> Graph<'a> {
                     implicit_receiver: false,
                     values,
                     forwarded: BTreeMap::new(),
+                    fresh_provider: None,
+                    verified: false,
                     conditional: true,
                     arguments_bound: false,
                 });
@@ -9738,6 +9755,7 @@ impl<'a> Graph<'a> {
                 self.activate_fastapi(reach, &mut pending);
                 self.activate_flask_parameter_hooks(reach, &mut pending);
                 self.activate_static_parameter_calls(reach, &mut pending);
+                self.activate_source_provider_calls(reach, &mut pending, possible);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
                 self.resolve_django_reloader_parameter_receivers(reach, &mut pending, possible);
             }
@@ -9983,6 +10001,7 @@ impl<'a> Graph<'a> {
         }
         self.report_unbound_receiver_calls(&reach);
         self.report_fresh_field_calls(&reach);
+        self.report_source_provider_calls(&reach);
         self.issues
             .extend(
                 self.fastapi_dependency_issues
@@ -10373,6 +10392,7 @@ struct Reachability {
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     resolved_django_reloader_parameters: BTreeSet<usize>,
     resolved_static_parameter_calls: BTreeSet<usize>,
+    resolved_source_provider_calls: BTreeSet<SymbolId>,
     closed_class_call_sites: BTreeSet<(ScopeId, [usize; 2], &'static str)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_websocket_query_bindings: BTreeMap<SymbolId, bool>,
