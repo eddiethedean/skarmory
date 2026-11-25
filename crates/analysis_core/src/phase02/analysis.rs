@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::OsStr;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
@@ -36,13 +37,14 @@ mod flask;
 mod frameworks;
 mod gunicorn;
 mod logging_config;
+mod mcp_tools;
 mod mutations;
 mod pydantic;
 mod sanic;
 mod starlette;
 mod terminal;
 
-pub(super) use django_templates::{DjangoInput, TemplateProject};
+pub(super) use django_templates::TemplateProject;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -91,6 +93,7 @@ enum Value {
     FastapiInheritedMethod,
     FastapiMiddleware(Option<SymbolId>),
     PydanticDump(SymbolId),
+    McpServer(Object),
     PluggyHookMarker,
     CeleryConfig(Object),
     CeleryBackend(Object),
@@ -485,7 +488,7 @@ fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
         None,
         None,
         false,
-        DjangoInput::default(),
+        FrameworkInputs::default(),
     )
 }
 
@@ -498,7 +501,7 @@ fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analys
         None,
         None,
         true,
-        DjangoInput::default(),
+        FrameworkInputs::default(),
     )
 }
 
@@ -553,6 +556,13 @@ impl<'a> NestedPackages<'a> {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct FrameworkInputs<'a> {
+    pub(super) settings: Option<&'a OsStr>,
+    pub(super) templates: Option<&'a TemplateProject<'a>>,
+    pub(super) discovery: Option<&'a crate::preview_source::Project>,
+}
+
 pub(super) fn analyze_with_verification(
     files: &[AnalyzedFile],
     entrypoints: &[Entrypoint],
@@ -560,10 +570,11 @@ pub(super) fn analyze_with_verification(
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
     runtime: Option<&runtime_evidence::Snapshot>,
     phase03: bool,
-    django: DjangoInput<'_>,
+    framework: FrameworkInputs<'_>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
+        discovery: framework.discovery,
         modules: BTreeMap::new(),
         nested_packages: if phase03 {
             NestedPackages::index(files)
@@ -624,6 +635,7 @@ pub(super) fn analyze_with_verification(
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
+        mcp_registrations: BTreeMap::new(),
         celery_backends: celery::Backends::default(),
         celery_routes: celery_routes::Routes::default(),
         fastapi_dependency_issues: Vec::new(),
@@ -635,6 +647,7 @@ pub(super) fn analyze_with_verification(
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
+        django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_settings_sources: BTreeSet::new(),
@@ -642,7 +655,7 @@ pub(super) fn analyze_with_verification(
         django_registration_issues: Vec::new(),
         framework_route_receivers: BTreeMap::new(),
         registered_django_admin_models: BTreeSet::new(),
-        initial_django_settings: django.settings.map_or(DjangoSettings::Unset, |value| {
+        initial_django_settings: framework.settings.map_or(DjangoSettings::Unset, |value| {
             value.to_str().map_or(DjangoSettings::Unknown, |value| {
                 DjangoSettings::Module(value.to_owned())
             })
@@ -710,6 +723,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_gunicorn_config();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
+        graph.collect_mcp_registrations();
         graph.collect_celery_backends();
         graph.collect_celery_routes();
     }
@@ -757,7 +771,7 @@ pub(super) fn analyze_with_verification(
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
     graph.report_failed_terminal_module_consumers();
-    let mut analysis = graph.finish(roots, possible_roots, verification, django.templates);
+    let mut analysis = graph.finish(roots, possible_roots, verification, framework.templates);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -765,6 +779,7 @@ pub(super) fn analyze_with_verification(
 
 struct Graph<'a> {
     files: &'a [AnalyzedFile],
+    discovery: Option<&'a crate::preview_source::Project>,
     modules: BTreeMap<&'a str, usize>,
     nested_packages: NestedPackages<'a>,
     scopes: Vec<Scope<'a>>,
@@ -819,6 +834,7 @@ struct Graph<'a> {
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
+    mcp_registrations: BTreeMap<(Object, String), Vec<mcp_tools::Registration>>,
     celery_backends: celery::Backends,
     celery_routes: celery_routes::Routes,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
@@ -830,6 +846,7 @@ struct Graph<'a> {
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
+    django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
@@ -2007,6 +2024,18 @@ impl<'a> Graph<'a> {
         let file = self.scopes[scope].file;
         match symbol.binding {
             Binding::Definition(definition, _) => {
+                if self.phase03
+                    && let [decorator] = definition.decorators.as_slice()
+                    && self.bounded_decorator_replaces_function(
+                        scope,
+                        decorator,
+                        id,
+                        definition.name.at,
+                        depth + 1,
+                    )
+                {
+                    return Value::Unknown;
+                }
                 if self.phase03
                     && let [decorator] = definition.decorators.as_slice()
                     && !matches!(decorator.kind, ExpressionKind::Call { .. })
@@ -3459,6 +3488,11 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => match self.call_target_identity(scope, function, before, depth + 1) {
+                Value::Provider(provider)
+                    if self.phase03 && mcp_tools::is_server_provider(&provider) =>
+                {
+                    self.mcp_server(scope, expression.at, arguments, keywords)
+                }
                 Value::Provider(name)
                     if self.empty_flask_context_pop(&name, arguments, keywords) =>
                 {
@@ -4161,7 +4195,8 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Await(_)
             | ExpressionKind::KeywordMappingCall { .. }
-            | ExpressionKind::RepeatedKeywordCall { .. } => Value::Unknown,
+            | ExpressionKind::RepeatedKeywordCall { .. }
+            | ExpressionKind::ForwardingCall { .. } => Value::Unknown,
         }
     }
 
@@ -4873,6 +4908,30 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::ForwardingCall {
+                function,
+                positional,
+                keywords,
+            } => {
+                self.walk_expression(scope, function, before, true);
+                self.walk(scope, positional, before);
+                self.walk(scope, keywords, before);
+                if self.phase03 {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unresolved_call",
+                        "variadic forwarding is outside the bounded callable model",
+                    );
+                } else {
+                    self.issue(
+                        self.scopes[scope].file,
+                        expr.at,
+                        "unsupported_construct",
+                        "expression is outside the compatibility subset",
+                    );
+                }
+            }
             ExpressionKind::RepeatedKeywordCall {
                 function,
                 arguments,
@@ -4888,10 +4947,18 @@ impl<'a> Graph<'a> {
                     "keyword expansion with a duplicate argument is outside the bounded call model",
                 );
             }
-            ExpressionKind::KeywordMappingCall { function, mapping } => {
+            ExpressionKind::KeywordMappingCall {
+                function,
+                arguments,
+                mapping,
+            } => {
                 self.walk_expression(scope, function, before, true);
+                for argument in arguments {
+                    self.walk(scope, argument, before);
+                }
                 self.walk(scope, mapping, before);
                 if self.phase03
+                    && arguments.is_empty()
                     && let Value::Method(object, ObjectKind::CeleryApp, method) =
                         self.call_target_identity(scope, function, before, 0)
                     && method == "conf.update"
@@ -5687,6 +5754,11 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
                         }
                     }
+                    Value::Provider(name) if self.phase03 && mcp_tools::is_server_provider(&name) => {
+                        if !matches!(self.mcp_server(scope, expr.at, arguments, keywords), Value::McpServer(_)) {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "FastMCP server arguments are outside the bounded model");
+                        }
+                    }
                     Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
                         if self.drf_field_writable(scope, before, arguments, keywords).is_none() {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF serializer field arguments are outside the bounded model");
@@ -6032,6 +6104,7 @@ impl<'a> Graph<'a> {
                 self.with_explicit_receiver(invocation, positional, keywords, |graph, value| {
                     graph.identity(scope, value, before, 0)
                 });
+            self.record_django_autoreload_method_arguments(invocation, call, certainty);
             if !invocation.verified
                 && let Some(class) = invocation.receiver.supplied()
                 && self.is_django_command_class(class)
@@ -6645,7 +6718,21 @@ impl<'a> Graph<'a> {
                         && let [decorator] = definition.decorators.as_slice()
                         && self.django_receiver_rejects_definition(scope, decorator, at)
                     {
-                        self.walk(scope, decorator, at);
+                        if let ExpressionKind::KeywordMappingCall {
+                            function,
+                            arguments,
+                            ..
+                        } = &decorator.kind
+                        {
+                            // These operands are evaluated before the missing
+                            // mapping aborts the decorator expression.
+                            self.walk(scope, function, at);
+                            for argument in arguments {
+                                self.walk(scope, argument, at);
+                            }
+                        } else {
+                            self.walk(scope, decorator, at);
+                        }
                         self.rejected_django_callbacks.insert(target);
                         return true;
                     }
@@ -7084,8 +7171,16 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         before: Location,
     ) -> bool {
-        if let ExpressionKind::KeywordMappingCall { function, mapping } = &decorator.kind {
+        if let ExpressionKind::KeywordMappingCall {
+            function,
+            arguments,
+            mapping,
+        } = &decorator.kind
+        {
             self.walk(scope, function, before);
+            for argument in arguments {
+                self.walk(scope, argument, before);
+            }
             self.walk(scope, mapping, before);
             self.scope_issue(
                 scope,
@@ -7108,6 +7203,9 @@ impl<'a> Graph<'a> {
             self.walk(scope, value, before);
         }
         if self.phase03 && self.record_fastapi_parameter_route(scope, decorator, target, before) {
+            return false;
+        }
+        if self.phase03 && self.apply_bounded_tool_decorator(scope, decorator, target, before) {
             return false;
         }
         match self.call_target_identity(scope, function, before, 0) {
@@ -9164,6 +9262,7 @@ impl<'a> Graph<'a> {
                         | "generator_creation"
                         | "flask_factory_failed_call"
                         | "flask_initializer_failed_call"
+                        | "django_settings_failed_initializer_call"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
                         | aiohttp::DECLARATION
@@ -9175,6 +9274,7 @@ impl<'a> Graph<'a> {
                         | "django_migration_callback_declaration"
                         | drf::PROTOCOL_DECLARATION
                         | drf::FIELD_DECLARATION
+                        | mcp_tools::DECORATOR_APPLICATION
                 ) {
                     continue;
                 }
@@ -9814,6 +9914,20 @@ impl<'a> Graph<'a> {
                 });
             }
         }
+        let mut fastapi_route_declarations: Vec<_> = self
+            .fastapi
+            .route_declarations
+            .iter()
+            .map(|&target| {
+                let symbol = &self.symbols[target];
+                super::FastapiRouteDeclaration {
+                    file: self.files[self.scopes[symbol.scope].file].path.clone(),
+                    line: position(symbol.name.at)[0],
+                    qualified_name: self.full_name(target),
+                }
+            })
+            .collect();
+        fastapi_route_declarations.sort();
         self.issues.extend(
             self.scope_issues
                 .into_iter()
@@ -9827,6 +9941,7 @@ impl<'a> Graph<'a> {
             findings,
             definitions,
             evidence: retained,
+            fastapi_route_declarations,
             issues: self.issues,
             uncertainties: self.uncertainties,
             verification: verification.evidence,
@@ -10025,8 +10140,20 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.extend(arguments);
                 expressions.extend(keywords.iter().map(|(_, value)| value));
             }
-            ExpressionKind::KeywordMappingCall { function, mapping } => {
+            ExpressionKind::ForwardingCall {
+                function,
+                positional,
+                keywords,
+            } => {
+                expressions.extend([function.as_ref(), positional.as_ref(), keywords.as_ref()]);
+            }
+            ExpressionKind::KeywordMappingCall {
+                function,
+                arguments,
+                mapping,
+            } => {
                 expressions.extend([function.as_ref(), mapping.as_ref()]);
+                expressions.extend(arguments);
             }
             ExpressionKind::RepeatedKeywordCall {
                 function,
@@ -11018,6 +11145,100 @@ def retired(pk):
             .collect();
         assert_eq!(hooks, ["shop.backends.Actual.get_user"]);
         assert!(names(&report, Category::Function).contains(&"retired"));
+    }
+
+    #[test]
+    fn django_auth_backend_stops_before_proven_unbound_writes() {
+        const HEADER: &str = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n";
+        const SETTING: &str = "AUTHENTICATION_BACKENDS = ['shop.backends.Selected']\n";
+        const BACKEND: &str = "class Selected:\n    def get_user(self, pk): return pk\n";
+        for (provider, settings, other, retains_hook) in [
+            ("Selected.get_user = replacement\n", "", "", false),
+            (
+                "if enabled:\n    Selected.get_user = replacement\n",
+                "",
+                "",
+                false,
+            ),
+            (
+                "def replace():\n    Selected.get_user = replacement\nreplace()\n",
+                "",
+                "",
+                false,
+            ),
+            (
+                "",
+                "from shop import backends\nbackends.Selected = replacement\n",
+                "",
+                false,
+            ),
+            (
+                "",
+                "",
+                "from shop import backends\nbackends.Selected = replacement\n",
+                true,
+            ),
+        ] {
+            let settings_source = format!("{HEADER}{settings}{SETTING}");
+            let backend = format!("{BACKEND}{provider}");
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings_source),
+                module("shop/backends.py", "shop.backends", &backend),
+                module("consumer.py", "consumer", other),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert!(
+                report.issues.is_empty(),
+                "provider {provider:?}, settings {settings:?}, other {other:?}: {:?}",
+                report.issues
+            );
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_auth_backend"),
+                retains_hook
+            );
+        }
+
+        let settings = format!("{HEADER}{SETTING}");
+        let backend =
+            format!("{BACKEND}from external import replacement\nSelected.get_user = replacement\n");
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings),
+                module("shop/backends.py", "shop.backends", &backend),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_attribute_write")
+        );
+        let backend = format!("{BACKEND}Selected.get_user = replacement\n");
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings),
+                module("shop/backends.py", "shop.backends", &backend),
+                module(
+                    "consumer.py",
+                    "consumer",
+                    "from shop.backends import Selected\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| { issue.path == "consumer.py" && issue.kind == "unresolved_import" })
+        );
     }
 
     #[test]
@@ -14304,6 +14525,173 @@ class Command:
             }),
             "{:?}",
             result.issues
+        );
+    }
+
+    #[test]
+    fn phase03_django_app_config_failure_precedes_models_and_ready_hooks() {
+        let shop = || module("shop/__init__.py", "shop", "");
+        let launch = || {
+            module(
+                "startup.py",
+                "startup",
+                "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+            )
+        };
+        let ready = || {
+            module(
+                "shop/apps.py",
+                "shop.apps",
+                "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from . import signals\n",
+            )
+        };
+        let signal = "from django.db.models.signals import post_save\ndef callback(sender, **kwargs): return None\npost_save.connect(callback)\n";
+        for (apps, loaded) in [
+            ("['shop.apps.ShopConfig']", true),
+            ("['shop.apps.ShopConfig', 'bad.apps.Broken']", false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module(
+                        "settings.py",
+                        "settings",
+                        &format!("INSTALLED_APPS = {apps}\n"),
+                    ),
+                    launch(),
+                    shop(),
+                    ready(),
+                    module("shop/signals.py", "shop.signals", signal),
+                    module("shop/models.py", "shop.models", signal),
+                    module("bad/__init__.py", "bad", ""),
+                    module("bad/apps.py", "bad.apps", "Broken = object\n"),
+                ],
+                &[],
+            );
+            assert_eq!(
+                result.issues.is_empty(),
+                loaded,
+                "{apps}: {:?}",
+                result.issues
+            );
+            let activated: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|event| event.kind == "django_signal" && event.certainty == "certain")
+                .map(|event| event.full_name.as_str())
+                .collect();
+            assert_eq!(
+                activated,
+                if loaded {
+                    BTreeSet::from(["shop.models.callback", "shop.signals.callback"])
+                } else {
+                    BTreeSet::new()
+                },
+                "{apps}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_receiver_unbound_keyword_mapping_stops_after_positional_arguments() {
+        let result = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\ndef select(): return post_save\n@receiver(select(), **options)\ndef blocked(sender, **kwargs): return None\ndef later(): return 1\nlater()\n",
+            )],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|event| event.full_name == "app.select" && event.kind == "direct_call")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|event| event.full_name == "app.blocked" || event.full_name == "app.later")
+        );
+    }
+
+    #[test]
+    fn phase03_launched_django_command_forwards_autoreload_through_a_bound_method() {
+        for call in [
+            "self.start(callback)",
+            "saved = self.start\n        saved(target=callback)",
+        ] {
+            let command = format!(
+                "from django.core.management.base import BaseCommand\nfrom django.utils import autoreload\ndef callback(): return None\n\
+class Command(BaseCommand):\n    def handle(self, *args, **options):\n        {call}\n    def start(self, target):\n        autoreload.run_with_reloader(target)\n"
+            );
+            let selected = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        &command,
+                    ),
+                ],
+                &[],
+            );
+            assert!(selected.issues.is_empty(), "{call}: {:?}", selected.issues);
+            assert!(
+                selected
+                    .evidence
+                    .iter()
+                    .any(|event| event.full_name.ends_with(".callback")
+                        && event.kind == "django_autoreload"
+                        && event.certainty == "certain"),
+                "{call}: {:?}",
+                selected.evidence
+            );
+            let dormant = analyze_phase03(
+                &[module(
+                    "demo/management/commands/audit.py",
+                    "demo.management.commands.audit",
+                    &command,
+                )],
+                &[],
+            );
+            assert!(
+                !dormant
+                    .evidence
+                    .iter()
+                    .any(|event| event.kind == "django_autoreload")
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_autoreload_wrapper_rejects_an_unmapped_descriptor_receiver() {
+        let result = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                "from django.utils import autoreload\ndef callback(): return None\ndef forward(target, extra=None):\n    autoreload.run_with_reloader(target)\nclass Adapter:\n    run = forward\nAdapter().run(callback)\n",
+            )],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|event| event.kind == "django_autoreload")
         );
     }
 

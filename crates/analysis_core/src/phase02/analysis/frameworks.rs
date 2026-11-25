@@ -17,6 +17,22 @@ pub(super) enum DjangoCommands {
     Selected(String),
 }
 
+struct DjangoAppEntry {
+    app: ScopeId,
+    label: Option<String>,
+    config: Option<SymbolId>,
+}
+
+impl DjangoAppEntry {
+    fn package(app: ScopeId, name: &str) -> Self {
+        Self {
+            app,
+            label: Some(django_default_app_label(name).to_owned()),
+            config: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum DjangoReceiver {
     Certain,
@@ -1542,6 +1558,66 @@ impl Graph<'_> {
         .then_some(invocation)
     }
 
+    pub(super) fn record_django_autoreload_method_arguments(
+        &mut self,
+        invocation: Invocation,
+        call: CallArguments<'_>,
+        certainty: &'static str,
+    ) {
+        let Receiver::Bound(class) = invocation.receiver else {
+            return;
+        };
+        let target = invocation.target;
+        if invocation.verified
+            || !self.is_django_command_class(class)
+            || self.receiver_parameter(target).is_none()
+            || !self.bounded_framework_function(target)
+        {
+            return;
+        }
+        let Binding::Definition(definition, _) = self.symbols[target].binding else {
+            return;
+        };
+        if !definition.simple_positional_parameters {
+            return;
+        }
+        let parameters = &definition.parameters[1..];
+        let required = parameters.len().saturating_sub(definition.defaults.len());
+        let mut values = BTreeMap::new();
+        for (name, expression) in parameters
+            .iter()
+            .map(|p| &p.text)
+            .zip(call.positional)
+            .chain(call.keywords.iter().map(|(name, expr)| (name, expr)))
+        {
+            values.insert(
+                name.clone(),
+                self.identity_with_dormant_declarations(call.scope, expression, call.before, 0),
+            );
+        }
+        let arguments_bound = call.positional.len() <= parameters.len()
+            && values.len() == call.positional.len() + call.keywords.len()
+            && parameters[..required]
+                .iter()
+                .all(|p| values.contains_key(&p.text))
+            && call
+                .keywords
+                .iter()
+                .all(|(name, _)| parameters.iter().any(|p| p.text == *name));
+        self.django_autoreload_method_arguments
+            .entry(target)
+            .or_default()
+            .push(DirectArguments {
+                caller: call.scope,
+                at: call.at,
+                implicit_receiver: false,
+                values,
+                forwarded: BTreeMap::new(),
+                conditional: certainty != "certain" || self.branch_depth != 0,
+                arguments_bound,
+            });
+    }
+
     fn django_autoreload_wrapper_targets(
         &mut self,
         hook: DjangoParameterRegistration,
@@ -1553,14 +1629,25 @@ impl Graph<'_> {
             .get(&hook.owner)
             .into_iter()
             .flatten()
+            .chain(
+                self.django_autoreload_method_arguments
+                    .get(&hook.owner)
+                    .into_iter()
+                    .flatten(),
+            )
             .filter(|call| reach.scopes.contains(&call.caller))
             .map(|call| {
+                let deferred = self.scopes[call.caller].owner.is_some_and(|caller| {
+                    !reach
+                        .evidence
+                        .contains(&(caller, "django_command", "certain"))
+                });
                 (
-                    call.arguments_bound
+                    (call.arguments_bound && !call.implicit_receiver)
                         .then(|| call.values.get(parameter).cloned())
                         .flatten()
                         .unwrap_or(Value::Unknown),
-                    call.conditional || self.scopes[call.caller].owner.is_some(),
+                    call.conditional || deferred,
                 )
             })
             .collect();
@@ -2048,7 +2135,9 @@ impl Graph<'_> {
         for binding in settings_bindings {
             self.edge(scope, binding, "django_setting", "certain");
         }
-        self.collect_django_apps(scope, settings, commands);
+        if !self.collect_django_apps(scope, settings, commands) {
+            return;
+        }
         if let Some(binding) = self.local(settings, "ROOT_URLCONF", END) {
             if let Value::Text(module) = self.binding(binding, END, 0)
                 && let Some(&file) = self.modules.get(module.as_str())
@@ -2291,9 +2380,14 @@ impl Graph<'_> {
         }
     }
 
-    fn collect_django_apps(&mut self, scope: ScopeId, settings: usize, commands: &DjangoCommands) {
+    fn collect_django_apps(
+        &mut self,
+        scope: ScopeId,
+        settings: usize,
+        commands: &DjangoCommands,
+    ) -> bool {
         let Some(binding) = self.local(settings, "INSTALLED_APPS", END) else {
-            return;
+            return true;
         };
         let at = self.symbols[binding].name.at;
         let object = django_loaded_module(settings);
@@ -2303,7 +2397,7 @@ impl Graph<'_> {
                 at,
                 "Django INSTALLED_APPS is not a resolved sequence",
             );
-            return;
+            return false;
         };
         let external_django = !self.modules.contains_key("django");
         let builtin_admin = |entry: &str| {
@@ -2318,31 +2412,58 @@ impl Graph<'_> {
             matches!(app, Value::Text(entry) if builtin_admin(entry)
                 && entry != "django.contrib.admin.apps.SimpleAdminConfig")
         });
-        let mut registered_commands = BTreeMap::new();
+        let mut selected = Vec::new();
         for app in apps {
             let resolved = if let Value::Text(entry) = app {
                 if builtin_admin(&entry) {
                     continue;
                 }
+                if external_django
+                    && let Some(file) = self.invalid_explicit_django_app_export(&entry)
+                {
+                    self.scopes[scope]
+                        .activated_apps
+                        .push(django_loaded_module(file));
+                    if scope != settings || self.django_configured_settings != Some(settings) {
+                        self.django_registration_issue(
+                            object,
+                            at,
+                            "Django INSTALLED_APPS names a value that is not an AppConfig class",
+                        );
+                    }
+                    return false;
+                }
                 self.django_app_config(scope, object, &entry, at)
             } else {
                 None
             };
-            let Some((app, label)) = resolved else {
+            let Some(entry) = resolved else {
                 self.django_registration_issue(
                     object,
                     at,
                     "Django INSTALLED_APPS entry could not be resolved in selected sources",
                 );
-                continue;
+                return false;
             };
+            self.scopes[scope]
+                .activated_apps
+                .push(django_loaded_module(entry.app));
+            selected.push(entry);
+        }
+
+        // All app configurations must load before Django imports models or
+        // runs any ready hook. Phase-one package imports still precede failure.
+        let mut registered_commands = BTreeMap::new();
+        for DjangoAppEntry { app, config, label } in selected {
+            if let Some(class) = config {
+                self.activate_django_hook(scope, object, class, "ready", "django_app_config", at);
+            }
             self.django_template_apps
                 .entry(settings)
                 .or_default()
                 .insert(app, label);
             let prefix = format!("{}.", self.files[app].module);
             for module in [
-                Some(app),
                 self.modules
                     .get(format!("{prefix}models").as_str())
                     .copied(),
@@ -2425,6 +2546,38 @@ impl Graph<'_> {
                 );
             }
         }
+        true
+    }
+
+    fn invalid_explicit_django_app_export(&mut self, entry: &str) -> Option<ScopeId> {
+        if self.modules.contains_key(entry) {
+            // Django first tries the entire entry as an application module.
+            return None;
+        }
+        let (module, name) = entry.rsplit_once('.')?;
+        let file = *self.modules.get(module)?;
+        if self.failed_terminal_modules.contains(&file)
+            || self.scopes[file].open_wildcard
+            || self.local(file, "__getattr__", END).is_some()
+        {
+            return None;
+        }
+        let binding = self.local(file, name, END)?;
+        if self.binding_depends_on_branch(binding, END)
+            || self
+                .module_member_write(module, name, (file, END))
+                .is_some()
+        {
+            return None;
+        }
+        let value = self.binding(binding, END, 0);
+        (value.is_builtin_scalar()
+            || matches!(&value, Value::Provider(provider) if provider == "builtins.object")
+            || matches!(
+                value,
+                Value::Integer(_) | Value::None | Value::Sequence(_) | Value::Mapping(_)
+            ))
+        .then_some(file)
     }
 
     fn activate_django_command(
@@ -3000,14 +3153,23 @@ impl Graph<'_> {
         object: Object,
         entry: &str,
         at: Location,
-    ) -> Option<(usize, Option<String>)> {
+    ) -> Option<DjangoAppEntry> {
         let (file, config) = if let Some(&app) = self.modules.get(entry) {
+            if self.failed_terminal_modules.contains(&app) {
+                self.scopes[scope]
+                    .activated_apps
+                    .push(django_loaded_module(app));
+                return None;
+            }
             let Some(&file) = self.modules.get(format!("{entry}.apps").as_str()) else {
-                return Some((app, Some(django_default_app_label(entry).to_owned())));
+                return Some(DjangoAppEntry::package(app, entry));
             };
             self.scopes[scope]
                 .activated_apps
                 .push(django_loaded_module(file));
+            if self.failed_terminal_modules.contains(&file) {
+                return None;
+            }
             let candidates: Vec<_> = self.scopes[file]
                 .names
                 .values()
@@ -3038,7 +3200,7 @@ impl Graph<'_> {
                 match (defaults.next(), defaults.next()) {
                     (Some((config, _)), None) => config,
                     (None, _) => {
-                        return Some((app, Some(django_default_app_label(entry).to_owned())));
+                        return Some(DjangoAppEntry::package(app, entry));
                     }
                     _ => return None,
                 }
@@ -3047,6 +3209,12 @@ impl Graph<'_> {
         } else {
             let (module, name) = entry.rsplit_once('.')?;
             let file = *self.modules.get(module)?;
+            if self.failed_terminal_modules.contains(&file) {
+                self.scopes[scope]
+                    .activated_apps
+                    .push(django_loaded_module(file));
+                return None;
+            }
             let binding = self.local(file, name, END)?;
             if self.conditional.contains_key(&binding) {
                 return None;
@@ -3061,6 +3229,12 @@ impl Graph<'_> {
             return None;
         };
         let app = *self.modules.get(name.as_str())?;
+        if self.failed_terminal_modules.contains(&app) {
+            self.scopes[scope]
+                .activated_apps
+                .extend([django_loaded_module(file), django_loaded_module(app)]);
+            return None;
+        }
         let default_path = [
             "path",
             "__init__",
@@ -3083,15 +3257,12 @@ impl Graph<'_> {
         self.scopes[scope]
             .activated_apps
             .push(django_loaded_module(file));
-        self.activate_django_class(
-            scope,
-            object,
-            class,
-            &["__init__", "ready"],
-            "django_app_config",
-            at,
-        );
-        Some((app, label))
+        self.activate_django_class(scope, object, class, &["__init__"], "django_app_config", at);
+        Some(DjangoAppEntry {
+            app,
+            label,
+            config: Some(class),
+        })
     }
 
     fn django_class_binding(
@@ -3204,6 +3375,15 @@ impl Graph<'_> {
         decorator: &Expression,
         before: Location,
     ) -> bool {
+        if let ExpressionKind::KeywordMappingCall {
+            function,
+            arguments,
+            mapping,
+        } = &decorator.kind
+        {
+            return self
+                .django_receiver_missing_options(scope, function, arguments, mapping, before);
+        }
         let ExpressionKind::Call {
             function,
             arguments,
@@ -3235,6 +3415,23 @@ impl Graph<'_> {
         }
         let value = self.probe_identity(scope, signal, before);
         self.django_signal_source(&value, (scope, before)) == DjangoReceiver::Certain
+    }
+
+    fn django_receiver_missing_options(
+        &mut self,
+        scope: ScopeId,
+        function: &Expression,
+        arguments: &[Expression],
+        mapping: &Expression,
+        before: Location,
+    ) -> bool {
+        self.phase03
+            && self.terminal_proofs
+            && scope == self.scopes[scope].file
+            && self.branch_depth == 0
+            && matches!(arguments, [_])
+            && self.unbound_module_name(scope, mapping, before)
+            && matches!(self.probe_identity(scope, function, before), Value::Provider(provider) if is_django_receiver(&provider))
     }
 
     fn django_signal_sources(

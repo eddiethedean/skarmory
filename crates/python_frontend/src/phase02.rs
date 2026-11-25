@@ -266,8 +266,14 @@ pub enum ExpressionKind {
         arguments: Vec<Expression>,
         keywords: Vec<(String, Expression)>,
     },
+    ForwardingCall {
+        function: Box<Expression>,
+        positional: Box<Expression>,
+        keywords: Box<Expression>,
+    },
     KeywordMappingCall {
         function: Box<Expression>,
+        arguments: Vec<Expression>,
         mapping: Box<Expression>,
     },
     RepeatedKeywordCall {
@@ -1151,11 +1157,24 @@ impl Lowering<'_> {
                 ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
             }
             Expr::Call(node)
-                if node.arguments.args.is_empty()
-                    && matches!(node.arguments.keywords.as_slice(), [keyword] if keyword.arg.is_none()) =>
+                if let [Expr::Starred(positional)] = node.arguments.args.as_ref()
+                    && matches!(positional.value.as_ref(), Expr::Name(_))
+                    && let [keywords] = node.arguments.keywords.as_slice()
+                    && keywords.arg.is_none()
+                    && matches!(&keywords.value, Expr::Name(_)) =>
+            {
+                ExpressionKind::ForwardingCall {
+                    function: Box::new(lower(&node.func)?),
+                    positional: Box::new(lower(&positional.value)?),
+                    keywords: Box::new(lower(&keywords.value)?),
+                }
+            }
+            Expr::Call(node)
+                if matches!(node.arguments.keywords.as_slice(), [keyword] if keyword.arg.is_none()) =>
             {
                 ExpressionKind::KeywordMappingCall {
                     function: Box::new(lower(&node.func)?),
+                    arguments: self.expressions(&node.arguments.args, next)?,
                     mapping: Box::new(lower(&node.arguments.keywords[0].value)?),
                 }
             }

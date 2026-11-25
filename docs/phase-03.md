@@ -286,7 +286,21 @@ callbacks still come from the lifecycle list captured at inclusion. It retains c
 leading wildcard imports from the supported FastAPI and typing export tables.
 Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
 incomplete.
+When a nested regular package shadows a root package, the preview can prove
+that a specific missing submodule stops a FastAPI initializer. This requires
+an inert package initializer, a closed import prefix and a verified package
+directory. Excluded modules, opaque extensions and consumers of the failed
+initializer preserve incomplete coverage. The optional
+`analysis_summary.fastapi_route_declarations` field records identified route
+declaration locations separately from activation evidence.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
+
+FastMCP records possible-use evidence for tool decorators applied through a
+resolved server and a bounded project wrapper. Plain identity, caching and
+forwarding decorators retain their own execution evidence. Duplicate tool
+names use the first reachable registration when declaration order is known.
+Unresolved decorator effects and ambiguous registration order leave coverage
+incomplete.
 
 Django URL discovery follows a reachable, recognized launcher. An explicit
 management `--settings` option takes precedence over the launcher's environment.
@@ -339,6 +353,9 @@ replacement. Reading code metadata does not execute the method.
 Proven construction or argument setup failures leave later stages dormant.
 Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.
+An activated command can forward an autoreload callback through a resolved
+bound method or captured bound alias. Argument binding accounts for the
+implicit receiver.
 An explicit call on a resolved `BaseCommand` instance can identify `handle`
 parameters as part of its callback contract. Bounded zero-argument Manager
 and QuerySet construction follows actual initializer hooks. ORM operations
@@ -363,7 +380,8 @@ dictionary edits follow initializer order, including directly called local
 helpers, reassignments, and named imports in finite conditional branches.
 The authentication backend list supports literal augmentation, repetition,
 and item edits in the selected settings module. Proven invalid list operations
-can stop initialization before Django consumes the setting. A closed source
+and unbound backend replacements can stop initialization before Django consumes
+the setting. A closed source
 decorator can replace a backend class with another initialized class or
 discard a hook without executing its body. Source importers of a mutated list
 and unresolved mutations retain their coverage diagnostics.

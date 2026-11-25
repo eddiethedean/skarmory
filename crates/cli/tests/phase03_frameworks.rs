@@ -21,6 +21,16 @@ fn scan_with_exit(
     cache: Option<&Path>,
     code: i32,
 ) -> Value {
+    scan_with_excludes(project, settings, cache, &[], code)
+}
+
+fn scan_with_excludes(
+    project: &Path,
+    settings: Option<&str>,
+    cache: Option<&Path>,
+    excludes: &[&str],
+    code: i32,
+) -> Value {
     fs::write(project.join(".skylos.toml"), "root = true\n").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
     command.env_remove("DJANGO_SETTINGS_MODULE");
@@ -35,6 +45,7 @@ fn scan_with_exit(
     let output = command
         .current_dir(project)
         .env_remove("SKYLOS_CONFIG_FILE")
+        .args(excludes.iter().flat_map(|pattern| ["--exclude", *pattern]))
         .args([
             "--profile",
             "skylos-0.3",
@@ -127,6 +138,120 @@ fn gunicorn_config_retains_effective_declarations_with_possible_evidence() {
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(cached, report);
     }
+}
+
+#[test]
+fn fastmcp_registration_follows_applied_wrappers_without_running_dormant_bodies() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let providers = root.join("providers.py");
+    let handlers = root.join("handlers.py");
+    let source = r#"from functools import wraps
+from mcp.server.fastmcp import FastMCP
+
+server = FastMCP("demo")
+
+def expose(fn):
+    @server.tool(name=fn.__name__)
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        return str(fn(*args, **kwargs))
+    return wrapper
+
+def register_as(label):
+    def decorate(fn):
+        return server.tool(name=label)(fn)
+    return decorate
+
+def deferred(fn):
+    def wrapper(*args, **kwargs):
+        return server.tool(name="late")(fn)(*args, **kwargs)
+    return wrapper
+"#;
+    fs::write(&providers, source).unwrap();
+    let client = r#"from providers import expose, register_as, deferred, server
+
+@expose
+def live(value): return helper(value)
+
+@register_as("configured")
+def alternate(): return 1
+
+@server.tool(name="direct")
+def direct(): return 2
+
+@server.tool(name="direct")
+def duplicate(): return 9
+
+@deferred
+def inactive(): return 3
+
+def helper(value): return value
+def retired(): return 4
+"#;
+    fs::write(&handlers, client).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(
+        [
+            "handlers.duplicate",
+            "handlers.inactive",
+            "handlers.retired"
+        ]
+        .iter()
+        .all(|name| unused.contains(name)),
+        "{report}"
+    );
+    let evidence = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for target in ["handlers.live", "handlers.alternate", "handlers.direct"] {
+        assert!(
+            evidence
+                .iter()
+                .any(|symbol| symbol["qualified_name"] == target
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "mcp_tool_registration" && edge["certainty"] == "possible"
+                    })),
+            "{target}\n{report}"
+        );
+    }
+    assert!(!unused.contains(&"handlers.helper"), "{report}");
+    let cache = tempfile::tempdir().unwrap();
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(&handlers, format!("{client}\ninactive()\n")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_call" && error["file"] == "handlers.py" }),
+        "{report}"
+    );
+
+    fs::write(&handlers, client).unwrap();
+    fs::write(
+        &providers,
+        format!("{source}\nfrom extension import customize\ncustomize(server)\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "mcp_tool_registration")
+            }),
+        "{report}"
+    );
 }
 
 #[test]
@@ -3982,6 +4107,129 @@ router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
         assert_eq!(stats["hits"], hits);
         assert_eq!(cached, report);
     }
+}
+
+#[test]
+fn fastapi_shadows_an_unavailable_submodule_in_a_closed_regular_package() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for package in ["app", "backend/app"] {
+        fs::create_dir_all(root.join(package)).unwrap();
+        fs::write(root.join(package).join("__init__.py"), "").unwrap();
+    }
+    let route = "from fastapi import APIRouter\nrouter = APIRouter()\n\
+                 @router.get('/')\ndef endpoint(): return 1\n";
+    fs::write(root.join("app/routes.py"), route).unwrap();
+    let main = root.join("backend/app/main.py");
+    for mount in [
+        "from app.routes import router\napp.include_router(router)\n",
+        "import app.routes as routes\napp.include_router(routes.router)\n",
+    ] {
+        fs::write(
+            &main,
+            format!("from fastapi import FastAPI\napp = FastAPI()\n{mount}"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["app.routes.endpoint"]
+        );
+        assert!(
+            report["analysis_summary"]["fastapi_route_declarations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["qualified_name"] == "app.routes.endpoint" && row["file"] == "app/routes.py"
+                })
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    for artifact in [
+        "backend/app/routes.cpython-311.so",
+        "backend/app/__init__.abi3.so",
+        "backend/__init__.abi3.so",
+        "backend/app/routes.pyc",
+        "backend/app/routes.pyw",
+    ] {
+        let native_candidate = root.join(artifact);
+        fs::write(&native_candidate, "").unwrap();
+        let unavailable = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            unavailable["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_import")
+        );
+        fs::remove_file(native_candidate).unwrap();
+    }
+
+    for hidden in [
+        "backend/__init__.py",
+        "backend/app/routes.py",
+        "backend/fastapi.py",
+        "fastapi.py",
+    ] {
+        let source = root.join(hidden);
+        fs::write(&source, "").unwrap();
+        let unavailable = scan_with_excludes(root, None, Some(cache.path()), &[hidden], 2);
+        assert!(
+            unavailable["selected_paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|path| path != hidden)
+        );
+        assert!(
+            unavailable["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_import")
+        );
+        fs::remove_file(source).unwrap();
+    }
+
+    let consumer = root.join("consumer.py");
+    fs::write(&consumer, "from backend.app.main import app\n").unwrap();
+    let consumer_failure = scan_with_exit(root, None, None, 2);
+    assert!(
+        consumer_failure["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_import" && issue["path"] == "consumer.py")
+    );
+    fs::remove_file(consumer).unwrap();
+
+    fs::write(root.join("backend/app/routes.py"), route).unwrap();
+    let resolved = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&resolved, "unused_functions"),
+        ["app.routes.endpoint"]
+    );
+    assert!(
+        resolved["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "backend.app.routes.endpoint"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "fastapi_registration")
+            })
+    );
 }
 
 #[test]

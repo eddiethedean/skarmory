@@ -17,6 +17,7 @@ impl Graph<'_> {
             return false;
         }
         if self.terminal_failed_flask_provider(scope, statement)
+            || self.terminal_fastapi_shadowed_import(scope, statement)
             || self.terminal_django_url_assignment(scope, statement)
             || self.terminal_django_url_initializer(scope, statement)
             || self.terminal_unbound_flask_initializer(scope, statement)
@@ -25,6 +26,7 @@ impl Graph<'_> {
             || self.phase03
                 && (self.terminal_missing_django_reloader(scope, statement)
                     || self.terminal_django_auth_initializer(scope, statement)
+                    || self.terminal_django_backend_replacement(scope, statement)
                     || self.terminal_django_runpython(scope, statement)
                     || self.terminal_celery_router_failure(scope, statement)
                     || self.terminal_logging_config_failure(scope, statement))
@@ -50,9 +52,15 @@ impl Graph<'_> {
                     && self.terminal_missing_plain_member(scope, function, before, previous)
             }),
             StatementKind::Evaluate(Expression {
-                kind: ExpressionKind::KeywordMappingCall { function, mapping },
+                kind:
+                    ExpressionKind::KeywordMappingCall {
+                        function,
+                        arguments,
+                        mapping,
+                    },
                 ..
-            }) if self.unbound_module_name(scope, mapping, before)
+            }) if arguments.is_empty()
+                && self.unbound_module_name(scope, mapping, before)
                 && matches!(self.probe_identity(scope, function, before),
                     Value::Method(_, ObjectKind::CeleryApp, method) if method == "conf.update") =>
             {
