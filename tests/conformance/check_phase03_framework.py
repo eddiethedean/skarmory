@@ -9,7 +9,7 @@ import sys
 from tempfile import TemporaryDirectory
 import tomllib
 
-from phase03_framework import framework_report
+from phase03_framework import framework_definitions, framework_report
 
 
 BASELINE = Path(__file__).with_name("baselines") / "skylos-5.7.0.toml"
@@ -86,7 +86,7 @@ def check_checkout(upstream):
         )
 
 
-def run(upstream, sdk_python, selected, backend):
+def run(upstream, sdk_python, selected, backend, diagnostics_path=None):
     import pytest
 
     sys.dont_write_bytecode = True
@@ -105,18 +105,19 @@ def run(upstream, sdk_python, selected, backend):
     class Replay:
         def __init__(self):
             self.skipped = []
+            self.diagnostics = {}
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
             if sdk_python is None:
                 return (yield)
 
+            from skylos.analyzer import Skylos
             from test import web_framework_fixtures
 
-            scans = 0
+            scans = self.diagnostics[item.nodeid] = []
 
             def analyze(path, **options):
-                nonlocal scans
                 candidate_path = Path(path).absolute()
                 command = subprocess.run(
                     [sdk_python, "-I", "-c", SDK_SCAN],
@@ -135,21 +136,36 @@ def run(upstream, sdk_python, selected, backend):
                         f"Installed SDK failed to analyze {path}:\n{command.stderr}"
                     )
                 report = json.loads(command.stdout)
-                scans += 1
-                if report["coverage"]["status"] != "complete":
-                    pytest.fail(
-                        f"Installed SDK coverage incomplete: {report['analysis_errors']}"
-                    )
+                scans.append({
+                    "coverage": report["coverage"],
+                    "analysis_errors": report["analysis_errors"],
+                })
                 return json.dumps(framework_report(report))
 
+            def analyze_instance(analyzer, path, thr=60, exclude_folders=None, **options):
+                options.setdefault("grep_verify", True)
+                options.setdefault("grep_cache", True)
+                result = analyze(path, conf=thr, exclude_folders=exclude_folders, **options)
+                analyzer.defs = framework_definitions(json.loads(result))
+                return result
+
             with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(Skylos, "analyze", analyze_instance)
                 if hasattr(item.module, "_scan"):
                     patch.setattr(web_framework_fixtures, "analyze", analyze)
                 if hasattr(item.module, "analyze"):
                     patch.setattr(item.module, "analyze", analyze)
-                result = yield
+                try:
+                    result = yield
+                finally:
+                    if scans:
+                        item.add_report_section(
+                            "call", "installed SDK coverage", json.dumps(scans, indent=2)
+                        )
                 if not scans:
                     pytest.fail("Pinned assertion did not call the installed SDK")
+                if any(scan["coverage"]["status"] != "complete" for scan in scans):
+                    pytest.fail("The pinned case ran with incomplete installed SDK coverage")
                 return result
 
         def pytest_runtest_logreport(self, report):
@@ -172,6 +188,8 @@ def run(upstream, sdk_python, selected, backend):
             ],
             plugins=[replay],
         )
+    if diagnostics_path is not None:
+        diagnostics_path.write_text(json.dumps(replay.diagnostics, indent=2) + "\n", encoding="utf-8")
     if sdk_python and replay.skipped:
         print(f"Candidate cases skipped: {', '.join(replay.skipped)}", file=sys.stderr)
         return 1
@@ -194,7 +212,12 @@ def main():
         action="append",
         help="Override the starting report-facing case selection",
     )
+    parser.add_argument(
+        "--diagnostics", type=Path, help="Write per-case SDK coverage and analysis errors"
+    )
     args = parser.parse_args()
+    if args.diagnostics and not args.sdk_python:
+        parser.error("--diagnostics requires --sdk-python")
     upstream = args.upstream.resolve()
     check_checkout(upstream)
     return run(
@@ -202,6 +225,7 @@ def main():
         args.sdk_python.absolute() if args.sdk_python else None,
         args.case,
         args.backend,
+        args.diagnostics.absolute() if args.diagnostics else None,
     )
 
 

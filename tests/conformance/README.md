@@ -20,12 +20,15 @@ run.
 ```sh
 "$reference_python" tests/conformance/check_phase03_framework.py "$skylos_checkout"
 "$reference_python" tests/conformance/check_phase03_framework.py "$skylos_checkout" \
-  --sdk-python "$installed_sdk_python"
+  --sdk-python "$installed_sdk_python" --diagnostics framework-coverage.json
 ```
 
 The candidate run exercises the installed native extension on the original
 fixtures. It fails on incomplete coverage, skipped cases, and cases that
-never call the native SDK. The adapter projects evidence by qualified name,
+never call the native SDK. The optional diagnostics file records scan coverage
+and analysis errors per case, including scans that fail an upstream assertion.
+Use repeated `--case` arguments for specific pinned files or node IDs. The
+adapter projects evidence by qualified name,
 source file, and line. The default subset excludes private Skylos visitor and
 call-count probes. The release gate tracks full-suite scope and required
 variants separately.

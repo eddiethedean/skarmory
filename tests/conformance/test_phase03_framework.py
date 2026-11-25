@@ -1,4 +1,4 @@
-from phase03_framework import framework_report
+from phase03_framework import framework_definitions, framework_report
 
 
 def test_only_matching_native_evidence_proves_framework_activation():
@@ -48,3 +48,9 @@ def test_only_matching_native_evidence_proves_framework_activation():
     assert possible["evidence"][0]["certainty"] == "possible"
     assert dead["classification"] == "likely_dead"
     assert dead["evidence"] == []
+
+    definitions = framework_definitions(projected)
+    assert definitions["app.live"].name == "app.live"
+    assert definitions["app.live"].heuristic_refs == {"framework_root": 1.0}
+    assert definitions["app.possible"].heuristic_refs == {}
+    assert definitions["app.dead"].heuristic_refs == {}

@@ -1,5 +1,8 @@
 """Project native framework evidence into the pinned Skylos assertion fields."""
 
+from types import SimpleNamespace
+
+
 _ROOT_KINDS = {
     "django_admin_registration",
     "django_path_converter",
@@ -100,4 +103,20 @@ def framework_report(report):
             **summary,
             "dead_code_liveness": {**liveness, "rescued": rescued},
         },
+    }
+
+
+def framework_definitions(report):
+    """Expose the pinned analyzer's definition fields backed by native evidence."""
+    return {
+        name: SimpleNamespace(
+            name=name,
+            heuristic_refs={
+                "framework_root": 1.0
+                for evidence in definition["dead_code_evidence"]
+                if evidence["kind"] == "framework_root"
+                and evidence["certainty"] == "certain"
+            },
+        )
+        for name, definition in report["definitions"].items()
     }
