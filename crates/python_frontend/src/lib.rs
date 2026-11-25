@@ -1,5 +1,6 @@
 //! Ruff adapters for the native Python analyzers.
 
+pub mod cleanup;
 pub mod phase02;
 pub mod preview;
 

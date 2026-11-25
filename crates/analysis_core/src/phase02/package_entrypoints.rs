@@ -32,6 +32,12 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
+    pub(super) fn input_stamps(&self) -> impl Iterator<Item = (&PathBuf, &Stamp)> {
+        self.metadata
+            .iter()
+            .filter_map(|(path, _, stamp)| Some((path, stamp.as_ref()?)))
+    }
+
     pub(super) fn read(path: &Path, files: &[AnalyzedFile]) -> Self {
         let file_only = path.is_file();
         let root = if file_only {
