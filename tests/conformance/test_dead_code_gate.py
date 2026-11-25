@@ -218,6 +218,7 @@ port = "crates/analysis_core/tests/resolve.rs"
         sdk = self.reviewed_receipt([
             "coverage:incomplete", "issue:unresolved_import:app.py:2",
             "scoped-unused:shop:unused_files:placeholder.py",
+            "scoped-evidence:shop:framework_declaration:possible:app.handler",
         ])
         engine = self.receipt("python-engine")
         runtime = sdk["results"][0]["reviewed_runtime"]

@@ -7,6 +7,8 @@ FINDING_BUCKETS = {
     "unused_functions", "unused_classes", "unused_imports", "unused_variables",
     "unused_parameters", "suppressed",
 }
+CERTAINTIES = {"certain", "possible", "*"}
+SCOPED_ASSERTIONS = {"scoped-evidence", "scoped-unused"}
 
 
 def relative_path(value):
@@ -29,11 +31,14 @@ def parse_assertion(value):
             len(items) == 3 and relative_path(items[0])
             and items[1] in FINDING_BUCKETS | {"unused_files"}
         ),
+        "scoped-evidence": lambda: (
+            len(items) == 4 and relative_path(items[0]) and items[2] in CERTAINTIES
+        ),
         "issue": lambda: (
             len(items) == 3 and relative_path(items[1]) and items[2].isascii() and items[2].isdigit()
         ),
-        "evidence": lambda: len(items) == 3 and items[1] in {"certain", "possible", "*"},
-        "no-evidence": lambda: len(items) == 3 and items[1] in {"certain", "possible", "*"},
+        "evidence": lambda: len(items) == 3 and items[1] in CERTAINTIES,
+        "no-evidence": lambda: len(items) == 3 and items[1] in CERTAINTIES,
     }
     if not all(items) or kind not in valid or not valid[kind]():
         raise ValueError(f"invalid reviewed runtime assertion {value!r}")
@@ -67,15 +72,25 @@ def has_finding(report, bucket, name):
     )
 
 
+def evidence_facts(report):
+    return {
+        (edge["kind"], edge["certainty"], row["qualified_name"])
+        for row in report["dead_code_evidence"]["symbols"] for edge in row["evidence"]
+    }
+
+
+def has_evidence(facts, edge, certainty, symbol):
+    if certainty != "*":
+        return (edge, certainty, symbol) in facts
+    return any(kind == edge and target == symbol for kind, _, target in facts)
+
+
 def observe_review(report, fixture, assertions, scan):
     path = Path(fixture).resolve()
     observation, complete_fixture = scan_coverage(report, path)
     coverage = observation["coverage"]
     definitions = {row["name"] for row in report["definitions"].values()}
-    evidence = {
-        (edge["kind"], edge["certainty"], row["qualified_name"])
-        for row in report["dead_code_evidence"]["symbols"] for edge in row["evidence"]
-    }
+    evidence = evidence_facts(report)
     scoped_reports = {}
     scoped_observations = {}
     passed = []
@@ -95,8 +110,8 @@ def observe_review(report, fixture, assertions, scan):
             )
         elif kind == "unused":
             matched = has_finding(report, *parts)
-        elif kind == "scoped-unused":
-            scope, bucket, name = parts
+        elif kind in SCOPED_ASSERTIONS:
+            scope, *expectation = parts
             child = path / scope
             if not path.is_dir() or child.resolve() != child or not child.exists():
                 raise ValueError(f"review scope must be an existing fixture path: {scope!r}")
@@ -109,7 +124,11 @@ def observe_review(report, fixture, assertions, scan):
                     exact and current["coverage"]["status"] == "complete"
                     and not current["coverage"]["issues"] and not current["analysis_errors"]
                 )
-            matched = has_finding(scoped_reports[scope], bucket, name)
+            scoped = scoped_reports[scope]
+            if kind == "scoped-unused":
+                matched = has_finding(scoped, *expectation)
+            else:
+                matched = has_evidence(evidence_facts(scoped), *expectation)
         elif kind == "issue":
             category, filename, line = parts
             matched = any(
@@ -118,13 +137,8 @@ def observe_review(report, fixture, assertions, scan):
                 for row in coverage["issues"]
             )
         else:
-            edge, certainty, name = parts
-            observed = any(
-                actual_edge == edge and target == name
-                and certainty in {"*", actual_certainty}
-                for actual_edge, actual_certainty, target in evidence
-            )
-            matched = observed if kind == "evidence" else name in definitions and not observed
+            observed = has_evidence(evidence, *parts)
+            matched = observed if kind == "evidence" else parts[2] in definitions and not observed
         if matched:
             passed.append(assertion)
     return {

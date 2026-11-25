@@ -10,7 +10,7 @@ import tomllib
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
-from phase03_review_assertions import parse_assertion
+from phase03_review_assertions import SCOPED_ASSERTIONS, parse_assertion
 
 BASELINE = (
     Path(__file__).resolve().parents[1]
@@ -334,7 +334,7 @@ def verify_runtime_result(result, review):
             ):
                 reasons.append(f"reviewed runtime diagnostic is missing: {':'.join(parts)}")
     scopes = result.get("scopes", {})
-    expected_scopes = {parts[0] for kind, parts in checks if kind == "scoped-unused"}
+    expected_scopes = {parts[0] for kind, parts in checks if kind in SCOPED_ASSERTIONS}
     if not isinstance(scopes, dict) or scopes.keys() != expected_scopes:
         reasons.append("reviewed runtime scopes do not match the inventory")
     else:
