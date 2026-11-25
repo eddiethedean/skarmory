@@ -101,9 +101,11 @@ impl Graph<'_> {
             })
             .collect();
         let mut replaced = BTreeSet::new();
+        let reads = std::mem::take(&mut self.read);
         for scope in 0..self.scopes.len() {
             self.collect_field_callback_replacements(scope, self.scopes[scope].body, &mut replaced);
         }
+        self.read = reads;
         for proof in std::mem::take(&mut self.fresh_field_invocations) {
             self.direct.insert(proof.method.target);
             if proof
