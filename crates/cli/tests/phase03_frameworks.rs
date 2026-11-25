@@ -4925,3 +4925,64 @@ fn typer_callback_discovery_requires_the_real_reached_owner() {
             .any(|symbol| symbol["qualified_name"] == "commands.dormant.nested")
     );
 }
+
+#[test]
+fn django_setting_class_declaration_does_not_activate_replaced_protocol_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let package = project.path().join("service");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        package.join("settings.py"),
+        concat!(
+            "INSTALLED_APPS = []\n",
+            "SECRET_KEY = 'fixture'\n",
+            "LOGGING = {'filters': {'selected': {'()': 'service.backend.Filter'}}}\n",
+            "LOGGING = {}\n",
+            "STORAGES = {'default': {'BACKEND': 'service.backend.Declared'}}\n",
+            "NOTE = 'service.backend.Unrelated'\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        package.join("backend.py"),
+        concat!(
+            "from pydantic import BaseModel\n",
+            "class Filter:\n",
+            "    def filter(self, record): return helper()\n",
+            "class Declared(BaseModel):\n",
+            "    def model_post_init(self, context): return other_helper()\n",
+            "class Unrelated: pass\n",
+            "def helper(): return True\n",
+            "def other_helper(): return True\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["service.backend.Unrelated"]
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "service.backend.Declared.model_post_init",
+            "service.backend.Filter.filter",
+            "service.backend.helper",
+            "service.backend.other_helper",
+        ]
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|symbol| {
+        symbol["qualified_name"] == "service.backend.Filter"
+            && symbol["evidence"].as_array().unwrap().iter().any(|event| {
+                event["kind"] == "django_configured_class_declaration"
+                    && event["certainty"] == "possible"
+            })
+    }));
+    assert!(
+        !symbols
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "service.backend.Filter.filter")
+    );
+}

@@ -8231,6 +8231,9 @@ impl<'a> Graph<'a> {
                     self.open_fastapi_effects(effects, reach, &mut pending);
                 }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
+                if edge.kind == "django_configured_class_declaration" {
+                    continue;
+                }
                 reach.symbols.insert(edge.target);
                 if matches!(
                     edge.kind,
@@ -8568,6 +8571,12 @@ impl<'a> Graph<'a> {
             evidence,
             ..
         } = reach;
+        let django_class_declarations: BTreeSet<_> = evidence
+            .iter()
+            .filter_map(|&(target, kind, _)| {
+                (kind == "django_configured_class_declaration").then_some(target)
+            })
+            .collect();
         let independently_retained: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
@@ -8712,7 +8721,9 @@ impl<'a> Graph<'a> {
             let public = !name.starts_with('_');
             let (category, rule_id, confidence, reason) = match symbol.binding {
                 Binding::Definition(def, _)
-                    if !reachable_symbols.contains(&id) && def.kind == DefinitionKind::Class =>
+                    if !reachable_symbols.contains(&id)
+                        && !django_class_declarations.contains(&id)
+                        && def.kind == DefinitionKind::Class =>
                 {
                     (Category::Class, "SKY-U004", 90, "unreachable_class")
                 }

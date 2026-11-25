@@ -120,8 +120,75 @@ impl Graph<'_> {
         true
     }
 
+    fn retain_django_configured_class_declarations(&mut self) {
+        for file in 0..self.files.len() {
+            let Some(package) = self.files[file].module.strip_suffix(".settings") else {
+                continue;
+            };
+            if !self
+                .modules
+                .get(package)
+                .is_some_and(|&package| self.files[package].is_package)
+                || !self
+                    .local(file, "INSTALLED_APPS", END)
+                    .is_some_and(|binding| {
+                        matches!(self.binding(binding, END, 0), Value::Sequence(_))
+                    })
+                || !self
+                    .local(file, "SECRET_KEY", END)
+                    .is_some_and(|binding| matches!(self.binding(binding, END, 0), Value::Text(_)))
+            {
+                continue;
+            }
+            for statement in self.scopes[file].body {
+                let StatementKind::Assign {
+                    names,
+                    value: Some(value),
+                    ..
+                } = &statement.kind
+                else {
+                    continue;
+                };
+                let [setting] = names.as_slice() else {
+                    continue;
+                };
+                let entries: Vec<_> = match setting.text.as_str() {
+                    "LOGGING" => literal_settings_entries(value)
+                        .filter(|(name, _)| matches!(*name, "filters" | "formatters" | "handlers"))
+                        .flat_map(|(_, group)| literal_settings_entries(group))
+                        .map(|(_, entry)| (entry, "()"))
+                        .collect(),
+                    "STORAGES" => literal_settings_entries(value)
+                        .map(|(_, entry)| (entry, "BACKEND"))
+                        .collect(),
+                    _ => continue,
+                };
+                for (entry, key) in entries {
+                    if let Some((_, provider)) =
+                        literal_settings_entries(entry).find(|(name, _)| *name == key)
+                        && let ExpressionKind::Text(target) = &provider.kind
+                        && let Some((module, name)) = target.rsplit_once('.')
+                        && let Some(&source) = self.modules.get(module)
+                        && let Some(binding) = self.local(source, name, END)
+                        && self.is_class(binding)
+                    {
+                        // A settings declaration can name a class even when a later
+                        // assignment replaces the setting. Do not run protocol methods.
+                        self.edge(
+                            file,
+                            binding,
+                            "django_configured_class_declaration",
+                            "possible",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
+        self.retain_django_configured_class_declarations();
         self.collect_flask_cli_factory();
 
         let classes: Vec<_> = (0..self.symbols.len())
@@ -2731,4 +2798,18 @@ fn has_django_pattern(value: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+fn literal_settings_entries(value: &Expression) -> impl Iterator<Item = (&str, &Expression)> {
+    let items = match &value.kind {
+        ExpressionKind::Dictionary(items) => items.as_slice(),
+        _ => &[],
+    };
+    items.chunks_exact(2).filter_map(|pair| {
+        let [key, value] = pair else { return None };
+        match &key.kind {
+            ExpressionKind::Text(name) => Some((name.as_str(), value)),
+            _ => None,
+        }
+    })
 }
