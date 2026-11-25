@@ -328,9 +328,20 @@ Use the pinned case ledger to assess each contract before claiming parity.
 
 The pinned `django-urlpatterns` and `django-signal-receiver` corpus fixtures
 omit startup and a qualifying settings/URLconf pair, leaving coverage incomplete.
-The `python-unittest-lifecycle` corpus case expects lifecycle retention without a
-discovered test method and a test-only path whitelist. The reviewed inventory must
-account for these differences before qualification.
+The standalone `django-class-based-view`, `django-management-command`, and
+`django-appconfig-ready` fixtures expect retention without a selected
+registration or launcher. The `celery-task-class` fixture declares a task
+without registering it. The `python-unittest-lifecycle` fixture expects hooks
+to be retained without a discovered test method and an unrelated helper to be
+whitelisted by path. These expectations remain required differences in the
+reviewed inventory and do not receive pass credit.
+
+Some pinned Flask and Django lookalike cases deliberately introduce an opaque
+replacement and expect a complete report. Skarmory keeps the missing evidence
+visible when the replacement can affect reachability. FastAPI fixtures whose
+later router registrations depend on the installed FastAPI version still need
+a version-specific qualification variant. Review these differences before
+claiming compatibility for the affected cases.
 
 ### Python shutdown callbacks
 
