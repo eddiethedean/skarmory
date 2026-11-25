@@ -20,8 +20,7 @@ from phase03_dependencies import (
     UNUSED_DEPENDENCY_SOURCES,
     unused_dependencies,
 )
-from phase03_engine import CASE as ENGINE_CASE
-from phase03_engine import engine_case
+from phase03_engine import ENGINE_CASES, engine_case
 from phase03_framework import framework_report, patch_framework_analysis
 from phase03_fastapi import CASES as FASTAPI_CASES, LIVE_ROUTER, prove_live_router, verify_wheels
 from phase03_framework_corpus import MANIFEST as CORPUS_SOURCE
@@ -127,10 +126,10 @@ def port_cases(args):
     cases = {key: case for key, case in expected[args.variant].items() if case["port"] == PORT}
     if not cases:
         raise ValueError(f"no seed port mappings for {args.variant}")
-    if (layer == "engine" and set(cases) != {ENGINE_CASE}) or (
-        ENGINE_CASE in cases and layer != "engine"
+    if (layer == "engine" and not cases.keys() <= ENGINE_CASES) or (
+        layer != "engine" and cases.keys() & ENGINE_CASES
     ):
-        raise ValueError("the engine port requires its own single-case variant")
+        raise ValueError("a mapped engine case requires a registered native port and engine variant")
     if layer == "cli" and any(
         key != CLI_CASE and key not in CLEANUP_CASES and key not in CLEANUP_EXECUTION_CASES
         and case["source"] not in WORKFLOW_SOURCES
@@ -352,9 +351,10 @@ def run_framework_corpus_cases(args, cases):
 def pytest_worker(args):
     _, _, variant, cases = port_cases(args)
     if args.mode == "candidate" and variant["layer"] == "engine":
-        result = engine_case(args, cases[ENGINE_CASE], environment())
-        args.output.write_text(json.dumps({ENGINE_CASE: result}), encoding="utf-8")
-        return int(result["status"] != "passed")
+        env = environment()
+        results = {key: engine_case(args, key, case, env) for key, case in cases.items()}
+        args.output.write_text(json.dumps(results), encoding="utf-8")
+        return int(any(result["status"] != "passed" for result in results.values()))
 
     import pytest
 
@@ -722,7 +722,7 @@ def write_receipt(args):
                 "reference": reference.get("corpus"),
                 "candidate": candidate.get("corpus"),
             }
-        if case_id == ENGINE_CASE:
+        if case_id in ENGINE_CASES:
             result["native_test"] = candidate.get("native_test")
         results.append(result)
     receipt = {
