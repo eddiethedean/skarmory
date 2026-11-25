@@ -31,6 +31,7 @@ Ordinary pinned matches are counted separately under `skylos_parity`.
 | Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. |
 | Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. |
 | Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. The launcher-free fixture needs explicit settings selection. Its auth application also needs `django.contrib.contenttypes` to finish setup. |
+| Pontoon-shaped Django startup | The WSGI fixture fails while loading admin because it omits `django.contrib.contenttypes`. The SDK extracts all sources, reports the unresolved wildcard imports, and keeps the original unused-code checks and bounded declaration evidence in complete file scopes. |
 | Django signature conventions | CPython 3.11 resolves `site` to its frozen non-package module. The original project cannot import `site.checks`, `site.views`, or `site.signals` by name under that interpreter configuration. |
 | Logging configuration | The satellite settings omit `version`, so `dictConfig` raises before invoking either factory. In the path-like lookalike fixture, CPython 3.11 selects frozen `os`, the dictionary fails the `PathLike` guard, and `dictConfig` creates the formatter the original expects to be unused. |
 | Wagtail snippet settings | The view-set class supplies neither a model nor a `register_snippet` call. The analyzer records the related model and block declarations separately. |
@@ -58,8 +59,8 @@ prerequisites. On reviewed rows it also requires each corrected assertion
 to run on the candidate SDK and pass with the specified coverage. When a
 correction expects incomplete coverage, the receipt must contain its
 diagnostic and show that every fixture source was extracted.
-When an unrelated failed import prevents a full-project finding, a correction
-can preserve that assertion in a complete scan of a declared fixture subtree.
+When an unresolved import prevents full-project analysis, a correction can
+preserve a finding or declaration in a complete scan of a declared fixture subtree.
 The receipt records the full-project diagnostic and verifies that the subtree
 scan extracted the same sources selected within that subtree.
 
