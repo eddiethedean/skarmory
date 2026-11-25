@@ -2318,6 +2318,76 @@ if enabled:
 }
 
 #[test]
+fn django_converters_use_proven_regex_and_method_descriptors() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("converters.py"),
+        r#"import builtins as native
+from builtins import staticmethod as static
+from django.urls import register_converter
+from django.urls.converters import StringConverter as Base
+
+class Static(Base):
+    @static
+    def to_python(value):
+        return value.lower()
+
+class Classed(Base):
+    @native.classmethod
+    def to_python(cls, value):
+        return value.lower()
+
+class StringConverter:
+    pass
+
+class Lookalike(StringConverter):
+    def to_python(self, value):
+        return value
+
+register_converter(Static, 'static')
+register_converter(Classed, 'classed')
+register_converter(Lookalike, 'lookalike')
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["converters.Lookalike.to_python"]
+    );
+    let registrations = report["dead_code_evidence"]["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|symbol| {
+            let name = symbol["qualified_name"].as_str().unwrap();
+            (name.ends_with(".to_python")
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|event| event["kind"] == "django_path_converter"))
+            .then_some(name)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        registrations,
+        [
+            "converters.Classed.to_python",
+            "converters.Static.to_python"
+        ]
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["unused_functions", "coverage", "dead_code_evidence"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+}
+
+#[test]
 fn django_converter_protocol_requires_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

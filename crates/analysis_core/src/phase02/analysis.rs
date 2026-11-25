@@ -2695,6 +2695,14 @@ impl<'a> Graph<'a> {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
                 Value::Provider(name) if name == "builtins.object" => None,
+                Value::Provider(base) if self.phase03 && is_django_string_converter(&base) => {
+                    match name {
+                        "__init__" | "__new__" | "__init_subclass__" => None,
+                        "regex" => Some(Value::Text("[^/]+".into())),
+                        "to_python" | "to_url" => Some(Value::Provider(format!("{base}.{name}"))),
+                        _ => Some(Value::Unknown),
+                    }
+                }
                 Value::Provider(base)
                     if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
                 {
@@ -9293,7 +9301,11 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
 }
 
 fn framework_managed_base(name: &str) -> bool {
-    framework_class_provider(name).is_some()
+    framework_class_provider(name).is_some() || is_django_string_converter(name)
+}
+
+fn is_django_string_converter(name: &str) -> bool {
+    name == "django.urls.converters.StringConverter"
 }
 
 fn is_declarative_base_factory(name: &str) -> bool {

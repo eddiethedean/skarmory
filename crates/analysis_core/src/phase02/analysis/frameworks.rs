@@ -41,6 +41,20 @@ pub(super) struct DjangoConverter {
     pub(super) string_calls: Vec<ParameterCall>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ConverterDescriptor {
+    Instance,
+    Static,
+    Class,
+}
+
+enum ConverterRegex {
+    Source(SymbolId),
+    Builtin,
+    Absent,
+    Opaque,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct DjangoAutoreloadWrapper {
     site: ScopeId,
@@ -641,18 +655,38 @@ impl Graph<'_> {
             "possible"
         };
         self.edge(scope, class, kind, certainty);
+        match self.converter_regex(class) {
+            ConverterRegex::Source(target) => {
+                self.edge(scope, target, "django_converter_regex", certainty);
+            }
+            ConverterRegex::Builtin => {}
+            // Registration can store the instance without compiling a URL
+            // pattern. A class without regex cannot supply its callbacks.
+            ConverterRegex::Absent => return,
+            ConverterRegex::Opaque => {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_registration",
+                    "Django converter regex could not be resolved",
+                );
+                return;
+            }
+        }
         for name in methods {
             match self.class_member_at(class, name, 0, Some((scope, at))) {
                 Some(Value::Callable(invocation))
-                    if self.bounded_framework_function(invocation.target) =>
+                    if let Some(descriptor) = self.converter_descriptor(invocation.target) =>
                 {
+                    let descriptor_arguments =
+                        usize::from(descriptor != ConverterDescriptor::Static);
                     let input = if *name == "to_python"
-                        && self.receiver_parameter(invocation.target).is_some()
                         && let Binding::Definition(definition, body) =
                             self.symbols[invocation.target].binding
                         && definition.simple_positional_parameters
-                        && let [_, value] = definition.parameters.as_slice()
+                        && definition.parameters.len() == descriptor_arguments + 1
                     {
+                        let value = &definition.parameters[descriptor_arguments];
                         self.by_location
                             .get(&(body, value.at.line, value.at.column))
                             .copied()
@@ -664,7 +698,7 @@ impl Graph<'_> {
                         .entry(invocation.target)
                         .or_default()
                         .push((scope, input));
-                    let invocation = if self.receiver_parameter(invocation.target).is_some() {
+                    let invocation = if descriptor == ConverterDescriptor::Instance {
                         invocation.bind_receiver(Receiver::Bound(class))
                     } else {
                         invocation
@@ -672,6 +706,10 @@ impl Graph<'_> {
                     self.invoke(scope, invocation, kind, certainty, at);
                 }
                 Some(Value::ConstantFunction) | None => {}
+                Some(Value::Provider(provider))
+                    if provider.rsplit_once('.').is_some_and(|(base, method)| {
+                        is_django_string_converter(base) && method == *name
+                    }) => {}
                 _ => self.scope_issue(
                     scope,
                     at,
@@ -680,14 +718,72 @@ impl Graph<'_> {
                 ),
             }
         }
-        let (lineage, _) = self.class_lineage(class);
+    }
+
+    fn converter_regex(&mut self, class: SymbolId) -> ConverterRegex {
+        let (lineage, resolved) = self.class_lineage(class);
         if let Some(target) = lineage
-            .into_iter()
-            .find_map(|body| self.local(body, "regex", END))
-            && matches!(self.symbols[target].binding, Binding::Variable(_, _))
+            .iter()
+            .find_map(|&body| self.local(body, "regex", END))
         {
-            self.edge(scope, target, "django_converter_regex", certainty);
+            // Probing a detached registration must not mark its field as read.
+            return if !self.binding_depends_on_branch(target, END)
+                && matches!(self.binding_value(target, 0), Value::Text(_))
+            {
+                ConverterRegex::Source(target)
+            } else {
+                ConverterRegex::Opaque
+            };
         }
+        if resolved {
+            return ConverterRegex::Absent;
+        }
+        if let Some(owner) = lineage.last().and_then(|&body| self.scopes[body].owner)
+            && let Binding::Definition(definition, _) = self.symbols[owner].binding
+            && let [base] = definition.bases.as_slice()
+            && matches!(
+                self.probe_identity(self.symbols[owner].scope, base, definition.name.at),
+                Value::Provider(provider) if is_django_string_converter(&provider)
+            )
+        {
+            return ConverterRegex::Builtin;
+        }
+        ConverterRegex::Opaque
+    }
+
+    fn converter_descriptor(&mut self, target: SymbolId) -> Option<ConverterDescriptor> {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return None;
+        };
+        if definition.kind != DefinitionKind::Function || definition.is_generator {
+            return None;
+        }
+        let scope = symbol.scope;
+        let mut descriptor = ConverterDescriptor::Instance;
+        for decorator in &definition.decorators {
+            let value = self.probe_identity(scope, decorator, definition.name.at);
+            match value {
+                Value::Provider(provider)
+                    if provider == "builtins.staticmethod"
+                        && descriptor == ConverterDescriptor::Instance =>
+                {
+                    descriptor = ConverterDescriptor::Static;
+                }
+                Value::Provider(provider)
+                    if provider == "builtins.classmethod"
+                        && descriptor == ConverterDescriptor::Instance =>
+                {
+                    descriptor = ConverterDescriptor::Class;
+                }
+                value => {
+                    if !self.local_identity_decorator(value, decorator) {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(descriptor)
     }
 
     pub(super) fn report_converter_string_calls(&mut self, reach: &Reachability) {
