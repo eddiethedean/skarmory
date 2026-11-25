@@ -4612,6 +4612,108 @@ dormant.add_api_route("/other", other, dependencies=[Depends(inactive_dependency
 }
 
 #[test]
+fn fastapi_unannotated_websocket_query_accept_failure_preserves_unused_findings() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let project_source = r#"from fastapi import APIRouter, FastAPI
+router = APIRouter(prefix="/accounts")
+inactive = APIRouter()
+@router.websocket("/ws")
+async def connected(socket):
+    """Call the socket protocol."""
+    await socket.accept()
+@inactive.websocket("/ws")
+async def unmounted(socket):
+    await socket.accept()
+def unused():
+    return 1
+app = FastAPI()
+app.include_router(router, prefix="/api")
+"#;
+    fs::write(&app, project_source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.unmounted", "app.unused"]
+    );
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "app.connected"
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    for changed in [
+        project_source.replace("/accounts", "/{socket:custom}"),
+        project_source.replace("/api", "/{socket:custom}"),
+        project_source.replace(r#"websocket("/ws")"#, r#"websocket("/{socket:custom}")"#),
+        project_source
+            .replace(
+                "from fastapi import APIRouter, FastAPI",
+                "from fastapi import APIRouter, FastAPI, WebSocket",
+            )
+            .replace("connected(socket)", "connected(socket: WebSocket)"),
+        project_source.replace("connected(socket)", "connected(socket=None)"),
+        project_source.replace("router.websocket(", "router.websocket_route("),
+        format!("{project_source}app.include_router(router, prefix='/{{socket:custom}}')\n"),
+        project_source.replace(
+            "app = FastAPI()",
+            "from fastapi import WebSocket\nconnected.__annotations__ = {'socket': WebSocket}\napp = FastAPI()",
+        ),
+        format!("{project_source}app.add_api_route('/also-http', connected)\n"),
+        format!("{project_source}from external import preserve\npreserve(connected)\n"),
+        format!(
+            "{project_source}class LocalSocket:\n    async def accept(self): return None\nasync def launch(): await connected(LocalSocket())\nimport asyncio\nasyncio.run(launch())\n"
+        ),
+        project_source.replace(
+            "await socket.accept()",
+            "await socket.accept()\n    return 1",
+        ),
+    ] {
+        fs::write(&app, &changed).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["kind"] == "unresolved_callback"
+                    && row["line"] == 7
+                    && row["column"] == 5),
+            "{changed}\n{report}"
+        );
+    }
+
+    fs::write(
+        &app,
+        r#"class FakeRouter:
+    def websocket(self, path):
+        return lambda fn: fn
+router = FakeRouter()
+@router.websocket("/ws")
+async def connected(socket):
+    await socket.accept()
+"#,
+    )
+    .unwrap();
+    assert!(findings(&scan(root), "unused_functions").contains(&"app.connected"));
+}
+
+#[test]
 fn fastapi_empty_registration_options_preserve_findings() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

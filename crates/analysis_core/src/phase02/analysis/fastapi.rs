@@ -31,6 +31,7 @@ pub(super) struct Fastapi {
     signatures: BTreeMap<SymbolId, BTreeMap<ScopeId, bool>>,
     lifespans: BTreeMap<Object, (Site, ScopeId)>,
     observable_objects: BTreeSet<Object>,
+    plain_query_owners: BTreeSet<Object>,
     parameter_routes: Vec<ParameterRoute>,
     pub(super) route_declarations: BTreeSet<SymbolId>,
 }
@@ -116,6 +117,8 @@ struct Event {
     startup_or_shutdown: bool,
     iterated: bool,
     api_route: bool,
+    websocket_query_target: Option<SymbolId>,
+    plain_query_binding: bool,
     signature_targets: Vec<SymbolId>,
     signatures: BTreeMap<SignatureSite, ScopeId>,
     // Proven execution prefixes before this inclusion. Completed imports use END.
@@ -136,6 +139,7 @@ struct Inclusion {
     legacy_default_reached: bool,
     lifecycle_reached: bool,
     conditional: bool,
+    plain_query_binding: bool,
     mode: FastapiRouterMode,
 }
 
@@ -854,6 +858,32 @@ impl<'a> Graph<'a> {
         }
     }
 
+    pub(super) fn record_fastapi_query_owner(
+        &mut self,
+        object: Object,
+        site: Site,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        router: bool,
+    ) {
+        if arguments.is_empty()
+            && (keywords.is_empty()
+                || router
+                    && matches!(keywords, [(name, prefix)] if name == "prefix"
+                        && self.fastapi_plain_prefix(site, Some(prefix))))
+        {
+            self.fastapi.plain_query_owners.insert(object);
+        }
+    }
+
+    fn fastapi_plain_prefix(&mut self, site: Site, prefix: Option<&Expression>) -> bool {
+        prefix.is_none_or(|prefix| {
+            matches!(self.probe_identity(site.scope, prefix, site.before),
+                Value::Text(prefix) if prefix.is_empty()
+                    || prefix.starts_with('/') && !prefix.ends_with('/') && !prefix.contains(['{', '}']))
+        })
+    }
+
     pub(super) fn fastapi_route(
         &mut self,
         object: Object,
@@ -1430,6 +1460,16 @@ impl<'a> Graph<'a> {
                     matches!(self.probe_identity(scope, expr, before),
                         Value::Text(path) if !path.contains('{'))
                 });
+                if self.fastapi_query_accept_sites(target).is_some() {
+                    // Any other route registered for this callable can supply
+                    // different inputs, even if its body looks the same.
+                    event.websocket_query_target = Some(target);
+                    event.plain_query_binding = method == "websocket"
+                        && certainty == "certain"
+                        && matches!(positional, [path] if keywords.is_empty()
+                            && matches!(self.probe_identity(scope, path, before),
+                                Value::Text(path) if path.starts_with('/') && !path.contains(['{', '}'])));
+                }
                 self.fastapi
                     .signatures
                     .entry(target)
@@ -1448,12 +1488,16 @@ impl<'a> Graph<'a> {
         parent: Object,
         child: Object,
         site: Site,
+        arguments: &[Expression],
         keywords: &[(String, Expression)],
     ) {
         let effects = self.fastapi_effect_scope(site);
         let mut event = Event::new(site, effects);
         event.included_router = Some(child);
         event.conditional_include = self.branch_depth != 0;
+        event.plain_query_binding = arguments.len() <= 1
+            && matches!(registration_arguments(arguments, keywords, ["router", "prefix"]),
+                Some([Some(_), prefix]) if self.fastapi_plain_prefix(site, prefix));
         event.signature_targets = self.fastapi_options(effects, site, keywords);
         self.fastapi_event(parent, event);
     }
@@ -1737,6 +1781,7 @@ impl<'a> Graph<'a> {
                             legacy_default_reached: false,
                             lifecycle_reached: true,
                             conditional: false,
+                            plain_query_binding: false,
                             mode: self.files[object.0].fastapi_router_mode,
                         },
                     ));
@@ -1894,6 +1939,8 @@ impl<'a> Graph<'a> {
                 || inclusion.is_some_and(|inclusion| inclusion.legacy_default_reached));
         let mode = inclusion.map_or(self.files[object.0].fastapi_router_mode, |item| item.mode);
         let conditional = inclusion.is_some_and(|inclusion| inclusion.conditional);
+        let plain_query_binding = self.fastapi.plain_query_owners.contains(&object)
+            && inclusion.is_none_or(|inclusion| inclusion.plain_query_binding);
         let mut has_routes = false;
         for &id in snapshots.events.get(&object).into_iter().flatten() {
             let Some(remaining) = snapshots.remaining.checked_sub(1) else {
@@ -1944,6 +1991,7 @@ impl<'a> Graph<'a> {
                         legacy_default_reached,
                         lifecycle_reached: child_lifecycle,
                         conditional: conditional || event.conditional_include,
+                        plain_query_binding: plain_query_binding && event.plain_query_binding,
                         mode,
                     }),
                     reach,
@@ -1953,6 +2001,15 @@ impl<'a> Graph<'a> {
                 )
             }) {
                 has_routes |= event.carries_routes();
+                if let Some(target) = event.websocket_query_target {
+                    let ordinary_query =
+                        plain_query_binding && event.plain_query_binding && !conditional;
+                    reach
+                        .fastapi_websocket_query_bindings
+                        .entry(target)
+                        .and_modify(|bounded| *bounded &= ordinary_query)
+                        .or_insert(ordinary_query);
+                }
                 if event.startup_or_shutdown {
                     self.open_fastapi_lifecycle_effects(event.effects, conditional, reach, pending);
                 } else {
@@ -2107,6 +2164,114 @@ impl<'a> Graph<'a> {
             );
         }
     }
+
+    pub(super) fn report_fastapi_websocket_query_failures(&mut self, reach: &Reachability) {
+        if !self.issues.is_empty() {
+            return;
+        }
+        let sites: BTreeMap<_, _> = reach
+            .fastapi_websocket_query_bindings
+            .iter()
+            .filter_map(|(&target, &plain_query)| {
+                (plain_query
+                    && reach
+                        .evidence
+                        .contains(&(target, "fastapi_registration", "certain"))
+                    && reach
+                        .evidence
+                        .range((target, "", "")..)
+                        .take_while(|&&(id, _, _)| id == target)
+                        .all(|&(_, kind, _)| {
+                            matches!(kind, "fastapi_registration" | "type_reference")
+                        }))
+                .then(|| self.fastapi_query_accept_sites(target))
+                .flatten()
+            })
+            .collect();
+        if sites.is_empty() {
+            return;
+        }
+        let known_failure = |scope, issue: &Issue| {
+            sites.get(&scope).is_some_and(|&(call, awaited)| {
+                let at = (issue.line, issue.column);
+                match (issue.kind, issue.message.as_str()) {
+                    ("unresolved_call", "call target is outside the bounded model") => {
+                        at == (Some(call.line), Some(call.column))
+                    }
+                    ("unresolved_callback", "callback target could not be bounded") => {
+                        at == (Some(awaited.line), Some(awaited.column))
+                    }
+                    _ => false,
+                }
+            })
+        };
+        // Unknown statements or mutations in the reached project can change
+        // the callable's effective signature or how the app supplies its inputs.
+        if self
+            .scope_issues
+            .iter()
+            .any(|(scope, issue)| reach.scopes.contains(scope) && !known_failure(*scope, issue))
+        {
+            return;
+        }
+        self.scope_issues
+            .retain(|(scope, issue)| !known_failure(*scope, issue));
+    }
+
+    fn fastapi_query_accept_sites(
+        &self,
+        target: SymbolId,
+    ) -> Option<(ScopeId, (Location, Location))> {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, body) = symbol.binding else {
+            return None;
+        };
+        let [parameter] = definition.parameters.as_slice() else {
+            return None;
+        };
+        if symbol.scope != self.scopes[symbol.scope].file
+            || definition.kind != DefinitionKind::Coroutine
+            || definition.is_generator
+            || !definition.simple_positional_parameters
+            || !definition.defaults.is_empty()
+            || !definition.annotations.is_empty()
+            || definition.decorators.len() != 1
+        {
+            return None;
+        }
+        let [
+            Statement {
+                kind: StatementKind::Evaluate(awaited),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        let ExpressionKind::Await(call) = &awaited.kind else {
+            return None;
+        };
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &call.kind
+        else {
+            return None;
+        };
+        let ExpressionKind::Member(receiver, member) = &function.kind else {
+            return None;
+        };
+        // The required, unannotated input is the raw query string whenever
+        // FastAPI enters the callback. str has no accept member. Evaluating
+        // the call raises before the await can consume any other coroutine.
+        (member == "accept"
+            && arguments.is_empty()
+            && keywords.is_empty()
+            && self.parameter_binding(body, receiver, awaited.at)
+                == Some(self.by_location[&(body, parameter.at.line, parameter.at.column)]))
+        .then_some((body, (call.at, awaited.at)))
+    }
 }
 
 fn plain_empty_middleware_body(definition: &Definition) -> bool {
@@ -2133,6 +2298,8 @@ impl Event {
             startup_or_shutdown: false,
             iterated: false,
             api_route: false,
+            websocket_query_target: None,
+            plain_query_binding: false,
             signature_targets: Vec::new(),
             signatures: BTreeMap::new(),
             prior_scopes: BTreeMap::new(),
