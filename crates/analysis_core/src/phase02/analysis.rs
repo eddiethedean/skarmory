@@ -3255,7 +3255,8 @@ impl<'a> Graph<'a> {
         value
     }
 
-    fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
+    fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, subclass: &Definition) {
+        let single_base = subclass.bases.len() == 1;
         let hook = match base {
             Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
                 self.class_member_at(id, "__init_subclass__", 0, Some((scope, at)))
@@ -3267,6 +3268,7 @@ impl<'a> Graph<'a> {
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
                             || self.wagtail_declaration_base(&name)
+                            || self.wagtail_plain_snippet_base(&name, subclass)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -5939,6 +5941,14 @@ impl<'a> Graph<'a> {
                             && let Some(receiver) = arguments.first()
                         {
                             self.record_unmodeled_class_write(scope, receiver, before);
+                            if self.wagtail_snippet_provider_write(scope, receiver, before) {
+                                self.scope_issue(
+                                    scope,
+                                    expr.at,
+                                    "unresolved_attribute_write",
+                                    "Wagtail snippet base mutations are outside the bounded model",
+                                );
+                            }
                         }
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -6956,7 +6966,7 @@ impl<'a> Graph<'a> {
                             self.edge(scope, id, "base_class", "certain");
                         }
                         if !literal_string_enum {
-                            self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                            self.subclass_hook(scope, value, base.at, definition);
                         }
                     }
                     if definition.kind == DefinitionKind::Class {
@@ -11709,10 +11719,17 @@ configure()
             )],
             &[],
         );
-        // The framework's snippet base is outside the bounded class model.
-        assert!(report.issues.iter().any(|issue| {
-            issue.path == "home/views.py" && issue.kind == "unresolved_subclass_hook"
-        }));
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for member in ["list_display", "sort_order_field", "unrelated_option"] {
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|row| { row.full_name == format!("home.views.PersonViewSet.{member}") }),
+                "{member}: {:?}",
+                report.findings
+            );
+        }
         assert!(
             !report
                 .evidence
@@ -11722,6 +11739,59 @@ configure()
             "{:?}",
             report.evidence
         );
+    }
+
+    #[test]
+    fn wagtail_snippet_subclass_hook_preserves_unbounded_inputs() {
+        for (source, expected_issue) in [
+            (
+                "from vendor import SnippetViewSet\nclass Child(SnippetViewSet): pass\n",
+                "unresolved_subclass_hook",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "class Mixin: pass\n",
+                    "class Child(SnippetViewSet, Mixin): pass\n",
+                ),
+                "unresolved_subclass_hook",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "SnippetViewSet.__init_subclass__ = lambda cls: None\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "setattr(SnippetViewSet, '__init_subclass__', lambda cls: None)\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "from wagtail.snippets.models import register_snippet\n",
+                    "class Child(SnippetViewSet): pass\n",
+                    "register_snippet(Child)\n",
+                ),
+                "unresolved_call",
+            ),
+        ] {
+            let report = analyze_phase03(&[module("views.py", "views", source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == expected_issue),
+                "{source}: {:?}",
+                report.issues
+            );
+        }
     }
 
     #[test]

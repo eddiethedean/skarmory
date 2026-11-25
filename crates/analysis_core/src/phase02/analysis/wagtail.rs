@@ -7,6 +7,7 @@ pub(super) const BLOCK_METADATA: &str = "wagtail_block_metadata";
 pub(super) const MODEL_OPTION: &str = "wagtail_model_option";
 pub(super) const CALLBACK_PARAMETER: &str = "wagtail_callback_parameter";
 const SETTING_REGISTRATION: &str = "wagtail_setting_registration";
+const SNIPPET_VIEWSET: &str = "wagtail.snippets.views.snippets.SnippetViewSet";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Declaration {
@@ -54,6 +55,47 @@ impl Graph<'_> {
         !self.modules.contains_key("wagtail")
             && !self.modules.contains_key("django")
             && declaration(provider).is_some()
+    }
+
+    pub(super) fn wagtail_plain_snippet_base(&self, provider: &str, subclass: &Definition) -> bool {
+        // Wagtail 7.1 and 7.2 use type and object.__init_subclass__ for
+        // SnippetViewSet. Registration consumes options on a viewset instance.
+        provider == SNIPPET_VIEWSET
+            && !self.modules.contains_key("wagtail")
+            && !self.modules.contains_key("django")
+            && subclass.bases.len() == 1
+            && !subclass.has_class_keywords()
+            && subclass.decorators.is_empty()
+            && subclass.body_coverage_lines.is_empty()
+            && body_without_docstring(subclass).iter().all(|statement| {
+                let StatementKind::Assign {
+                    names,
+                    value: Some(value),
+                    annotation: None,
+                } = &statement.kind
+                else {
+                    return false;
+                };
+                names.iter().all(|name| !name.text.starts_with("__"))
+                    && (is_snippet_literal(value)
+                        || matches!(&value.kind, ExpressionKind::Sequence { items, .. }
+                            if items.iter().all(is_snippet_literal)))
+            })
+    }
+
+    pub(super) fn wagtail_snippet_provider_write(
+        &mut self,
+        scope: ScopeId,
+        receiver: &Expression,
+        before: Location,
+    ) -> bool {
+        matches!(self.probe_identity(scope, receiver, before), Value::Provider(provider)
+            if matches!(provider.as_str(),
+                SNIPPET_VIEWSET
+                    | "wagtail.admin.viewsets.model.ModelViewSet"
+                    | "wagtail.admin.viewsets.base.ViewSet"
+                    | "wagtail.admin.menu.WagtailMenuRegisterable"
+                    | "wagtail.snippets.views.snippets"))
     }
 
     fn wagtail_declaration(&mut self, class: SymbolId) -> Option<(Declaration, ScopeId)> {
@@ -433,6 +475,16 @@ impl Graph<'_> {
             _ => false,
         }
     }
+}
+
+fn is_snippet_literal(value: &Expression) -> bool {
+    matches!(
+        value.kind,
+        ExpressionKind::Text(_)
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::None
+            | ExpressionKind::Scalar(_)
+    )
 }
 
 fn field_panel(provider: &str) -> bool {
