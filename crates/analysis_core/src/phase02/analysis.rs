@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::RangeInclusive;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use skarmory_python::Location;
 use skarmory_python::phase02::{
@@ -24,6 +24,7 @@ mod celery;
 mod comprehension;
 mod django_forms;
 mod django_globals;
+mod django_template_paths;
 mod django_urls;
 mod fastapi;
 mod field_dispatch;
@@ -91,6 +92,8 @@ enum Value {
     Process(Box<Value>),
     Start(Box<Value>),
     Text(String),
+    ProjectPath(PathBuf),
+    ResolveProjectPath(PathBuf),
     Bool(bool),
     Integer(i64),
     None,
@@ -2579,6 +2582,7 @@ impl<'a> Graph<'a> {
                 ModuleMemberAccess::Attribute,
                 depth,
             ),
+            Value::ProjectPath(path) => self.project_path_member(path, name, access),
             Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
                 if self.is_class(class) =>
             {
@@ -3129,6 +3133,7 @@ impl<'a> Graph<'a> {
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
+                    | ExpressionKind::Divide(_)
                     | ExpressionKind::Operands(_)
             )
         {
@@ -3736,6 +3741,12 @@ impl<'a> Graph<'a> {
                         self.django_receiver(scope, arguments, keywords, before, depth),
                     )
                 }
+                Value::Provider(name) if self.phase03 && name == "pathlib.Path" => self
+                    .source_project_path(scope, before, arguments, keywords)
+                    .map_or(Value::Unknown, Value::ProjectPath),
+                Value::ResolveProjectPath(path) if arguments.is_empty() && keywords.is_empty() => {
+                    Value::ProjectPath(path)
+                }
                 Value::Provider(name) if self.phase03 && name == "django.urls.include" => self
                     .django_include(
                         CallArguments {
@@ -3823,7 +3834,26 @@ impl<'a> Graph<'a> {
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
             ExpressionKind::DeferredLambda(_) => Value::DeferredLambda,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
-            ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
+            ExpressionKind::Divide(operands) if self.phase03 => {
+                let [left, right] = operands.as_slice() else {
+                    return Value::Unknown;
+                };
+                let path = recurse(self, left);
+                if let Value::ProjectPath(path) = path {
+                    return self.join_project_path(path, right, (scope, before));
+                }
+                if self.has_namespace_reads(scope)
+                    && (path.may_contain_namespace()
+                        || recurse(self, right).may_contain_namespace())
+                {
+                    Value::OpaqueNamespace
+                } else {
+                    Value::OperatorResult
+                }
+            }
+            ExpressionKind::Addition(operands)
+            | ExpressionKind::Divide(operands)
+            | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
                     && operands
                         .iter()
@@ -5425,6 +5455,10 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
                         }
                     }
+                    Value::Provider(name)
+                        if self.phase03 && name == "pathlib.Path"
+                            && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
+                    Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -5575,6 +5609,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::Addition(values)
+            | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values) => {
                 for item in values {
                     self.walk(scope, item, before);
@@ -6260,6 +6295,7 @@ impl<'a> Graph<'a> {
                 .postponed_annotations;
         match &expr.kind {
             ExpressionKind::Addition(values)
+            | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values)
             | ExpressionKind::Sequence { items: values, .. } => {
                 for reference in values {
@@ -9552,6 +9588,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::FormattedString(values)
             | ExpressionKind::Boolean { values, .. }
             | ExpressionKind::Addition(values)
+            | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),
             ExpressionKind::Comprehension {
                 iterators,
@@ -10348,6 +10385,38 @@ configure()
                 .iter()
                 .any(|row| row.kind == "django_auth_backend")
         );
+    }
+
+    #[test]
+    fn django_settings_paths_require_an_original_file_anchor_and_path_provider() {
+        let source = "from pathlib import Path as FilePath\n\
+                      BASE = FilePath(__file__).resolve().parent\n\
+                      TEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', \
+                                    'DIRS': [BASE / 'pages']}]\n";
+        let settings = module(
+            "shop/settings.py",
+            "shop.settings",
+            "from .satellite import TEMPLATES\n",
+        );
+        let package = module("shop/__init__.py", "shop", "");
+        let sat = module("shop/satellite.py", "shop.satellite", source);
+        let report = analyze_phase03(&[package, settings, sat], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+
+        for replacement in [
+            "__file__ = '/different/site.py'\n",
+            "import pathlib\npathlib.Path.resolve = implementation\n",
+        ] {
+            let source = format!("{replacement}{source}");
+            let sat = module("shop/satellite.py", "shop.satellite", &source);
+            let report = analyze_phase03(&[sat], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call")
+            );
+        }
     }
 
     #[test]

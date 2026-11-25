@@ -419,6 +419,7 @@ impl<'a> Python<'a> {
             | Expr::FormattedString(values)
             | Expr::Boolean { values, .. }
             | Expr::Addition(values)
+            | Expr::Divide(values)
             | Expr::Operands(values) => {
                 for item in values {
                     self.expression(item, bindings);
