@@ -423,7 +423,7 @@ fn field_method(definition: &Definition) -> Option<(&Expression, &str, &str, usi
             matches!(
                 argument.kind,
                 ExpressionKind::Text(_)
-                    | ExpressionKind::Scalar
+                    | ExpressionKind::Scalar(_)
                     | ExpressionKind::Bool(_)
                     | ExpressionKind::None
             )
