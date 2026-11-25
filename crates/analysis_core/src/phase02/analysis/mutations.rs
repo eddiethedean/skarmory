@@ -153,7 +153,13 @@ impl Graph<'_> {
         } else {
             MemberWriteValue::Deleted
         };
-        if !matches!(value, MemberWriteValue::Ambiguous) {
+        // An ordered write to this resolved module slot has a bounded
+        // destination even when its replacement value is opaque. Diagnose
+        // later reads of that value without invalidating earlier captures.
+        let ordered_receiver_write = !conditional
+            && matches!(&receiver, ReceiverKey::Module(module)
+                if is_django_receiver(&format!("{module}.{member}")));
+        if ordered_receiver_write || !matches!(value, MemberWriteValue::Ambiguous) {
             self.mutations.modeled.insert((file, position(at)));
         }
         self.mutations

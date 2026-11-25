@@ -1827,6 +1827,110 @@ fn django_signal_evidence(report: &Value) -> Vec<(&str, &str)> {
 }
 
 #[test]
+fn django_class_receiver_uses_the_binding_at_class_creation() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    django_signal_project(
+        root,
+        r#"from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+class Registered:
+    @staticmethod
+    @receiver(post_save)
+    def run(sender, instance, **kwargs):
+        return live_helper()
+
+def receiver(signal):
+    def decorate(callback):
+        return callback
+    return decorate
+
+class Inert:
+    @staticmethod
+    @receiver(post_save)
+    def run(sender, instance, **kwargs):
+        return unused_helper()
+
+def live_helper():
+    return 1
+
+def unused_helper():
+    return 2
+
+Registered()
+Inert()
+"#,
+    );
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.Registered.run", "certain")]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"inventory.signals.unused_helper"));
+    assert!(!findings(&report, "unused_functions").contains(&"inventory.signals.live_helper"));
+    assert!(
+        findings(&report, "unused_parameters").contains(&"inventory.signals.Inert.run.instance")
+    );
+    assert!(
+        !findings(&report, "unused_parameters")
+            .contains(&"inventory.signals.Registered.run.instance")
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in [
+            "unused_functions",
+            "unused_parameters",
+            "dead_code_evidence",
+            "coverage",
+            "definitions",
+        ] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+}
+
+#[test]
+fn django_captured_receiver_survives_an_opaque_provider_assignment() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let src = r#"import django.dispatch as dispatch
+from django.dispatch import receiver
+from django.db.models.signals import post_save
+captured = receiver
+dispatch.receiver = replacement
+import os
+
+@captured(post_save)
+def registered(sender, instance, **kwargs):
+    return helper()
+
+def helper():
+    return 1
+"#;
+    django_signal_project(root, src);
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.registered", "certain")]
+    );
+    assert!(!findings(&report, "unused_functions").contains(&"inventory.signals.helper"));
+    let second = r#"
+@dispatch.receiver(post_save)
+def opaque(sender, instance, **kwargs):
+    pass
+"#;
+    fs::write(root.join("inventory/signals.py"), format!("{src}{second}")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.registered", "certain")]
+    );
+}
+
+#[test]
 fn django_receiver_decorator_factory_can_be_a_local_identity() {
     let project = tempfile::tempdir().unwrap();
     django_signal_project(

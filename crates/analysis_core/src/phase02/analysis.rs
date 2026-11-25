@@ -936,8 +936,24 @@ impl<'a> Graph<'a> {
                 return LexicalBinding::Missing;
             };
             scope = parent;
-            before = END;
+            if !self.phase03 || !class {
+                before = END;
+            }
         }
+    }
+
+    fn immediately_encloses_class_body(&self, mut scope: ScopeId, outer: ScopeId) -> bool {
+        if !self.phase03 {
+            return false;
+        }
+        while scope != outer {
+            let row = &self.scopes[scope];
+            if !row.owner.is_some_and(|owner| self.is_class(owner)) {
+                return false;
+            }
+            scope = row.parent.expect("class body has an enclosing scope");
+        }
+        true
     }
 
     fn is_class(&self, id: SymbolId) -> bool {
@@ -2726,7 +2742,12 @@ impl<'a> Graph<'a> {
                         return Value::Text(text.to_owned());
                     }
                     let binding_scope = self.symbols[id].scope;
-                    let binding_before = if binding_scope == scope {
+                    let binding_before = if binding_scope == scope
+                        || self.immediately_encloses_class_body(scope, binding_scope)
+                    {
+                        // A class suite runs where it is declared. Unlike a
+                        // deferred function body, it can select the binding
+                        // currently installed by each enclosing suite.
                         before
                     } else {
                         if self.scopes[binding_scope].names[name.as_str()].len() > 1 {
