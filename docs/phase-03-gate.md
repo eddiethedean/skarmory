@@ -129,25 +129,26 @@ HTTP 200. [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/
 
 The mapped Django SDK cases also verify assertions in the pinned shared
 fixture helper. The DRF method-field case checks the inherited getter and
-reads the unused sibling method from the native report's grouped findings. The Django
-view ports cover a source-proven unbound initializer and an unbound decorator.
-The converter and backend ports cover the class that a closed metaclass
-actually returns or modifies. The application fixture traces the called
-converter through both static methods and its returned instance. The configuration replacement suite has thirty ports exercising effective
-Django settings protocols and ordered collection mutations.
+reads the unused sibling method from the native report's grouped findings.
+The Django view ports cover a source-proven unbound initializer and an unbound
+decorator. The converter and backend ports cover the class that a closed
+metaclass returns or modifies. The application fixture traces the called
+converter through both static methods and its returned instance. The
+configuration replacement suite has thirty ports exercising effective Django
+settings protocols and ordered collection mutations.
 
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
-| URL function callbacks and view providers | 47 | 4 |
+| URL function callbacks and view providers | 49 | 2 |
 | Path converter registration and protocol | 60 | 0 |
 | Authentication backend selection and hooks | 70 | 1 |
 | Named settings imports and overrides | 26 | 2 |
 | Model, command, and form hook provenance | 37 | 10 |
 | Management command reachability | 24 | 12 |
-| Python template liveness | 48 | 1 |
+| Python template liveness | 49 | 0 |
 | Form hook evidence after source edits | 2 | 0 |
 | Autoreload callback selection | 29 | 3 |
-| Admin stub context | 5 | 2 |
+| Admin stub context | 6 | 1 |
 
 The Django hook cache ports reuse a cache across the original edits. The separate Django
 converter probes for Skylos's private parser and index hooks exercise
