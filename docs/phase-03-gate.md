@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,253 have port mappings. The reported release
+milestones. Of the required cases, 1,260 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -129,14 +129,18 @@ HTTP 200. [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/
 
 The mapped Django SDK cases also verify assertions in the pinned shared
 fixture helper. The DRF method-field case checks the inherited getter and
-reads the unused sibling method from the native report's grouped findings. The configuration replacement suite has thirty ports exercising effective
+reads the unused sibling method from the native report's grouped findings. The Django
+view ports cover a source-proven unbound initializer and an unbound decorator.
+The converter and backend ports cover the class that a closed metaclass
+actually returns or modifies. The application fixture traces the called
+converter through both static methods and its returned instance. The configuration replacement suite has thirty ports exercising effective
 Django settings protocols and ordered collection mutations.
 
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
-| URL function callbacks and view providers | 43 | 8 |
-| Path converter registration and protocol | 59 | 1 |
-| Authentication backend selection and hooks | 69 | 2 |
+| URL function callbacks and view providers | 47 | 4 |
+| Path converter registration and protocol | 60 | 0 |
+| Authentication backend selection and hooks | 70 | 1 |
 | Named settings imports and overrides | 26 | 2 |
 | Model, command, and form hook provenance | 37 | 10 |
 | Management command reachability | 24 | 12 |
