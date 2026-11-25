@@ -12,6 +12,7 @@ _ROOT_KINDS = {
     "django_command",
     "django_path_converter",
     "django_registration",
+    "fastapi_asgi_application",
     "fastapi_dependency",
     "fastapi_exception_handler",
     "fastapi_lifecycle",
