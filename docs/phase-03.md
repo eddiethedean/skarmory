@@ -287,6 +287,13 @@ initializer preserve incomplete coverage. The optional
 declaration locations separately from activation evidence.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 
+FastMCP records possible-use evidence for tool decorators applied through a
+resolved server and a bounded project wrapper. Plain identity, caching and
+forwarding decorators retain their own execution evidence. Duplicate tool
+names use the first reachable registration when declaration order is known.
+Unresolved decorator effects and ambiguous registration order leave coverage
+incomplete.
+
 Django URL discovery follows a reachable, recognized launcher. An explicit
 management `--settings` option takes precedence over the launcher's environment.
 The environment starts with the scan process's `DJANGO_SETTINGS_MODULE`. A
