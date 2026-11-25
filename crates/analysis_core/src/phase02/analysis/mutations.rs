@@ -1113,6 +1113,11 @@ impl Graph<'_> {
         original: Option<ScopeId>,
         (scope, at): (ScopeId, Location),
     ) -> Option<MemberWriteValue> {
+        let reached = || {
+            writes
+                .iter()
+                .filter(|write| self.before_flask_initializer_failure(write.file, write.at))
+        };
         let reader = self.scopes[scope].file;
         let mut before = at;
         let mut deferred = false;
@@ -1128,26 +1133,20 @@ impl Graph<'_> {
         // Its enclosing module-level declaration provides a lower bound.
         let before = if deferred { before } else { at };
         if deferred
-            && writes
-                .iter()
-                .any(|write| write.file == reader && position(write.at) >= position(before))
+            && reached().any(|write| write.file == reader && position(write.at) >= position(before))
         {
             return Some(MemberWriteValue::Ambiguous);
         }
-        let local = writes
-            .iter()
+        let local = reached()
             .rev()
             .find(|write| write.file == reader && position(write.at) < position(before));
-        let unordered = writes
-            .iter()
-            .any(|write| write.file != reader && Some(write.file) != original);
+        let unordered = reached().any(|write| write.file != reader && Some(write.file) != original);
         if unordered {
             return Some(MemberWriteValue::Ambiguous);
         }
         local
             .or_else(|| {
-                writes
-                    .iter()
+                reached()
                     .rev()
                     .find(|write| Some(write.file) == original && write.file != reader)
             })

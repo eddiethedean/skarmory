@@ -1607,6 +1607,86 @@ fn flask_opaque_hook_can_change_a_receiver_referenced_by_an_escaped_function() {
 }
 
 #[test]
+fn flask_failed_class_patches_leave_independent_receivers_unchanged() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let providers = root.join("providers.py");
+    let manager = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    fs::write(
+        root.join("active.py"),
+        format!("{manager}@login.user_loader\ndef active(user_id): return user_id\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("consumer.py"),
+        "from providers import login\n@login.user_loader\ndef deferred(user_id): return user_id\n",
+    )
+    .unwrap();
+
+    for failed in [
+        "LoginManager.user_loader = replacement",
+        "LoginManager.__new__ = replacement",
+        "stop = replacement\nLoginManager.user_loader = lambda self: self",
+    ] {
+        fs::write(&providers, format!("{manager}{failed}\n")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        let errors = report["analysis_errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1, "{failed}\n{report}");
+        assert_eq!(errors[0]["file"], "consumer.py", "{failed}\n{report}");
+        assert_eq!(errors[0]["kind"], "unresolved_import", "{failed}\n{report}");
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol["qualified_name"] == "active.active"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "flask_login_registration" && edge["certainty"] == "certain"
+                    })),
+            "{failed}\n{report}"
+        );
+        assert!(
+            !symbols
+                .iter()
+                .any(|symbol| symbol["qualified_name"] == "consumer.deferred"),
+            "{failed}\n{report}"
+        );
+        let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(
+        &providers,
+        format!("{manager}def replacement(self, callback): return callback\nLoginManager.user_loader = replacement\n"),
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        !report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_import" }),
+        "{report}"
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "active.active"
+                    && symbol["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "flask_login_registration")
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn flask_failed_provider_import_cannot_supply_a_callback() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
