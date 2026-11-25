@@ -21,6 +21,7 @@ from phase03_dependencies import (
 )
 from phase03_engine import CASE as ENGINE_CASE
 from phase03_engine import engine_case
+from phase03_framework import framework_report, patch_framework_analysis
 
 PORT = "tests/conformance/run_phase03_seed.py"
 BENCHMARK_SOURCE = "benchmarks/dead_code/manifest.json"
@@ -102,7 +103,8 @@ def scan_candidate(sdk_python, path, options):
     return subprocess.run(
         [str(sdk_python), "-I", "-c", SCAN],
         input=json.dumps(json_value([path, {**options, "profile": "skylos-0.3"}])),
-        cwd=path, env=environment(), text=True, capture_output=True, timeout=60,
+        cwd=Path(path) if Path(path).is_dir() else Path(path).parent,
+        env=environment(), text=True, capture_output=True, timeout=60,
         check=True,
     ).stdout
 
@@ -286,6 +288,7 @@ def pytest_worker(args):
             self.trace_disables = set()
             self.trace_rejections = set()
             self.unittest_evidence = set()
+            self.framework_evidence = set()
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
@@ -321,6 +324,9 @@ def pytest_worker(args):
                     for issue in report.get("runtime_evidence_issues", [])
                 ):
                     self.trace_rejections.add(key)
+                if "native-framework-evidence" in case["prerequisites"]:
+                    self.framework_evidence.add(key)
+                    return json.dumps(framework_report(report))
                 if "native-unittest-evidence" in case["prerequisites"]:
                     from phase03_framework import unittest_report
 
@@ -352,6 +358,8 @@ def pytest_worker(args):
                         else:
                             cli = WorkflowCaseCli(args.artifact, item.funcargs["tmp_path"], key)
                             patch.setattr(item.module.cli, "main", cli.run)
+                    elif "native-framework-evidence" in case["prerequisites"]:
+                        patch_framework_analysis(patch, item.module, analyze)
                     elif "shared-framework-fixture" in case["prerequisites"]:
                         from test import web_framework_fixtures
 
@@ -428,6 +436,8 @@ def pytest_worker(args):
                 proven = key in capture.scans
             elif required == UNUSED_DEPENDENCY_PREREQUISITE:
                 proven = key in capture.scans
+            elif required == "native-framework-evidence":
+                proven = key in capture.framework_evidence
             elif required == "native-unittest-evidence":
                 proven = key in capture.unittest_evidence
             elif required == "grep-verification":
