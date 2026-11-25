@@ -14589,9 +14589,8 @@ assertions = ["test/test_django_hook_provenance.py:126", "test/web_framework_fix
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct) (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_model_form_selected_model_field_keeps_clean_hook"
@@ -14652,9 +14651,8 @@ assertions = ["test/test_django_hook_provenance.py:224", "test/web_framework_fix
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct) (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_model_form_selection_preserves_declared_excluded_fields[\"__all__\"]"
