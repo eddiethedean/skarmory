@@ -27,6 +27,7 @@ mod celery;
 mod celery_routes;
 mod class_parameter_calls;
 mod comprehension;
+mod django_choices;
 mod django_forms;
 mod django_globals;
 mod django_middleware;
@@ -7038,9 +7039,10 @@ impl<'a> Graph<'a> {
                         }
                     }
                     let mut valid_bases = true;
-                    let literal_string_enum = self.phase03
+                    let literal_enum = self.phase03
                         && definition.kind == DefinitionKind::Class
-                        && self.literal_string_enum(target);
+                        && (self.literal_string_enum(target)
+                            || self.record_django_choice_declaration(target));
                     for base in &definition.bases {
                         self.walk(scope, base, at);
                         let value = self.class_base(scope, base, at, 0);
@@ -7048,7 +7050,7 @@ impl<'a> Graph<'a> {
                         if let Value::Callable(Invocation { target: id, .. }) = value {
                             self.edge(scope, id, "base_class", "certain");
                         }
-                        if !literal_string_enum {
+                        if !literal_enum {
                             self.subclass_hook(scope, value, base.at, definition);
                         }
                     }
@@ -11311,7 +11313,9 @@ fn framework_managed_base(name: &str) -> bool {
 }
 
 fn is_bounded_declaration_provider(name: &str) -> bool {
-    wagtail::is_snippet_base_provider(name) || django_forms::is_declaration_provider(name)
+    wagtail::is_snippet_base_provider(name)
+        || django_forms::is_declaration_provider(name)
+        || django_choices::is_declaration_provider(name)
 }
 
 fn is_django_runpython(name: &str) -> bool {
@@ -12029,6 +12033,94 @@ configure()
             let report = analyze_phase03(&[module("app.py", "app", source)], &[]);
             assert!(
                 report.issues.iter().any(|row| row.kind == issue),
+                "{source}: {:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn django_literal_choices_are_read_at_declaration_and_by_adjacent_model_field() {
+        let report = analyze_phase03(
+            &[module(
+                "models.py",
+                "models",
+                concat!(
+                    "from django.db import models\n",
+                    "class Priority(models.IntegerChoices):\n",
+                    "    LOW = 1, 'Low'\n",
+                    "    HIGH = 3, 'High'\n",
+                    "class Product(models.Model):\n",
+                    "    class Themes(models.TextChoices):\n",
+                    "        DARK = 'dark', 'Dark'\n",
+                    "        LIGHT = 'light', 'Light'\n",
+                    "    theme = models.CharField(choices=Themes.choices, max_length=20)\n",
+                    "    def has_changed(self): return False\n",
+                ),
+            )],
+            &[],
+        );
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for name in [
+            "models.Priority.LOW",
+            "models.Priority.HIGH",
+            "models.Product.Themes.DARK",
+            "models.Product.Themes.LIGHT",
+        ] {
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| { row.kind == "django_choice_member" && row.full_name == name })
+            );
+        }
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|row| row.full_name == "models.Product.has_changed")
+        );
+    }
+
+    #[test]
+    fn django_choices_keep_dynamic_class_creation_and_reads_incomplete() {
+        let cases = [
+            (
+                "class Options(TextChoices):\n    A = 'x', 'X'\n    B = 'x', 'Other'\n",
+                "unresolved_subclass_hook",
+            ),
+            (
+                "class Options(TextChoices):\n    A = label(), 'X'\n",
+                "unresolved_subclass_hook",
+            ),
+            (
+                concat!(
+                    "class Product(Model):\n",
+                    "    class Options(TextChoices):\n",
+                    "        A = 'x', 'X'\n",
+                    "    setattr(Options, 'choices', ())\n",
+                    "    field = CharField(choices=Options.choices)\n",
+                ),
+                "unresolved_constructor",
+            ),
+            (
+                concat!(
+                    "from django.db.models.base import ModelBase\n",
+                    "class Meta(ModelBase): pass\n",
+                    "class Product(Model, metaclass=Meta):\n",
+                    "    class Options(TextChoices):\n",
+                    "        A = 'x', 'X'\n",
+                    "    field = CharField(choices=Options.choices)\n",
+                ),
+                "unresolved_constructor",
+            ),
+        ];
+        for (body, kind) in cases {
+            let source =
+                format!("from django.db.models import Model, CharField, TextChoices\n{body}");
+            let report = analyze_phase03(&[module("models.py", "models", &source)], &[]);
+            assert!(
+                report.issues.iter().any(|issue| issue.kind == kind),
                 "{source}: {:?}",
                 report.issues
             );
