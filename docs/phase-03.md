@@ -238,7 +238,9 @@ aliases, and route and router registration options. App-wide dependencies apply
 to selected API routes. The analyzer also resolves selected HTTP middleware and
 exception handlers and async context-manager lifespans for active apps and
 included routers. A custom app lifespan supersedes that app's startup and
-shutdown hooks. FastAPI versions before 0.137 copy routes
+shutdown hooks. Constructor startup and shutdown callbacks on included routers
+remain eligible when a merged default lifespan invokes them. FastAPI versions
+before 0.137 copy routes
 at inclusion. Newer versions retain the router and can expose routes added
 later. The analyzer reports incomplete coverage when either model can select
 different routes or postponed dependencies, or when ordering across scopes
@@ -317,8 +319,10 @@ declarations. In a conventional unselected plugin module, a bounded hook
 signature and a resolved pytest import can contribute possible-use evidence.
 pytest autouse fixtures also apply to unittest cases collected by pytest. A reachable eager Pydantic
 model declaration can execute its core-schema hook during class creation.
-A resolved model dump can invoke the selected Pydantic serializers, including
-a bounded wrapping serializer that delegates through its handler argument.
+A resolved model dump can invoke the selected Pydantic serializers and computed
+fields, including a bounded wrapping serializer that delegates through its
+handler argument. A definite instance access also reaches the selected
+computed field.
 These are bounded models under
 [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
