@@ -9,16 +9,21 @@ const REPLACEMENT: &str = "print('ready')\n";
 pub(super) fn project() -> (tempfile::TempDir, Options, Scan, Candidate) {
     let project = tempfile::tempdir().unwrap();
     fs::write(project.path().join(TARGET), ORIGINAL).unwrap();
+    let (options, before, candidate) = project_scan(project.path());
+    (project, options, before, candidate)
+}
+
+fn project_scan(root: &Path) -> (Options, Scan, Candidate) {
     let options = Options {
         profile: Profile::SkylosPhase03,
         trace_file: EvidenceInput::Disabled,
         coverage_file: EvidenceInput::Disabled,
         ..Options::default()
     };
-    let before = Scan::read(project.path(), &options).unwrap();
+    let before = Scan::read(root, &options).unwrap();
     assert!(before.report.is_complete());
     let candidate = before
-        .candidates(project.path())
+        .candidates(root)
         .into_iter()
         .find(|candidate| {
             candidate.task.file == TARGET
@@ -26,7 +31,7 @@ pub(super) fn project() -> (tempfile::TempDir, Options, Scan, Candidate) {
                 && candidate.task.name == "math"
         })
         .unwrap();
-    (project, options, before, candidate)
+    (options, before, candidate)
 }
 
 pub(super) fn apply_and_check<'a>(
@@ -129,4 +134,68 @@ fn source_changed_after_comparison_preserves_passed_rescan_and_user_changes() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "requires the pinned Skylos cleanup fixture and pytest environment"]
+fn pinned_source_removed_after_comparison_preserves_receipts() {
+    let root = PathBuf::from(
+        std::env::var_os("SKARMORY_PHASE03_CLEANUP_FIXTURE").expect("pinned cleanup fixture"),
+    );
+    let check = std::env::var("SKARMORY_PHASE03_CLEANUP_CHECK").expect("pinned pytest command");
+    let target = root.join(TARGET);
+    assert_eq!(fs::read(&target).unwrap(), b"import math\nanswer = 42\n");
+    assert_eq!(
+        fs::read(root.join("test_app.py")).unwrap(),
+        b"import app\n\ndef test_answer():\n    assert app.answer == 42\n"
+    );
+
+    let (options, before, candidate) = project_scan(&root);
+    let edit = candidate
+        .edit
+        .as_ref()
+        .unwrap()
+        .load(&root, &candidate.task)
+        .unwrap();
+    assert_eq!(edit.replacement, "answer = 42\n");
+    execution::replace(
+        &root,
+        Path::new(TARGET),
+        edit.source.as_bytes(),
+        edit.replacement.as_bytes(),
+    )
+    .unwrap();
+    let tests = Check::parse(&check).unwrap().run(&root);
+    assert_eq!(tests.status, "passed", "{:?}", tests.error);
+    assert!(tests.observed);
+    assert_eq!(tests.evidence, "pytest_junit");
+    assert_eq!(serde_json::to_value(&tests).unwrap()["count"], 1);
+    let rescan = compare_rescan(
+        &root,
+        &before,
+        &candidate,
+        &edit,
+        Scan::read(&root, &options),
+    );
+    assert_eq!(rescan.status, "passed", "{:?}", rescan.error);
+
+    // Match the reference mutation boundary: remove the source after comparing
+    // the rescan with the baseline, then finalize the execution receipt.
+    fs::remove_file(&target).unwrap();
+    let receipt = finish_execution(&root, &candidate, &edit, tests, rescan);
+    assert_eq!(receipt.status, "incomplete");
+    assert_eq!(receipt.tests.status, "passed");
+    assert_eq!(receipt.rescan.status, "passed");
+    assert!(!receipt.rolled_back);
+    assert_eq!(
+        fs::symlink_metadata(target).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(
+        receipt
+            .limitations
+            .last()
+            .unwrap()
+            .contains("source changed")
+    );
 }

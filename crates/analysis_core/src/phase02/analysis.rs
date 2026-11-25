@@ -4561,6 +4561,15 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "math.sqrt"
+                            && keywords.is_empty()
+                            && matches!(arguments.as_slice(), [argument]
+                                if self.identity(scope, argument, before, 0).is_builtin_scalar()) =>
+                    {
+                        // Exact built-in scalars cannot call user-defined numeric conversions.
+                    }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -9035,6 +9044,40 @@ async def unused():
     }
 
     #[test]
+    fn phase03_math_sqrt_requires_a_bounded_scalar_input() {
+        let scalar = [module(
+            "app.py",
+            "app",
+            "from math import sqrt as root\nRESULT = root(16)\n",
+        )];
+        let report = analyze_phase03(&scalar, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Variable), ["RESULT"]);
+
+        let custom = [module(
+            "app.py",
+            "app",
+            r#"import math
+
+class Custom:
+    def __float__(self):
+        return 16.0
+
+math.sqrt(Custom())
+"#,
+        )];
+        let report = analyze_phase03(&custom, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call"),
+            "{:?}",
+            report.issues
+        );
+    }
+
+    #[test]
     fn scalar_local_namespace_equality_rules_out_unrelated_hooks() {
         for (expression, expected_issues) in [
             ("collect() == {'enabled': True}", 0),
@@ -10094,6 +10137,31 @@ print(Status.default)
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "child_urls.Child.get" && entry.kind == "framework_lifecycle"
         }));
+    }
+
+    #[test]
+    fn phase03_direct_django_settings_assignment_overrides_the_default() {
+        let files = [
+            module("config.py", "config", "DEBUG = True\nunused_value = 1\n"),
+            module("dormant.py", "dormant", "DEBUG = False\n"),
+            module(
+                "wsgi.py",
+                "wsgi",
+                "import os as environment\nimport django\nenvironment.environ.setdefault('DJANGO_SETTINGS_MODULE', 'dormant')\nenvironment.environ['DJANGO_SETTINGS_MODULE'] = 'config'\ndjango.setup()\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let unused: BTreeSet<_> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.category == Category::Variable)
+            .map(|finding| finding.full_name.as_str())
+            .collect();
+        assert_eq!(
+            unused,
+            BTreeSet::from(["config.unused_value", "dormant.DEBUG"])
+        );
     }
 
     #[test]
