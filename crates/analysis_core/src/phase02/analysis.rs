@@ -11613,6 +11613,76 @@ configure()
     }
 
     #[test]
+    fn django_middleware_preserves_request_metadata_only_after_closed_dispatch() {
+        let settings = r#"INSTALLED_APPS = ['shop']
+SECRET_KEY = 'fixture'
+ROOT_URLCONF = 'shop.urls'
+MIDDLEWARE = ['shop.middleware.Active']
+STORAGES = {'default': {'BACKEND': 'shop.storage.Media'}}
+"#;
+        let middleware = r#"def matched_path(request):
+    path = getattr(request, 'path_info', None) or getattr(request, 'path', '')
+    if not path:
+        return None
+    return path.rstrip('/') or '/'
+
+class Active:
+    def __init__(self, next_handler):
+        self.next_handler = next_handler
+
+    def __call__(self, request):
+        response = self.next_handler(request)
+        if route := matched_path(request):
+            request.META = getattr(request, 'META', {})
+            request.META['app.route'] = route
+        return response
+"#;
+        for (routes, complete) in [
+            ("urlpatterns = []\n", true),
+            (
+                "urlpatterns = []\nhandler404 = 'shop.handlers.custom_not_found'\n",
+                false,
+            ),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("shop/__init__.py", "shop", ""),
+                    module("shop/settings.py", "shop.settings", settings),
+                    module("shop/urls.py", "shop.urls", routes),
+                    module("shop/middleware.py", "shop.middleware", middleware),
+                    module(
+                        "shop/storage.py",
+                        "shop.storage",
+                        "class Media:\n    def save(self, name, content): return name\n",
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                report.issues.is_empty(),
+                complete,
+                "{routes}: {:?}",
+                report.issues
+            );
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name == "shop.middleware.matched_path"
+                        && row.kind == "direct_call"),
+                complete
+            );
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name == "shop.storage.Media.save"
+                        && row.kind == "django_storage_backend")
+            );
+        }
+    }
+
+    #[test]
     fn django_settings_keeps_source_imports_in_finite_initializer_branches() {
         for (initializer, expected) in [
             (

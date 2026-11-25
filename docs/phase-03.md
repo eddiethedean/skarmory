@@ -407,6 +407,9 @@ and unresolved mutations retain their coverage diagnostics. Selected Django
 middleware with a plain constructor and a request method forwarding the
 framework continuation contributes possible-use evidence. Middleware with
 opaque constructor or request behavior retains an incomplete dispatch diagnostic.
+A single selected middleware around an empty, source-resolved URL table can
+normalize the built-in request path and record it under a literal metadata key
+when the default error handlers and request setup remain effective.
 
 The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
 module initialization. It follows literal formatter and filter declarations,
