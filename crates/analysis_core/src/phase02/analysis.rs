@@ -12970,6 +12970,24 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     }
 
     #[test]
+    fn phase03_shadowed_django_reloader_stops_at_missing_builtin_attribute() {
+        let result = analyze_phase03(
+            &[
+                module("django/__init__.py", "django", ""),
+                module("django/utils.py", "django.utils", "autoreload = object()\n"),
+                module(
+                    "app.py",
+                    "app",
+                    "from django.utils import autoreload\ndef callback():\n    return 1\n\nautoreload.run_with_reloader(callback())\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["callback"]);
+    }
+
+    #[test]
     fn phase03_reports_unresolved_django_installation() {
         let settings = module(
             "settings.py",
