@@ -35,6 +35,12 @@ struct DjangoSignalCallback {
     receiver: Option<SymbolId>,
 }
 
+#[derive(Default)]
+pub(super) struct DjangoConverter {
+    inputs: BTreeMap<SymbolId, Vec<(ScopeId, Option<SymbolId>)>>,
+    pub(super) string_calls: Vec<ParameterCall>,
+}
+
 pub(super) fn is_django_signal_edge(kind: &str) -> bool {
     matches!(kind, "django_signal" | "django_signal_unknown_loading")
 }
@@ -631,6 +637,24 @@ impl Graph<'_> {
                 Some(Value::Callable(invocation))
                     if self.bounded_framework_function(invocation.target) =>
                 {
+                    let input = if *name == "to_python"
+                        && self.receiver_parameter(invocation.target).is_some()
+                        && let Binding::Definition(definition, body) =
+                            self.symbols[invocation.target].binding
+                        && definition.simple_positional_parameters
+                        && let [_, value] = definition.parameters.as_slice()
+                    {
+                        self.by_location
+                            .get(&(body, value.at.line, value.at.column))
+                            .copied()
+                    } else {
+                        None
+                    };
+                    self.django_converter
+                        .inputs
+                        .entry(invocation.target)
+                        .or_default()
+                        .push((scope, input));
                     let invocation = if self.receiver_parameter(invocation.target).is_some() {
                         invocation.bind_receiver(Receiver::Bound(class))
                     } else {
@@ -655,6 +679,94 @@ impl Graph<'_> {
         {
             self.edge(scope, target, "django_converter_regex", certainty);
         }
+    }
+
+    pub(super) fn report_converter_string_calls(&mut self, reach: &Reachability) {
+        let mut proved = BTreeMap::new();
+        for call in &self.django_converter.string_calls {
+            if reach.scopes.contains(&call.scope)
+                && !self.converter_string_parameter(call.parameter, reach, &mut proved, 0)
+            {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_call",
+                        &self.files[self.scopes[call.scope].file].path,
+                        "call target is outside the bounded model",
+                    )
+                    .at(call.at),
+                );
+            }
+        }
+    }
+
+    fn converter_string_parameter(
+        &self,
+        parameter: SymbolId,
+        reach: &Reachability,
+        proved: &mut BTreeMap<SymbolId, bool>,
+        depth: usize,
+    ) -> bool {
+        if depth >= MAX_BINDING_CHAIN {
+            return false;
+        }
+        if let Some(&result) = proved.get(&parameter) {
+            return result;
+        }
+        // Recursion with no established input is outside the bounded proof.
+        proved.insert(parameter, false);
+        let symbol = &self.symbols[parameter];
+        let owner = self.scopes[symbol.scope]
+            .owner
+            .expect("parameters belong to a definition");
+        let kinds = reach
+            .evidence
+            .range((owner, "", "")..)
+            .take_while(|&&(target, _, _)| target == owner)
+            .map(|&(_, kind, _)| kind)
+            .filter(|kind| !matches!(*kind, "type_reference" | "generator_creation"))
+            .collect::<BTreeSet<_>>();
+        let result = !kinds.is_empty()
+            && kinds.into_iter().all(|kind| match kind {
+                "django_path_converter" => {
+                    let mut candidates = self
+                        .django_converter
+                        .inputs
+                        .get(&owner)
+                        .into_iter()
+                        .flatten()
+                        .filter(|(scope, _)| reach.scopes.contains(scope))
+                        .peekable();
+                    // URL matching supplies a regex capture as a Python str.
+                    // The same body can also be registered for to_url.
+                    candidates.peek().is_some()
+                        && candidates.all(|(_, input)| *input == Some(parameter))
+                }
+                "direct_call" => {
+                    let mut callers = self
+                        .direct_arguments
+                        .get(&owner)
+                        .into_iter()
+                        .flatten()
+                        .filter(|call| reach.scopes.contains(&call.caller))
+                        .peekable();
+                    callers.peek().is_some()
+                        && callers.all(|call| {
+                            call.forwarded
+                                .get(&symbol.name.text)
+                                .is_some_and(|&source| {
+                                    self.converter_string_parameter(
+                                        source,
+                                        reach,
+                                        proved,
+                                        depth + 1,
+                                    )
+                                })
+                        })
+                }
+                _ => false,
+            });
+        proved.insert(parameter, result);
+        result
     }
 
     fn bounded_framework_function(&mut self, target: SymbolId) -> bool {

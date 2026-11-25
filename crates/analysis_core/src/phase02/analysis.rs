@@ -316,6 +316,7 @@ struct DirectArguments {
     caller: ScopeId,
     at: Location,
     values: BTreeMap<String, Value>,
+    forwarded: BTreeMap<String, SymbolId>,
 }
 
 struct CallArguments<'a> {
@@ -486,6 +487,7 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_converter: frameworks::DjangoConverter::default(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_registration_issues: Vec::new(),
@@ -647,6 +649,7 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_converter: frameworks::DjangoConverter,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_registration_issues: Vec<(Object, Issue)>,
@@ -4810,17 +4813,28 @@ impl<'a> Graph<'a> {
                     }
                     _ => {
                         if self.phase03
+                            && !self.probing_identity
+                            && arguments.is_empty()
+                            && keywords.is_empty()
+                            && let ExpressionKind::Member(base, name) = &function.kind
+                            && name == "lower"
+                            && let Some(parameter) = self.parameter_binding(scope, base, before)
+                        {
+                            self.django_converter.string_calls.push(ParameterCall {
+                                scope,
+                                parameter,
+                                at: expr.at,
+                            });
+                            return;
+                        }
+                        if self.phase03
                             && self.record_flask_parameter_hook(
                                 scope, function, arguments, keywords, before, expr.at,
                             )
                         {
                             return;
                         }
-                        let parameter = match &function.kind {
-                            ExpressionKind::Name(name) => self.lexical(scope, name, before),
-                            _ => None,
-                        }
-                        .filter(|&id| matches!(self.symbols[id].binding, Binding::Parameter));
+                        let parameter = self.parameter_binding(scope, function, before);
                         if let Some(parameter) = parameter {
                             self.parameter_calls.push(ParameterCall {
                                 scope,
@@ -5060,11 +5074,51 @@ impl<'a> Graph<'a> {
         keywords: &[(String, Expression)],
     ) {
         if let Some(values) = self.call_argument_values(caller, callee, before, args, keywords) {
+            let mut forwarded = BTreeMap::new();
+            if self.phase03
+                && let Binding::Definition(definition, _) = self.symbols[callee].binding
+                && args.len() <= definition.parameters.len()
+                && values.len() == args.len() + keywords.len()
+            {
+                for (parameter, argument) in definition
+                    .parameters
+                    .iter()
+                    .zip(args)
+                    .map(|(parameter, argument)| (&parameter.text, argument))
+                    .chain(
+                        keywords
+                            .iter()
+                            .map(|(parameter, argument)| (parameter, argument)),
+                    )
+                {
+                    if let Some(source) = self.parameter_binding(caller, argument, before) {
+                        forwarded.insert(parameter.clone(), source);
+                    }
+                }
+            }
             self.direct_arguments
                 .entry(callee)
                 .or_default()
-                .push(DirectArguments { caller, at, values });
+                .push(DirectArguments {
+                    caller,
+                    at,
+                    values,
+                    forwarded,
+                });
         }
+    }
+
+    fn parameter_binding(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> Option<SymbolId> {
+        let ExpressionKind::Name(name) = &expression.kind else {
+            return None;
+        };
+        self.lexical(scope, name, before)
+            .filter(|&id| matches!(self.symbols[id].binding, Binding::Parameter))
     }
 
     fn call_argument_values(
@@ -5185,6 +5239,7 @@ impl<'a> Graph<'a> {
                     caller: scope,
                     at,
                     values,
+                    forwarded: BTreeMap::new(),
                 });
         }
         self.activate_callback(scope, target, "executor_submission", at);
@@ -7962,6 +8017,7 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.report_converter_string_calls(&reach);
             self.report_flask_parameter_hooks(&reach);
         }
         self.issues.extend(

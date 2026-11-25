@@ -1786,7 +1786,7 @@ class Child(Converter):
     pass
 
 def parse(value):
-    return value
+    return value.lower()
 
 def install():
     register_converter(Child, 'custom')
@@ -1842,6 +1842,24 @@ inactive_instance = Inactive()
         "unused_variables",
     ] {
         assert_eq!(clean[field], active[field], "{field}");
+    }
+
+    for unknown_caller in ["parse(123)", "instance.to_python(123)"] {
+        fs::write(&path, format!("{src}\ninstall()\n{unknown_caller}\n")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| {
+                    error["kind"] == "unresolved_call"
+                        && error["path"] == "converters.py"
+                        && error["line"] == 14
+                }),
+            "{report}"
+        );
     }
 }
 
