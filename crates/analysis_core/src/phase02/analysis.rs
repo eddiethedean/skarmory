@@ -5112,7 +5112,9 @@ impl<'a> Graph<'a> {
                     Value::Method(object, ObjectKind::CeleryApp, method)
                         if self.phase03 && method == "send_task" =>
                     {
-                        self.record_celery_route_load(object, scope, expr.at);
+                        if keywords.is_empty() && matches!(arguments.as_slice(), [task] if matches!(task.kind, ExpressionKind::Text(_))) {
+                            self.record_celery_route_load(object, scope, expr.at);
+                        }
                         self.scope_issue(scope, expr.at, "unresolved_call", "Celery task submission is outside the bounded model");
                     }
                     Value::Method(parent, ObjectKind::App, method)
@@ -10718,6 +10720,33 @@ configure()
                 .iter()
                 .any(|edge| edge.full_name == "routers.route" && edge.certainty == "possible")
         );
+    }
+
+    #[test]
+    fn celery_early_submission_resolves_module_names_before_later_rebinding() {
+        let files = [module(
+            "app.py",
+            "app",
+            concat!(
+                "from celery import Celery\n",
+                "def original(name, args, kwargs, options, task=None): pass\n",
+                "def late(name, args, kwargs, options, task=None): pass\n",
+                "selected = original\n",
+                "app = Celery('shop', task_routes=('app:selected',))\n",
+                "app.send_task('jobs.run')\n",
+                "selected = late\n",
+                "app.conf.task_routes = ()\n",
+            ),
+        )];
+        let result = analyze_phase03(&files, &[]);
+        let routers: Vec<_> = result
+            .evidence
+            .iter()
+            .filter_map(|edge| {
+                (edge.kind == celery_routes::ROUTER).then_some(edge.full_name.as_str())
+            })
+            .collect();
+        assert_eq!(routers, ["app.original"]);
     }
 
     #[test]

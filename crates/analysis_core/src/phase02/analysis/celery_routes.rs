@@ -360,10 +360,15 @@ impl Graph<'_> {
                     && let Some(&file) = self.modules.get(module)
                 {
                     resolved = Some(file);
+                    let before = if file == self.scopes[scope].file {
+                        at
+                    } else {
+                        END
+                    };
                     self.module_member_at(
                         module,
                         member,
-                        END,
+                        before,
                         (scope, at),
                         ModuleMemberAccess::FromImport,
                         0,
