@@ -1029,6 +1029,66 @@ def app_after(): return {}
 }
 
 #[test]
+fn flask_opaque_consumers_invalidate_only_exposed_registration_providers() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("provider.py"),
+        "from flask_login import LoginManager\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    for argument in [
+        "login",
+        "{'manager': login}",
+        "manager=login",
+        "login.user_loader",
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!(
+                r#"from extension import customize
+from flask_login import LoginManager
+from provider import login
+
+other = LoginManager()
+
+@login.user_loader
+def before(user_id): return user_id
+
+customize({argument})
+
+@login.user_loader
+def after(user_id): return user_id
+
+@other.user_loader
+def independent(user_id): return user_id
+"#,
+            ),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        let registrations: Vec<_> = report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|symbol| {
+                symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "flask_login_registration")
+            })
+            .map(|symbol| symbol["qualified_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(registrations, ["app.before", "app.independent"], "{report}");
+        let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+}
+
+#[test]
 fn flask_constructor_rebinding_does_not_change_the_earlier_import_capture() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
