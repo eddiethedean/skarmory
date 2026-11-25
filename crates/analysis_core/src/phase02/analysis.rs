@@ -68,6 +68,7 @@ enum Value {
     CeleryBackend(Object),
     DeferredComprehension,
     ComprehensionResult,
+    DeferredLambda,
     Executor,
     Submit,
     Process(Box<Value>),
@@ -3508,6 +3509,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
+            ExpressionKind::DeferredLambda(_) => Value::DeferredLambda,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
@@ -3858,8 +3860,8 @@ impl<'a> Graph<'a> {
                 );
                 return;
             }
-            Value::DeferredComprehension | Value::ComprehensionResult => {
-                self.unresolved_comprehension_use(scope, at, &value);
+            Value::DeferredComprehension | Value::ComprehensionResult | Value::DeferredLambda => {
+                self.report_unmodeled_deferred_value(scope, at, &value);
                 return;
             }
             Value::LocalNamespace(..) | Value::NamespaceCopy(_) => {
@@ -4301,7 +4303,13 @@ impl<'a> Graph<'a> {
                         } else {
                             Value::ComprehensionResult
                         };
-                        self.unresolved_comprehension_use(scope, expr.at, &value);
+                        self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                    } else if matches!(expr.kind, ExpressionKind::DeferredLambda(_)) {
+                        self.report_unmodeled_deferred_value(
+                            scope,
+                            expr.at,
+                            &Value::DeferredLambda,
+                        );
                     }
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
@@ -4311,6 +4319,9 @@ impl<'a> Graph<'a> {
                     Value::ConstantFunction => {}
                     Value::NullaryConstantFunction
                         if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::DeferredLambda => {
+                        self.report_unmodeled_deferred_value(scope, expr.at, &callee)
+                    }
                     Value::PydanticDump(class) => self.record_pydantic_dump(
                         class,
                         scope,
@@ -5146,13 +5157,14 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Name(_) | ExpressionKind::IterationVariable(_) => {
                 let value = self.identity(scope, expr, before, 0);
-                self.unresolved_comprehension_use(scope, expr.at, &value);
+                self.report_unmodeled_deferred_value(scope, expr.at, &value);
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda
+            | ExpressionKind::DeferredLambda(_)
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -7090,6 +7102,10 @@ impl<'a> Graph<'a> {
                     self.expose(scope, value, kind, at);
                     Vec::new()
                 }
+                Value::DeferredLambda => {
+                    self.report_unmodeled_deferred_value(scope, at, &value);
+                    Vec::new()
+                }
                 Value::NamespaceParameter(parameter) => {
                     let default = self.namespace_parameter_default(parameter);
                     let symbol = &self.symbols[parameter];
@@ -8743,6 +8759,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::Member(value, _)
             | ExpressionKind::Not(value)
+            | ExpressionKind::DeferredLambda(value)
             | ExpressionKind::Await(value) => expressions.push(value),
             ExpressionKind::Call {
                 function,

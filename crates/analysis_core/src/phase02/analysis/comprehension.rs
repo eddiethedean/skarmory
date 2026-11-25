@@ -64,7 +64,7 @@ impl Graph<'_> {
         }
     }
 
-    pub(super) fn unresolved_comprehension_use(
+    pub(super) fn report_unmodeled_deferred_value(
         &mut self,
         scope: ScopeId,
         at: Location,
@@ -78,6 +78,10 @@ impl Graph<'_> {
             Value::ComprehensionResult => (
                 "unsupported_construct",
                 "use of a comprehension result is outside the bounded model",
+            ),
+            Value::DeferredLambda => (
+                "unresolved_lambda_execution",
+                "executing an anonymous callable is outside the bounded model",
             ),
             _ => return,
         };
@@ -95,7 +99,7 @@ impl Graph<'_> {
             value,
             Value::DeferredComprehension | Value::ComprehensionResult
         ) {
-            self.unresolved_comprehension_use(evaluation.scope, iterable.at, &value);
+            self.report_unmodeled_deferred_value(evaluation.scope, iterable.at, &value);
         } else if !matches!(
             value,
             Value::Sequence(_) | Value::Text(_) | Value::Range | Value::BuiltinIterable

@@ -1517,6 +1517,46 @@ del other.conf['result_backend']
 }
 
 #[test]
+fn celery_dormant_lambda_does_not_load_the_configured_backend() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("providers.py"), "class Backend: pass\n").unwrap();
+    let path = root.join("jobs.py");
+    let source = "from celery import Celery\napp = Celery('jobs', backend='providers:Backend')\npending = lambda: app.backend\napp.conf.result_backend = 'rpc://'\n";
+    fs::write(&path, source).unwrap();
+    let baseline = scan(root);
+    assert_eq!(
+        findings(&baseline, "unused_classes"),
+        ["providers.Backend"],
+        "{baseline}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, baseline);
+    }
+
+    fs::write(
+        path,
+        source.replace(
+            "app.conf.result_backend",
+            "pending()\napp.conf.result_backend",
+        ),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_lambda_execution"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn celery_backend_lookup_respects_deleted_exports_and_captured_aliases() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
