@@ -322,9 +322,12 @@ the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
 class-based views reach their effective `setup()` hook. Function views can
 reach a source-owned provider method when a fresh object receives a provider
-selected by a literal argument. Calling a generator view creates the
-generator and leaves its body dormant. Unresolved URL
-registrations in active URL modules produce coverage diagnostics.
+selected by a literal argument. A direct path can supply a literal string
+keyword or let the view use its literal string default. Captures, include
+arguments, and unbounded callers keep this dispatch unresolved. Calling a generator view
+creates the generator and leaves its body dormant. If a view’s defining module
+cannot finish initialization, the selected registration remains incomplete.
+Unresolved URL registrations in active URL modules produce coverage diagnostics.
 An initializer with a proven invalid URL call cannot finish constructing
 its URL table. The preview follows a final literal list's direct `clear()`
 and indexed `URLPattern.callback` edits in a closed initializer. Opaque options,

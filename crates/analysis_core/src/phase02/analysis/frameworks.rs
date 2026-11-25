@@ -2111,6 +2111,10 @@ impl Graph<'_> {
                             invocation.target,
                             "django_registration",
                         ));
+                        self.django_view_arguments
+                            .entry((object, invocation.target))
+                            .or_default()
+                            .push(None);
                     } else {
                         self.django_registration_issue(
                             object,
@@ -3709,7 +3713,16 @@ impl Graph<'_> {
                     self.collect_django_patterns(file, parent, value, at);
                 }
             }
-            Value::DjangoPattern(callback) => match *callback {
+            Value::DjangoPattern(callback, defaults) => match *callback {
+                Value::Callable(invocation)
+                    if self.django_view_provider_failed(invocation.target) =>
+                {
+                    self.django_registration_issue(
+                        parent,
+                        at,
+                        "Django URL callback module cannot finish initialization",
+                    );
+                }
                 Value::Callable(invocation)
                     if self.django_constant_callback_code(file, invocation.target) => {}
                 Value::Callable(invocation) if !self.is_class(invocation.target) => {
@@ -3723,6 +3736,16 @@ impl Graph<'_> {
                     self.scopes[file]
                         .routes
                         .push((parent, invocation.target, kind));
+                    if kind == "django_registration" {
+                        self.django_view_arguments
+                            .entry((parent, invocation.target))
+                            .or_default()
+                            .push(defaults.filter(|_| {
+                                !invocation.verified
+                                    && matches!(invocation.receiver, Receiver::Ordinary)
+                                    && !invocation.implicit_descriptor_receiver
+                            }));
+                    }
                 }
                 Value::DjangoView(class) => {
                     self.scopes[file]
@@ -3772,7 +3795,7 @@ impl Graph<'_> {
 
 fn has_django_pattern(value: &Value) -> bool {
     match value {
-        Value::DjangoPattern(_) => true,
+        Value::DjangoPattern(_, _) => true,
         Value::Sequence(values) | Value::Alternatives(values) => {
             values.iter().any(has_django_pattern)
         }

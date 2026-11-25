@@ -30,6 +30,7 @@ mod django_migrations;
 mod django_template_paths;
 mod django_templates;
 mod django_urls;
+mod django_views;
 mod drf;
 mod fastapi;
 mod field_dispatch;
@@ -77,7 +78,7 @@ enum Value {
     Method(Object, ObjectKind, String),
     DjangoInclude(Object),
     DjangoInvalidRegistration,
-    DjangoPattern(Box<Value>),
+    DjangoPattern(Box<Value>, Option<django_views::ViewArguments>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
     DjangoField(django_forms::Field),
@@ -644,6 +645,7 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_view_arguments: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
@@ -844,6 +846,7 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_view_arguments: django_views::ViewRouteArguments,
     django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
@@ -3960,7 +3963,7 @@ impl<'a> Graph<'a> {
                     if self.phase03
                         && matches!(name.as_str(), "django.urls.path" | "django.urls.re_path") =>
                 {
-                    self.django_path(arguments, keywords, recurse)
+                    self.django_path(arguments, keywords, name == "django.urls.path", recurse)
                 }
                 Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listens_for" => {
                     Value::Provider("sqlalchemy.event.listens_for.callback".into())
@@ -9582,6 +9585,12 @@ impl<'a> Graph<'a> {
                     self.establish_reachability(&roots, &possible_roots, snapshot);
             }
         }
+        if self.phase03 && converged && self.resolve_django_view_dispatch(&reach) {
+            self.resolve_receiver_calls();
+            self.resolve_class_invocations();
+            (reach, static_reach, verification, converged) =
+                self.establish_reachability(&roots, &possible_roots, snapshot);
+        }
         if !converged {
             self.issues.push(framework_limit());
         }
@@ -13584,6 +13593,123 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                     .any(|edge| { edge.full_name == target && edge.kind == "django_registration" })
             );
         }
+    }
+
+    #[test]
+    fn django_view_dispatch_uses_bound_literal_parameters() {
+        let make_files = |view, route, extra: &str| {
+            [
+                module(
+                    "manage.py",
+                    "manage",
+                    "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+                ),
+                module(
+                    "settings.py",
+                    "settings",
+                    "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+                ),
+                module(
+                    "urls.py",
+                    "urls",
+                    &format!(
+                        "from django.urls import path\nfrom views import view\nurlpatterns = [{route}]\n"
+                    ),
+                ),
+                module("views.py", "views", view),
+                module(
+                    "pipeline.py",
+                    "pipeline",
+                    &format!(
+                        "from providers import get_client\nclass Pipeline:\n    def __init__(self, client): self.client = client\n    def update(self): return self.client.schedule()\ndef dispatch(slug): return Pipeline(get_client(slug)).update()\n{extra}"
+                    ),
+                ),
+                module(
+                    "providers.py",
+                    "providers",
+                    "class First:\n    def schedule(self): return 1\nclass Second:\n    def schedule(self): return 2\ndef get_client(slug):\n    if slug == 'first': return First()\n    return Second()\n",
+                ),
+            ]
+        };
+        let default = "from pipeline import dispatch\ndef view(request, slug='first'): return dispatch(slug)\n";
+        let required = default.replace("slug='first'", "slug");
+        for (view, route, expected) in [
+            (default, "path('', view)", "providers.First.schedule"),
+            (
+                default,
+                "path('', view, {'slug': 'second'})",
+                "providers.Second.schedule",
+            ),
+            (
+                required.as_str(),
+                "path('', view, {'slug': 'first'})",
+                "providers.First.schedule",
+            ),
+        ] {
+            let report = analyze_phase03(&make_files(view, route, ""), &[]);
+            assert!(report.issues.is_empty(), "{route}: {:?}", report.issues);
+            let reached: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|edge| edge.kind == "direct_call" && edge.full_name.ends_with(".schedule"))
+                .map(|edge| edge.full_name.as_str())
+                .collect();
+            assert_eq!(reached, [expected], "{route}");
+        }
+        for (route, extra) in [
+            ("path('<str:slug>/', view)", ""),
+            ("path('', view)", "dispatch(input())\n"),
+        ] {
+            let report = analyze_phase03(&make_files(default, route, extra), &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"),
+                "{route}: {:?}",
+                report.issues
+            );
+        }
+        let mut files = make_files(default, "path('', view)", "");
+        files[2] = module(
+            "urls.py",
+            "urls",
+            "from django.urls import path\nfrom views import view\nfrom external import mutate\nurlpatterns = [path('', view)]\nmutate(urlpatterns)\n",
+        );
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name.ends_with(".schedule"))
+        );
+    }
+
+    #[test]
+    fn django_failed_view_initializer_cannot_register_a_callback() {
+        let urls = "from django.urls import path\nfrom rejected import view\nurlpatterns = [path('', view)]\n";
+        let mut files = django_url_test_files(urls, "");
+        files.push(module("rejected.py", "rejected", "def view(request): return helper()\ndef helper(): return 1\nraise RuntimeError('not ready')\n"));
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "urls.py" && issue.kind == "unresolved_registration")
+        );
+        assert!(!report.evidence.iter().any(|edge| edge.kind == "django_registration" && edge.full_name == "rejected.view"));
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|edge| edge.kind == "direct_call" && edge.full_name == "rejected.helper")
+        );
     }
 
     #[test]
