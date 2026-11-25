@@ -5573,15 +5573,7 @@ impl<'a> Graph<'a> {
                                         DjangoSettings::Module(module) => settings = Some(module),
                                         DjangoSettings::Unknown => settings = None,
                                     }
-                                    match values.get(1) {
-                                        Some(Value::Text(command)) if !command.starts_with('-') => {
-                                            frameworks::DjangoCommands::Selected(command.clone())
-                                        }
-                                        Some(Value::Text(_)) | None => {
-                                            frameworks::DjangoCommands::None
-                                        }
-                                        _ => frameworks::DjangoCommands::Available,
-                                    }
+                                    frameworks::DjangoCommands::from_argv(&values)
                                 }
                                 _ => frameworks::DjangoCommands::Available,
                             }
@@ -14042,6 +14034,103 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                 .filter(|name| *name != "Command")
                 .collect();
             assert_eq!(dispatches, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn phase03_django_management_help_stops_after_parser_setup() {
+        let command = "from django.core.management.base import BaseCommand\n\
+class Command(BaseCommand):\n    def add_arguments(self, parser): return parser\n    def handle(self, *args, **options): return None\n";
+        for (arguments, parser, handle) in [
+            ("'audit'", true, true),
+            ("'audit', '--help'", true, false),
+            ("'audit', '-h'", true, false),
+            ("'help', 'audit'", true, false),
+            ("'help', 'audit', '--commands'", false, false),
+            ("'help'", false, false),
+            ("'version'", false, false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        &format!(
+                            "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', {arguments}, '--settings=settings'])\n"
+                        ),
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        command,
+                    ),
+                    module(
+                        "demo/management/commands/version.py",
+                        "demo.management.commands.version",
+                        command,
+                    ),
+                    module(
+                        "demo/management/commands/help.py",
+                        "demo.management.commands.help",
+                        command,
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{arguments}: {:?}", result.issues);
+            let reached = |method: &str| {
+                result
+                    .evidence
+                    .iter()
+                    .any(|edge| edge.kind == "django_command" && edge.full_name.ends_with(method))
+            };
+            assert_eq!(reached(".add_arguments"), parser, "{arguments}");
+            assert_eq!(reached(".handle"), handle, "{arguments}");
+        }
+        assert!(matches!(frameworks::DjangoCommands::from_argv(&[
+            Value::Text("manage.py".into()),
+            Value::Text("audit".into()),
+            Value::Text("--".into()),
+            Value::Text("--help".into()),
+        ]), frameworks::DjangoCommands::Selected(name) if name == "audit"));
+    }
+
+    #[test]
+    fn phase03_flat_inert_django_shadow_stops_a_command_import() {
+        let command = "from django.core.management.base import BaseCommand\ndef prepare(): return 1\nclass Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\nprepare()\n";
+        for (shadow, closed) in [
+            ("class BaseCommand: pass\n", true),
+            ("modify_imports()\n", false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("django.py", "django", shadow),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        command,
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                result.issues.is_empty(),
+                closed,
+                "{shadow}: {:?}",
+                result.issues
+            );
+            if closed {
+                assert!(names(&result, Category::Function).contains(&"prepare"));
+                assert!(
+                    !result
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.kind == "django_command"
+                            || edge.full_name.ends_with(".prepare"))
+                );
+            }
         }
     }
 

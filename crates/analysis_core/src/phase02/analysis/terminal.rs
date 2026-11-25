@@ -25,6 +25,7 @@ impl Graph<'_> {
             || self.terminal_flask_global_initializer(scope, statement)
             || self.phase03
                 && (self.terminal_shadowed_framework_package(scope, statement)
+                    || self.terminal_shadowed_django_command_provider(scope, statement)
                     || self.terminal_missing_django_reloader(scope, statement)
                     || self.terminal_django_auth_initializer(scope, statement)
                     || self.terminal_django_backend_replacement(scope, statement)
@@ -132,6 +133,55 @@ impl Graph<'_> {
             return false;
         }
         self.scopes[scope].imports.push(provider);
+        true
+    }
+
+    fn terminal_shadowed_django_command_provider(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Import(import) = &statement.kind else {
+            return false;
+        };
+        if import.level != 0
+            || import.module != "django.core.management.base"
+            || import.member.as_deref() != Some("BaseCommand")
+            || self.nested_packages.resolve(scope, "django") != "django"
+            || !self.scopes[scope]
+                .body
+                .iter()
+                .take_while(|row| position(row.at) < position(statement.at))
+                .all(|row| {
+                    matches!(
+                        row.kind,
+                        StatementKind::Evaluate(Expression {
+                            kind: ExpressionKind::Text(_),
+                            ..
+                        })
+                    )
+                })
+        {
+            return false;
+        }
+        let Some(&shadow) = self.modules.get("django") else {
+            return false;
+        };
+        // A flat, inert module cannot expose a package path or preinstall
+        // the missing child modules in sys.modules during the import.
+        if self.files[shadow].is_package
+            || !self.scopes[shadow].body.iter().all(|row| match &row.kind {
+                StatementKind::Define(definition) => plain_class(definition),
+                StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }) => true,
+                _ => false,
+            })
+        {
+            return false;
+        }
+        self.scopes[scope].imports.push(shadow);
         true
     }
 
