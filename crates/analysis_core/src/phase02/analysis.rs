@@ -28,6 +28,7 @@ mod mutations;
 mod pydantic;
 mod sanic;
 mod starlette;
+mod terminal;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -501,6 +502,10 @@ pub(super) fn analyze_with_verification(
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
         phase03,
+        terminal_proofs: entrypoints.is_empty()
+            && package_entrypoints.is_none_or(|snapshot| snapshot.entries.is_empty())
+            && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
+        failed_terminal_modules: BTreeSet::new(),
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
         framework_class_whitelists: BTreeMap::new(),
@@ -585,6 +590,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
+        graph.report_failed_terminal_module_consumers();
     }
     graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
@@ -676,6 +682,8 @@ struct Graph<'a> {
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
     phase03: bool,
+    terminal_proofs: bool,
+    failed_terminal_modules: BTreeSet<ScopeId>,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
@@ -2959,6 +2967,7 @@ impl<'a> Graph<'a> {
                 expression.kind,
                 ExpressionKind::Await(_)
                     | ExpressionKind::FormattedString(_)
+                    | ExpressionKind::KeywordMappingCall { .. }
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
@@ -3799,7 +3808,7 @@ impl<'a> Graph<'a> {
                     Value::Scalar
                 }
             }
-            ExpressionKind::Await(_) => Value::Unknown,
+            ExpressionKind::Await(_) | ExpressionKind::KeywordMappingCall { .. } => Value::Unknown,
         }
     }
 
@@ -4476,6 +4485,24 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::KeywordMappingCall { function, mapping } => {
+                self.walk_expression(scope, function, before, true);
+                self.walk(scope, mapping, before);
+                if self.phase03
+                    && let Value::Method(object, ObjectKind::CeleryApp, method) =
+                        self.call_target_identity(scope, function, before, 0)
+                    && method == "conf.update"
+                {
+                    self.record_celery_expanded_config(object, scope, mapping, before, expr.at);
+                } else {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unsupported_construct",
+                        "unbounded keyword expansion",
+                    );
+                }
+            }
             ExpressionKind::Call {
                 function,
                 arguments,
@@ -5930,7 +5957,9 @@ impl<'a> Graph<'a> {
                     self.annotation(scope, reference, before, evaluated);
                 }
             }
-            ExpressionKind::Call { .. } if evaluated => {
+            ExpressionKind::Call { .. } | ExpressionKind::KeywordMappingCall { .. }
+                if evaluated =>
+            {
                 self.walk(scope, expr, before);
             }
             _ => {
@@ -5950,6 +5979,10 @@ impl<'a> Graph<'a> {
     fn suite(&mut self, scope: ScopeId, body: &[Statement]) -> bool {
         for statement in body {
             let at = statement.at;
+            if self.phase03 && self.prove_terminal_module_failure(scope, statement) {
+                self.failed_terminal_modules.insert(scope);
+                return true;
+            }
             match &statement.kind {
                 StatementKind::Define(definition) => {
                     if definition.is_generator && !self.phase03 {
@@ -6327,6 +6360,17 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         before: Location,
     ) -> bool {
+        if let ExpressionKind::KeywordMappingCall { function, mapping } = &decorator.kind {
+            self.walk(scope, function, before);
+            self.walk(scope, mapping, before);
+            self.scope_issue(
+                scope,
+                decorator.at,
+                "unsupported_construct",
+                "unbounded decorator keyword expansion",
+            );
+            return false;
+        }
         let (function, args, keywords) = match &decorator.kind {
             ExpressionKind::Call {
                 function,
@@ -9126,6 +9170,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.push(function);
                 expressions.extend(arguments);
                 expressions.extend(keywords.iter().map(|(_, value)| value));
+            }
+            ExpressionKind::KeywordMappingCall { function, mapping } => {
+                expressions.extend([function.as_ref(), mapping.as_ref()]);
             }
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)

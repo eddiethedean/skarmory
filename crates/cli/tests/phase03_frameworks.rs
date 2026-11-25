@@ -2109,6 +2109,70 @@ print(Item, Owner, Ordinary, Linked)
 }
 
 #[test]
+fn celery_terminal_failures_exclude_unreached_backend_calls() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("providers.py"), "class Candidate: pass\n").unwrap();
+    let app = root.join("app.py");
+    let configured = "from celery import Celery\napp = Celery('worker')\napp.conf.result_backend = 'providers:Candidate'\n";
+    for source in [
+        "class Local: pass\napp = Local()\napp.conf.update(result_backend='providers:Candidate')\n".into(),
+        "from celery import Celery\nclass Local: pass\nCelery = Local\napp = Celery()\napp.conf.update(result_backend='providers:Candidate')\n".into(),
+        format!("{configured}app.conf.update(**replacement)\n"),
+        format!("{configured}app.conf = replacement\n"),
+        format!("{configured}replacement = {{'result_backend': 'rpc://'}}\napp.conf.update(**replacement)\n"),
+    ] {
+        fs::write(&app, source).unwrap();
+        let report = scan(root);
+        assert!(findings(&report, "unused_classes").contains(&"providers.Candidate"), "{report}");
+    }
+
+    let source = format!("{configured}app.backend\napp.conf.update(**replacement)\n");
+    fs::write(&app, &source).unwrap();
+    let report = scan(root);
+    assert!(
+        !findings(&report, "unused_classes").contains(&"providers.Candidate"),
+        "{report}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let consumer = root.join("consumer.py");
+    fs::write(&consumer, "import app\n").unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_import" && issue["path"] == "consumer.py"),
+        "{incomplete}"
+    );
+
+    fs::remove_file(consumer).unwrap();
+    fs::write(
+        app,
+        format!(
+            "{configured}from configuration import replacement\napp.conf.update(**replacement)\n"
+        ),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_registration"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn celery_backends_follow_effective_settings_and_the_first_load() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

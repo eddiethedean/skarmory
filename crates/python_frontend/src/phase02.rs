@@ -182,6 +182,10 @@ pub enum ExpressionKind {
         arguments: Vec<Expression>,
         keywords: Vec<(String, Expression)>,
     },
+    KeywordMappingCall {
+        function: Box<Expression>,
+        mapping: Box<Expression>,
+    },
     Text(String),
     FormattedString(Vec<Expression>),
     Bool(bool),
@@ -890,6 +894,15 @@ impl Lowering<'_> {
             ),
             Expr::Attribute(node) => {
                 ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
+            }
+            Expr::Call(node)
+                if node.arguments.args.is_empty()
+                    && matches!(node.arguments.keywords.as_slice(), [keyword] if keyword.arg.is_none()) =>
+            {
+                ExpressionKind::KeywordMappingCall {
+                    function: Box::new(lower(&node.func)?),
+                    mapping: Box::new(lower(&node.arguments.keywords[0].value)?),
+                }
             }
             Expr::Call(node) => {
                 let mut keyword_names = BTreeSet::new();
