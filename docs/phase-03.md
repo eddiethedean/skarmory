@@ -549,8 +549,9 @@ The queue uses a complete static Python scan. It presents unused functions
 and imports for review. A preview includes a unified diff and a proof covering
 the edit, source bytes, and inputs to the analysis. A bare module-level
 function must have no decorators, defaults, annotations, or type parameters.
-An ordinary import must use an allowlisted standard-library module with
-no local shadow provider. Definitions and imports outside this contract
+An ordinary import must use an allowlisted standard-library module. Cleanup
+checks for local providers that could shadow it or its modeled transitive
+imports during initialization. Definitions and imports outside this contract
 stay in the queue for manual review.
 
 Apply requires an explicit task and a fresh preflight scan. Supply the
@@ -562,7 +563,10 @@ confirms the original statement is gone and no new risk findings appeared.
 Replacements remain unverified without changed-line execution evidence. A
 failed command, a returned statement, or a newly introduced risk finding
 triggers rollback when the edited file still has the exact bytes Skarmory
-wrote and the proof dependencies agree. Skarmory checks the file again
+wrote and the proof dependencies agree. After a failed check, an unrelated
+source save can invalidate the rescan while still allowing the target alone
+to be restored. Pytest JUnit reports use a separate 64 MiB read limit.
+Skarmory checks the file again
 after comparing the scans. A late removal or rewrite leaves the rescan
 result intact and makes the overall execution incomplete. When project
 configuration enables dependency analysis, its inputs are included in the

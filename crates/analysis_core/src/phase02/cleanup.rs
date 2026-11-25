@@ -5,7 +5,7 @@ mod execution;
 #[cfg(all(test, unix))]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -142,6 +142,8 @@ struct Rescan {
     new_findings: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip)]
+    rollback_proof_current: bool,
 }
 
 impl Rescan {
@@ -155,6 +157,7 @@ impl Rescan {
             original_present: Some(original_present),
             new_findings,
             error: None,
+            rollback_proof_current: true,
         }
     }
 }
@@ -314,10 +317,46 @@ fn normalize(source: &str) -> String {
 
 struct Providers(BTreeMap<String, PathBuf>);
 
+// Names reachable during initialization of the allowlisted CPython modules.
+// Include platform-dependent providers even when cleanup runs on another OS.
+fn shadow_names(root: &str) -> impl Iterator<Item = &str> {
+    let dependencies = match root {
+        "collections" => {
+            "_abc _collections _collections_abc _operator abc itertools keyword operator reprlib"
+        }
+        "functools" => {
+            "_abc _collections _collections_abc _functools _operator _types abc collections itertools keyword operator reprlib types"
+        }
+        "json" => {
+            "_abc _collections _collections_abc _functools _json _operator _sre _types abc collections copyreg enum functools itertools keyword operator re reprlib types"
+        }
+        "math" => "_math_integer",
+        "operator" => "_operator",
+        "os" => {
+            "_abc _collections_abc _stat _winapi abc errno genericpath nt ntpath posix posixpath stat warnings"
+        }
+        "pathlib" => {
+            "_abc _collections _collections_abc _functools _math_integer _operator _sre _stat _types _winapi abc collections contextlib copyreg enum errno fcntl fnmatch functools genericpath glob grp io ipaddress itertools keyword math msvcrt nt ntpath operator os posix posixpath pwd re reprlib stat types urllib warnings"
+        }
+        "re" => {
+            "_abc _collections _collections_abc _functools _operator _sre _types abc collections copyreg enum functools itertools keyword operator reprlib types"
+        }
+        "typing" => {
+            "_abc _collections _collections_abc _functools _operator _sre _stat _types _typing _winapi abc collections contextlib copyreg enum errno functools genericpath itertools keyword nt ntpath operator os posix posixpath re reprlib stat types warnings"
+        }
+        _ => "",
+    };
+    std::iter::once(root).chain(dependencies.split_ascii_whitespace())
+}
+
 impl Providers {
     fn read(root: &Path) -> Result<Self, String> {
         // Python's import paths can include directories outside analyzer
         // selection. Check the bounded project tree independently.
+        let guarded: BTreeSet<_> = cleanup::SAFE_IMPORT_ROOTS
+            .iter()
+            .flat_map(|name| shadow_names(name))
+            .collect();
         let mut found = BTreeMap::<String, PathBuf>::new();
         for (index, entry) in WalkDir::new(root).min_depth(1).into_iter().enumerate() {
             if index >= 65_536 {
@@ -332,7 +371,7 @@ impl Providers {
                 (Some((module, _)), Some((_, "py" | "pyc" | "so" | "pyd"))) => module,
                 _ => &name,
             };
-            if cleanup::SAFE_IMPORT_ROOTS.contains(&provider)
+            if guarded.contains(provider)
                 && found
                     .get(provider)
                     .is_none_or(|path| entry.path() < path.as_path())
@@ -344,14 +383,15 @@ impl Providers {
     }
 
     fn check(&self, names: &[String]) -> Result<(), String> {
-        if let Some((name, path)) = names
-            .iter()
-            .find_map(|name| self.0.get(name).map(|path| (name, path)))
-        {
-            return Err(format!(
-                "a project path may shadow {name}: {}",
-                path.display()
-            ));
+        for root in names {
+            if let Some((name, path)) =
+                shadow_names(root).find_map(|name| self.0.get(name).map(|path| (name, path)))
+            {
+                return Err(format!(
+                    "a project path may shadow {name} when importing {root}: {}",
+                    path.display()
+                ));
+            }
         }
         Ok(())
     }
@@ -527,14 +567,12 @@ fn finish_execution(
         result.tests.observed,
     ) {
         ("failed", _, _) | (_, "failed", _) => {
-            if result.rescan.status == "incomplete" {
-                if let Some(error) = &result.rescan.error {
-                    result.limitations.push(format!(
-                        "Rollback was not applied: proof could not be revalidated: {error}"
-                    ));
-                }
-            } else {
+            if result.rescan.rollback_proof_current {
                 rollback(root, target, edit, &mut result);
+            } else if let Some(error) = &result.rescan.error {
+                result.limitations.push(format!(
+                    "Rollback was not applied: proof could not be revalidated: {error}"
+                ));
             }
             "failed"
         }
@@ -573,47 +611,52 @@ fn compare_rescan(
     edit: &Edit<'_>,
     after: Result<Scan, ConfigError>,
 ) -> Rescan {
-    let incomplete = |error: String| Rescan {
+    let incomplete = |error: String, rollback_proof_current| Rescan {
         status: "incomplete",
         original_present: None,
         new_findings: Vec::new(),
         error: Some(error),
+        rollback_proof_current,
     };
     let after = match after {
         Ok(after) => after,
-        Err(error) => return incomplete(error.to_string()),
+        Err(error) => return incomplete(error.to_string(), false),
     };
     if before.inputs.policy != after.inputs.policy {
         return incomplete(
             "configuration or other analysis inputs changed during cleanup validation".into(),
+            false,
         );
     }
     if !edit.plan.import_roots.is_empty()
         && let Err(error) =
             Providers::read(root).and_then(|providers| providers.check(&edit.plan.import_roots))
     {
-        return incomplete(error);
+        return incomplete(error, false);
     }
     if !after.report.is_complete() {
-        return incomplete("post-edit analysis has incomplete coverage".into());
+        return incomplete("post-edit analysis has incomplete coverage".into(), false);
     }
+    // Other source changes prevent a comparable rescan. The inverse edit
+    // still checks the exact applied target bytes before writing.
     let target = Some(candidate.task.file.as_str());
     if before.inputs.fingerprint(target) != after.inputs.fingerprint(target) {
         return incomplete(
-            "source coverage or proof dependencies changed during cleanup validation".into(),
+            "other analyzed sources changed during cleanup validation".into(),
+            true,
         );
     }
     let Some(source) = after.inputs.sources.get(&candidate.task.file) else {
-        return incomplete("source is missing from the cleanup rescan".into());
+        return incomplete("source is missing from the cleanup rescan".into(), true);
     };
     let original = &edit.source[edit.plan.statement.clone()];
     match cleanup::contains_statement(source, original) {
         Ok(true) => return Rescan::compared(true, Vec::new()),
         Ok(false) => {}
-        Err(error) => return incomplete(error),
+        Err(error) => return incomplete(error, true),
     }
     if source != &normalize(&edit.replacement) {
-        return incomplete("source changed during cleanup validation".into());
+        return incomplete("source changed during cleanup validation".into(), true);
     }
     let new_findings = comparison::new_risks(
         &before.report,

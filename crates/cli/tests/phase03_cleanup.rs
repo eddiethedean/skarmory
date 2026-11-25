@@ -99,6 +99,32 @@ fn queue_and_preview_remove_one_import_without_writing() {
 }
 
 #[test]
+fn a_transitive_standard_library_shadow_blocks_cleanup() {
+    for (import, provider) in [("pathlib", "fnmatch.py"), ("json", "copyreg.py")] {
+        let original = format!("import {import}\nprint('ready')\n");
+        let project = project(&original);
+        let queue = cleanup(project.path(), &[], 0);
+        let finding = task(&queue, "SKY-U002", import);
+        let id = field(finding, "id");
+        assert_eq!(finding["eligible"], true, "{finding}");
+        cleanup(project.path(), &["--task", id], 0);
+
+        fs::write(project.path().join(provider), "print('local provider')\n").unwrap();
+        let queue = cleanup(project.path(), &[], 0);
+        let finding = task(&queue, "SKY-U002", import);
+        assert_eq!(finding["eligible"], false, "{finding}");
+        assert!(field(finding, "reason").contains(provider), "{finding}");
+        cleanup(project.path(), &["--task", id], 2);
+        #[cfg(unix)]
+        cleanup(project.path(), &["--task", id, "--apply"], 2);
+        assert_eq!(
+            fs::read_to_string(project.path().join("app.py")).unwrap(),
+            original
+        );
+    }
+}
+
+#[test]
 fn previews_an_unused_function_and_preserves_its_used_neighbor() {
     let original = "def unused():\n    return 1\n\ndef used():\n    return 42\n\nprint(used())\n";
     let project = project(original);
@@ -401,8 +427,8 @@ fn junit_check_fixture() -> (tempfile::TempDir, String) {
     fs::write(
         &launcher,
         r#"#!/bin/sh
-"$SKARMORY_TEST_CLEANUP_BINARY" --exact explicit_cleanup_check_fixture || exit "$?"
 [ "$1" = '--junitxml' ] || exit 92
+SKARMORY_TEST_CLEANUP_JUNIT="$2" "$SKARMORY_TEST_CLEANUP_BINARY" --exact explicit_cleanup_check_fixture || exit "$?"
 cat > "$2" <<'XML'
 <?xml version="1.0" encoding="utf-8"?>
 <testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1"><testcase classname="cleanup" name="explicit_cleanup_check_fixture"/></testsuite></testsuites>
@@ -433,6 +459,23 @@ fn explicit_cleanup_check_fixture() {
             fs::write("app.py", b"print('user change')\r\n").unwrap();
             std::process::exit(42);
         }
+        "edit-neighbor-and-fail" => {
+            fs::write("other.py", "VALUE = 2\n").unwrap();
+        }
+        "large-junit-failure" => {
+            let row = "<testcase classname=\"test_many\" name=\"test_smoke\" time=\"0.000\" />";
+            let cases = row.repeat(20_000);
+            let receipt = format!(
+                r#"<testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="20001">{cases}<testcase name="test_failure"><failure message="assert False">assert False</failure></testcase></testsuite></testsuites>"#
+            );
+            assert!(receipt.len() > 1024 * 1024);
+            fs::write(
+                std::env::var_os("SKARMORY_TEST_CLEANUP_JUNIT").unwrap(),
+                receipt,
+            )
+            .unwrap();
+            std::process::exit(1);
+        }
         "restore-source" => {
             fs::write("app.py", b"import math\r\nprint('ready')\r\n").unwrap();
         }
@@ -446,6 +489,9 @@ fn explicit_cleanup_check_fixture() {
         }
         "add-provider" | "add-provider-and-fail" => {
             fs::write("math.py", "print('local provider')\n").unwrap();
+        }
+        "add-transitive-provider" => {
+            fs::write("fnmatch.py", "print('local provider')\n").unwrap();
         }
         "change-dependencies" | "change-dependencies-and-fail" => {
             fs::write("requirements.txt", "flask\nrequests\n").unwrap();
@@ -693,15 +739,66 @@ fn failed_explicit_check_rolls_back_exact_bytes_without_overwriting_user_edits()
 
 #[cfg(unix)]
 #[test]
+fn failed_check_rolls_back_only_the_target_after_an_unrelated_save() {
+    let original = "import math\r\nprint('ready')\r\n";
+    let project = project(original);
+    let other = project.path().join("other.py");
+    fs::write(&other, "VALUE = 1\n").unwrap();
+    let queue = cleanup(project.path(), &[], 0);
+    let id = field(task(&queue, "SKY-U002", "math"), "id");
+    let report = cleanup_with_check(
+        project.path(),
+        &["--task", id, "--apply", "--test-cmd", &check_command()],
+        1,
+        Some("edit-neighbor-and-fail"),
+    );
+    let execution = &report["execution"];
+    assert_eq!(execution["tests"]["status"], "failed", "{execution}");
+    assert_eq!(execution["rescan"]["status"], "incomplete", "{execution}");
+    assert_eq!(execution["rolled_back"], true, "{execution}");
+    assert_eq!(
+        fs::read(project.path().join("app.py")).unwrap(),
+        original.as_bytes()
+    );
+    assert_eq!(fs::read_to_string(other).unwrap(), "VALUE = 2\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_check_with_large_pytest_junit_report_rolls_back() {
+    let original = "import math\r\nprint('ready')\r\n";
+    let project = project(original);
+    let (_launcher, command) = junit_check_fixture();
+    let queue = cleanup(project.path(), &[], 0);
+    let id = field(task(&queue, "SKY-U002", "math"), "id");
+    let report = cleanup_with_check(
+        project.path(),
+        &["--task", id, "--apply", "--test-cmd", &command],
+        1,
+        Some("large-junit-failure"),
+    );
+    let execution = &report["execution"];
+    assert_eq!(execution["tests"]["status"], "failed", "{execution}");
+    assert_eq!(execution["tests"]["count"], 20_001, "{execution}");
+    assert_eq!(execution["rolled_back"], true, "{execution}");
+    assert_eq!(
+        fs::read(project.path().join("app.py")).unwrap(),
+        original.as_bytes()
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn policy_or_provider_mutations_during_a_check_leave_the_rescan_incomplete() {
     let (_fixture, command) = junit_check_fixture();
-    for (action, changed_file) in [
-        ("change-policy", "pyproject.toml"),
-        ("add-provider", "math.py"),
+    for (action, changed_file, import) in [
+        ("change-policy", "pyproject.toml", "math"),
+        ("add-provider", "math.py", "math"),
+        ("add-transitive-provider", "fnmatch.py", "pathlib"),
     ] {
-        let project = project("import math\r\nprint('ready')\r\n");
+        let project = project(&format!("import {import}\r\nprint('ready')\r\n"));
         let queue = cleanup(project.path(), &[], 0);
-        let id = field(task(&queue, "SKY-U002", "math"), "id");
+        let id = field(task(&queue, "SKY-U002", import), "id");
         let report = cleanup_with_check(
             project.path(),
             &["--task", id, "--apply", "--test-cmd", &command],

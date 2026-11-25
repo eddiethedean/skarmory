@@ -11,6 +11,9 @@ use super::super::ConfigError;
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CHECK_OUTPUT: u64 = 1024 * 1024;
+// Match the pinned Skylos bound for pytest JUnit receipts.
+#[cfg(unix)]
+const MAX_JUNIT_BYTES: u64 = 64 * 1024 * 1024;
 const OUTPUT_TAIL_BYTES: u64 = 4096;
 const OUTPUT_LIMIT_MESSAGE: &str = "test command exceeded its 1 MiB output budget";
 
@@ -18,7 +21,7 @@ pub(super) fn read(root: &Path, relative: &Path) -> Result<Vec<u8>, ConfigError>
     validate_path(root, relative)?;
     #[cfg(unix)]
     {
-        unix::read(root, relative)
+        unix::read(root, relative, crate::source::MAX_SOURCE_BYTES)
     }
     #[cfg(not(unix))]
     {
@@ -27,6 +30,20 @@ pub(super) fn read(root: &Path, relative: &Path) -> Result<Vec<u8>, ConfigError>
         crate::preview_source::read_snapshot(&path, &relative.to_string_lossy(), None)
             .map(|(bytes, _)| bytes)
             .map_err(|issue| ConfigError::new(issue.message))
+    }
+}
+
+fn read_junit(root: &Path) -> Result<Vec<u8>, ConfigError> {
+    #[cfg(unix)]
+    {
+        let relative = Path::new("pytest.xml");
+        validate_path(root, relative)?;
+        unix::read(root, relative, MAX_JUNIT_BYTES)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Err(ConfigError::new("guarded JUnit receipt reads require Unix"))
     }
 }
 
@@ -131,16 +148,23 @@ mod unix {
         ConfigError::new("cleanup source changed, preserving the current file")
     }
 
-    fn snapshot(dir: &OwnedFd, name: &OsStr) -> Result<(Vec<u8>, Metadata), ConfigError> {
+    fn snapshot(
+        dir: &OwnedFd,
+        name: &OsStr,
+        max_bytes: u64,
+    ) -> Result<(Vec<u8>, Metadata), ConfigError> {
         let (mut file, before) = open_source(dir, name)?;
         let stamp = Stamp::new(&before);
         let mut bytes = Vec::new();
         (&mut file)
-            .take(MAX_SOURCE_BYTES + 1)
+            .take(max_bytes + 1)
             .read_to_end(&mut bytes)
             .map_err(ConfigError::new)?;
-        if bytes.len() as u64 > MAX_SOURCE_BYTES {
-            return Err(ConfigError::new("cleanup source exceeds 1 MiB"));
+        if bytes.len() as u64 > max_bytes {
+            return Err(ConfigError::new(format!(
+                "cleanup file exceeds {} MiB",
+                max_bytes / (1024 * 1024)
+            )));
         }
         let after = file.metadata().map_err(ConfigError::new)?;
         let (_, live) = open_source(dir, name)?;
@@ -153,10 +177,14 @@ mod unix {
         Ok((bytes, before))
     }
 
-    pub(super) fn read(root: &Path, relative: &Path) -> Result<Vec<u8>, ConfigError> {
+    pub(super) fn read(
+        root: &Path,
+        relative: &Path,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, ConfigError> {
         let dir = directory(root, relative)?;
         let name = relative.file_name().expect("validated relative path");
-        let (bytes, _) = snapshot(&dir, name)?;
+        let (bytes, _) = snapshot(&dir, name, max_bytes)?;
         Ok(bytes)
     }
 
@@ -185,7 +213,7 @@ mod unix {
         }
         let dir = directory(root, relative)?;
         let name = relative.file_name().expect("validated relative path");
-        let (original, metadata) = snapshot(&dir, name)?;
+        let (original, metadata) = snapshot(&dir, name, MAX_SOURCE_BYTES)?;
         if original != expected {
             return Err(changed());
         }
@@ -239,7 +267,7 @@ mod unix {
         if Stamp::new(&staged_metadata) != staged_stamp {
             return Err(ConfigError::new("staged cleanup replacement changed"));
         }
-        let (current, current_metadata) = snapshot(&dir, name)?;
+        let (current, current_metadata) = snapshot(&dir, name, MAX_SOURCE_BYTES)?;
         if current != expected || Stamp::new(&current_metadata) != Stamp::new(&metadata) {
             return Err(changed());
         }
@@ -387,7 +415,7 @@ impl Check {
             ..CheckResult::skipped()
         };
         if let Some(junit) = junit {
-            let receipt = read(junit.path(), Path::new("pytest.xml"))
+            let receipt = read_junit(junit.path())
                 .ok()
                 .and_then(|bytes| junit_counts(&bytes));
             match receipt {
