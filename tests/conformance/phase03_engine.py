@@ -7,8 +7,10 @@ import re
 import runpy
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 SOURCE = "test/test_cleanup_execution.py"
@@ -24,7 +26,21 @@ IMPORT_ROOT_PREREQUISITES = [
     "original regular package and source-layout roots",
     "tool-only manifest control",
 ]
-ENGINE_CASES = {CASE, IMPORT_ROOT_CASE}
+INCLUDE_SOURCE = "test/test_fastapi_import_scope_boundaries.py"
+INCLUDE_BUDGET_CASE = f"{INCLUDE_SOURCE}::test_possible_include_graph_honors_abstract_step_budget"
+INCLUDE_CYCLE_CASE = f"{INCLUDE_SOURCE}::test_possible_include_graph_retains_cycles_and_rejects_uncalled_owner"
+INCLUDE_TEST = "phase02::analysis::fastapi::tests::pinned_fastapi_include_graph"
+INCLUDE_CASES = {
+    INCLUDE_BUDGET_CASE: (
+        [f"{INCLUDE_SOURCE}:{line}" for line in (76, 78, 79)],
+        ["original twenty-edge router graph and bounded step limit"],
+    ),
+    INCLUDE_CYCLE_CASE: (
+        [f"{INCLUDE_SOURCE}:95"],
+        ["original router graph with cycle and uncalled owner"],
+    ),
+}
+ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *INCLUDE_CASES}
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -74,7 +90,87 @@ def stage_import_roots(source, fixture):
     raise ValueError("the pinned import-root fixture did not construct its project")
 
 
-def engine_case(args, key, case, env):
+def replay_include_graph(key, source, fixture, argv, env, trace):
+    import pytest
+
+    upstream = source["fastapi_liveness"]
+    default_limit = upstream._MAX_ANALYSIS_STEPS
+    graph_file = fixture / "include-graph.json"
+    native_report = fixture / "include-report.json"
+    stages = []
+
+    class Project:
+        def __init__(self, definitions, parsed, root):
+            if definitions or parsed or root != fixture:
+                raise ValueError("the pinned include fixture must build its graph directly")
+            self.active_objects = set()
+            self.possible_includes = []
+            self.includes = defaultdict(set)
+            self.report = SimpleNamespace()
+
+        def _possibly_included(self):
+            if stages or any(edge.owner_key != edge.owner for edge in self.possible_includes):
+                raise ValueError("unexpected invocation or owner key in the pinned include graph")
+            edges = [
+                {"receiver": edge.receiver, "child": edge.child, "owner": edge.owner}
+                for edge in self.possible_includes
+            ]
+            edges.extend(
+                {"receiver": receiver, "child": child, "owner": None}
+                for receiver, children in sorted(self.includes.items()) for child in sorted(children)
+            )
+            limit = upstream._MAX_ANALYSIS_STEPS
+            graph_file.write_text(json.dumps({
+                "roots": sorted(self.active_objects),
+                "edges": edges,
+                "limit": None if limit == default_limit else limit,
+            }), encoding="utf-8")
+            fixtures = {graph_file.name: hashlib.sha256(graph_file.read_bytes()).hexdigest()}
+            outcome = subprocess.run(
+                argv,
+                env={
+                    **env,
+                    "SKARMORY_PHASE03_FASTAPI_INCLUDE_FIXTURE": str(graph_file),
+                    "SKARMORY_PHASE03_FASTAPI_INCLUDE_REPORT": str(native_report),
+                },
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            stages.append((outcome, fixtures))
+            if not passed_exact_test(outcome, INCLUDE_TEST):
+                raise ValueError("the named native include graph test failed")
+            result = json.loads(native_report.read_text(encoding="utf-8"))
+            self.report.complete = result["status"] == "complete"
+            if result["status"] == "incomplete":
+                self.report.incomplete_reason = result["reason"]
+                raise source["FastAPIAnalysisLimit"](result["reason"])
+            if not self.report.complete:
+                raise ValueError("unexpected native include graph status")
+            return set(result["reachable"])
+
+    original = source[key.split("::")[1]]
+    previous_trace = sys.gettrace()
+    failure = None
+    try:
+        with patch.dict(original.__globals__, {"FastAPIProject": Project}):
+            with pytest.MonkeyPatch.context() as monkeypatch:
+                sys.settrace(trace)
+                if key == INCLUDE_BUDGET_CASE:
+                    original(fixture, monkeypatch)
+                else:
+                    original(fixture)
+    except (AssertionError, ValueError, OSError, pytest.fail.Exception,
+            source["FastAPIAnalysisLimit"]) as error:
+        failure = str(error)
+    finally:
+        sys.settrace(previous_trace)
+    if len(stages) != 1:
+        raise ValueError("the original include fixture did not invoke the native graph exactly once")
+    outcome, fixtures = stages[0]
+    result = json.loads(native_report.read_text(encoding="utf-8")) if native_report.is_file() else None
+    return outcome, fixtures, {"graph": result, "assertion_error": failure}
+
+
+def engine_case(args, key, case, env, trace=None):
     if key == IMPORT_ROOT_CASE:
         source_file = IMPORT_ROOT_SOURCE
         assertions = IMPORT_ROOT_ASSERTIONS
@@ -82,6 +178,9 @@ def engine_case(args, key, case, env):
         test = "phase02::analysis::tests::pinned_fastapi_import_roots"
     elif key == CASE:
         source_file, assertions, prerequisites, test = SOURCE, ASSERTIONS, PREREQUISITES, TEST
+    elif key in INCLUDE_CASES:
+        assertions, prerequisites = INCLUDE_CASES[key]
+        source_file, test = INCLUDE_SOURCE, INCLUDE_TEST
     else:
         raise ValueError(f"missing native engine port for {key}")
     if (case["source"], case["assertions"], case["prerequisites"]) != (
@@ -97,7 +196,10 @@ def engine_case(args, key, case, env):
     ]
     with TemporaryDirectory(prefix="skarmory-pinned-engine-") as workspace:
         fixture = Path(workspace).resolve()
-        if key == CASE:
+        details = {}
+        if key in INCLUDE_CASES:
+            outcome, fixtures, details = replay_include_graph(key, source, fixture, argv, env, trace)
+        elif key == CASE:
             # Keep the source inputs and the real pytest command from the
             # upstream fixture. Rust generates its own cleanup findings.
             source["_task"](fixture)
@@ -109,15 +211,18 @@ def engine_case(args, key, case, env):
         else:
             stage_import_roots(source, fixture)
             fixture_env = {"SKARMORY_PHASE03_IMPORT_ROOT_FIXTURE": str(fixture)}
-        fixtures = {
-            path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted(fixture.rglob("*")) if path.is_file()
-        }
-        outcome = subprocess.run(
-            argv, env={**env, **fixture_env},
-            capture_output=True, text=True, timeout=60, check=False,
-        )
+        if key not in INCLUDE_CASES:
+            fixtures = {
+                path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(fixture.rglob("*")) if path.is_file()
+            }
+            outcome = subprocess.run(
+                argv, env={**env, **fixture_env},
+                capture_output=True, text=True, timeout=60, check=False,
+            )
     passed = passed_exact_test(outcome, test)
+    if key in INCLUDE_CASES:
+        passed = passed and details["assertion_error"] is None and set(assertions) <= trace.completed
     sys.stdout.write(outcome.stdout)
     sys.stderr.write(outcome.stderr)
     return {
@@ -131,6 +236,7 @@ def engine_case(args, key, case, env):
             "argv": argv,
             **({"check": check} if key == CASE else {}),
             "fixture_sha256": fixtures,
+            **details,
             "returncode": outcome.returncode,
             "stdout": outcome.stdout,
             "stderr": outcome.stderr,
