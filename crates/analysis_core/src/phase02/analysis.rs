@@ -623,6 +623,7 @@ pub(super) fn analyze_with_verification(
         fresh_field_invocations: Vec::new(),
         source_provider_calls: BTreeMap::new(),
         source_provider_invalidated: None,
+        source_provider_opaque_arguments: BTreeSet::new(),
         resolved_receiver_calls: BTreeSet::new(),
         receiver_call_issues: BTreeSet::new(),
         issues: Vec::new(),
@@ -843,6 +844,7 @@ struct Graph<'a> {
     fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
     source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
     source_provider_invalidated: Option<BTreeSet<SymbolId>>,
+    source_provider_opaque_arguments: BTreeSet<SymbolId>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
     receiver_call_issues: BTreeSet<usize>,
     issues: Vec<Issue>,
@@ -3291,6 +3293,7 @@ impl<'a> Graph<'a> {
                             || framework_managed_base(&name)
                             || self.wagtail_declaration_base(&name)
                             || self.wagtail_plain_snippet_base(&name, subclass)
+                            || self.django_plain_widget_or_field(&name, subclass)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -4167,7 +4170,9 @@ impl<'a> Graph<'a> {
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
-            ExpressionKind::DeferredLambda(_) => Value::DeferredLambda,
+            ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda => {
+                Value::DeferredLambda
+            }
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Divide(operands) if self.phase03 => {
                 let [left, right] = operands.as_slice() else {
@@ -4570,13 +4575,13 @@ impl<'a> Graph<'a> {
         let invocation = match value {
             Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
             Value::Provider(provider)
-                if self.phase03 && wagtail::is_snippet_base_provider(&provider) =>
+                if self.phase03 && is_bounded_declaration_provider(&provider) =>
             {
                 self.scope_issue(
                     scope,
                     at,
                     "unresolved_attribute_write",
-                    "Wagtail snippet base escapes to an unmodeled consumer",
+                    "framework declaration provider escapes to an unmodeled consumer",
                 );
                 return;
             }
@@ -5194,7 +5199,10 @@ impl<'a> Graph<'a> {
                             Value::ComprehensionResult
                         };
                         self.report_unmodeled_deferred_value(scope, expr.at, &value);
-                    } else if matches!(expr.kind, ExpressionKind::DeferredLambda(_)) {
+                    } else if matches!(
+                        expr.kind,
+                        ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda
+                    ) {
                         self.report_unmodeled_deferred_value(
                             scope,
                             expr.at,
@@ -5991,12 +5999,12 @@ impl<'a> Graph<'a> {
                             && let Some(receiver) = arguments.first()
                         {
                             self.record_unmodeled_class_write(scope, receiver, before);
-                            if self.wagtail_snippet_provider_write(scope, receiver, before) {
+                            if self.bounded_declaration_provider_write(scope, receiver, before) {
                                 self.scope_issue(
                                     scope,
                                     expr.at,
                                     "unresolved_attribute_write",
-                                    "Wagtail snippet base mutations are outside the bounded model",
+                                    "framework declaration provider mutations are outside the bounded model",
                                 );
                             }
                         }
@@ -6105,6 +6113,15 @@ impl<'a> Graph<'a> {
                                 at: expr.at,
                             });
                         } else {
+                            if self.phase03 {
+                                self.record_opaque_source_provider_arguments(CallArguments {
+                                    scope,
+                                    before,
+                                    at: expr.at,
+                                    positional: arguments,
+                                    keywords,
+                                });
+                            }
                             self.scope_issue(
                                 scope,
                                 expr.at,
@@ -6296,6 +6313,7 @@ impl<'a> Graph<'a> {
             | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda
             | ExpressionKind::DeferredLambda(_)
+            | ExpressionKind::DeferredBoolLambda
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -6475,6 +6493,20 @@ impl<'a> Graph<'a> {
         };
         self.lexical(scope, name, before)
             .filter(|&id| matches!(self.symbols[id].binding, Binding::Parameter))
+    }
+
+    fn bounded_declaration_provider_write(
+        &mut self,
+        scope: ScopeId,
+        receiver: &Expression,
+        before: Location,
+    ) -> bool {
+        let is_provider = |value| matches!(value, Value::Provider(name) if is_bounded_declaration_provider(&name));
+        is_provider(self.probe_identity(scope, receiver, before))
+            || self
+                .parameter_binding(scope, receiver, before)
+                .and_then(|parameter| self.namespace_parameter_default(parameter))
+                .is_some_and(is_provider)
     }
 
     fn call_argument_values(
@@ -7429,6 +7461,14 @@ impl<'a> Graph<'a> {
                             "star imports cannot resolve finite bindings at this location",
                         );
                     }
+                }
+                StatementKind::ProjectWildcardImport(_) => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unsupported_construct",
+                        "star imports cannot resolve finite bindings at this location",
+                    );
                 }
             }
         }
@@ -10499,6 +10539,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             StatementKind::ProviderWildcardImport(imports) => {
                 assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
             }
+            StatementKind::ProjectWildcardImport(_) => {}
             StatementKind::Assign {
                 names,
                 value,
@@ -10662,6 +10703,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
+            | ExpressionKind::DeferredBoolLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}
@@ -11277,6 +11319,10 @@ fn framework_managed_base(name: &str) -> bool {
         || django_migrations::is_migration_base(name)
 }
 
+fn is_bounded_declaration_provider(name: &str) -> bool {
+    wagtail::is_snippet_base_provider(name) || django_forms::is_declaration_provider(name)
+}
+
 fn is_django_runpython(name: &str) -> bool {
     matches!(
         name,
@@ -11401,6 +11447,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn django_settings_extracts_a_deferred_literal_callback() {
+        let source = concat!(
+            "DEBUG_TOOLBAR_CONFIG = {'SHOW_TOOLBAR_CALLBACK': lambda request: True}\n",
+            "def optional_helper(): return 1\n",
+        );
+        let report = analyze_phase03(&[module("settings.py", "settings", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(names(&report, Category::Function).contains(&"optional_helper"));
+
+        let called = concat!(
+            "def make_request(): return None\n",
+            "(lambda request: True)(make_request())\n",
+        );
+        let report = analyze_phase03(&[module("consumer.py", "consumer", called)], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_lambda_execution" && issue.line == Some(2)),
+            "{:?}",
+            report.issues
+        );
     }
 
     #[test]
@@ -11873,6 +11944,100 @@ configure()
                     .issues
                     .iter()
                     .any(|issue| issue.kind == expected_issue),
+                "{source}: {:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn plain_django_widget_and_char_field_preserve_local_unused_parameters() {
+        let report = analyze_phase03(
+            &[
+                module(
+                    "views.py",
+                    "views",
+                    concat!(
+                        "from django import forms\n",
+                        "from django.views import View\n",
+                        "class Thing(View):\n",
+                        "    def helper(self, unused_arg): return None\n",
+                        "class PickerWidget(forms.Widget):\n",
+                        "    def value_from_datadict(self, data, files, name): return data.get(name)\n",
+                        "def use(): return Thing, PickerWidget\n",
+                        "use()\n",
+                    ),
+                ),
+                module(
+                    "fields.py",
+                    "fields",
+                    concat!(
+                        "from django.db import models\n",
+                        "class Upper(models.CharField):\n",
+                        "    def from_db_value(self, value, expression, connection): return value\n",
+                        "def _private(value, unused_flag): return value\n",
+                        "_private(1, 2)\n",
+                    ),
+                ),
+            ],
+            &[],
+        );
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for parameter in [
+            "views.Thing.helper.unused_arg",
+            "views.PickerWidget.value_from_datadict.files",
+            "fields.Upper.from_db_value.expression",
+            "fields.Upper.from_db_value.connection",
+            "fields._private.unused_flag",
+        ] {
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|row| row.category == Category::Parameter && row.full_name == parameter),
+                "{parameter}: {:?}",
+                report.findings
+            );
+        }
+    }
+
+    #[test]
+    fn django_widget_and_char_field_keep_unmodeled_class_effects_incomplete() {
+        for (source, issue) in [
+            (
+                concat!(
+                    "from django.forms.widgets import Widget\n",
+                    "class Child(Widget):\n",
+                    "    class Media:\n",
+                    "        js = ['app.js']\n",
+                    "Child().media\n",
+                ),
+                "unresolved_subclass_hook",
+            ),
+            (
+                concat!(
+                    "from django.forms.widgets import Widget\n",
+                    "from django.forms.widgets import MediaDefiningClass\n",
+                    "def replacement(*args): return None\n",
+                    "setattr(MediaDefiningClass, '__new__', replacement)\n",
+                    "class Child(Widget): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from django.db.models import CharField\n",
+                    "def patch(parent):\n",
+                    "    setattr(parent, '__init_subclass__', lambda: None)\n",
+                    "patch(CharField)\n",
+                    "class Child(CharField): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+        ] {
+            let report = analyze_phase03(&[module("app.py", "app", source)], &[]);
+            assert!(
+                report.issues.iter().any(|row| row.kind == issue),
                 "{source}: {:?}",
                 report.issues
             );

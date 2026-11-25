@@ -83,22 +83,6 @@ impl Graph<'_> {
             })
     }
 
-    pub(super) fn wagtail_snippet_provider_write(
-        &mut self,
-        scope: ScopeId,
-        receiver: &Expression,
-        before: Location,
-    ) -> bool {
-        matches!(self.probe_identity(scope, receiver, before), Value::Provider(provider)
-            if is_snippet_base_provider(&provider))
-            || self
-                .parameter_binding(scope, receiver, before)
-                .and_then(|parameter| self.namespace_parameter_default(parameter))
-                .is_some_and(|value| {
-                    matches!(value, Value::Provider(provider) if is_snippet_base_provider(&provider))
-                })
-    }
-
     fn wagtail_declaration(&mut self, class: SymbolId) -> Option<(Declaration, ScopeId)> {
         let Binding::Definition(definition, body) = self.symbols[class].binding else {
             return None;

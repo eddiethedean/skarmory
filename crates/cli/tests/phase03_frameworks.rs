@@ -3325,6 +3325,81 @@ app = FastAPI()
 }
 
 #[test]
+fn project_wildcard_reads_finite_settings_exports_from_a_selected_sibling() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let conf = root.join("conf");
+    fs::create_dir(&conf).unwrap();
+    fs::write(conf.join("__init__.py"), "").unwrap();
+    let base = conf.join("settings.py");
+    let provider = "INSTALLED_APPS = ['django.contrib.auth']\n\
+                    CUSTOM_FLAG = True\n\
+                    _PRIVATE = False\n";
+    fs::write(&base, provider).unwrap();
+    fs::write(
+        conf.join("settings_production.py"),
+        "from conf.settings import *\nPRODUCTION_ONLY = True\n",
+    )
+    .unwrap();
+    fs::write(conf.join("constants.py"), "STALE_CONSTANT = 1\n").unwrap();
+    fs::write(
+        conf.join("consumer.py"),
+        "from conf.settings_production import CUSTOM_FLAG\n\
+         if not CUSTOM_FLAG:\n    raise RuntimeError()\n",
+    )
+    .unwrap();
+
+    let report = scan(root);
+    let unused = findings(&report, "unused_variables");
+    assert!(
+        unused.contains(&"conf.constants.STALE_CONSTANT"),
+        "{report}"
+    );
+    assert!(!unused.contains(&"conf.settings.CUSTOM_FLAG"), "{report}");
+    assert!(findings(&report, "unused_imports").is_empty(), "{report}");
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let unresolved = |report: &Value| {
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| {
+                    error["kind"] == "unsupported_construct"
+                        && error["file"] == "conf/settings_production.py"
+                        && error["line"] == 1
+                }),
+            "{report}"
+        );
+    };
+    fs::write(&base, format!("{provider}__all__ = []\n")).unwrap();
+    unresolved(&scan_with_exit(root, None, Some(cache.path()), 2));
+    fs::write(
+        &base,
+        format!("from __future__ import annotations\n{provider}"),
+    )
+    .unwrap();
+    unresolved(&scan_with_exit(root, None, Some(cache.path()), 2));
+    fs::write(&base, provider).unwrap();
+    fs::create_dir(conf.join("settings")).unwrap();
+    fs::write(conf.join("settings/__init__.py"), "CUSTOM_FLAG = False\n").unwrap();
+    unresolved(&scan_with_excludes(
+        root,
+        None,
+        Some(cache.path()),
+        &["conf/settings/"],
+        2,
+    ));
+}
+
+#[test]
 fn fastapi_wildcard_imports_require_known_external_provider_identity() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -9539,4 +9614,65 @@ fn assert_provider_cache_equivalence(root: &Path, cache: &Path, report: &Value, 
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(&cached, report);
     }
+}
+
+#[test]
+fn source_provider_dispatch_does_not_invoke_a_factory_class_before_definition() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let header = r#"def select(kind):
+    if kind == "live":
+        return Live()
+    return Fallback()
+
+def run(kind, value):
+    provider = select(kind)
+    return provider.execute(value)
+"#;
+    let classes = r#"class Live:
+    def execute(self, value): return {"value": value}
+
+class Fallback:
+    def execute(self, value): return {"fallback": value}
+"#;
+    let call = "RESULT = run('live', 1)\n";
+    let source = root.join("main.py");
+    fs::write(&source, format!("{header}\n{call}\n{classes}")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "main.py", 8);
+    assert!(!provider_call(&report, "main.Live.execute", "certain"));
+
+    fs::write(source, format!("{header}\n{classes}\n{call}")).unwrap();
+    let report = scan(root);
+    assert_provider_call(&report, "main.Live.execute", "certain");
+    assert!(unreachable_functions(&report).contains(&"main.Fallback.execute"));
+}
+
+#[test]
+fn source_provider_dispatch_keeps_opaque_class_mutations_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("main.py"),
+        r#"from unittest.mock import patch
+
+class Provider:
+    def execute(self, value): return {"value": value}
+
+def run(provider, value):
+    return provider.execute(value)
+
+def replacement(self, value):
+    return {"replacement": value}
+
+with patch.object(Provider, 'execute', replacement):
+    RESULT = run(Provider(), 1)
+"#,
+    )
+    .unwrap();
+
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "main.py", 7);
+    assert!(!provider_call(&report, "main.Provider.execute", "certain"));
+    assert!(!provider_call(&report, "main.Provider.execute", "possible"));
 }

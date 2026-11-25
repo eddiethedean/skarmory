@@ -98,6 +98,7 @@ pub enum StatementKind {
     Define(Definition),
     Import(Import),
     ProviderWildcardImport(Vec<Import>),
+    ProjectWildcardImport(String),
     Assign {
         names: Vec<Name>,
         value: Option<Expression>,
@@ -304,6 +305,7 @@ pub enum ExpressionKind {
     IdentityLambda,
     IdentityDecoratorLambda,
     DeferredLambda(Box<Expression>),
+    DeferredBoolLambda,
     EmptyListComprehension,
     Sequence {
         items: Vec<Expression>,
@@ -367,6 +369,15 @@ pub struct ComprehensionIterator {
 
 /// Extract Rust-owned facts and comment locations from the same parsed snapshot.
 pub fn extract(source: &str) -> Result<ModuleFacts, FrontendError> {
+    extract_module(source, false)
+}
+
+/// Preserve a top-level project wildcard for finite source resolution.
+pub fn extract_with_project_wildcards(source: &str) -> Result<ModuleFacts, FrontendError> {
+    extract_module(source, true)
+}
+
+fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, FrontendError> {
     let (parsed, lines) = parse_source(source)?;
     let Mod::Module(syntax) = parsed.syntax() else {
         unreachable!("module mode always produces a module AST");
@@ -420,6 +431,7 @@ pub fn extract(source: &str) -> Result<ModuleFacts, FrontendError> {
         SyntaxScope::ModuleOrClass,
         BTreeMap::new(),
         &named_condition,
+        project_wildcards,
     )
     .suite(&syntax.body, 0)?;
     Ok(ModuleFacts {
@@ -494,6 +506,7 @@ struct Lowering<'a>(
     SyntaxScope,
     BTreeMap<String, Location>,
     &'a Cell<Option<Location>>,
+    bool,
 );
 
 struct BodyCoverage<'a> {
@@ -722,6 +735,7 @@ impl Lowering<'_> {
         module: &str,
         level: u32,
         from: bool,
+        top_level: bool,
     ) -> Result<(), FrontendError> {
         for alias in names {
             let name = alias.name.as_str();
@@ -749,6 +763,13 @@ impl Lowering<'_> {
                     output.push(Statement {
                         at,
                         kind: StatementKind::ProviderWildcardImport(imports),
+                    });
+                    continue;
+                }
+                if self.4 && top_level && from && level == 0 {
+                    output.push(Statement {
+                        at: self.0.locate(alias.start()),
+                        kind: StatementKind::ProjectWildcardImport(module.into()),
                     });
                     continue;
                 }
@@ -824,12 +845,19 @@ impl Lowering<'_> {
             let kind = match statement {
                 Stmt::Pass(_) => continue,
                 Stmt::Import(node) if !node.is_lazy => {
-                    self.imports(&mut result, &node.names, "", 0, false)?;
+                    self.imports(&mut result, &node.names, "", 0, false, depth == 0)?;
                     continue;
                 }
                 Stmt::ImportFrom(node) if !node.is_lazy => {
                     let module = node.module.as_ref().map_or("", |module| module.as_str());
-                    self.imports(&mut result, &node.names, module, node.level, true)?;
+                    self.imports(
+                        &mut result,
+                        &node.names,
+                        module,
+                        node.level,
+                        true,
+                        depth == 0,
+                    )?;
                     continue;
                 }
                 Stmt::FunctionDef(node) => {
@@ -865,6 +893,7 @@ impl Lowering<'_> {
                         },
                         BTreeMap::new(),
                         self.3,
+                        self.4,
                     );
                     let body = if !is_async
                         && parameters.is_empty()
@@ -1003,8 +1032,14 @@ impl Lowering<'_> {
                             .map(|keyword| expression(&keyword.value))
                             .transpose()?,
                         is_generator: false,
-                        body: Lowering(self.0, SyntaxScope::ModuleOrClass, BTreeMap::new(), self.3)
-                            .suite(&node.body, next)?,
+                        body: Lowering(
+                            self.0,
+                            SyntaxScope::ModuleOrClass,
+                            BTreeMap::new(),
+                            self.3,
+                            self.4,
+                        )
+                        .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
                         decorators: node
                             .decorator_list
@@ -1367,6 +1402,12 @@ impl Lowering<'_> {
             Expr::Lambda(node) if node.parameters.as_ref().is_none_or(|parameters| parameters.is_empty()) => {
                 ExpressionKind::DeferredLambda(Box::new(lower(&node.body)?))
             }
+            Expr::Lambda(node)
+                if lambda_parameter(node).is_some()
+                    && matches!(node.body.as_ref(), Expr::BooleanLiteral(_)) =>
+            {
+                ExpressionKind::DeferredBoolLambda
+            }
             Expr::NoneLiteral(_) => ExpressionKind::None,
             Expr::ListComp(node)
                 if node.generators.first().is_some_and(|first| {
@@ -1527,7 +1568,7 @@ impl Lowering<'_> {
                 .or_insert_with(|| self.0.locate(target.start()));
             targets.push(target);
         }
-        let mut child = Self(self.0, self.1, self.2.clone(), self.3);
+        let mut child = Self(self.0, self.1, self.2.clone(), self.3, self.4);
         child.2.extend(local_targets);
         let iterators = generators
             .iter()

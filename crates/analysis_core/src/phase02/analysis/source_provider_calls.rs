@@ -152,6 +152,32 @@ impl<'a> Graph<'a> {
         (!constructor.verified && constructor.target == *class).then_some(*class)
     }
 
+    pub(super) fn record_opaque_source_provider_arguments(&mut self, call: CallArguments<'_>) {
+        let mut targets = BTreeSet::new();
+        for expression in call
+            .positional
+            .iter()
+            .chain(call.keywords.iter().map(|(_, value)| value))
+        {
+            if matches!(
+                expression.kind,
+                ExpressionKind::Name(_)
+                    | ExpressionKind::Member(..)
+                    | ExpressionKind::Call { .. }
+                    | ExpressionKind::Sequence { .. }
+                    | ExpressionKind::Dictionary(_)
+            ) {
+                let identity = self.probe_identity(call.scope, expression, call.before);
+                collect_opaque_provider_arguments(&identity, &mut targets);
+            }
+        }
+        let before = self.source_provider_opaque_arguments.len();
+        self.source_provider_opaque_arguments.extend(targets);
+        if before != self.source_provider_opaque_arguments.len() {
+            self.source_provider_invalidated = None;
+        }
+    }
+
     pub(super) fn activate_source_provider_calls(
         &mut self,
         reach: &mut Reachability,
@@ -170,6 +196,7 @@ impl<'a> Graph<'a> {
         let invalidated = self.source_provider_invalidated.take().unwrap_or_else(|| {
             let mut invalidated = self.field_callback_replacements();
             invalidated.extend(self.escaped_field_callbacks());
+            invalidated.extend(&self.source_provider_opaque_arguments);
             invalidated
         });
         for (owner, site) in sites {
@@ -270,14 +297,18 @@ impl<'a> Graph<'a> {
                     before,
                     Some((selector, &text)),
                 )?;
-                if invalidated.contains(&factory) {
+                if invalidated.contains(&factory)
+                    || !self.source_provider_definition_precedes(factory, access)
+                {
                     return None;
                 }
                 class
             }
             _ => return None,
         };
-        if !self.plain_default_provider(class, access, invalidated) {
+        if !self.source_provider_definition_precedes(class, access)
+            || !self.plain_default_provider(class, access, invalidated)
+        {
             return None;
         }
         let Some(Value::Callable(invocation)) =
@@ -296,6 +327,26 @@ impl<'a> Graph<'a> {
         .then_some((invocation.target, class))
     }
 
+    fn source_provider_definition_precedes(
+        &self,
+        target: SymbolId,
+        (mut caller, mut at): (ScopeId, Location),
+    ) -> bool {
+        let binding = &self.symbols[target];
+        if self.scopes[binding.scope].file != self.scopes[caller].file {
+            // Imports from another module use the initialization graph's
+            // existing check for cycles and unresolved imported bindings.
+            return true;
+        }
+        // A nested caller can execute as soon as its outermost definition
+        // becomes available. Check the earliest possible module location.
+        while let Some(owner) = self.scopes[caller].owner {
+            at = self.symbols[owner].name.at;
+            caller = self.symbols[owner].scope;
+        }
+        position(binding.name.at) < position(at)
+    }
+
     pub(super) fn report_source_provider_calls(&mut self, reach: &Reachability) {
         for (&owner, site) in &self.source_provider_calls {
             if reach.scopes.contains(&site.scope)
@@ -311,6 +362,23 @@ impl<'a> Graph<'a> {
                 );
             }
         }
+    }
+}
+
+fn collect_opaque_provider_arguments(value: &Value, targets: &mut BTreeSet<SymbolId>) {
+    match value {
+        Value::Callable(invocation) if !invocation.verified => {
+            targets.insert(invocation.target);
+        }
+        Value::Instance(class) => {
+            targets.insert(*class);
+        }
+        Value::Mapping(values) | Value::Sequence(values) | Value::Alternatives(values) => {
+            for value in values {
+                collect_opaque_provider_arguments(value, targets);
+            }
+        }
+        _ => {}
     }
 }
 

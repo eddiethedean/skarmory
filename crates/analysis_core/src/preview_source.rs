@@ -709,6 +709,41 @@ impl Project {
             && self.package_submodule_absent(package, module)
     }
 
+    pub(super) fn root_package_source_unambiguous(
+        &self,
+        initializer: &str,
+        source: &str,
+        package: &str,
+        module: &str,
+    ) -> bool {
+        let package_path = Path::new(package);
+        let source_name = format!("{module}.py");
+        let no_competitor = |directory: &Path, module, chosen, kind| {
+            self.directories.get(directory).is_some_and(|entries| {
+                entries.iter().all(|(name, entry)| {
+                    (name == OsStr::new(chosen) && *entry == kind)
+                        || !entry_may_supply_module(name, *entry, module)
+                })
+            })
+        };
+        Path::new(initializer) == package_path.join("__init__.py")
+            && Path::new(source) == package_path.join(&source_name)
+            && self.search.iter().all(|root| root == &self.base)
+            && no_competitor(&self.base, package, package, SeenEntry::Directory)
+            && no_competitor(
+                &self.base.join(package),
+                "__init__",
+                "__init__.py",
+                SeenEntry::SourceFile,
+            )
+            && no_competitor(
+                &self.base.join(package),
+                module,
+                &source_name,
+                SeenEntry::SourceFile,
+            )
+    }
+
     pub(super) fn root_flat_module_unambiguous(&self, source: &str, module: &str) -> bool {
         Path::new(source)
             .parent()
