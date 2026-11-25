@@ -2259,6 +2259,9 @@ impl Graph<'_> {
                 {
                     continue;
                 }
+                if self.unresolved_django_command_lookup(class, (call.scope, call.at)) {
+                    continue;
+                }
                 if let Some(Value::Callable(invocation)) = self.class_member(class, &call.member, 0)
                     && !self.receiver_conflicts(invocation.bind_receiver(Receiver::Bound(class)))
                 {
@@ -2444,6 +2447,18 @@ impl Graph<'_> {
             ("execute", None),
             ("handle", None),
         ] {
+            if name == "__getattribute__"
+                && self
+                    .django_class_value(class, "__getattr__", module)
+                    .is_some()
+            {
+                self.django_registration_issue(
+                    object,
+                    at,
+                    "Django command fallback attribute lookup is unresolved",
+                );
+                break;
+            }
             let Some(value) = self.django_class_value(class, name, module) else {
                 continue;
             };
@@ -2541,6 +2556,36 @@ impl Graph<'_> {
                 }
                 break;
             }
+        }
+    }
+
+    pub(super) fn is_django_command_class(&mut self, class: SymbolId) -> bool {
+        self.phase03
+            && self.is_class(class)
+            && self.has_command_namespace(self.scopes[self.symbols[class].scope].file)
+            && self.framework_class_role(class, &mut BTreeSet::new(), 0)
+                == Some(FrameworkClassRole::DjangoCommand)
+    }
+
+    pub(super) fn unresolved_django_command_lookup(
+        &mut self,
+        class: SymbolId,
+        (scope, at): (ScopeId, Location),
+    ) -> bool {
+        if self.is_django_command_class(class)
+            && ["__getattribute__", "__getattr__"]
+                .into_iter()
+                .any(|name| self.django_class_value(class, name, scope).is_some())
+        {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_descriptor",
+                "Django command instance attribute lookup depends on a custom hook",
+            );
+            true
+        } else {
+            false
         }
     }
 

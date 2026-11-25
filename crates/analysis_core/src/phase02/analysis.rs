@@ -2655,6 +2655,11 @@ impl<'a> Graph<'a> {
             Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
                 if self.is_class(class) =>
             {
+                if matches!(base, Value::Instance(_))
+                    && self.unresolved_django_command_lookup(class, access)
+                {
+                    return Value::Unknown;
+                }
                 let member = self
                     .class_member_at(class, name, depth, Some(access))
                     .unwrap_or(Value::Unknown);
@@ -4304,6 +4309,9 @@ impl<'a> Graph<'a> {
                 };
                 for class in receivers {
                     if !self.resolved_receiver_calls.insert((index, class)) {
+                        continue;
+                    }
+                    if self.unresolved_django_command_lookup(class, (call.scope, call.at)) {
                         continue;
                     }
                     match self.class_member_at(class, &call.member, 0, Some((call.scope, call.at)))
@@ -6581,7 +6589,9 @@ impl<'a> Graph<'a> {
                     if matches!(
                         definition.name.text.as_str(),
                         "__getattribute__" | "__getattr__"
-                    ) && self.scopes[scope].owner.is_some_and(|id| self.is_class(id))
+                    ) && let Some(owner) = self.scopes[scope].owner
+                        && self.is_class(owner)
+                        && !self.is_django_command_class(owner)
                     {
                         self.scope_issue(
                             scope,
@@ -13918,6 +13928,48 @@ selected = Command.handle\n";
                 .iter()
                 .any(|entry| entry.kind == "direct_call" && entry.full_name.ends_with(".original"))
         );
+    }
+
+    #[test]
+    fn phase03_django_command_lookup_hooks_require_a_reached_dispatch() {
+        for hook in ["__getattribute__", "__getattr__"] {
+            let module_name = "demo.management.commands.audit";
+            let source = format!(
+                "from django.core.management.base import BaseCommand\n\
+class Command(BaseCommand):\n    def {hook}(self, name): return unknown()\n    def handle(self, *args, **options): return 1\n"
+            );
+            let command = || module("demo/management/commands/audit.py", module_name, &source);
+            let dormant = analyze_phase03(&[command()], &[]);
+            assert!(dormant.issues.is_empty(), "{hook}: {:?}", dormant.issues);
+            let active = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    command(),
+                ],
+                &[],
+            );
+            assert!(
+                active
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration"),
+                "{hook}: {:?}",
+                active.issues
+            );
+            assert!(
+                !active
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "django_command"
+                        && entry.full_name.ends_with(".Command.handle"))
+            );
+        }
     }
 
     #[test]
