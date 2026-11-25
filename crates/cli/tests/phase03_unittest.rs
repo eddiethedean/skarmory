@@ -120,7 +120,8 @@ class ServiceTests(TestCase):
     let empty_path = root.join("test_empty.py");
     let empty = r#"from unittest import TestCase
 
-def setUpModule(): return 1
+def configure(): return 1
+setUpModule = configure
 def tearDownModule(): return 2
 def configure_class(): return 3
 def finish_class(): return 4
@@ -146,7 +147,7 @@ class Empty(TestCase):
         "unused_functions",
         "test_service.unused_cleanup"
     ));
-    let module_hooks = ["test_empty.setUpModule", "test_empty.tearDownModule"];
+    let module_hooks = ["test_empty.configure", "test_empty.tearDownModule"];
     let class_hooks = [
         "test_empty.Empty.setUpClass",
         "test_empty.Empty.tearDownClass",
