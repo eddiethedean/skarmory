@@ -18,6 +18,7 @@ impl Graph<'_> {
         }
         if self.terminal_django_url_assignment(scope, statement)
             || self.terminal_unbound_flask_initializer(scope, statement)
+            || self.terminal_flask_factory_initializer(scope, statement)
         {
             return true;
         }

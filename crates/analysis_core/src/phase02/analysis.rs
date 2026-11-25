@@ -8616,6 +8616,7 @@ impl<'a> Graph<'a> {
                     edge.kind,
                     "type_reference"
                         | "generator_creation"
+                        | "flask_factory_failed_call"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
                         | aiohttp::DECLARATION

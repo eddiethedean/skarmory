@@ -876,6 +876,17 @@ impl Lowering<'_> {
                             continue;
                         };
                         StatementKind::Evaluate(expression(value)?)
+                    } else if let Expr::YieldFrom(yielded) = &*node.value
+                        && self.1 == SyntaxScope::Function
+                        && match &*yielded.value {
+                            Expr::List(list) => list.elts.is_empty(),
+                            Expr::Tuple(tuple) => tuple.elts.is_empty(),
+                            _ => false,
+                        }
+                    {
+                        // Delegation to an empty built-in literal has no
+                        // effects. The function remains a generator.
+                        continue;
                     } else {
                         StatementKind::Evaluate(expression(&node.value)?)
                     }

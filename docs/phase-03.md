@@ -234,7 +234,10 @@ zero-argument factory call can return one fresh Flask app through local aliases.
 Defaulted factory parameters are supported when the factory can allocate the app
 without consulting them. A closed module initializer that stops on a proven
 missing binding or incompatible decorator receiver contributes no later
-registrations. Selected importers of a failed module retain incomplete coverage. The scanner treats
+registrations. This includes a factory call that fails argument binding or
+reaches an unbound name before any application mutation. A fresh generator
+used immediately as a decorator receiver cannot register the callback.
+Selected importers of a failed module retain incomplete coverage. The scanner treats
 literal `g.pop(key, None)` as empty only when the selected code establishes
 that the context key has no writers or opaque access. A resolved Flask-Login
 manager records reached loader and error callback registrations through its

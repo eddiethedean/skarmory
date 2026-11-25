@@ -1106,6 +1106,42 @@ def callback(): return {}
 }
 
 #[test]
+fn flask_login_consumer_fails_before_exposing_the_manager_to_an_unbound_name() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let web = root.join("web.py");
+    fs::write(
+        root.join("providers.py"),
+        "from flask_login import LoginManager\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    let setup = "from providers import login\nvalues = {'manager': login}; opaque(values)\n";
+    let callback = "@login.user_loader\ndef callback(user_id): return user_id\n";
+    fs::write(&web, format!("{setup}{callback}")).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["web.callback"]);
+
+    let importer = root.join("consumer.py");
+    fs::write(&importer, "from web import callback\n").unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["file"] == "consumer.py" && error["kind"] == "unresolved_import"
+            }),
+        "{report}"
+    );
+    fs::remove_file(importer).unwrap();
+
+    fs::write(&web, format!("def opaque(values): pass\n{setup}{callback}")).unwrap();
+    let report = scan(root);
+    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+}
+
+#[test]
 fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1185,6 +1221,120 @@ fn flask_login_empty_provider_lookalike_has_no_registration_method() {
     .unwrap();
     let report = scan(project.path());
     assert_eq!(findings(&report, "unused_functions"), ["app.handler"]);
+}
+
+#[test]
+fn flask_factory_consumer_stops_at_proven_initialization_failures() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let web = root.join("web.py");
+    let callback = "@app.shell_context_processor\ndef callback(): return {}\n";
+    let factory = "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n";
+
+    for (source, mutation) in [
+        (
+            format!("{factory}    return app\n"),
+            "app.shell_context_processor = missing\n",
+        ),
+        (
+            format!("{factory}    return app\n"),
+            "alias = app\nalias.shell_context_processor = missing\n",
+        ),
+        (
+            format!("{factory}    return app\n"),
+            "setattr(app, 'shell_context_processor', missing)\n",
+        ),
+        (
+            format!("{factory}    return app\n"),
+            "if missing:\n    app = replacement\n",
+        ),
+        (format!("{factory}    yield 1\n    return app\n"), ""),
+        (format!("{factory}    yield from []\n    return app\n"), ""),
+        (
+            "from flask import Flask\ndef create_app(Flask): return Flask(__name__)\n".into(),
+            "",
+        ),
+        (
+            "from flask import Flask\ndef create_app(): return missing\n".into(),
+            "",
+        ),
+        (
+            format!("{factory}    app.shell_context_processor = missing\n    return app\n"),
+            "",
+        ),
+        (
+            format!(
+                "{factory}    setattr(app, 'shell_context_processor', missing)\n    return app\n"
+            ),
+            "",
+        ),
+        (
+            format!("{factory}    alias = app\n    opaque(alias)\n    return app\n"),
+            "",
+        ),
+        (
+            format!("{factory}    holder.value = app\n    return app\n"),
+            "",
+        ),
+    ] {
+        fs::write(&provider, &source).unwrap();
+        fs::write(
+            &web,
+            format!("from providers import create_app\napp = create_app()\n{mutation}{callback}"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert!(
+            findings(&report, "unused_functions").contains(&"web.callback"),
+            "{source}{mutation}\n{report}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(&provider, format!("{factory}    return app\n")).unwrap();
+    fs::write(
+        &web,
+        format!("from providers import create_app\napp = create_app()\n{callback}"),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(
+        !findings(&report, "unused_functions").contains(&"web.callback"),
+        "{report}"
+    );
+
+    // A resolved callee before the factory returns may actually change the application.
+    fs::write(&provider, format!("def opaque(app): app.shell_context_processor = lambda fn: fn\n{factory}    opaque(app)\n    return app\n")).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["kind"] == "unresolved_decorator"),
+        "{report}"
+    );
+
+    // An escaped generator may be consumed before attempting the decoration.
+    fs::write(&provider, format!("{factory}    yield app\n")).unwrap();
+    fs::write(
+        &web,
+        format!("from providers import create_app\napp = create_app()\nopaque(app)\n{callback}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["kind"] == "unresolved_generator_execution"),
+        "{report}"
+    );
 }
 
 #[test]
