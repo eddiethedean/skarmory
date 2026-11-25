@@ -34,6 +34,7 @@ pub(super) struct Mutations {
     modules: BTreeMap<String, Vec<Write>>,
     command_namespaces: BTreeSet<ScopeId>,
     command_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
+    form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     flask_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
@@ -141,6 +142,17 @@ impl Graph<'_> {
                     && matches!(self.probe_identity(file, mapping, at), Value::CommandNamespace(owner) if owner == file) =>
                 {
                     self.index_command_global(file, at, name, value, conditional);
+                }
+                StatementKind::WriteModuleEntry {
+                    mapping:
+                        Expression {
+                            kind: ExpressionKind::Member(class, table),
+                            ..
+                        },
+                    module: field,
+                    value: Some(value),
+                } if matches!(table.as_str(), "base_fields" | "declared_fields") => {
+                    self.index_django_form_table_field(file, at, class, field, value, conditional);
                 }
                 StatementKind::WriteModuleEntry {
                     mapping,
@@ -446,6 +458,63 @@ impl Graph<'_> {
         true
     }
 
+    fn index_django_form_table_field(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        class: &Expression,
+        field: &str,
+        value: &Expression,
+        conditional: bool,
+    ) {
+        let Value::Callable(invocation) = self.probe_identity(file, class, at) else {
+            return;
+        };
+        let class = invocation.target;
+        if !self.is_class(class) || !self.django_plain_form_tables(class, (file, at)) {
+            return;
+        }
+        let replacement = self.probe_identity(file, value, at);
+        let value = if conditional
+            || !matches!(replacement, Value::DjangoField(django_forms::Field::Form))
+        {
+            MemberWriteValue::Ambiguous
+        } else {
+            self.mutations.modeled.insert((file, position(at)));
+            MemberWriteValue::Replacement(replacement)
+        };
+        self.mutations
+            .form_table_fields
+            .entry(class)
+            .or_default()
+            .entry(field.into())
+            .or_default()
+            .push(Write { file, at, value });
+    }
+
+    pub(super) fn has_django_form_table_edits(&self, class: SymbolId) -> bool {
+        self.mutations.form_table_fields.contains_key(&class)
+    }
+
+    pub(super) fn django_form_table_fields_at(
+        &self,
+        class: SymbolId,
+        access: (ScopeId, Location),
+    ) -> Option<Vec<String>> {
+        let original = self.scopes[self.symbols[class].scope].file;
+        let mut fields = Vec::new();
+        if let Some(table) = self.mutations.form_table_fields.get(&class) {
+            for (name, writes) in table {
+                match self.write_value(writes, Some(original), access) {
+                    Some(MemberWriteValue::Replacement(_)) => fields.push(name.clone()),
+                    None => {}
+                    _ => return None,
+                }
+            }
+        }
+        Some(fields)
+    }
+
     pub(super) fn command_global_write(
         &self,
         file: ScopeId,
@@ -515,6 +584,10 @@ impl Graph<'_> {
                                 .into_iter()
                                 .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoSignal && member == "connect"
+                        || matches!(
+                            role,
+                            FrameworkClassRole::DjangoForm | FrameworkClassRole::DjangoModelForm
+                        ) && matches!(member, "base_fields" | "declared_fields")
                 })
             }
             ReceiverKey::Module(module) => {

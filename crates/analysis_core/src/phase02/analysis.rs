@@ -4881,6 +4881,7 @@ impl<'a> Graph<'a> {
                     Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
                     Value::DjangoFormValidation(Some(class)) => self.record_django_form_validation(
                         class,
+                        function,
                         CallArguments {
                             scope, before, at: expr.at, positional: arguments, keywords,
                         },
@@ -13350,6 +13351,42 @@ class Replacement(BaseCommand):\n    def handle(self, *args, **options):\n      
                 callbacks,
                 [format!("demo.management.commands.audit.{selected}.handle")],
                 "{write}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_form_table_edits_follow_instance_construction() {
+        let form = "from django import forms\n\
+class Contact(forms.Form):\n    def clean_phone(self):\n        return 'ok'\n";
+        for (table, instance, retained) in [
+            ("base_fields", "", true),
+            ("declared_fields", "", true),
+            ("base_fields", "form = Contact({'phone': '123'})\n", false),
+            (
+                "declared_fields",
+                "form = Contact({'phone': '123'})\n",
+                false,
+            ),
+        ] {
+            let validate = if retained {
+                "Contact({'phone': '123'}).is_valid()"
+            } else {
+                "alias = form\nalias.is_valid()"
+            };
+            let source = format!(
+                "{form}{instance}Contact.{table}['phone'] = forms.CharField()\n{validate}\n"
+            );
+            let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+            assert!(result.issues.is_empty(), "{source}: {:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|entry| {
+                    entry.kind == django_forms::VALIDATION_HOOK
+                        && entry.full_name == "app.Contact.clean_phone"
+                        && entry.certainty == "possible"
+                }),
+                retained,
+                "{source}"
             );
         }
     }
