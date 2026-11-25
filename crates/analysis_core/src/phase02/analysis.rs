@@ -5445,6 +5445,7 @@ impl<'a> Graph<'a> {
                                         at: expr.at,
                                         before,
                                     },
+                                    arguments,
                                     keywords,
                                 );
                             } else {
@@ -5778,6 +5779,7 @@ impl<'a> Graph<'a> {
                             at: expr.at,
                             before,
                         };
+                        self.record_fastapi_query_owner(object, site, arguments, keywords, false);
                         let lifespan = keywords.iter().find(|(name, value)| {
                             name == "lifespan" && !matches!(value.kind, ExpressionKind::None)
                         });
@@ -5828,6 +5830,7 @@ impl<'a> Graph<'a> {
                                 at: expr.at,
                                 before,
                             };
+                            self.record_fastapi_query_owner(object, site, arguments, keywords, true);
                             if let Some((_, lifespan)) = keywords.iter().find(|(name, value)| {
                                 name == "lifespan" && !matches!(value.kind, ExpressionKind::None)
                             }) {
@@ -9984,6 +9987,7 @@ impl<'a> Graph<'a> {
                 }),
         );
         self.remove_resolved_static_parameter_diagnostics(&reach);
+        self.report_fastapi_websocket_query_failures(&reach);
         let Reachability {
             scopes: reachable_scopes,
             symbols: reachable_symbols,
@@ -10347,6 +10351,7 @@ struct Reachability {
     resolved_static_parameter_calls: BTreeSet<usize>,
     closed_class_call_sites: BTreeSet<(ScopeId, [usize; 2], &'static str)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
+    fastapi_websocket_query_bindings: BTreeMap<SymbolId, bool>,
     fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
