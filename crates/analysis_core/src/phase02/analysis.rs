@@ -10750,6 +10750,33 @@ configure()
     }
 
     #[test]
+    fn celery_routes_respect_provider_rebinding_without_retiring_an_earlier_capture() {
+        let files = [
+            module(
+                "app.py",
+                "app",
+                concat!(
+                    "from celery import Celery as Original\n",
+                    "import celery\n",
+                    "def replacement(task_routes=None): return object()\n",
+                    "celery.Celery = replacement\n",
+                    "from celery import Celery as Recent\n",
+                    "app = Original(task_routes=('routers.active',))\n",
+                    "lookalike = Recent(task_routes=('routers.fake',))\n",
+                ),
+            ),
+            module(
+                "routers.py",
+                "routers",
+                "def active(*args, **kwargs): pass\ndef fake(*args, **kwargs): pass\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["fake"]);
+    }
+
+    #[test]
     fn django_runpython_preserves_only_supplied_callback_parameters() {
         let files = [
             module(
