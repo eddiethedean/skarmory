@@ -651,6 +651,55 @@ if os.getenv('USE_HANDLER'):
 }
 
 #[test]
+fn fastapi_conditional_factory_keeps_handler_and_signature_as_possible() {
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    for (setup, returned) in [("", "FastAPI()"), ("    shared = FastAPI()\n", "shared")] {
+        fs::write(
+            &file,
+            format!(
+                r#"import os
+from fastapi import FastAPI
+
+def helper(): return 1
+def handle_error(request, exc): return helper()
+
+def create_app(flag):
+{setup}    if flag:
+        return {returned}
+    else:
+        return {returned}
+
+app = create_app(os.getenv('APP_CHOICE'))
+app.add_exception_handler(Exception, handle_error)
+"#
+            ),
+        )
+        .unwrap();
+        let report = scan(project.path());
+        assert!(findings(&report, "unused_functions").is_empty());
+        assert!(findings(&report, "unused_parameters").is_empty());
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        let handler = symbols
+            .iter()
+            .find(|entry| entry["qualified_name"] == "web.handle_error")
+            .unwrap();
+        let effects = handler["evidence"].as_array().unwrap();
+        assert!(
+            effects
+                .iter()
+                .any(|edge| edge["kind"] == "fastapi_exception_handler")
+        );
+        assert!(
+            effects
+                .iter()
+                .filter(|edge| edge["kind"] == "fastapi_exception_handler")
+                .all(|edge| edge["certainty"] == "possible")
+        );
+    }
+}
+
+#[test]
 fn fastapi_registration_tracks_ordered_method_replacement() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

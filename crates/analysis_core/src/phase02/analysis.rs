@@ -3182,6 +3182,9 @@ impl<'a> Graph<'a> {
                         self.with_explicit_receiver(invocation, arguments, keywords, recurse),
                     )
                 }
+                Value::Callable(invocation) if self.phase03 => {
+                    self.fastapi_conditional_app_result(invocation, arguments, keywords, depth + 1)
+                }
                 Value::ConstantFunction => Value::Scalar,
                 Value::NullaryConstantFunction if arguments.is_empty() && keywords.is_empty() => {
                     Value::Scalar
@@ -4493,6 +4496,21 @@ impl<'a> Graph<'a> {
                             "certain",
                         );
                     }
+                    Value::Alternatives(values)
+                        if self.phase03 && !values.is_empty() && values.iter().all(|value| {
+                            matches!(value, Value::Method(_, ObjectKind::App, name) if name == "add_exception_handler")
+                        }) =>
+                    {
+                        let objects: BTreeSet<_> = values.into_iter().filter_map(|value| {
+                            match value {
+                                Value::Method(object, ..) => Some(object),
+                                _ => None,
+                            }
+                        }).collect();
+                        self.fastapi_exception_handlers(objects, CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        }, true);
+                    }
                     Value::Alternatives(values) => {
                         let mut resolved = false;
                         let mut unresolved = false;
@@ -4736,34 +4754,14 @@ impl<'a> Graph<'a> {
                     Value::Method(parent, kind, method)
                         if self.phase03 && is_imperative_registration(kind, &method) =>
                     {
-                        let target = callback_argument(kind, &method, arguments, keywords);
-                        let value = target.map(|target| self.identity(scope, target, before, 0));
                         if method == "add_exception_handler" {
-                            if let Some(target) =
-                                value.and_then(|value| self.fastapi_hook_target(value))
-                            {
-                                self.fastapi_route(
-                                    parent,
-                                    target,
-                                    CallArguments {
-                                        scope,
-                                        before,
-                                        at: expr.at,
-                                        positional: arguments,
-                                        keywords,
-                                    },
-                                    &method,
-                                );
-                            } else {
-                                self.scope_issue(
-                                    scope,
-                                    expr.at,
-                                    "unresolved_registration",
-                                    "FastAPI exception handler could not be resolved",
-                                );
-                            }
+                            self.fastapi_exception_handlers([parent], CallArguments {
+                                scope, before, at: expr.at, positional: arguments, keywords,
+                            }, false);
                             return;
                         }
+                        let target = callback_argument(kind, &method, arguments, keywords);
+                        let value = target.map(|target| self.identity(scope, target, before, 0));
                         match value {
                             Some(Value::Callable(invocation)) => {
                                 if matches!(kind, ObjectKind::App | ObjectKind::Router) {
