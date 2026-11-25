@@ -629,7 +629,7 @@ impl Graph<'_> {
         for name in methods {
             match self.class_member_at(class, name, 0, Some((scope, at))) {
                 Some(Value::Callable(invocation))
-                    if self.bounded_converter_method(invocation.target) =>
+                    if self.bounded_framework_function(invocation.target) =>
                 {
                     let invocation = if self.receiver_parameter(invocation.target).is_some() {
                         invocation.bind_receiver(Receiver::Bound(class))
@@ -657,7 +657,7 @@ impl Graph<'_> {
         }
     }
 
-    fn bounded_converter_method(&mut self, target: SymbolId) -> bool {
+    fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
         let symbol = &self.symbols[target];
         let Binding::Definition(definition, _) = symbol.binding else {
             return false;
@@ -669,6 +669,37 @@ impl Graph<'_> {
                 let value = self.probe_identity(scope, decorator, definition.name.at);
                 self.local_identity_decorator(value, decorator)
             })
+    }
+
+    pub(super) fn register_django_autoreload(&mut self, call: CallArguments<'_>) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        if let Some([Some(callback)]) = registration_arguments(positional, keywords, ["main_func"])
+            && let Value::Callable(invocation) =
+                self.identity_with_dormant_declarations(scope, callback, before, 0)
+            && !invocation.verified
+            && !matches!(invocation.receiver, Receiver::Explicit(_))
+            && self.bounded_framework_function(invocation.target)
+        {
+            let certainty = if self.branch_depth == 0 {
+                "certain"
+            } else {
+                "possible"
+            };
+            self.invoke(scope, invocation, "django_autoreload", certainty, at);
+            return;
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_registration",
+            "Django autoreload requires a bounded synchronous callback",
+        );
     }
 
     pub(super) fn framework_class_role(

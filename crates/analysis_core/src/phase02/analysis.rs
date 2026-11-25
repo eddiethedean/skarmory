@@ -4482,6 +4482,17 @@ impl<'a> Graph<'a> {
                             .map(|target| self.identity(scope, target, before, 0));
                         self.record_django_signal(scope, signal, callback, expr.at);
                     }
+                    Value::Provider(name)
+                        if self.phase03 && name == "django.utils.autoreload.run_with_reloader" =>
+                    {
+                        self.register_django_autoreload(CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        });
+                    }
                     Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listen" => {
                         let callback = arguments.get(2).or_else(|| {
                             keywords

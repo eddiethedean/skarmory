@@ -1566,6 +1566,56 @@ fn django_management_settings_option_selects_the_installed_commands() {
 }
 
 #[test]
+fn django_autoreload_requires_a_reached_genuine_provider() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("startup.py"),
+        r#"from django.utils import autoreload
+
+def start():
+    return helper()
+
+def helper():
+    return 1
+
+def dormant():
+    return 2
+
+def unreached():
+    autoreload.run_with_reloader(dormant)
+
+def replaced():
+    return 3
+
+def noop(callback):
+    pass
+
+reload = autoreload.run_with_reloader
+autoreload.run_with_reloader = noop
+autoreload.run_with_reloader(replaced)
+reload(main_func=start)
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    let callbacks = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let roots: Vec<_> = callbacks
+        .iter()
+        .filter(|row| {
+            row["evidence"].as_array().unwrap().iter().any(|event| {
+                event["kind"] == "django_autoreload" && event["certainty"] == "certain"
+            })
+        })
+        .map(|row| row["qualified_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(roots, ["startup.start"]);
+    let unused = findings(&report, "unused_functions");
+    assert!(unused.contains(&"startup.dormant"));
+    assert!(!unused.contains(&"startup.helper"));
+}
+
+#[test]
 fn django_converter_protocol_requires_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
