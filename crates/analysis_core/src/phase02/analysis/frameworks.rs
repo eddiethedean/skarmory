@@ -3905,7 +3905,11 @@ impl Graph<'_> {
                             }));
                     }
                 }
-                Value::DjangoView(class) => self.activate_django_view(file, parent, class, at),
+                Value::DjangoView(class) => {
+                    let no_route_arguments = self.django_roots.contains(&parent)
+                        && defaults.is_some_and(|arguments| arguments.is_empty());
+                    self.activate_django_view(file, parent, class, at, no_route_arguments);
+                }
                 Value::DjangoInclude(child) => self.scopes[file].mounts.push((parent, child)),
                 Value::ConstantFunction | Value::NullaryConstantFunction => {}
                 _ => self.django_registration_issue(
@@ -3928,6 +3932,7 @@ impl Graph<'_> {
         object: Object,
         class: SymbolId,
         at: Location,
+        no_route_arguments: bool,
     ) {
         const LIFECYCLE: &str = "framework_lifecycle";
         self.scopes[file]
@@ -3939,6 +3944,7 @@ impl Graph<'_> {
                 return;
             }
         }
+        let mut framework_setup = true;
         for name in ["__init__", "setup"] {
             let Some(value) = self.django_class_value(class, name, file) else {
                 continue;
@@ -3960,6 +3966,19 @@ impl Graph<'_> {
                 let body = body_without_docstring(definition);
                 if django_unconditionally_raises(body) {
                     return;
+                }
+                if name == "setup"
+                    && self.django_view_installs_request(
+                        file,
+                        class,
+                        invocation.target,
+                        no_route_arguments,
+                    )
+                {
+                    // Request alone does not establish the argument state
+                    // consumed by inherited generic template dispatch.
+                    framework_setup = false;
+                    continue;
                 }
                 let no_effects = body.is_empty()
                     || matches!(
@@ -4040,7 +4059,10 @@ impl Graph<'_> {
         if methods.contains("head") && self.django_class_value(class, "head", file).is_none() {
             methods.insert("get".into());
         }
-        if methods.contains("get") && self.django_class_value(class, "get", file).is_none() {
+        if framework_setup
+            && methods.contains("get")
+            && self.django_class_value(class, "get", file).is_none()
+        {
             self.scopes[file]
                 .routes
                 .push((object, class, "django_view_default_dispatch"));
@@ -4049,6 +4071,90 @@ impl Graph<'_> {
         for method in methods {
             self.activate_django_hook(file, object, class, &method, LIFECYCLE, at);
         }
+    }
+
+    fn django_view_installs_request(
+        &mut self,
+        file: ScopeId,
+        class: SymbolId,
+        target: SymbolId,
+        no_route_arguments: bool,
+    ) -> bool {
+        let Binding::Definition(definition, body_scope) = self.symbols[target].binding else {
+            return false;
+        };
+        let [receiver, request, ..] = definition.parameters.as_slice() else {
+            return false;
+        };
+        let Some((write, prefix)) = body_without_docstring(definition).split_last() else {
+            return false;
+        };
+        if self.direct.contains(&target)
+            || definition.positional_parameter_count != 2
+            || !definition.required_keyword_only_parameters.is_empty()
+            || !(no_route_arguments
+                || definition.has_variadic_positional_parameter
+                    && definition.has_variadic_keyword_parameter)
+            || !matches!(&write.kind, StatementKind::WriteAttribute {
+                receiver: Expression { kind: ExpressionKind::Name(target), .. }, member,
+                value: Some(Expression { kind: ExpressionKind::Name(source), .. }),
+            } if target == &receiver.text && member == "request" && source == &request.text)
+            || ["request", "__setattr__"]
+                .into_iter()
+                .any(|name| self.django_class_value(class, name, file).is_some())
+            || prefix.iter().any(|statement| {
+                let StatementKind::Evaluate(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }) = &statement.kind
+                else {
+                    return true;
+                };
+                !arguments.is_empty()
+                    || !keywords.is_empty()
+                    || !self.django_view_setup_literal_helper(body_scope, statement.at, function)
+            })
+        {
+            return false;
+        }
+        let [line, column] = position(write.at);
+        self.scope_issues.retain(|(scope, issue)| {
+            *scope != body_scope
+                || issue.kind != "unresolved_attribute_write"
+                || (issue.line, issue.column) != (Some(line), Some(column))
+        });
+        true
+    }
+
+    fn django_view_setup_literal_helper(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        function: &Expression,
+    ) -> bool {
+        let Value::Callable(call) = self.probe_identity(scope, function, at) else {
+            return false;
+        };
+        let symbol = &self.symbols[call.target];
+        matches!(function.kind, ExpressionKind::Name(_))
+            && !call.verified
+            && matches!(call.receiver, Receiver::Ordinary)
+            && !call.implicit_descriptor_receiver
+            && symbol.scope == self.scopes[scope].file
+            && matches!(symbol.binding, Binding::Definition(definition, _)
+            if definition.kind == DefinitionKind::Function && !definition.is_generator
+                && definition.parameters.is_empty() && definition.decorators.is_empty()
+                && matches!(body_without_docstring(definition), [] | [Statement {
+                    kind: StatementKind::Return(None | Some(Expression {
+                        kind: ExpressionKind::None | ExpressionKind::Bool(_)
+                                | ExpressionKind::Scalar(_) | ExpressionKind::Text(_), ..
+                    })), ..
+                }]))
     }
 
     fn django_registration_issue(&mut self, object: Object, at: Location, message: &'static str) {

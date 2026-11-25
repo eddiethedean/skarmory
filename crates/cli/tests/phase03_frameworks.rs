@@ -6317,7 +6317,11 @@ urlpatterns = [path("", Home.as_view())]
     let report = scan(root);
     assert_eq!(
         findings(&report, "unused_functions"),
-        ["urls.Dormant.setup", "urls.dormant_setup"],
+        [
+            "urls.Audited.get",
+            "urls.Dormant.setup",
+            "urls.dormant_setup"
+        ],
         "{report}"
     );
     assert_setup_evidence(&report);
@@ -6327,6 +6331,15 @@ urlpatterns = [path("", Home.as_view())]
         assert_eq!(stats["hits"], hits);
         assert_eq!(cached, report);
     }
+
+    write_views("        self.request = request");
+    let report = scan(root);
+    assert_setup_evidence(&report);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["urls.Dormant.setup", "urls.dormant_setup"],
+        "{report}"
+    );
 
     write_views("        super().setup(request)");
     let incomplete = scan_with_exit(root, None, None, 2);
