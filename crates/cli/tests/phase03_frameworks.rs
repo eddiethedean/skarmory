@@ -2632,7 +2632,7 @@ install(Active)
     fs::write(&source, src).unwrap();
     let report = scan(root);
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "routes.Inactive.to_python",
             "routes.Inactive.to_url",
@@ -2650,6 +2650,7 @@ install(Active)
             "dead_code_evidence",
             "unused_functions",
             "unused_variables",
+            "suppressed",
         ] {
             assert_eq!(report[field], cached[field], "{field}");
         }
