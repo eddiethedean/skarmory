@@ -1146,6 +1146,7 @@ expires = "not a date"
             file: "main.py".into(),
             line: 1,
             column: 1,
+            method_owner: None,
             confidence: 90,
             rule_id: "SKY-U001",
             reason: "no_call_path_from_root",

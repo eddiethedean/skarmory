@@ -68,6 +68,7 @@ enum Value {
     CeleryBackend(Object),
     DeferredComprehension,
     ComprehensionResult,
+    DeferredLambda,
     Executor,
     Submit,
     Process(Box<Value>),
@@ -86,6 +87,7 @@ enum Value {
     BuiltinIterable,
     Scalar,
     ConstantFunction,
+    NullaryConstantFunction,
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     MissingFrameworkMember,
@@ -327,6 +329,7 @@ struct DirectArguments {
     arguments_bound: bool,
 }
 
+#[derive(Clone, Copy)]
 struct CallArguments<'a> {
     scope: ScopeId,
     before: Location,
@@ -481,6 +484,7 @@ pub(super) fn analyze_with_verification(
         has_hash_hooks: false,
         has_bool_hooks: false,
         has_length_hooks: false,
+        has_format_hooks: false,
         has_iteration_hooks: false,
         iteration_locals: Vec::new(),
         grep_verify: verification.is_some(),
@@ -540,6 +544,7 @@ pub(super) fn analyze_with_verification(
                 "__hash__" => graph.has_hash_hooks = true,
                 "__bool__" => graph.has_bool_hooks = true,
                 "__len__" => graph.has_length_hooks = true,
+                "__format__" | "__str__" | "__repr__" => graph.has_format_hooks = true,
                 "__iter__" | "__next__" | "__getitem__" => graph.has_iteration_hooks = true,
                 _ => {}
             }
@@ -558,6 +563,8 @@ pub(super) fn analyze_with_verification(
         graph.suite(scope, body);
     }
     if phase03 {
+        graph.collect_django_converter_wrappers();
+        graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
@@ -647,6 +654,7 @@ struct Graph<'a> {
     has_hash_hooks: bool,
     has_bool_hooks: bool,
     has_length_hooks: bool,
+    has_format_hooks: bool,
     has_iteration_hooks: bool,
     iteration_locals: Vec<([usize; 2], Value)>,
     grep_verify: bool,
@@ -664,7 +672,7 @@ struct Graph<'a> {
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
     django_converter: frameworks::DjangoConverter,
-    django_autoreload_wrappers: Vec<frameworks::DjangoAutoreloadWrapper>,
+    django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_registration_issues: Vec<(Object, Issue)>,
@@ -1561,6 +1569,7 @@ impl<'a> Graph<'a> {
                     | "pydantic_schema_build"
                     | "truth_test"
                     | "length_call"
+                    | "formatting_hook"
             ) || include_verification && edge.kind == "grep_dynamic_call")
                 && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
@@ -1820,7 +1829,12 @@ impl<'a> Graph<'a> {
                         self.identity(scope, decorator, definition.name.at, depth + 1)
                     && let Some(replacement) = self.local_replacement_decorator(decorator_fn)
                 {
-                    return Value::Callable(Invocation::ordinary(replacement));
+                    return replacement;
+                }
+                if self.phase03
+                    && let Some(replacement) = self.fastapi_decorated_value(id, depth)
+                {
+                    return replacement;
                 }
                 Value::Callable(Invocation::ordinary(id))
             }
@@ -2695,6 +2709,14 @@ impl<'a> Graph<'a> {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
                 Value::Provider(name) if name == "builtins.object" => None,
+                Value::Provider(base) if self.phase03 && is_django_string_converter(&base) => {
+                    match name {
+                        "__init__" | "__new__" | "__init_subclass__" => None,
+                        "regex" => Some(Value::Text("[^/]+".into())),
+                        "to_python" | "to_url" => Some(Value::Provider(format!("{base}.{name}"))),
+                        _ => Some(Value::Unknown),
+                    }
+                }
                 Value::Provider(base)
                     if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
                 {
@@ -2863,6 +2885,7 @@ impl<'a> Graph<'a> {
             && matches!(
                 expression.kind,
                 ExpressionKind::Await(_)
+                    | ExpressionKind::FormattedString(_)
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
@@ -2905,6 +2928,7 @@ impl<'a> Graph<'a> {
                 ..
             } => Value::DeferredComprehension,
             ExpressionKind::Comprehension { .. } => Value::ComprehensionResult,
+            ExpressionKind::FormattedString(_) => Value::Scalar,
             ExpressionKind::Name(name) => {
                 let lazy = matches!(evaluation, ValueEvaluation::Lazy { .. });
                 let binding = self.lexical_binding(
@@ -3103,6 +3127,9 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::ConstantFunction => Value::Scalar,
+                Value::NullaryConstantFunction if arguments.is_empty() && keywords.is_empty() => {
+                    Value::Scalar
+                }
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
                     .map_or(Value::Unknown, |(value, _)| value),
@@ -3485,8 +3512,10 @@ impl<'a> Graph<'a> {
             ExpressionKind::Bool(value) => Value::Bool(*value),
             ExpressionKind::Scalar | ExpressionKind::None => Value::Scalar,
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
+            ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
+            ExpressionKind::DeferredLambda(_) => Value::DeferredLambda,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
@@ -3837,8 +3866,8 @@ impl<'a> Graph<'a> {
                 );
                 return;
             }
-            Value::DeferredComprehension | Value::ComprehensionResult => {
-                self.unresolved_comprehension_use(scope, at, &value);
+            Value::DeferredComprehension | Value::ComprehensionResult | Value::DeferredLambda => {
+                self.report_unmodeled_deferred_value(scope, at, &value);
                 return;
             }
             Value::LocalNamespace(..) | Value::NamespaceCopy(_) => {
@@ -4144,6 +4173,55 @@ impl<'a> Graph<'a> {
             .is_some_and(|owner| !self.is_class(owner))
     }
 
+    fn record_formatting(&mut self, scope: ScopeId, value: Value, at: Location) {
+        if value.is_builtin_scalar() {
+            return;
+        }
+        match value {
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.record_formatting(scope, value, at);
+                }
+                return;
+            }
+            Value::Instance(class) => {
+                // With an empty format specification, object's default
+                // formatter uses str(value), which can fall back to repr.
+                let hook = [("__format__", 2), ("__str__", 1), ("__repr__", 1)]
+                    .into_iter()
+                    .find_map(|(name, arity)| {
+                        self.class_member_at(class, name, 0, Some((scope, at)))
+                            .map(|value| (value, arity))
+                    });
+                match hook {
+                    None => return,
+                    Some((Value::Callable(invocation), arity))
+                        if matches!(self.symbols[invocation.target].binding, Binding::Definition(definition, _)
+                            if definition.simple_positional_parameters && definition.parameters.len() == arity)
+                            && self.invoke_instance_hook(
+                                scope,
+                                class,
+                                Value::Callable(invocation),
+                                "formatting_hook",
+                                at,
+                            ) =>
+                    {
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            _ if !self.has_format_hooks => return,
+            _ => {}
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_formatting",
+            "formatted string dispatch is outside the bounded model",
+        );
+    }
+
     fn namespace_is_nonempty(&self, owner: ScopeId, first: [usize; 2]) -> bool {
         let at = Location {
             line: first[0],
@@ -4280,7 +4358,13 @@ impl<'a> Graph<'a> {
                         } else {
                             Value::ComprehensionResult
                         };
-                        self.unresolved_comprehension_use(scope, expr.at, &value);
+                        self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                    } else if matches!(expr.kind, ExpressionKind::DeferredLambda(_)) {
+                        self.report_unmodeled_deferred_value(
+                            scope,
+                            expr.at,
+                            &Value::DeferredLambda,
+                        );
                     }
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
@@ -4288,6 +4372,11 @@ impl<'a> Graph<'a> {
                     Value::Provider(name)
                         if self.empty_flask_context_pop(&name, arguments, keywords) => {}
                     Value::ConstantFunction => {}
+                    Value::NullaryConstantFunction
+                        if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::DeferredLambda => {
+                        self.report_unmodeled_deferred_value(scope, expr.at, &callee)
+                    }
                     Value::PydanticDump(class) => self.record_pydantic_dump(
                         class,
                         scope,
@@ -4856,24 +4945,20 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name)
-                        if self.phase03 && name == "django.urls.register_converter" =>
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "django.urls.register_converter"
+                                    | "django.urls.converters.register_converter"
+                            ) =>
                     {
-                        let target = arguments.first().or_else(|| {
-                            keywords
-                                .iter()
-                                .find(|(name, _)| name == "converter")
-                                .map(|(_, value)| value)
-                        });
-                        let value = target.map_or(Value::Unknown, |target| {
-                            self.identity(scope, target, before, 0)
-                        });
-                        self.register_protocol_class(
+                        self.record_django_converter(CallArguments {
                             scope,
-                            value,
-                            &["to_python", "to_url"],
-                            "django_path_converter",
-                            expr.at,
-                        );
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        });
                     }
                     Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
                         match self.verification_member(scope, arguments, keywords, before, 0) {
@@ -5063,6 +5148,23 @@ impl<'a> Graph<'a> {
                     self.walk(scope, item, before);
                 }
             }
+            ExpressionKind::FormattedString(values) => {
+                for value in values {
+                    self.walk(scope, value, before);
+                    if self.phase03 {
+                        let formatted = self.identity(scope, value, before, 0);
+                        self.record_formatting(scope, formatted, value.at);
+                    }
+                }
+                if !self.phase03 {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unsupported_construct",
+                        "formatted strings are outside this compatibility profile",
+                    );
+                }
+            }
             ExpressionKind::Comprehension {
                 form,
                 iterators,
@@ -5136,12 +5238,14 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Name(_) | ExpressionKind::IterationVariable(_) => {
                 let value = self.identity(scope, expr, before, 0);
-                self.unresolved_comprehension_use(scope, expr.at, &value);
+                self.report_unmodeled_deferred_value(scope, expr.at, &value);
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::ConstantLambda
+            | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda
+            | ExpressionKind::DeferredLambda(_)
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -5188,7 +5292,7 @@ impl<'a> Graph<'a> {
         if !invocation.verified {
             self.direct.insert(id);
         }
-        self.record_direct_arguments(scope, id, before, at, positional, keywords);
+        self.record_direct_arguments(invocation, call, certainty);
         if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
         {
             let invocation =
@@ -5218,15 +5322,22 @@ impl<'a> Graph<'a> {
 
     fn record_direct_arguments(
         &mut self,
-        caller: ScopeId,
-        callee: SymbolId,
-        before: Location,
-        at: Location,
-        args: &[Expression],
-        keywords: &[(String, Expression)],
+        invocation: Invocation,
+        call: CallArguments<'_>,
+        certainty: &'static str,
     ) {
+        let callee = invocation.target;
+        let CallArguments {
+            scope: caller,
+            before,
+            at,
+            positional: args,
+            keywords,
+        } = call;
         if let Some(values) = self.call_argument_values(caller, callee, before, args, keywords) {
-            let conditional = self.branch_depth != 0
+            let conditional = invocation.verified
+                || certainty != "certain"
+                || self.branch_depth != 0
                 || self.scopes[caller]
                     .owner
                     .is_some_and(|owner| self.conditional.contains_key(&owner));
@@ -5433,6 +5544,7 @@ impl<'a> Graph<'a> {
         kind: &'static str,
     ) -> bool {
         match value {
+            Value::NullaryConstantFunction if kind == "fastapi_lifecycle" => true,
             value @ (Value::Callable(_) | Value::Instance(_)) => {
                 if let Some(target) = self.fastapi_hook_target(value) {
                     self.edge(scope, target, kind, "certain");
@@ -5738,9 +5850,12 @@ impl<'a> Graph<'a> {
                             self.dormant_classes.insert(target);
                         }
                     }
-                    let mut preserves_receiver = true;
-                    for decorator in &definition.decorators {
-                        preserves_receiver &= self.decorator(scope, decorator, target, at);
+                    let mut preserves_receiver = false;
+                    if !self.phase03 || !self.apply_fastapi_replacement_stack(target) {
+                        preserves_receiver = true;
+                        for decorator in &definition.decorators {
+                            preserves_receiver &= self.decorator(scope, decorator, target, at);
+                        }
                     }
                     if preserves_receiver
                         && let Some(receiver) = self.receiver_parameter(target)
@@ -6031,6 +6146,9 @@ impl<'a> Graph<'a> {
         self.walk(scope, function, before);
         for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
             self.walk(scope, value, before);
+        }
+        if self.phase03 && self.record_fastapi_parameter_route(scope, decorator, target, before) {
+            return false;
         }
         match self.call_target_identity(scope, function, before, 0) {
             Value::Method(object, ObjectKind::App, name)
@@ -6372,7 +6490,7 @@ impl<'a> Graph<'a> {
                 if !matches!(decorator.kind, ExpressionKind::Call { .. }))
     }
 
-    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<SymbolId> {
+    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<Value> {
         let Binding::Definition(definition, body) = self.symbols[invocation.target].binding else {
             return None;
         };
@@ -6383,6 +6501,18 @@ impl<'a> Graph<'a> {
             || definition.parameters.len() != 1
         {
             return None;
+        }
+        if matches!(
+            body_without_docstring(definition),
+            [Statement {
+                kind: StatementKind::Return(Some(Expression {
+                    kind: ExpressionKind::NullaryConstantLambda,
+                    ..
+                })),
+                ..
+            }]
+        ) {
+            return Some(Value::NullaryConstantFunction);
         }
         let replacement = returned_nested_function(definition)?;
         // A literal return cannot capture the decorated callback or call its body.
@@ -6404,6 +6534,7 @@ impl<'a> Graph<'a> {
             return None;
         }
         self.local(body, &replacement.name.text, END)
+            .map(|replacement| Value::Callable(Invocation::ordinary(replacement)))
     }
 
     fn empty_flask_lookalike(
@@ -7050,6 +7181,10 @@ impl<'a> Graph<'a> {
                 }
                 Value::Coroutine(_) if kind == "local_namespace" => {
                     self.expose(scope, value, kind, at);
+                    Vec::new()
+                }
+                Value::DeferredLambda => {
+                    self.report_unmodeled_deferred_value(scope, at, &value);
                     Vec::new()
                 }
                 Value::NamespaceParameter(parameter) => {
@@ -8241,6 +8376,7 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
             self.report_flask_parameter_hooks(&reach);
@@ -8497,6 +8633,10 @@ impl<'a> Graph<'a> {
                 file: self.files[scope.file].path.clone(),
                 line: symbol.name.at.line,
                 column: symbol.name.at.column,
+                method_owner: scope
+                    .owner
+                    .filter(|&owner| category == Category::Function && self.is_class(owner))
+                    .map(|owner| position(self.symbols[owner].name.at)),
                 confidence,
                 rule_id,
                 reason,
@@ -8515,6 +8655,7 @@ impl<'a> Graph<'a> {
                     file: file.path.clone(),
                     line: 1,
                     column: 1,
+                    method_owner: None,
                     confidence: 100,
                     rule_id: "SKY-E002",
                     reason: "empty_or_docstring_only",
@@ -8699,6 +8840,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::Member(value, _)
             | ExpressionKind::Not(value)
+            | ExpressionKind::DeferredLambda(value)
             | ExpressionKind::Await(value) => expressions.push(value),
             ExpressionKind::Call {
                 function,
@@ -8711,6 +8853,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
+            | ExpressionKind::FormattedString(values)
             | ExpressionKind::Boolean { values, .. }
             | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),
@@ -8746,6 +8889,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::Scalar
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
+            | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}
@@ -9297,7 +9441,11 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
 }
 
 fn framework_managed_base(name: &str) -> bool {
-    framework_class_provider(name).is_some()
+    framework_class_provider(name).is_some() || is_django_string_converter(name)
+}
+
+fn is_django_string_converter(name: &str) -> bool {
+    name == "django.urls.converters.StringConverter"
 }
 
 fn is_declarative_base_factory(name: &str) -> bool {

@@ -408,6 +408,7 @@ pub(super) fn analyze(
                 file: file.clone(),
                 line: 1,
                 column: 1,
+                method_owner: None,
                 confidence: if has_importers { 65 } else { 80 },
                 rule_id: RULE,
                 reason: if has_importers {

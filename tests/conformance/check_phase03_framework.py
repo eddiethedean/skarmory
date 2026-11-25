@@ -58,7 +58,7 @@ def environment():
     return env
 
 
-def check_checkout(upstream):
+def check_checkout(upstream, *fixture_sources):
     baseline = tomllib.loads(BASELINE.read_text(encoding="utf-8"))["reference"]
     revision = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=upstream, text=True
@@ -76,6 +76,7 @@ def check_checkout(upstream):
             "--",
             "test",
             "skylos",
+            *fixture_sources,
         ],
         cwd=upstream,
         text=True,

@@ -371,8 +371,18 @@ impl<'a> Python<'a> {
                 self.expression(value, bindings);
             }
             Expr::Not(value) | Expr::Await(value) => self.expression(value, bindings),
+            Expr::DeferredLambda(value) => {
+                self.expression(value, bindings);
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "deferred callable dependency bindings are outside the bounded model",
+                ));
+            }
             Expr::Sequence(values)
             | Expr::Dictionary(values)
+            | Expr::FormattedString(values)
             | Expr::Boolean { values, .. }
             | Expr::Addition(values)
             | Expr::Operands(values) => {

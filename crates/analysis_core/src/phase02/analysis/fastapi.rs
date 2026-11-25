@@ -17,6 +17,17 @@ pub(super) struct Fastapi {
     signatures: BTreeMap<SymbolId, BTreeMap<ScopeId, bool>>,
     lifespans: BTreeMap<Object, (Site, ScopeId)>,
     observable_objects: BTreeSet<Object>,
+    parameter_routes: Vec<ParameterRoute>,
+}
+
+struct ParameterRoute {
+    owner: SymbolId,
+    scope: ScopeId,
+    parameter: String,
+    target: SymbolId,
+    path: Expression,
+    method: String,
+    at: Location,
 }
 
 #[derive(Clone, Copy)]
@@ -33,6 +44,7 @@ struct Event {
     conditional_include: bool,
     startup_or_shutdown: bool,
     iterated: bool,
+    api_route: bool,
     signature_targets: Vec<SymbolId>,
     signatures: BTreeMap<SignatureSite, ScopeId>,
     // Proven execution prefixes before this inclusion. Completed imports use END.
@@ -62,7 +74,22 @@ struct Snapshots {
     limited: bool,
 }
 
-impl Graph<'_> {
+enum DecoratorLayer<'a> {
+    Route {
+        function: &'a Expression,
+        path: &'a Expression,
+        at: Location,
+        object: Object,
+        method: String,
+    },
+    Replace {
+        expression: &'a Expression,
+        invocation: Invocation,
+        replacement: Value,
+    },
+}
+
+impl<'a> Graph<'a> {
     fn fastapi_effect_scope(&mut self, site: Site) -> ScopeId {
         self.push_scope(self.scopes[site.scope].file, None, None, &[])
     }
@@ -105,6 +132,9 @@ impl Graph<'_> {
         if let Value::Sequence(callbacks) = callbacks {
             resolved = true;
             for callback in callbacks {
+                if matches!(callback, Value::NullaryConstantFunction) {
+                    continue;
+                }
                 if let Some(target) = self.fastapi_hook_target(callback) {
                     let certainty = if self.branch_depth == 0 {
                         "certain"
@@ -321,7 +351,293 @@ impl Graph<'_> {
         call: CallArguments<'_>,
         method: &str,
     ) {
-        self.record_fastapi_route(object, target, call, method, false);
+        self.record_fastapi_route(object, Some(target), call, method, false);
+    }
+
+    pub(super) fn record_fastapi_parameter_route(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &decorator.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Member(receiver, method) = &function.kind else {
+            return false;
+        };
+        let [
+            path @ Expression {
+                kind: ExpressionKind::Text(text),
+                ..
+            },
+        ] = arguments.as_slice()
+        else {
+            return false;
+        };
+        if !keywords.is_empty() || !text.starts_with('/') || !is_literal_api_decorator(method) {
+            return false;
+        }
+        let Some(parameter) = self.parameter_binding(scope, receiver, before) else {
+            return false;
+        };
+        let Some(owner) = self.scopes[scope].owner else {
+            return false;
+        };
+        let Binding::Definition(wrapper, _) = self.symbols[owner].binding else {
+            return false;
+        };
+        let Binding::Definition(endpoint, _) = self.symbols[target].binding else {
+            return false;
+        };
+        // Only a direct definition runs at the wrapper call site. Defaults,
+        // annotations and other decorators can execute code before mounting.
+        if self.scopes[scope].parent != Some(self.scopes[scope].file)
+            || wrapper.kind != DefinitionKind::Function
+            || !wrapper.decorators.is_empty()
+            || !wrapper.simple_positional_parameters
+            || wrapper.parameters.len() != 1
+            || !wrapper.defaults.is_empty()
+            || !matches!(body_without_docstring(wrapper), [Statement { kind: StatementKind::Define(child), .. }]
+                if position(child.name.at) == position(endpoint.name.at))
+            || endpoint.kind == DefinitionKind::Class
+            || endpoint.decorators.len() != 1
+            || !endpoint.defaults.is_empty()
+            || !endpoint.annotations.is_empty()
+        {
+            return false;
+        }
+        self.fastapi.parameter_routes.push(ParameterRoute {
+            owner,
+            scope,
+            parameter: self.symbols[parameter].name.text.clone(),
+            target,
+            path: Expression {
+                at: path.at,
+                kind: ExpressionKind::Text(text.clone()),
+            },
+            method: method.clone(),
+            at: decorator.at,
+        });
+        true
+    }
+
+    fn fastapi_parameter_receiver(
+        &self,
+        route: &ParameterRoute,
+        call: &DirectArguments,
+    ) -> Option<Object> {
+        let Value::Object(object, ObjectKind::App | ObjectKind::Router) =
+            call.values.get(&route.parameter)?
+        else {
+            return None;
+        };
+        (call.arguments_bound
+            && matches!(
+                self.fastapi_member_write(*object, &route.method, (call.caller, call.at)),
+                None | Some(mutations::MemberWriteValue::Deleted)
+            ))
+        .then_some(*object)
+    }
+
+    pub(super) fn index_fastapi_parameter_routes(&mut self) {
+        let routes = std::mem::take(&mut self.fastapi.parameter_routes);
+        for route in &routes {
+            let calls: Vec<_> = self
+                .direct_arguments
+                .get(&route.owner)
+                .into_iter()
+                .flatten()
+                .filter_map(|call| {
+                    self.fastapi_parameter_receiver(route, call)
+                        .map(|object| (object, call.caller, call.at, call.conditional))
+                })
+                .collect();
+            for (object, scope, at, conditional) in calls {
+                self.record_fastapi_route(
+                    object,
+                    Some(route.target),
+                    CallArguments {
+                        scope,
+                        before: at,
+                        at,
+                        positional: std::slice::from_ref(&route.path),
+                        keywords: &[],
+                    },
+                    &route.method,
+                    conditional,
+                );
+            }
+        }
+        self.fastapi.parameter_routes = routes;
+    }
+
+    pub(super) fn fastapi_decorated_value(
+        &mut self,
+        target: SymbolId,
+        depth: usize,
+    ) -> Option<Value> {
+        self.fastapi_replacement_stack(target, depth)?
+            .into_iter()
+            .find_map(|layer| match layer {
+                DecoratorLayer::Replace { replacement, .. } => Some(replacement),
+                DecoratorLayer::Route { .. } => None,
+            })
+    }
+
+    pub(super) fn apply_fastapi_replacement_stack(&mut self, target: SymbolId) -> bool {
+        let Some(layers) = self.fastapi_replacement_stack(target, 0) else {
+            return false;
+        };
+        let scope = self.symbols[target].scope;
+        let before = self.symbols[target].name.at;
+        // Python evaluates decorator expressions from top to bottom before
+        // applying them in reverse. The bounded route factories have one
+        // literal argument and produce a decorator without registering yet.
+        for layer in &layers {
+            match layer {
+                DecoratorLayer::Route { function, path, .. } => {
+                    self.walk(scope, function, before);
+                    self.walk(scope, path, before);
+                }
+                DecoratorLayer::Replace { expression, .. } => {
+                    self.walk(scope, expression, before);
+                }
+            }
+        }
+        let mut callback = Some(target);
+        for layer in layers.into_iter().rev() {
+            match layer {
+                DecoratorLayer::Route {
+                    path,
+                    at,
+                    object,
+                    method,
+                    ..
+                } => {
+                    self.record_fastapi_route(
+                        object,
+                        callback,
+                        CallArguments {
+                            scope,
+                            before,
+                            at,
+                            positional: std::slice::from_ref(path),
+                            keywords: &[],
+                        },
+                        &method,
+                        false,
+                    );
+                }
+                DecoratorLayer::Replace {
+                    expression,
+                    invocation,
+                    replacement,
+                } => {
+                    self.invoke(scope, invocation, "decorator", "certain", expression.at);
+                    callback = match replacement {
+                        Value::Callable(invocation) => Some(invocation.target),
+                        Value::NullaryConstantFunction => None,
+                        _ => unreachable!("replacement proof supplies a supported callable"),
+                    };
+                }
+            }
+        }
+        true
+    }
+
+    fn fastapi_replacement_stack(
+        &mut self,
+        target: SymbolId,
+        depth: usize,
+    ) -> Option<Vec<DecoratorLayer<'a>>> {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return None;
+        };
+        let scope = symbol.scope;
+        let before = definition.name.at;
+        if depth >= MAX_BINDING_CHAIN
+            || self.scopes[scope].owner.is_some()
+            || definition.decorators.len() < 2
+            || !matches!(
+                definition.kind,
+                DefinitionKind::Function | DefinitionKind::Coroutine
+            )
+        {
+            return None;
+        }
+        let mut stack = Vec::new();
+        for decorator in &definition.decorators {
+            match &decorator.kind {
+                ExpressionKind::Name(name) => {
+                    let binding = self.local(scope, name, before)?;
+                    if self.binding_depends_on_branch(binding, before) {
+                        return None;
+                    }
+                    let invocation = Invocation::ordinary(binding);
+                    let replacement = self.local_replacement_decorator(invocation)?;
+                    stack.push(DecoratorLayer::Replace {
+                        expression: decorator,
+                        invocation,
+                        replacement,
+                    });
+                }
+                ExpressionKind::Call {
+                    function,
+                    arguments,
+                    keywords,
+                } if keywords.is_empty()
+                    && matches!(&function.kind, ExpressionKind::Member(base, _)
+                            if matches!(base.kind, ExpressionKind::Name(_))) =>
+                {
+                    let [
+                        path @ Expression {
+                            kind: ExpressionKind::Text(text),
+                            ..
+                        },
+                    ] = arguments.as_slice()
+                    else {
+                        return None;
+                    };
+                    if !text.starts_with('/') {
+                        return None;
+                    }
+                    let previous = std::mem::replace(&mut self.probing_identity, true);
+                    let callee = self.identity(scope, function, before, depth + 1);
+                    self.probing_identity = previous;
+                    let Value::Method(object, ObjectKind::App | ObjectKind::Router, method) =
+                        callee
+                    else {
+                        return None;
+                    };
+                    if !is_literal_api_decorator(&method) {
+                        return None;
+                    }
+                    stack.push(DecoratorLayer::Route {
+                        function,
+                        path,
+                        object,
+                        method,
+                        at: decorator.at,
+                    });
+                }
+                _ => return None,
+            }
+        }
+        (stack
+            .iter()
+            .any(|layer| matches!(layer, DecoratorLayer::Route { .. }))
+            && stack
+                .iter()
+                .any(|layer| matches!(layer, DecoratorLayer::Replace { .. })))
+        .then_some(stack)
     }
 
     pub(super) fn fastapi_asgi_mount(&mut self, object: Object, call: CallArguments<'_>) {
@@ -395,7 +711,7 @@ impl Graph<'_> {
         }
         self.record_fastapi_route(
             object,
-            callback.target,
+            Some(callback.target),
             CallArguments {
                 scope,
                 before: at,
@@ -412,7 +728,7 @@ impl Graph<'_> {
     fn record_fastapi_route(
         &mut self,
         object: Object,
-        target: SymbolId,
+        target: Option<SymbolId>,
         call: CallArguments<'_>,
         method: &str,
         iterated: bool,
@@ -438,28 +754,33 @@ impl Graph<'_> {
         } else {
             "possible"
         };
-        self.edge(effects, target, kind, certainty);
+        if let Some(target) = target {
+            self.edge(effects, target, kind, certainty);
+        }
         let mut event = Event::new(site, effects);
         event.iterated = iterated;
         if kind == "fastapi_registration" {
+            event.api_route = true;
             event.signature_targets = self.fastapi_options(effects, site, keywords);
-            event.signature_targets.push(target);
-            let path = positional.first().or_else(|| {
-                keywords
-                    .iter()
-                    .find_map(|(name, expr)| (name == "path").then_some(expr))
-            });
-            let plain_path = path.is_some_and(|expr| {
-                matches!(self.probe_identity(scope, expr, before),
-                    Value::Text(path) if !path.contains('{'))
-            });
-            self.fastapi
-                .signatures
-                .entry(target)
-                .or_default()
-                .entry(scope)
-                .and_modify(|bounded| *bounded &= plain_path)
-                .or_insert(plain_path);
+            if let Some(target) = target {
+                event.signature_targets.push(target);
+                let path = positional.first().or_else(|| {
+                    keywords
+                        .iter()
+                        .find_map(|(name, expr)| (name == "path").then_some(expr))
+                });
+                let plain_path = path.is_some_and(|expr| {
+                    matches!(self.probe_identity(scope, expr, before),
+                        Value::Text(path) if !path.contains('{'))
+                });
+                self.fastapi
+                    .signatures
+                    .entry(target)
+                    .or_default()
+                    .entry(scope)
+                    .and_modify(|bounded| *bounded &= plain_path)
+                    .or_insert(plain_path);
+            }
         }
         event.startup_or_shutdown = method == "on_event";
         self.fastapi_event(object, event);
@@ -1021,6 +1342,34 @@ impl Graph<'_> {
     }
 
     pub(super) fn report_fastapi_coverage(&mut self, reach: &Reachability) {
+        for route in &self.fastapi.parameter_routes {
+            if !reach.scopes.contains(&route.scope) {
+                continue;
+            }
+            let mut calls = self
+                .direct_arguments
+                .get(&route.owner)
+                .into_iter()
+                .flatten()
+                .filter(|call| reach.scopes.contains(&call.caller))
+                .peekable();
+            if calls.peek().is_none()
+                || calls.any(|call| self.fastapi_parameter_receiver(route, call).is_none())
+                || reach
+                    .evidence
+                    .iter()
+                    .any(|(target, kind, _)| *target == route.owner && *kind != "direct_call")
+            {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_registration",
+                        &self.files[self.scopes[route.scope].file].path,
+                        "FastAPI registration parameter is unresolved for a reached wrapper call",
+                    )
+                    .at(route.at),
+                );
+            }
+        }
         if reach.fastapi_limited {
             self.issues.push(Issue::new(
                 "analysis_limit",
@@ -1049,6 +1398,13 @@ impl Graph<'_> {
     }
 }
 
+fn is_literal_api_decorator(method: &str) -> bool {
+    matches!(
+        method,
+        "get" | "post" | "put" | "delete" | "patch" | "head" | "options" | "trace" | "api_route"
+    )
+}
+
 impl Event {
     fn new(site: Site, effects: ScopeId) -> Self {
         Self {
@@ -1058,6 +1414,7 @@ impl Event {
             conditional_include: false,
             startup_or_shutdown: false,
             iterated: false,
+            api_route: false,
             signature_targets: Vec::new(),
             signatures: BTreeMap::new(),
             prior_scopes: BTreeMap::new(),
@@ -1065,6 +1422,6 @@ impl Event {
     }
 
     fn carries_routes(&self) -> bool {
-        self.included_router.is_some() || !self.signature_targets.is_empty()
+        self.included_router.is_some() || self.api_route
     }
 }

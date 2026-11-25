@@ -129,6 +129,7 @@ struct Finding {
     file: String,
     line: usize,
     column: usize,
+    method_owner: Option<[usize; 2]>,
     confidence: u8,
     rule_id: &'static str,
     reason: &'static str,
@@ -207,6 +208,8 @@ struct Diagnostic {
     #[serde(skip_serializing_if = "Option::is_none")]
     report_scope: Option<&'static str>,
     #[serde(skip)]
+    method_owner: Option<[usize; 2]>,
+    #[serde(skip)]
     identity_name: String,
     dead_code_evidence: Vec<DecisionEvidence>,
     #[serde(skip)]
@@ -261,6 +264,7 @@ impl Diagnostic {
             change_status: None,
             report_scope: None,
             identity_name: finding.identity_name,
+            method_owner: finding.method_owner,
             dead_code_evidence: vec![DecisionEvidence {
                 kind: finding.reason,
                 role: "supports_dead",
@@ -296,6 +300,27 @@ impl Categories {
             Category::Variable => &mut self.unused_variables,
             Category::Parameter => &mut self.unused_parameters,
             Category::File => &mut self.unused_files,
+        }
+    }
+
+    fn group_unused_class_methods(&mut self, suppressed: &mut Vec<Diagnostic>) {
+        let class_locations: BTreeSet<_> = self
+            .unused_classes
+            .iter()
+            .map(|class| (class.file.as_str(), [class.line, class.column]))
+            .collect();
+        for mut method in std::mem::take(&mut self.unused_functions) {
+            if method
+                .method_owner
+                .is_some_and(|owner| class_locations.contains(&(method.file.as_str(), owner)))
+            {
+                method.reason = "covered by the unused class finding".into();
+                method.dead_code_disposition = "suppressed";
+                method.dead_code_classification = Some("likely_dead");
+                suppressed.push(method);
+            } else {
+                self.unused_functions.push(method);
+            }
         }
     }
 
@@ -769,7 +794,7 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v19/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v22/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -1199,6 +1224,10 @@ fn scan_selected(
                 ));
             }
         }
+    }
+
+    if phase03 {
+        categories.group_unused_class_methods(&mut suppressed);
     }
 
     if let Some(diff_sources) = diff_sources {

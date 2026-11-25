@@ -67,6 +67,20 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
     names
 }
 
+fn unreachable_functions(report: &Value) -> Vec<&str> {
+    let mut names = findings(report, "unused_functions");
+    names.extend(
+        report["suppressed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["reason"] == "covered by the unused class finding")
+            .map(|row| row["full_name"].as_str().unwrap()),
+    );
+    names.sort_unstable();
+    names
+}
+
 #[test]
 fn pydantic_computed_fields_follow_dump_and_property_access() {
     let project = tempfile::tempdir().unwrap();
@@ -75,9 +89,9 @@ fn pydantic_computed_fields_follow_dump_and_property_access() {
         root.join("models.py"),
         concat!(
             "from pydantic import BaseModel, computed_field\n",
-            "class Dumped(BaseModel):\n",
+            "class Dumped(BaseModel):\n    prefix: str\n",
             "    @computed_field\n    @property\n",
-            "    def name(self) -> str: return dump_name()\n",
+            "    def name(self) -> str: return f'{self.prefix} {dump_name()}'\n",
             "class Accessed(BaseModel):\n",
             "    @computed_field\n    def name(self) -> str: return accessed_name()\n",
             "class Constructed(BaseModel):\n",
@@ -86,7 +100,7 @@ fn pydantic_computed_fields_follow_dump_and_property_access() {
             "def dump_name(): return 'dumped'\n",
             "def accessed_name(): return 'accessed'\n",
             "def dormant_name(): return 'dormant'\n",
-            "Dumped().model_dump()\n",
+            "Dumped(prefix='model').model_dump()\n",
             "Accessed().name\n",
             "Constructed()\n",
         ),
@@ -105,6 +119,49 @@ fn pydantic_computed_fields_follow_dump_and_property_access() {
     for dormant in ["models.Constructed.name", "models.dormant_name"] {
         assert!(unused.contains(&dormant), "{dormant}: {report}");
     }
+}
+
+#[test]
+fn formatted_string_retains_known_special_methods_and_reports_unresolved_dispatch() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("formatting.py");
+    let source = concat!(
+        "class Formatter:\n",
+        "    def __format__(self, spec): return render()\n",
+        "def render(): return 'value'\n",
+        "def dormant(): return 'dormant'\n",
+        "def never_called(): return f'{dormant()}'\n",
+        "print(f'{Formatter()} formatted')\n",
+    );
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["formatting.dormant", "formatting.never_called"],
+        "{report}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        path,
+        format!("{source}from config import opaque\nprint(f'{{opaque}}')\n"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_formatting"),
+        "{incomplete}"
+    );
 }
 
 #[test]
@@ -560,6 +617,132 @@ def endpoint(value=Depends(dependency)): return 1
 }
 
 #[test]
+fn fastapi_lifecycle_accepts_proven_noop_replacements() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import APIRouter, FastAPI
+
+def erase(callback): return lambda: None
+def helper(): return 1
+
+@erase
+def startup(): return helper()
+
+router = APIRouter(on_shutdown=[startup])
+app = FastAPI(on_startup=[startup])
+app.include_router(router)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.helper", "web.startup"]
+    );
+}
+
+#[test]
+fn fastapi_stacked_route_decorators_register_the_effective_callback() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import Depends, FastAPI
+
+def erase(callback): return lambda: None
+def keep(): return 1
+def discard(): return 2
+def route_dependency(): return 3
+
+outer_app = FastAPI()
+inner_app = FastAPI(dependencies=[Depends(route_dependency)])
+
+@erase
+@outer_app.get('/outer')
+def outer(): return keep()
+
+@inner_app.get('/inner')
+@erase
+def inner(): return discard()
+
+inner()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.discard", "web.inner"]
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, kind) in [
+        ("web.outer", "fastapi_registration"),
+        ("web.route_dependency", "fastapi_dependency"),
+    ] {
+        assert!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == name
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == kind && edge["certainty"] == "certain")
+            }),
+            "{name} {report}"
+        );
+    }
+}
+
+#[test]
+fn fastapi_literal_registration_wrapper_follows_reached_router_argument() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from fastapi import APIRouter, FastAPI
+from external_config import unknown_router
+
+def helper(): return 1
+def retired(): return 2
+
+def attach(target):
+    @target.get('/')
+    def endpoint(): return helper()
+
+router = APIRouter()
+app = FastAPI()
+"#;
+    let mounted = "app.include_router(router)\n";
+    fs::write(&file, format!("{source}{mounted}")).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "web.attach",
+            "web.attach.endpoint",
+            "web.helper",
+            "web.retired"
+        ]
+    );
+
+    fs::write(&file, format!("{source}attach(router)\n{mounted}")).unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["web.retired"]);
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(&file, format!("{source}attach(unknown_router)\n{mounted}")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_registration" && error["line"] == 8 })
+    );
+}
+
+#[test]
 fn fastapi_wildcard_imports_require_known_external_provider_identity() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -737,7 +920,7 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
     }
 
     let report = scan(project.path());
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     for expected in [
         "ordinary.pytest_addhooks",
         "plugin.Ordinary.pytest_collection_finish",
@@ -795,7 +978,7 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
 
     fs::write(project.path().join("pytest.py"), "").unwrap();
     let report = scan(project.path());
-    assert!(findings(&report, "unused_functions").contains(&"plugin.pytest_assertrepr_compare"));
+    assert!(unreachable_functions(&report).contains(&"plugin.pytest_assertrepr_compare"));
 }
 
 #[test]
@@ -873,7 +1056,7 @@ def admin_label():
             assert_eq!(serial[key], parallel[key]);
             assert_eq!(serial[key], cached[key]);
         }
-        let unused = findings(&serial, "unused_functions");
+        let unused = unreachable_functions(&serial);
         assert_eq!(
             unused.contains(&"shop.admin.ProductAdmin.tax_display"),
             !active
@@ -902,9 +1085,7 @@ def admin_label():
         + "\nadmin.site.register(Product, ProductAdmin)\n";
     fs::write(&admin_path, &imperative).unwrap();
     let report = scan(root);
-    assert!(
-        !findings(&report, "unused_functions").contains(&"shop.admin.ProductAdmin.tax_display")
-    );
+    assert!(!unreachable_functions(&report).contains(&"shop.admin.ProductAdmin.tax_display"));
 
     let getter = imperative.replace(
         "    def __str__(self):\n        return admin_label()",
@@ -912,7 +1093,7 @@ def admin_label():
     );
     fs::write(&admin_path, getter).unwrap();
     let report = scan(root);
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(unused.contains(&"shop.admin.ProductAdmin.tax_display"));
     assert!(!unused.contains(&"shop.admin.ProductAdmin.old_display"));
 
@@ -990,7 +1171,7 @@ def dormant_setup():
     let cache = tempfile::tempdir().unwrap();
     let report = scan(project.path());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "web.DormantResource.release",
             "web.dormant_hook",
@@ -1379,6 +1560,46 @@ del other.conf['result_backend']
 }
 
 #[test]
+fn celery_dormant_lambda_does_not_load_the_configured_backend() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("providers.py"), "class Backend: pass\n").unwrap();
+    let path = root.join("jobs.py");
+    let source = "from celery import Celery\napp = Celery('jobs', backend='providers:Backend')\npending = lambda: app.backend\napp.conf.result_backend = 'rpc://'\n";
+    fs::write(&path, source).unwrap();
+    let baseline = scan(root);
+    assert_eq!(
+        findings(&baseline, "unused_classes"),
+        ["providers.Backend"],
+        "{baseline}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, baseline);
+    }
+
+    fs::write(
+        path,
+        source.replace(
+            "app.conf.result_backend",
+            "pending()\napp.conf.result_backend",
+        ),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_lambda_execution"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn celery_backend_lookup_respects_deleted_exports_and_captured_aliases() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1592,7 +1813,7 @@ app.register_task(Registered())
     .unwrap();
     let report = scan(project.path());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "jobs.Dormant.perform",
             "jobs.dormant_helper",
@@ -2135,7 +2356,7 @@ fn django_management_settings_option_selects_the_installed_commands() {
         let report = scan_with_settings(root, Some("production"), None);
         let module = format!("{unused_app}.management.commands.record");
         assert_eq!(
-            findings(&report, "unused_functions"),
+            unreachable_functions(&report),
             [
                 format!("{module}.Command.handle"),
                 format!("{module}.record_message"),
@@ -2147,7 +2368,7 @@ fn django_management_settings_option_selects_the_installed_commands() {
     launcher("'--settings', name");
     let report = scan_with_exit(root, Some("production"), None, 2);
     assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
-    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(unreachable_functions(&report).is_empty(), "{report}");
     assert!(
         report["coverage"]["issues"]
             .as_array()
@@ -2303,6 +2524,187 @@ if enabled:
                     .all(|entry| entry["kind"] != "django_autoreload"))
         );
     }
+}
+
+#[test]
+fn django_converters_use_proven_regex_and_method_descriptors() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("converters.py"),
+        r#"import builtins as native
+from builtins import staticmethod as static
+from django.urls import register_converter
+from django.urls.converters import StringConverter as Base
+
+class Static(Base):
+    @static
+    def to_python(value):
+        return value.lower()
+
+class Classed(Base):
+    @native.classmethod
+    def to_python(cls, value):
+        return value.lower()
+
+class StringConverter:
+    pass
+
+class Lookalike(StringConverter):
+    def to_python(self, value):
+        return value
+
+register_converter(Static, 'static')
+register_converter(Classed, 'classed')
+register_converter(Lookalike, 'lookalike')
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["converters.Lookalike.to_python"]
+    );
+    let registrations = report["dead_code_evidence"]["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|symbol| {
+            let name = symbol["qualified_name"].as_str().unwrap();
+            (name.ends_with(".to_python")
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|event| event["kind"] == "django_path_converter"))
+            .then_some(name)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        registrations,
+        [
+            "converters.Classed.to_python",
+            "converters.Static.to_python"
+        ]
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["unused_functions", "coverage", "dead_code_evidence"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+}
+
+#[test]
+fn django_converter_wrappers_resolve_reached_arguments_only() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("configure.py"),
+        "from django.urls import register_converter\ndef install(converter):\n    register_converter(converter=converter, type_name='custom')\n",
+    )
+    .unwrap();
+    let src = r#"from configure import install
+from external import opaque
+
+class Active:
+    regex = r'[a-z]+'
+    def to_python(self, value):
+        return value.lower()
+    def to_url(self, value):
+        return value
+
+class Inactive:
+    regex = r'[a-z]+'
+    def to_python(self, value):
+        return value
+    def to_url(self, value):
+        return value
+
+def dormant():
+    install(Inactive)
+
+install(Active)
+"#;
+    let source = root.join("routes.py");
+    fs::write(&source, src).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "routes.Inactive.to_python",
+            "routes.Inactive.to_url",
+            "routes.dormant"
+        ]
+    );
+    assert_eq!(
+        findings(&report, "unused_variables"),
+        ["routes.Inactive.regex"]
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in [
+            "coverage",
+            "dead_code_evidence",
+            "unused_functions",
+            "unused_variables",
+        ] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+    fs::write(source, format!("{src}\ninstall(opaque)\n")).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration" && issue["path"] == "configure.py"
+            })
+    );
+}
+
+#[test]
+fn django_converter_chooses_methods_in_c3_order() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("converters.py"),
+        r#"from django.urls import register_converter
+
+class Base:
+    regex = '[a-z]+'
+    def to_python(self, value):
+        return old(value)
+    def to_url(self, value):
+        return value
+
+class Left(Base):
+    pass
+
+class Right(Base):
+    def to_python(self, value):
+        return value.lower()
+
+class Diamond(Left, Right):
+    pass
+
+def old(value):
+    return value
+
+register_converter(Diamond, 'diamond')
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["converters.Base.to_python", "converters.old"]
+    );
+    assert!(!findings(&report, "unused_variables").contains(&"converters.Base.regex"));
 }
 
 #[test]
@@ -3211,10 +3613,7 @@ fn django_configured_project_proves_loaded_signals_without_a_launcher() {
         [("inventory.signals.refresh", "certain")],
         "{report}"
     );
-    assert_eq!(
-        findings(&report, "unused_functions"),
-        ["inventory.signals.stale"]
-    );
+    assert_eq!(unreachable_functions(&report), ["inventory.signals.stale"]);
 
     let launcher_path = root.join("deployment.py");
     let launcher = "import os\nfrom django import setup\ndef boot():\n    os.environ['DJANGO_SETTINGS_MODULE'] = 'other_settings'\n    setup()\n";
@@ -3260,7 +3659,7 @@ fn django_configured_project_proves_loaded_signals_without_a_launcher() {
         fs::write(&config_path, format!("{config}{replacement}")).unwrap();
         let report = scan(root);
         assert!(django_signal_evidence(&report).is_empty(), "{report}");
-        assert!(!findings(&report, "unused_functions").contains(&"inventory.signals.helper"));
+        assert!(!unreachable_functions(&report).contains(&"inventory.signals.helper"));
     }
     fs::write(config_path, config).unwrap();
 
@@ -3272,7 +3671,7 @@ fn django_configured_project_proves_loaded_signals_without_a_launcher() {
     let report = scan(root);
     assert!(django_signal_evidence(&report).is_empty());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "inventory.apps.InventoryConfig.ready",
             "inventory.signals.stale"
@@ -3615,7 +4014,7 @@ def install_optional():
     );
     django_signal_project(project.path(), &callable);
     let report = scan(project.path());
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(
         unused.contains(&"inventory.signals.Optional.process"),
         "{report}"
@@ -3633,7 +4032,7 @@ def install_optional():
         django_signal_evidence(&report),
         [("inventory.signals.Handler.on_save", "certain")],
     );
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(
         unused.contains(&"inventory.signals.install_optional"),
         "{report}"
@@ -3872,7 +4271,7 @@ Active().cleanup()
         )
         .unwrap();
         let report = scan(project.path());
-        let unused = findings(&report, "unused_functions");
+        let unused = unreachable_functions(&report);
         assert!(unused.contains(&"shutdown.dormant_helper"), "{report}");
         assert!(unused.contains(&"shutdown.install_dormant"), "{report}");
         assert_eq!(
@@ -3926,7 +4325,7 @@ if name == "posix":
     )
     .unwrap();
     let report = scan(project.path());
-    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(unreachable_functions(&report).is_empty(), "{report}");
     let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
     for (name, kind, certainty) in [
         (
@@ -3977,10 +4376,34 @@ if name == "posix":
         .replace("if name == \"posix\":\n    install_shutdown()\n", "");
     fs::write(path, updated).unwrap();
     let report = scan(project.path());
-    let unused = findings(&report, "unused_functions");
+    let unused = unreachable_functions(&report);
     assert!(unused.contains(&"shutdown.AtExit.finish"), "{report}");
     assert!(unused.contains(&"helpers.shutdown_helper"), "{report}");
     let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");
     assert_eq!(cached, report);
+}
+
+#[test]
+fn phase03_reports_the_dead_class_without_duplicate_method_findings() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("model.py"),
+        concat!(
+            "class Dormant:\n",
+            "    def clean(self): return 1\n",
+            "class Used:\n",
+            "    def clean(self): return 2\n",
+            "Used()\n",
+        ),
+    )
+    .unwrap();
+
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_classes"), ["model.Dormant"]);
+    assert_eq!(findings(&report, "unused_functions"), ["model.Used.clean"]);
+    assert!(report["suppressed"].as_array().unwrap().iter().any(|row| {
+        row["full_name"] == "model.Dormant.clean"
+            && row["reason"] == "covered by the unused class finding"
+    }));
 }
