@@ -5872,6 +5872,55 @@ fn flat_unpack_evaluates_operands_before_rejecting_wrong_arity() {
 }
 
 #[test]
+fn string_enum_joins_use_only_the_reached_literal_members() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("entry.py");
+    let code = r#"from enum import Enum as Tags
+
+class Data(str, Tags):
+    FIRST = 'a'
+    SECOND = 'b'
+    ALIAS = 'a'
+
+def expected():
+    return 1
+
+def unexpected():
+    return 2
+
+pattern = '^({})$'.format('|'.join(item.value for item in Data))
+if pattern == '^(a|b)$':
+    expected()
+else:
+    unexpected()
+"#;
+    fs::write(&source, code).unwrap();
+    let report = scan(root);
+    assert_eq!(unreachable_functions(&report), ["entry.unexpected"]);
+    assert_eq!(findings(&report, "unused_variables"), ["entry.Data.ALIAS"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    // A project-owned class has a distinct identity from the standard Enum.
+    fs::write(root.join("enum.py"), "class Enum:\n    pass\n").unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_generator_execution" && issue["path"] == "entry.py"
+            })
+    );
+}
+
+#[test]
 fn django_converter_wrappers_resolve_reached_arguments_only() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

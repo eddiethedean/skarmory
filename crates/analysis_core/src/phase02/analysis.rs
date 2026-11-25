@@ -40,6 +40,7 @@ mod field_dispatch;
 mod flask;
 mod frameworks;
 mod gunicorn;
+mod literal_text;
 mod logging_config;
 mod mcp_tools;
 mod mutations;
@@ -3531,6 +3532,25 @@ impl<'a> Graph<'a> {
                 function,
                 arguments,
                 keywords,
+            } if self.phase03
+                && let Some(call) = self.literal_text_call(
+                    function,
+                    CallArguments {
+                        scope,
+                        before,
+                        at: expression.at,
+                        positional: arguments,
+                        keywords,
+                    },
+                    depth,
+                ) =>
+            {
+                Value::Text(call.value)
+            }
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
             } => match self.call_target_identity(scope, function, before, depth + 1) {
                 Value::Provider(provider)
                     if self.phase03 && mcp_tools::is_server_provider(&provider) =>
@@ -5022,6 +5042,20 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => {
+                if self.phase03
+                    && self.walk_literal_text_call(
+                        function,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                {
+                    return;
+                }
                 if self.phase03
                     && arguments.is_empty()
                     && keywords.is_empty()
@@ -6816,6 +6850,9 @@ impl<'a> Graph<'a> {
                         }
                     }
                     let mut valid_bases = true;
+                    let literal_string_enum = self.phase03
+                        && definition.kind == DefinitionKind::Class
+                        && self.literal_string_enum(target);
                     for base in &definition.bases {
                         self.walk(scope, base, at);
                         let value = self.class_base(scope, base, at, 0);
@@ -6823,7 +6860,9 @@ impl<'a> Graph<'a> {
                         if let Value::Callable(Invocation { target: id, .. }) = value {
                             self.edge(scope, id, "base_class", "certain");
                         }
-                        self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                        if !literal_string_enum {
+                            self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                        }
                     }
                     if definition.kind == DefinitionKind::Class {
                         if let Some(table) = definition.table_keyword {
