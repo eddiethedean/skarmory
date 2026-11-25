@@ -105,6 +105,9 @@ impl Graph<'_> {
         if let Value::Sequence(callbacks) = callbacks {
             resolved = true;
             for callback in callbacks {
+                if matches!(callback, Value::NullaryConstantFunction) {
+                    continue;
+                }
                 if let Some(target) = self.fastapi_hook_target(callback) {
                     let certainty = if self.branch_depth == 0 {
                         "certain"

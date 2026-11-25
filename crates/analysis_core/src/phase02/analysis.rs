@@ -86,6 +86,7 @@ enum Value {
     BuiltinIterable,
     Scalar,
     ConstantFunction,
+    NullaryConstantFunction,
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     MissingFrameworkMember,
@@ -1822,7 +1823,7 @@ impl<'a> Graph<'a> {
                         self.identity(scope, decorator, definition.name.at, depth + 1)
                     && let Some(replacement) = self.local_replacement_decorator(decorator_fn)
                 {
-                    return Value::Callable(Invocation::ordinary(replacement));
+                    return replacement;
                 }
                 Value::Callable(Invocation::ordinary(id))
             }
@@ -3113,6 +3114,9 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::ConstantFunction => Value::Scalar,
+                Value::NullaryConstantFunction if arguments.is_empty() && keywords.is_empty() => {
+                    Value::Scalar
+                }
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
                     .map_or(Value::Unknown, |(value, _)| value),
@@ -3495,6 +3499,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::Bool(value) => Value::Bool(*value),
             ExpressionKind::Scalar | ExpressionKind::None => Value::Scalar,
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
+            ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
@@ -4298,6 +4303,8 @@ impl<'a> Graph<'a> {
                     Value::Provider(name)
                         if self.empty_flask_context_pop(&name, arguments, keywords) => {}
                     Value::ConstantFunction => {}
+                    Value::NullaryConstantFunction
+                        if arguments.is_empty() && keywords.is_empty() => {}
                     Value::PydanticDump(class) => self.record_pydantic_dump(
                         class,
                         scope,
@@ -5137,6 +5144,7 @@ impl<'a> Graph<'a> {
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::ConstantLambda
+            | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda
                 if !self.phase03 =>
@@ -5437,6 +5445,7 @@ impl<'a> Graph<'a> {
         kind: &'static str,
     ) -> bool {
         match value {
+            Value::NullaryConstantFunction if kind == "fastapi_lifecycle" => true,
             value @ (Value::Callable(_) | Value::Instance(_)) => {
                 if let Some(target) = self.fastapi_hook_target(value) {
                     self.edge(scope, target, kind, "certain");
@@ -6376,7 +6385,7 @@ impl<'a> Graph<'a> {
                 if !matches!(decorator.kind, ExpressionKind::Call { .. }))
     }
 
-    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<SymbolId> {
+    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<Value> {
         let Binding::Definition(definition, body) = self.symbols[invocation.target].binding else {
             return None;
         };
@@ -6387,6 +6396,18 @@ impl<'a> Graph<'a> {
             || definition.parameters.len() != 1
         {
             return None;
+        }
+        if matches!(
+            body_without_docstring(definition),
+            [Statement {
+                kind: StatementKind::Return(Some(Expression {
+                    kind: ExpressionKind::NullaryConstantLambda,
+                    ..
+                })),
+                ..
+            }]
+        ) {
+            return Some(Value::NullaryConstantFunction);
         }
         let replacement = returned_nested_function(definition)?;
         // A literal return cannot capture the decorated callback or call its body.
@@ -6408,6 +6429,7 @@ impl<'a> Graph<'a> {
             return None;
         }
         self.local(body, &replacement.name.text, END)
+            .map(|replacement| Value::Callable(Invocation::ordinary(replacement)))
     }
 
     fn empty_flask_lookalike(
@@ -8756,6 +8778,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::Scalar
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
+            | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}

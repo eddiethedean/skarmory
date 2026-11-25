@@ -185,6 +185,7 @@ pub enum ExpressionKind {
     None,
     Scalar,
     ConstantLambda,
+    NullaryConstantLambda,
     IdentityLambda,
     IdentityDecoratorLambda,
     EmptyListComprehension,
@@ -926,6 +927,12 @@ impl Lowering<'_> {
                     matches!(node.body.as_ref(), Expr::Name(name) if name.id.as_str() == parameter)) =>
             {
                 ExpressionKind::IdentityLambda
+            }
+            Expr::Lambda(node)
+                if matches!(node.body.as_ref(), Expr::NoneLiteral(_))
+                    && node.parameters.as_ref().is_none_or(|parameters| parameters.is_empty()) =>
+            {
+                ExpressionKind::NullaryConstantLambda
             }
             Expr::Lambda(node)
                 if matches!(node.body.as_ref(), Expr::NoneLiteral(_))

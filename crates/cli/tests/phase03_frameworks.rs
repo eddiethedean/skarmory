@@ -574,6 +574,32 @@ def endpoint(value=Depends(dependency)): return 1
 }
 
 #[test]
+fn fastapi_lifecycle_accepts_proven_noop_replacements() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import APIRouter, FastAPI
+
+def erase(callback): return lambda: None
+def helper(): return 1
+
+@erase
+def startup(): return helper()
+
+router = APIRouter(on_shutdown=[startup])
+app = FastAPI(on_startup=[startup])
+app.include_router(router)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.helper", "web.startup"]
+    );
+}
+
+#[test]
 fn fastapi_wildcard_imports_require_known_external_provider_identity() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
