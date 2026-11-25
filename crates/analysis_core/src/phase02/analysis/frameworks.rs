@@ -1327,6 +1327,29 @@ impl Graph<'_> {
             );
             return false;
         };
+        for &owner in &mro {
+            let ConverterBase::Source(owner) = owner else {
+                continue;
+            };
+            let Some(metaclasses::ClassCreation::Rewrite { member, .. }) =
+                self.metaclass_creation(owner)
+            else {
+                continue;
+            };
+            if self
+                .class_member_write(owner, &member, (scope, at))
+                .is_some()
+                || self.has_unmodeled_class_write(owner)
+            {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_registration",
+                    "Django converter method may be replaced after metaclass creation",
+                );
+                return false;
+            }
+        }
         match self.converter_member(&mro, "regex") {
             Some(ConverterMember::Source(target))
                 if !self.binding_depends_on_branch(target, END)
@@ -1423,7 +1446,10 @@ impl Graph<'_> {
                     let Binding::Definition(_, body) = self.symbols[class].binding else {
                         unreachable!()
                     };
-                    if let Some(binding) = self.local(body, name, END) {
+                    if let Some(binding) = self
+                        .metaclass_member(class, name)
+                        .or_else(|| self.local(body, name, END))
+                    {
                         return Some(ConverterMember::Source(binding));
                     }
                 }
@@ -1452,6 +1478,13 @@ impl Graph<'_> {
         };
         let scope = symbol.scope;
         if depth >= MAX_BINDING_CHAIN
+            || matches!(
+                self.metaclass_creation(class),
+                Some(
+                    metaclasses::ClassCreation::Unknown
+                        | metaclasses::ClassCreation::Redirect { .. }
+                )
+            )
             || definition.bases.len() >= MAX_BINDING_CHAIN
             || !definition.decorators.iter().all(|decorator| {
                 let value = self.probe_identity(scope, decorator, definition.name.at);

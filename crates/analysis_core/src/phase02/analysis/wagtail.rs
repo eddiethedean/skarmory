@@ -63,7 +63,7 @@ impl Graph<'_> {
         let [base] = definition.bases.as_slice() else {
             return None;
         };
-        if definition.kind != DefinitionKind::Class || definition.table_keyword.is_some() {
+        if definition.kind != DefinitionKind::Class || definition.has_class_keywords() {
             return None;
         }
         let Value::Provider(provider) =
@@ -122,7 +122,7 @@ impl Graph<'_> {
         self.local(body, "Meta", END).is_none_or(|meta| {
             matches!(self.symbols[meta].binding, Binding::Definition(definition, options)
                 if definition.kind == DefinitionKind::Class
-                    && definition.table_keyword.is_none()
+                    && !definition.has_class_keywords()
                     && definition.bases.is_empty()
                     && definition.decorators.is_empty()
                     && !self.binding_depends_on_branch(meta, END)
@@ -165,7 +165,7 @@ impl Graph<'_> {
             || definition.kind != DefinitionKind::Class
             || !definition.decorators.is_empty()
             || !definition.bases.is_empty()
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
         {
             return;
         }

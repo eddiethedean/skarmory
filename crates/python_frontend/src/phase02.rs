@@ -187,6 +187,7 @@ pub struct Definition {
     pub name: Name,
     pub kind: DefinitionKind,
     pub table_keyword: Option<bool>,
+    pub metaclass: Option<Expression>,
     pub is_generator: bool,
     pub body: Vec<Statement>,
     pub body_coverage_lines: Vec<usize>,
@@ -204,6 +205,12 @@ pub struct Definition {
     pub annotations: Vec<Expression>,
     pub parameter_annotation_count: usize,
     pub bases: Vec<Expression>,
+}
+
+impl Definition {
+    pub fn has_class_keywords(&self) -> bool {
+        self.table_keyword.is_some() || self.metaclass.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -908,6 +915,7 @@ impl Lowering<'_> {
                             DefinitionKind::Function
                         },
                         table_keyword: None,
+                        metaclass: None,
                         is_generator: coverage.is_generator,
                         body,
                         body_coverage_lines: coverage.lines.into_iter().collect(),
@@ -959,8 +967,11 @@ impl Lowering<'_> {
                     if node.arguments.as_ref().is_none_or(|args| {
                         args.keywords.is_empty()
                             || matches!(args.keywords.as_slice(), [keyword]
-                                if keyword.arg.as_ref().is_some_and(|name| name.as_str() == "table")
-                                    && matches!(keyword.value, Expr::BooleanLiteral(_)))
+                            if keyword.arg.as_ref().is_some_and(|name| match name.as_str() {
+                                "table" => matches!(keyword.value, Expr::BooleanLiteral(_)),
+                                "metaclass" => true,
+                                _ => false,
+                            }))
                     }) =>
                 {
                     StatementKind::Define(Definition {
@@ -968,6 +979,10 @@ impl Lowering<'_> {
                         kind: DefinitionKind::Class,
                         table_keyword: node.arguments.as_ref().and_then(|args| {
                             if let [keyword] = args.keywords.as_slice()
+                                && keyword
+                                    .arg
+                                    .as_ref()
+                                    .is_some_and(|name| name.as_str() == "table")
                                 && let Expr::BooleanLiteral(value) = &keyword.value
                             {
                                 Some(value.value)
@@ -975,6 +990,18 @@ impl Lowering<'_> {
                                 None
                             }
                         }),
+                        metaclass: node
+                            .arguments
+                            .as_ref()
+                            .and_then(|args| args.keywords.first())
+                            .filter(|keyword| {
+                                keyword
+                                    .arg
+                                    .as_ref()
+                                    .is_some_and(|name| name.as_str() == "metaclass")
+                            })
+                            .map(|keyword| expression(&keyword.value))
+                            .transpose()?,
                         is_generator: false,
                         body: Lowering(self.0, SyntaxScope::ModuleOrClass, BTreeMap::new(), self.3)
                             .suite(&node.body, next)?,

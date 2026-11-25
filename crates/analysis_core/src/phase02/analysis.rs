@@ -44,6 +44,7 @@ mod gunicorn;
 mod literal_text;
 mod logging_config;
 mod mcp_tools;
+mod metaclasses;
 mod mutations;
 mod pydantic;
 mod sanic;
@@ -629,6 +630,7 @@ pub(super) fn analyze_with_verification(
         executor_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
         static_parameter_calls: Vec::new(),
+        closed_class_replacements: None,
         class_argument_consumers: BTreeMap::new(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
@@ -649,6 +651,7 @@ pub(super) fn analyze_with_verification(
         failed_flask_import_initializers: BTreeMap::new(),
         flask_initializer_probe_cutoffs: BTreeMap::new(),
         mutations: mutations::Mutations::default(),
+        metaclasses: BTreeMap::new(),
         framework_lifecycle: Vec::new(),
         framework_class_whitelists: BTreeMap::new(),
         framework_roots: Vec::new(),
@@ -666,6 +669,7 @@ pub(super) fn analyze_with_verification(
         logging_record_calls: Vec::new(),
         logging_formatter_methods: BTreeSet::new(),
         django_view_arguments: BTreeMap::new(),
+        django_failed_view_initializers: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
@@ -722,12 +726,14 @@ pub(super) fn analyze_with_verification(
     }
     graph.index_submodule_imports();
     if phase03 {
+        graph.index_metaclasses();
         graph.index_framework_mutations();
     }
     graph.index_base_classes();
     if phase03 {
         graph.index_django_global_writes();
         graph.index_failed_flask_provider_initializers();
+        graph.index_failed_django_view_initializers();
         graph.index_flask_context();
     }
     for scope in 0..graph.scopes.len() {
@@ -838,6 +844,7 @@ struct Graph<'a> {
     executor_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
     static_parameter_calls: Vec<class_parameter_calls::StaticParameterCall>,
+    closed_class_replacements: Option<BTreeSet<SymbolId>>,
     class_argument_consumers: BTreeMap<SymbolId, BTreeSet<(ScopeId, SymbolId)>>,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
@@ -856,6 +863,7 @@ struct Graph<'a> {
     failed_flask_import_initializers: BTreeMap<ScopeId, Location>,
     flask_initializer_probe_cutoffs: BTreeMap<ScopeId, Location>,
     mutations: mutations::Mutations,
+    metaclasses: BTreeMap<SymbolId, metaclasses::ClassCreation>,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
     framework_roots: Vec<Edge>,
@@ -873,6 +881,7 @@ struct Graph<'a> {
     logging_record_calls: Vec<ParameterCall>,
     logging_formatter_methods: BTreeSet<SymbolId>,
     django_view_arguments: django_views::ViewRouteArguments,
+    django_failed_view_initializers: BTreeMap<ScopeId, Location>,
     django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
@@ -2092,6 +2101,15 @@ impl<'a> Graph<'a> {
         }
         match symbol.binding {
             Binding::Definition(definition, _) => {
+                if let Some(creation) = self.metaclass_creation(id) {
+                    match creation {
+                        metaclasses::ClassCreation::Redirect { replacement, .. } => {
+                            return Value::Callable(Invocation::ordinary(replacement));
+                        }
+                        metaclasses::ClassCreation::Unknown => return Value::Unknown,
+                        metaclasses::ClassCreation::Rewrite { .. } => {}
+                    }
+                }
                 if self.phase03
                     && let [decorator] = definition.decorators.as_slice()
                     && self.bounded_decorator_replaces_function(
@@ -3050,6 +3068,12 @@ impl<'a> Graph<'a> {
         let Binding::Definition(definition, class_scope) = symbol.binding else {
             unreachable!()
         };
+        if matches!(
+            self.metaclass_creation(id),
+            Some(metaclasses::ClassCreation::Unknown)
+        ) {
+            return Some(Value::Unknown);
+        }
         match access.and_then(|site| self.class_member_write(id, name, site)) {
             Some(mutations::MemberWriteValue::Replacement(value)) => return Some(value),
             Some(mutations::MemberWriteValue::Ambiguous) => {
@@ -3065,7 +3089,10 @@ impl<'a> Graph<'a> {
             }
             Some(mutations::MemberWriteValue::Deleted) => {}
             None => {
-                if let Some(attribute) = self.local(class_scope, name, END) {
+                if let Some(attribute) = self
+                    .metaclass_member(id, name)
+                    .or_else(|| self.local(class_scope, name, END))
+                {
                     return Some(self.binding(attribute, END, depth + 1));
                 }
             }
@@ -6939,6 +6966,21 @@ impl<'a> Graph<'a> {
                         }
                     }
                     if definition.kind == DefinitionKind::Class {
+                        if self.phase03 {
+                            if let Some(expression) = &definition.metaclass {
+                                self.walk(scope, expression, at);
+                            }
+                            if valid_bases {
+                                self.apply_metaclass(scope, target, at);
+                            }
+                        } else if definition.metaclass.is_some() {
+                            self.scope_issue(
+                                scope,
+                                at,
+                                "unsupported_construct",
+                                "metaclass keywords are outside the compatibility subset",
+                            );
+                        }
                         if let Some(table) = definition.table_keyword {
                             if self.phase03
                                 && self.framework_class_role(target, &mut BTreeSet::new(), 0)
@@ -7933,6 +7975,7 @@ impl<'a> Graph<'a> {
                         && definition.parameters[0].text != *name
                         && decorated.bases.is_empty()
                         && decorated.table_keyword.is_none()
+                        && decorated.metaclass.is_none()
                         && body_without_docstring(decorated).iter().all(|item| {
                             match &item.kind {
                                 StatementKind::Define(method) => method.kind != DefinitionKind::Class
@@ -9567,6 +9610,7 @@ impl<'a> Graph<'a> {
                     edge.kind,
                     "type_reference"
                         | "code_reference"
+                        | "metaclass_creation"
                         | "generator_creation"
                         | "flask_factory_failed_call"
                         | "flask_initializer_failed_call"
@@ -10301,6 +10345,7 @@ struct Reachability {
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     resolved_django_reloader_parameters: BTreeSet<usize>,
     resolved_static_parameter_calls: BTreeSet<usize>,
+    closed_class_call_sites: BTreeSet<(ScopeId, [usize; 2], &'static str)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
@@ -10373,6 +10418,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 nested_reads.extend(namespace_free_names(child, postponed));
                 expressions.extend(&child.decorators);
                 expressions.extend(&child.bases);
+                expressions.extend(&child.metaclass);
                 expressions.extend(&child.defaults);
                 if !postponed {
                     expressions.extend(&child.annotations);
@@ -16205,6 +16251,144 @@ class Command(BaseCommand):\n    def handle(self, *args, **options):\n        {c
                 assert!(report.evidence.iter().any(|edge| {
                     edge.kind == "django_path_converter" && edge.full_name == replacement
                 }));
+            }
+        }
+    }
+
+    #[test]
+    fn django_auth_backend_uses_the_class_returned_by_a_closed_metaclass() {
+        let source = "class Effective:\n    def get_user(self, pk): return pk\n\
+                      class Redirect(type):\n    def __new__(mcls, name, bases, namespace):\n\
+                      \x20       return Effective\n\
+                      class Configured(metaclass=Redirect):\n\
+                      \x20   def get_user(self, pk): return retired(pk)\n\
+                      def retired(pk): return pk\n";
+        for (provider, complete) in [
+            (source.to_owned(), true),
+            (
+                source.replace("return Effective", "return external(Effective)"),
+                false,
+            ),
+            (
+                source.replace(
+                    "class Redirect(type):",
+                    "class Redirect(type):\n    __prepare__ = external",
+                ),
+                false,
+            ),
+            (
+                source.replace("return retired(pk)", "return super().get_user(pk)"),
+                false,
+            ),
+        ] {
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module(
+                    "shop/settings.py",
+                    "shop.settings",
+                    "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n\
+                    AUTHENTICATION_BACKENDS = ['shop.backends.Configured']\n",
+                ),
+                module("shop/backends.py", "shop.backends", &provider),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert_eq!(report.issues.is_empty(), complete, "{:?}", report.issues);
+            let hooks: Vec<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == "django_auth_backend").then_some(row.full_name.as_str())
+                })
+                .collect();
+            if complete {
+                assert_eq!(hooks, ["shop.backends.Effective.get_user"]);
+                assert!(names(&report, Category::Function).contains(&"retired"));
+            } else {
+                assert!(hooks.is_empty(), "{hooks:?}");
+                assert!(
+                    report
+                        .issues
+                        .iter()
+                        .any(|issue| issue.kind == "unresolved_metaclass")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn django_converter_resolves_the_inherited_metaclass_namespace_write() {
+        let source = "def passthrough(self, value): return value\n\
+                      class Rewrite(type):\n    def __new__(meta, name, bases, namespace):\n\
+                      \x20       namespace['to_python'] = passthrough\n\
+                      \x20       return super().__new__(meta, name, bases, namespace)\n\
+                      class Base(metaclass=Rewrite): pass\n\
+                      class Converter(Base):\n    regex = '.*'\n\
+                      \x20   def to_python(self, value): return obsolete(value)\n\
+                      \x20   def to_url(self, value): return value\n\
+                      def obsolete(value): return value\n\
+                      Converter()\n";
+        for (provider, issue_kind) in [
+            (source.to_owned(), None),
+            (
+                source.replace("super().__new__", "external().__new__"),
+                Some("unresolved_metaclass"),
+            ),
+            (
+                source.replace(
+                    "class Base(metaclass=Rewrite): pass",
+                    "class Base(metaclass=Rewrite):\n    def __init_subclass__(cls): unknown(cls)",
+                ),
+                Some("unresolved_metaclass"),
+            ),
+            (
+                format!("{source}Converter.to_python = obsolete\n"),
+                Some("unresolved_registration"),
+            ),
+        ] {
+            let files = [
+                module("converters.py", "converters", &provider),
+                module(
+                    "urls.py",
+                    "urls",
+                    "from django.urls import register_converter\n\
+                     from converters import Converter\nregister_converter(Converter, 'custom')\n",
+                ),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert_eq!(
+                report.issues.is_empty(),
+                issue_kind.is_none(),
+                "{:?}",
+                report.issues
+            );
+            let hooks: BTreeSet<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == "django_path_converter").then_some(row.full_name.as_str())
+                })
+                .collect();
+            if let Some(kind) = issue_kind {
+                assert!(
+                    !hooks.contains("converters.Converter.to_python"),
+                    "{hooks:?}"
+                );
+                assert!(!hooks.contains("converters.passthrough"), "{hooks:?}");
+                assert!(
+                    report.issues.iter().any(|issue| issue.kind == kind),
+                    "{:?}",
+                    report.issues
+                );
+            } else {
+                assert_eq!(
+                    hooks,
+                    BTreeSet::from([
+                        "converters.Converter",
+                        "converters.Converter.to_url",
+                        "converters.passthrough"
+                    ])
+                );
+                assert!(names(&report, Category::Function).contains(&"obsolete"));
             }
         }
     }

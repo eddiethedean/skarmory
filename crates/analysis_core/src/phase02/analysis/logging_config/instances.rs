@@ -35,7 +35,7 @@ impl<'a> Replay<'a> {
         if self.depth > 0
             || !definition.bases.is_empty()
             || !definition.decorators.is_empty()
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
             || self.classes.len() >= MAX_ITEMS
         {
             return None;

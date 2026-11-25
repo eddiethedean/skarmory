@@ -529,46 +529,11 @@ impl Graph<'_> {
         file: ScopeId,
         statement: &Statement,
     ) -> bool {
-        let StatementKind::Import(import) = &statement.kind else {
+        let Some((provider, member)) = self.django_url_callback_provider(file, statement) else {
             return false;
         };
-        let Some(member) = &import.member else {
-            return false;
-        };
-        let Some(module) = self.import_module(file, import) else {
-            return false;
-        };
-        let Some(&provider) = self.modules.get(module.as_str()) else {
-            return false;
-        };
-        if provider == file
-            || module.contains('.')
-            || self.files[provider].is_package
-            || !self.django_raising_view_module(provider, member)
-        {
-            return false;
-        }
-        let Some((table, imports)) = self.scopes[file].body.split_last() else {
-            return false;
-        };
-        let StatementKind::Assign {
-            names,
-            value: Some(value),
-            annotation: None,
-        } = &table.kind
-        else {
-            return false;
-        };
-        let ExpressionKind::Sequence { items, .. } = &value.kind else {
-            return false;
-        };
-        if !matches!(names.as_slice(), [name] if name.text == "urlpatterns")
-            || !imports.iter().all(|row| matches!(row.kind, StatementKind::Import(_)))
-            || !self.closed_named_url_patterns(file, value, table.at)
-            || !items.iter().any(|item| matches!(&item.kind,
-                ExpressionKind::Call { arguments, .. }
-                    if matches!(arguments.as_slice(), [_, Expression { kind: ExpressionKind::Name(name), .. }]
-                        if name == &import.local.text)))
+        if !self.django_failed_view_initializers.contains_key(&provider)
+            && !self.django_raising_view_module(provider, member)
         {
             return false;
         }
@@ -578,6 +543,176 @@ impl Graph<'_> {
             .activated_apps
             .push(django_loaded_module(provider));
         true
+    }
+
+    pub(super) fn index_failed_django_view_initializers(&mut self) {
+        if !self.terminal_proofs {
+            return;
+        }
+        for file in 0..self.files.len() {
+            if self.is_pytest_file(file)
+                || self.files[file].path.rsplit('/').next() == Some("conftest.py")
+            {
+                continue;
+            }
+            let Some((table, imports)) = self.scopes[file].body.split_last() else {
+                continue;
+            };
+            if !matches!(&table.kind, StatementKind::Assign { names, .. }
+                if matches!(names.as_slice(), [name] if name.text == "urlpatterns"))
+            {
+                continue;
+            }
+            for statement in imports {
+                let Some((provider, member)) = self.django_url_callback_provider(file, statement)
+                else {
+                    continue;
+                };
+                if !self.is_pytest_file(provider)
+                    && self.files[provider].path.rsplit('/').next() != Some("conftest.py")
+                    && let Some(at) = self.django_unbound_view_initializer(provider, member)
+                {
+                    self.django_failed_view_initializers.insert(provider, at);
+                }
+            }
+        }
+    }
+
+    fn django_url_callback_provider<'statement>(
+        &mut self,
+        file: ScopeId,
+        statement: &'statement Statement,
+    ) -> Option<(ScopeId, &'statement str)> {
+        let StatementKind::Import(import) = &statement.kind else {
+            return None;
+        };
+        let member = import.member.as_deref()?;
+        let module = self.import_module(file, import)?;
+        let &provider = self.modules.get(module.as_str())?;
+        if provider == file || module.contains('.') || self.files[provider].is_package {
+            return None;
+        }
+        let (table, imports) = self.scopes[file].body.split_last()?;
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } = &table.kind
+        else {
+            return None;
+        };
+        let ExpressionKind::Sequence { items, .. } = &value.kind else {
+            return None;
+        };
+        (matches!(names.as_slice(), [name] if name.text == "urlpatterns")
+            && imports.iter().all(|row| matches!(row.kind, StatementKind::Import(_)))
+            && items.iter().any(|item| matches!(&item.kind,
+                ExpressionKind::Call { arguments, .. }
+                    if matches!(arguments.as_slice(), [_, Expression { kind: ExpressionKind::Name(name), .. }]
+                        if name == &import.local.text)))
+            && self.closed_named_url_patterns(file, value, table.at))
+        .then_some((provider, member))
+    }
+
+    fn django_unbound_view_initializer(&self, file: ScopeId, member: &str) -> Option<Location> {
+        let (terminal, prefix) = self.scopes[file].body.split_last()?;
+        match &terminal.kind {
+            StatementKind::Evaluate(Expression {
+                kind: ExpressionKind::Call { function, .. },
+                ..
+            }) if self.unbound_module_name(file, function, terminal.at)
+                && prefix.iter().any(|statement| {
+                    matches!(&statement.kind, StatementKind::Define(definition)
+                        if definition.name.text == member && plain_code_function(definition))
+                }) => {}
+            StatementKind::Define(definition)
+                if definition.kind == DefinitionKind::Function
+                    && definition.name.text == member
+                    && definition.defaults.is_empty()
+                    && definition.annotations.is_empty()
+                    && matches!(definition.decorators.as_slice(), [decorator]
+                        if self.unbound_module_name(file, decorator, terminal.at)) => {}
+            _ => return None,
+        }
+        // An earlier imported initializer could supply the name dynamically.
+        // Follow only flat local imports with passive bodies.
+        self.passive_django_view_imports(file, prefix, &mut 128, 0)
+            .then_some(terminal.at)
+    }
+
+    fn passive_django_view_imports(
+        &self,
+        file: ScopeId,
+        body: &[Statement],
+        remaining: &mut usize,
+        depth: usize,
+    ) -> bool {
+        let Some(budget) = remaining.checked_sub(body.len()) else {
+            return false;
+        };
+        if depth >= MAX_BINDING_CHAIN {
+            return false;
+        }
+        *remaining = budget;
+        let mut classes = BTreeMap::<&str, bool>::new();
+        body.iter().all(|statement| match &statement.kind {
+            StatementKind::Import(import) if !import.local.text.starts_with("__") => {
+                classes.remove(import.local.text.as_str());
+                self.import_module(file, import).is_some_and(|module| {
+                    !module.contains('.')
+                        && self.modules.get(module.as_str()).is_some_and(|&provider| {
+                            !self.files[provider].is_package
+                                && self.passive_django_view_imports(
+                                    provider, self.scopes[provider].body, remaining, depth + 1,
+                                )
+                        })
+                })
+            }
+            StatementKind::Define(definition) if !definition.name.text.starts_with("__") => {
+                if plain_code_function(definition) {
+                    classes.remove(definition.name.text.as_str());
+                    return true;
+                }
+                if definition.kind != DefinitionKind::Class
+                    || definition.has_class_keywords()
+                    || !definition.decorators.is_empty()
+                    || !definition.bases.iter().all(|base| {
+                        matches!(&base.kind, ExpressionKind::Name(name)
+                            if classes.contains_key(name.as_str()))
+                    })
+                {
+                    return false;
+                }
+                let methods = body_without_docstring(definition);
+                if !methods.iter().all(|row| {
+                    matches!(&row.kind, StatementKind::Define(method)
+                        if plain_code_function(method)
+                            && (!method.name.text.starts_with("__") || method.name.text == "__init__"))
+                }) {
+                    return false;
+                }
+                let default_constructor = definition.bases.is_empty() && methods.iter().all(|row| {
+                    matches!(&row.kind, StatementKind::Define(method) if method.name.text != "__init__")
+                });
+                classes.insert(&definition.name.text, default_constructor);
+                true
+            }
+            StatementKind::Evaluate(Expression { kind: ExpressionKind::Text(_), .. }) => true,
+            StatementKind::Assign {
+                names,
+                value: Some(value),
+                annotation: None,
+            } if matches!(names.as_slice(), [name] if !name.text.starts_with("__")) => {
+                let passive = matches!(&value.kind,
+                    ExpressionKind::Call { function, arguments, keywords }
+                        if arguments.is_empty() && keywords.is_empty()
+                            && matches!(&function.kind, ExpressionKind::Name(name)
+                                if classes.get(name.as_str()) == Some(&true)));
+                classes.remove(names[0].text.as_str());
+                passive
+            }
+            _ => false,
+        })
     }
 
     fn django_raising_view_module(&self, file: ScopeId, member: &str) -> bool {

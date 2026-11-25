@@ -356,6 +356,11 @@ named converters are registered by the same initializer. The proof checks the
 route captures and callback signature. Unknown converter names, table escapes,
 and unresolved registrations retain coverage diagnostics.
 
+In closed source modules, Django lookup follows a local metaclass that
+returns a different class or installs a source method before calling
+the built-in class constructor. A subclass with a proven single base can
+inherit the namespace rewrite. Opaque metaclass hooks leave coverage incomplete.
+
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
 AppConfig. It accepts explicit config class paths and resolves default selection

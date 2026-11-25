@@ -191,7 +191,7 @@ impl Graph<'_> {
         if definition.kind != DefinitionKind::Class
             || !definition.bases.is_empty()
             || !definition.decorators.is_empty()
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
         {
             return None;
         }
