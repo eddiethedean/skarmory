@@ -312,6 +312,36 @@ app = FastAPI(on_startup=[startup])
 }
 
 #[test]
+fn fastapi_environment_guard_keeps_possible_handler_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"import os
+from fastapi import FastAPI
+
+def handle_error(request, exc): return helper()
+def helper(): return 1
+def retired(): return 2
+
+app = FastAPI()
+if os.getenv('USE_HANDLER'):
+    app.add_exception_handler(Exception, handle_error)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["web.retired"]);
+    assert!(findings(&report, "unused_parameters").is_empty());
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|row| {
+        row["qualified_name"] == "web.handle_error"
+            && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                edge["kind"] == "fastapi_exception_handler" && edge["certainty"] == "possible"
+            })
+    }));
+}
+
+#[test]
 fn fastapi_dependency_uses_the_effective_replacement_binding() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

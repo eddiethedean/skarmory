@@ -8665,6 +8665,7 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
                         | "celery.Celery"
                         | "fastapi.Depends"
                         | "fastapi.Security"
+                        | "os.getenv"
                         | "starlette.middleware.Middleware"
                         | "fastapi.middleware.Middleware"
                         | "django.urls.path"
