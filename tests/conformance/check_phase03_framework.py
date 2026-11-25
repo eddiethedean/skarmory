@@ -9,7 +9,7 @@ import sys
 from tempfile import TemporaryDirectory
 import tomllib
 
-from phase03_framework import framework_definitions, framework_report
+from phase03_framework import framework_report, patch_framework_analysis
 
 
 BASELINE = Path(__file__).with_name("baselines") / "skylos-5.7.0.toml"
@@ -112,9 +112,6 @@ def run(upstream, sdk_python, selected, backend, diagnostics_path=None):
             if sdk_python is None:
                 return (yield)
 
-            from skylos.analyzer import Skylos
-            from test import web_framework_fixtures
-
             scans = self.diagnostics[item.nodeid] = []
 
             def analyze(path, **options):
@@ -142,19 +139,8 @@ def run(upstream, sdk_python, selected, backend, diagnostics_path=None):
                 })
                 return json.dumps(framework_report(report))
 
-            def analyze_instance(analyzer, path, thr=60, exclude_folders=None, **options):
-                options.setdefault("grep_verify", True)
-                options.setdefault("grep_cache", True)
-                result = analyze(path, conf=thr, exclude_folders=exclude_folders, **options)
-                analyzer.defs = framework_definitions(json.loads(result))
-                return result
-
             with pytest.MonkeyPatch.context() as patch:
-                patch.setattr(Skylos, "analyze", analyze_instance)
-                if hasattr(item.module, "_scan"):
-                    patch.setattr(web_framework_fixtures, "analyze", analyze)
-                if hasattr(item.module, "analyze"):
-                    patch.setattr(item.module, "analyze", analyze)
+                patch_framework_analysis(patch, item.module, analyze)
                 try:
                     result = yield
                 finally:

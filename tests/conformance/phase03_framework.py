@@ -1,5 +1,6 @@
 """Project native framework evidence into the pinned Skylos assertion fields."""
 
+import json
 from types import SimpleNamespace
 
 
@@ -132,3 +133,22 @@ def framework_definitions(report):
             heuristic_refs=refs,
         )
     return definitions
+
+
+def patch_framework_analysis(patch, module, analyze):
+    """Route pinned public analysis entry points through the candidate SDK."""
+    from skylos.analyzer import Skylos
+    from test import web_framework_fixtures
+
+    def analyze_instance(analyzer, path, thr=60, exclude_folders=None, **options):
+        options.setdefault("grep_verify", True)
+        options.setdefault("grep_cache", True)
+        result = analyze(path, conf=thr, exclude_folders=exclude_folders, **options)
+        analyzer.defs = framework_definitions(json.loads(result))
+        return result
+
+    patch.setattr(Skylos, "analyze", analyze_instance)
+    if hasattr(module, "_scan"):
+        patch.setattr(web_framework_fixtures, "analyze", analyze)
+    if hasattr(module, "analyze"):
+        patch.setattr(module, "analyze", analyze)
