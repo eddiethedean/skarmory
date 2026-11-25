@@ -625,7 +625,8 @@ fn compare_rescan(
     };
     if before.inputs.policy != after.inputs.policy {
         return incomplete(
-            "configuration or other analysis inputs changed during cleanup validation".into(),
+            "configuration changed or another analysis input changed during cleanup validation"
+                .into(),
             false,
         );
     }

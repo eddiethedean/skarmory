@@ -38,6 +38,7 @@ pub enum Profile {
 #[derive(Clone, Debug)]
 pub struct Options {
     pub profile: Profile,
+    pub experimental_javascript: bool,
     pub grep_verify: Option<bool>,
     /// Ordered external dependency source paths for the Phase 0.3 model.
     pub dependency_search_paths: Vec<PathBuf>,
@@ -63,6 +64,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             profile: Profile::default(),
+            experimental_javascript: false,
             grep_verify: None,
             dependency_search_paths: Vec::new(),
             enable_quality: Some(false),
@@ -855,9 +857,9 @@ fn scan_selected(
     let include_dead_code = !options.quality_only;
     let project_wildcards = phase03 && include_dead_code;
     let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
-    if !phase03 && !options.dependency_search_paths.is_empty() {
+    if options.experimental_javascript && !(phase03 && include_dead_code) {
         return Err(ConfigError::new(
-            "dependency source paths require the skylos-0.3 profile",
+            "experimental JavaScript and TypeScript analysis requires a skylos-0.3 dead-code scan",
         ));
     }
     if enable_quality && !phase03 {
@@ -882,11 +884,7 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            if project_wildcards {
-                "phase03-module-v41/ruff-0.0.12/py311/utf8-universal"
-            } else {
-                "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
-            },
+            "phase02-module-v13/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )
@@ -896,7 +894,7 @@ fn scan_selected(
         &roots,
         FileEntry::None,
         Some(&config.selection),
-        phase03 && include_dead_code && cleanup_inputs.is_none(),
+        options.experimental_javascript,
     );
     let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
         BTreeMap::new()

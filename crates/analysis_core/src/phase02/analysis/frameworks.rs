@@ -886,211 +886,6 @@ impl Graph<'_> {
         }
     }
 
-    fn collect_unittest_module(&mut self, file: ScopeId) {
-        let mut runnable = None;
-        for (class, certain) in self.pytest_registrations(&self.scopes[file].names, "") {
-            let Some(&role) = self.unittest_classes.get(&class.target) else {
-                continue;
-            };
-            self.read.extend(class.bindings);
-            self.framework_root(class.target, "unittest_discovery", certain);
-            let (lineage, _) = self.class_lineage(class.target);
-            let mut names = BTreeMap::new();
-            let mut overrides = BTreeMap::new();
-            for scope in lineage {
-                let owner = self.scopes[scope].owner.expect("class scope has an owner");
-                let writes = self.class_discovery_writes(owner, file);
-                for (name, write) in &writes {
-                    if !names.contains_key(name.as_str())
-                        && !matches!(write, mutations::MemberWriteValue::Deleted)
-                    {
-                        overrides.entry(name.clone()).or_insert(write.clone());
-                    }
-                }
-                for (&name, bindings) in &self.scopes[scope].names {
-                    if writes.contains_key(name) || overrides.contains_key(name) {
-                        continue;
-                    }
-                    // A bare annotation changes __annotations__, not the
-                    // actual class attribute consulted by discovery.
-                    let bindings: Vec<_> = bindings
-                        .iter()
-                        .copied()
-                        .filter(|&id| {
-                            !matches!(self.symbols[id].binding, Binding::Variable(None, _))
-                        })
-                        .collect();
-                    if !bindings.is_empty() {
-                        names.entry(name).or_insert(bindings);
-                    }
-                }
-            }
-            let mut tests = self.pytest_registrations(&names, "test");
-            tests.retain(|(method, _)| self.unittest_callable(method.target));
-            let mut opaque_test = false;
-            for (name, write) in &overrides {
-                if name.starts_with("test") {
-                    tests.extend(self.unittest_write(write));
-                    opaque_test |= matches!(
-                        write,
-                        mutations::MemberWriteValue::Replacement(Value::ConstantFunction)
-                    );
-                }
-                if matches!(write, mutations::MemberWriteValue::Ambiguous) {
-                    let symbol = &self.symbols[class.target];
-                    self.scope_issue(
-                        file,
-                        symbol.name.at,
-                        "unresolved_unittest_member",
-                        "unittest member changed by a write with unresolved ordering or value",
-                    );
-                }
-            }
-            if tests.is_empty() && !opaque_test {
-                tests = self.unittest_member(&names, &overrides, "runTest");
-                opaque_test = matches!(
-                    overrides.get("runTest"),
-                    Some(mutations::MemberWriteValue::Replacement(
-                        Value::ConstantFunction
-                    ))
-                );
-            }
-            if tests.is_empty() && !opaque_test {
-                continue;
-            }
-            let certain_case =
-                certain && (opaque_test || tests.iter().any(|(_, selected)| *selected));
-            runnable = Some(runnable.unwrap_or(false) || certain_case);
-            if self.is_pytest_file(file) {
-                self.pytest_unittest_cases
-                    .entry(file)
-                    .or_default()
-                    .push((names.clone(), certain_case));
-            }
-            let asynchronous = role == FrameworkClassRole::UnittestAsync;
-            let django = matches!(
-                role,
-                FrameworkClassRole::DjangoTestCase | FrameworkClassRole::DjangoDatabaseTestCase
-            );
-            for (method, selected) in tests {
-                if asynchronous || django || !self.is_coroutine(method.target) {
-                    self.unittest_method(class.target, method, certain && selected);
-                }
-            }
-            let mut lifecycle = vec!["setUp", "tearDown", "setUpClass", "tearDownClass"];
-            if asynchronous {
-                lifecycle.extend(["asyncSetUp", "asyncTearDown"]);
-            }
-            if django {
-                lifecycle.extend(["_pre_setup", "_post_teardown"]);
-            }
-            if role == FrameworkClassRole::DjangoDatabaseTestCase {
-                lifecycle.push("setUpTestData");
-            }
-            for name in lifecycle {
-                for (method, selected) in self.unittest_member(&names, &overrides, name) {
-                    if self.is_coroutine(method.target) == name.starts_with("async") {
-                        self.unittest_method(class.target, method, certain_case && selected);
-                    }
-                }
-            }
-        }
-        if let Some(certain) = runnable {
-            for name in ["setUpModule", "tearDownModule"] {
-                let Some(bindings) = self.scopes[file].names.get(name) else {
-                    continue;
-                };
-                let bindings: Vec<_> = bindings
-                    .iter()
-                    .copied()
-                    .filter(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
-                    .collect();
-                for (method, selected) in self.callable_candidates(&bindings) {
-                    let target = method.target;
-                    if !self.unittest_callable(target) || self.is_coroutine(target) {
-                        continue;
-                    }
-                    self.read.extend(method.bindings);
-                    self.framework_root(
-                        target,
-                        if self.is_generator(target) {
-                            "generator_creation"
-                        } else {
-                            "unittest_discovery"
-                        },
-                        certain && selected,
-                    );
-                }
-            }
-        }
-    }
-
-    fn unittest_member(
-        &mut self,
-        names: &PytestNames<'_>,
-        overrides: &BTreeMap<String, mutations::MemberWriteValue>,
-        name: &str,
-    ) -> Vec<(CallableBinding, bool)> {
-        if let Some(write) = overrides.get(name) {
-            return self.unittest_write(write).into_iter().collect();
-        }
-        let Some(bindings) = names.get(name) else {
-            return Vec::new();
-        };
-        self.callable_candidates(bindings)
-            .into_iter()
-            .filter(|(method, _)| self.unittest_callable(method.target))
-            .collect()
-    }
-
-    fn unittest_write(
-        &mut self,
-        write: &mutations::MemberWriteValue,
-    ) -> Option<(CallableBinding, bool)> {
-        let mutations::MemberWriteValue::Replacement(Value::Callable(invocation)) = write else {
-            return None;
-        };
-        self.unittest_callable(invocation.target).then_some((
-            CallableBinding {
-                target: invocation.target,
-                bindings: Vec::new(),
-            },
-            true,
-        ))
-    }
-
-    fn unittest_callable(&mut self, target: SymbolId) -> bool {
-        if !self.is_pytest_function(target) {
-            return false;
-        }
-        let symbol = &self.symbols[target];
-        let Binding::Definition(definition, _) = symbol.binding else {
-            unreachable!()
-        };
-        let scope = symbol.scope;
-        definition.decorators.iter().all(|decorator| {
-            let value = self.probe_identity(scope, decorator, definition.name.at);
-            matches!(
-                &value,
-                Value::Provider(provider)
-                    if matches!(provider.as_str(), "builtins.classmethod" | "builtins.staticmethod")
-            ) || self.local_identity_decorator(value, decorator)
-        })
-    }
-
-    fn unittest_method(&mut self, class: SymbolId, method: CallableBinding, certain: bool) {
-        self.read.extend(method.bindings);
-        if self.is_generator(method.target) {
-            self.framework_root(method.target, "generator_creation", certain);
-            return;
-        }
-        self.method_receivers
-            .entry(method.target)
-            .or_default()
-            .insert(class);
-        self.framework_root(method.target, "unittest_discovery", certain);
-    }
-
     fn collect_possible_pytest_hooks(&mut self, file: ScopeId) {
         let basename = self.files[file].path.rsplit('/').next().unwrap_or_default();
         if !(basename == "plugin.py"
@@ -2336,21 +2131,35 @@ impl Graph<'_> {
                     );
                     continue;
                 };
-                if !self.activate_django_settings(scope, settings, &startup.commands, startup.at) {
-                    continue;
-                }
-                if startup.creates_application
-                    && scope == self.scopes[scope].file
-                    && matches!(
-                        self.files[scope].module.rsplit('.').next(),
-                        Some("wsgi" | "asgi")
-                    )
-                    && let Some(application) = self.local(scope, "application", END)
-                    && !self.conditional.contains_key(&application)
-                    && matches!(self.symbols[application].binding,
-                        Binding::Variable(Some(value), _) if position(value.at) == position(startup.at))
+                let row = &mut self.scopes[scope];
+                row.activated_apps.extend([
+                    django_loaded_module(settings),
+                    django_loaded_module(row.file),
+                ]);
+                // Django reads DEBUG from the loaded settings object. Tie the
+                // read to the launcher so dormant configurations remain unused.
+                if let Some(debug) = self.local(settings, "DEBUG", END)
+                    && matches!(self.symbols[debug].binding, Binding::Variable(..))
                 {
-                    self.edge(scope, application, "django_application", "certain");
+                    self.edge(scope, debug, "django_setting", "certain");
+                }
+                self.collect_django_apps(scope, settings, &startup.commands);
+                let binding = self.local(settings, "ROOT_URLCONF", END);
+                let root = binding.and_then(|binding| match self.binding(binding, END, 0) {
+                    Value::Text(module) => self.modules.get(module.as_str()).copied(),
+                    _ => None,
+                });
+                if let Some(file) = root {
+                    let object = framework_module(file);
+                    self.scopes[scope].activated_apps.push(object);
+                    self.django_roots.insert(object);
+                } else if startup.requires_urlconf || binding.is_some() {
+                    self.scope_issue(
+                        scope,
+                        startup.at,
+                        "unresolved_registration",
+                        "Django ROOT_URLCONF could not be resolved",
+                    );
                 }
             }
         }

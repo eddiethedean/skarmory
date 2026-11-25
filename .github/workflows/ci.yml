@@ -45,6 +45,8 @@ jobs:
         with:
           toolchain: "1.98.1"
           components: rustfmt, clippy
+      - name: Test the dead-code release gate
+        run: python -m unittest discover -s tests/conformance -v
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
