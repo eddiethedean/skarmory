@@ -85,6 +85,14 @@ impl<'a> Python<'a> {
                     }
                     bindings.insert(&import.local.text, qualified);
                 }
+                Stmt::ProviderWildcardImport(imports) => {
+                    if let Some(import) = imports.first() {
+                        self.module(statement.at.line, &import.module, "python_import");
+                    }
+                    for import in imports {
+                        bindings.insert(&import.local.text, None);
+                    }
+                }
                 Stmt::Assign {
                     names,
                     value,

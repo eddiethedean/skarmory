@@ -1,4 +1,4 @@
-from phase03_framework import framework_definitions, framework_report
+from phase03_framework import framework_definitions, framework_report, unittest_report
 
 
 def test_only_matching_native_evidence_proves_framework_activation():
@@ -57,9 +57,6 @@ def test_only_matching_native_evidence_proves_framework_activation():
 
 
 import unittest
-
-from phase03_framework import unittest_report
-
 
 class UnittestReportTests(unittest.TestCase):
     def test_only_certain_evidence_for_the_actual_definition_marks_the_case(self):

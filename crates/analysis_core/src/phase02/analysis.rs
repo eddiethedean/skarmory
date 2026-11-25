@@ -20,6 +20,7 @@ mod fastapi;
 mod flask;
 mod frameworks;
 mod mutations;
+mod pydantic;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -59,6 +60,7 @@ enum Value {
     FastapiAnnotated(Option<SymbolId>),
     FastapiFieldMarker,
     FastapiMiddleware(Option<SymbolId>),
+    PydanticDump(SymbolId),
     Executor,
     Submit,
     Process(Box<Value>),
@@ -193,6 +195,7 @@ enum ObjectKind {
     Router,
     FlaskApp,
     FlaskBlueprint,
+    FlaskLoginManager,
     CeleryApp,
 }
 
@@ -239,6 +242,7 @@ struct Scope<'a> {
     owner: Option<SymbolId>,
     body: &'a [Statement],
     names: BTreeMap<&'a str, Vec<SymbolId>>,
+    open_wildcard: bool,
     namespace_reads: BTreeMap<[usize; 2], NamespaceRead>,
     namespace_copy_cutoffs: BTreeMap<[usize; 2], [usize; 2]>,
     namespace_captures: OnceCell<Vec<SymbolId>>,
@@ -472,6 +476,7 @@ pub(super) fn analyze_with_verification(
         framework_lifecycle: Vec::new(),
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
+        pydantic_serialization: pydantic::Serialization::default(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
         flask_hooks: Vec::new(),
@@ -503,6 +508,8 @@ pub(super) fn analyze_with_verification(
                 "multiple selected files have the same module name",
             );
         }
+    }
+    for (file, source) in files.iter().enumerate() {
         graph.index(file, &source.facts.body);
     }
     for symbol in &graph.symbols {
@@ -535,6 +542,7 @@ pub(super) fn analyze_with_verification(
     if phase03 {
         graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
+        graph.collect_pydantic_serialization();
     }
     graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
@@ -627,6 +635,7 @@ struct Graph<'a> {
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
+    pydantic_serialization: pydantic::Serialization,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
     flask_hooks: Vec<flask::ParameterHook>,
@@ -658,6 +667,7 @@ impl<'a> Graph<'a> {
             owner,
             body,
             names: BTreeMap::new(),
+            open_wildcard: false,
             namespace_reads: BTreeMap::new(),
             namespace_copy_cutoffs: BTreeMap::new(),
             namespace_captures: OnceCell::new(),
@@ -690,8 +700,10 @@ impl<'a> Graph<'a> {
             .entry(&name.text)
             .or_default()
             .push(id);
-        self.by_location
-            .insert((scope, name.at.line, name.at.column), id);
+        if !matches!(self.symbols[id].binding, Binding::Import(import) if import.wildcard_member) {
+            self.by_location
+                .insert((scope, name.at.line, name.at.column), id);
+        }
         id
     }
 
@@ -714,6 +726,18 @@ impl<'a> Graph<'a> {
                 }
                 StatementKind::Import(import) => {
                     self.bind(scope, &import.local, Binding::Import(import));
+                }
+                StatementKind::ProviderWildcardImport(imports)
+                    if self.supported_provider_wildcard(scope, statement.at, imports) =>
+                {
+                    // typing has a finite __all__. FastAPI additionally exposes
+                    // implementation modules and other undocumented names.
+                    self.scopes[scope].open_wildcard = imports
+                        .first()
+                        .is_some_and(|import| import.module == "fastapi");
+                    for import in imports {
+                        self.bind(scope, &import.local, Binding::Import(import));
+                    }
                 }
                 StatementKind::Assign { names, value, .. } => {
                     for name in names {
@@ -896,6 +920,37 @@ impl<'a> Graph<'a> {
             })
     }
 
+    fn supported_provider_wildcard(
+        &self,
+        scope: ScopeId,
+        at: Location,
+        imports: &[Import],
+    ) -> bool {
+        let row = &self.scopes[scope];
+        self.phase03
+            && row.parent.is_none()
+            && imports
+                .first()
+                .is_some_and(|import| !self.modules.contains_key(import.module.as_str()))
+            && row
+                .body
+                .iter()
+                .take_while(|statement| position(statement.at) < position(at))
+                .all(|statement| {
+                    matches!(
+                        &statement.kind,
+                        StatementKind::Evaluate(Expression {
+                            kind: ExpressionKind::Text(_),
+                            ..
+                        })
+                    )
+                })
+            && row
+                .body
+                .iter()
+                .any(|statement| position(statement.at) == position(at))
+    }
+
     fn lexical(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
         match self.lexical_binding(scope, name, before, false) {
             LexicalBinding::Found(id) => Some(id),
@@ -936,8 +991,24 @@ impl<'a> Graph<'a> {
                 return LexicalBinding::Missing;
             };
             scope = parent;
-            before = END;
+            if !self.phase03 || !class {
+                before = END;
+            }
         }
+    }
+
+    fn immediately_encloses_class_body(&self, mut scope: ScopeId, outer: ScopeId) -> bool {
+        if !self.phase03 {
+            return false;
+        }
+        while scope != outer {
+            let row = &self.scopes[scope];
+            if !row.owner.is_some_and(|owner| self.is_class(owner)) {
+                return false;
+            }
+            scope = row.parent.expect("class body has an enclosing scope");
+        }
+        true
     }
 
     fn is_class(&self, id: SymbolId) -> bool {
@@ -1003,8 +1074,20 @@ impl<'a> Graph<'a> {
         import: &Import,
     ) -> Option<Location> {
         let file = self.scopes[scope].file;
-        (scope == file && import.level > 0 && self.files[file].module == module)
-            .then_some(import.local.at)
+        if scope == file
+            && self.files[file].module == module
+            && (import.level > 0
+                || self.phase03 && self.files[file].is_package && import.member.is_some())
+        {
+            return Some(import.local.at);
+        }
+        if self.phase03
+            && scope == file
+            && let Some(member) = &import.member
+        {
+            return self.flask_blueprint_import_position(file, module, member);
+        }
+        None
     }
 
     fn index_submodule_imports(&mut self) {
@@ -1692,7 +1775,18 @@ impl<'a> Graph<'a> {
         let scope = symbol.scope;
         let file = self.scopes[scope].file;
         match symbol.binding {
-            Binding::Definition(_, _) => Value::Callable(Invocation::ordinary(id)),
+            Binding::Definition(definition, _) => {
+                if self.phase03
+                    && self.supports_replacement_decorator(id)
+                    && let [decorator] = definition.decorators.as_slice()
+                    && let Value::Callable(decorator_fn) =
+                        self.identity(scope, decorator, definition.name.at, depth + 1)
+                    && let Some(replacement) = self.local_replacement_decorator(decorator_fn)
+                {
+                    return Value::Callable(Invocation::ordinary(replacement));
+                }
+                Value::Callable(Invocation::ordinary(id))
+            }
             Binding::Variable(Some(value), before) => {
                 self.identity(scope, value, before, depth + 1)
             }
@@ -2295,6 +2389,14 @@ impl<'a> Graph<'a> {
                 {
                     return Value::Unknown;
                 }
+                if matches!(&member, Value::Provider(provider) if matches!(provider.as_str(),
+                    "pydantic.BaseModel.model_dump" | "pydantic.BaseModel.model_dump_json"))
+                {
+                    return match base {
+                        Value::Instance(_) => Value::PydanticDump(class),
+                        _ => Value::Unknown,
+                    };
+                }
                 if let Value::Callable(invocation) = &member
                     && self.unittest_property(invocation.target)
                 {
@@ -2326,6 +2428,9 @@ impl<'a> Graph<'a> {
                     Some(mutations::MemberWriteValue::Deleted) | None => Value::DjangoSignalConnect,
                     Some(mutations::MemberWriteValue::Ambiguous) => Value::Unknown,
                 }
+            }
+            Value::Object(object, ObjectKind::FlaskLoginManager) => {
+                self.flask_login_member(object, name, access)
             }
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
@@ -2726,7 +2831,12 @@ impl<'a> Graph<'a> {
                         return Value::Text(text.to_owned());
                     }
                     let binding_scope = self.symbols[id].scope;
-                    let binding_before = if binding_scope == scope {
+                    let binding_before = if binding_scope == scope
+                        || self.immediately_encloses_class_body(scope, binding_scope)
+                    {
+                        // A class suite runs where it is declared. Unlike a
+                        // deferred function body, it can select the binding
+                        // currently installed by each enclosing suite.
                         before
                     } else {
                         if self.scopes[binding_scope].names[name.as_str()].len() > 1 {
@@ -2761,6 +2871,17 @@ impl<'a> Graph<'a> {
                     return value;
                 }
                 if self.is_namespace_builtin(name) {
+                    let file = self.scopes[scope].file;
+                    if self.scopes[file].open_wildcard
+                        && (scope == file || matches!(name.as_str(), "eval" | "exec"))
+                    {
+                        self.scope_issue(
+                            scope,
+                            expression.at,
+                            "unresolved_import",
+                            "namespace inspection may read unmodeled FastAPI star imports",
+                        );
+                    }
                     return match binding {
                         LexicalBinding::Missing => Value::Provider(format!("builtins.{name}")),
                         _ => Value::Unknown,
@@ -2799,6 +2920,17 @@ impl<'a> Graph<'a> {
                     && !self.scopes[scope].names.contains_key(name.as_str())
                 {
                     return Value::Provider(format!("builtins.{name}"));
+                }
+                if matches!(binding, LexicalBinding::Missing)
+                    && self.scopes[self.scopes[scope].file].open_wildcard
+                    && !name.starts_with('_')
+                {
+                    self.scope_issue(
+                        scope,
+                        expression.at,
+                        "unresolved_import",
+                        format!("{name} may be an unmodeled FastAPI star import"),
+                    );
                 }
                 Value::Unknown
             }
@@ -3083,6 +3215,25 @@ impl<'a> Graph<'a> {
                             expression.at.column,
                         ),
                         ObjectKind::FlaskBlueprint,
+                    )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && is_flask_login_constructor(&name)
+                        && registration_arguments(
+                            arguments,
+                            keywords,
+                            ["app", "add_context_processor"],
+                        )
+                        .is_some() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::FlaskLoginManager,
                     )
                 }
                 Value::Provider(name) if self.phase03 && name == "celery.Celery" => Value::Object(
@@ -4008,6 +4159,12 @@ impl<'a> Graph<'a> {
                     Value::Provider(name)
                         if self.empty_flask_context_pop(&name, arguments, keywords) => {}
                     Value::ConstantFunction => {}
+                    Value::PydanticDump(class) => self.record_pydantic_dump(
+                        class,
+                        scope,
+                        expr.at,
+                        arguments.is_empty() && keywords.is_empty(),
+                    ),
                     Value::UnittestComparison => {
                         if !self.bounded_unittest_comparison(scope, arguments, keywords, before) {
                             self.scope_issue(
@@ -4583,7 +4740,10 @@ impl<'a> Graph<'a> {
                         if let Value::Object(object, kind) = self.identity(scope, expr, before, 0)
                             && matches!(
                                 kind,
-                                ObjectKind::App | ObjectKind::FlaskApp | ObjectKind::CeleryApp
+                                ObjectKind::App
+                                    | ObjectKind::FlaskApp
+                                    | ObjectKind::FlaskLoginManager
+                                    | ObjectKind::CeleryApp
                             )
                         {
                             self.scopes[scope].activated_apps.push(object);
@@ -4743,11 +4903,15 @@ impl<'a> Graph<'a> {
                 }
             }
             ExpressionKind::Boolean { and, values } => {
+                let mut conditional = false;
                 for value in values {
+                    self.branch_depth += usize::from(conditional);
                     self.walk(scope, value, before);
-                    if matches!(self.identity(scope, value, before, 0), Value::Bool(result) if result != *and)
-                    {
-                        break;
+                    self.branch_depth -= usize::from(conditional);
+                    match self.identity(scope, value, before, 0) {
+                        Value::Bool(result) if result != *and => break,
+                        Value::Bool(_) => {}
+                        _ => conditional = self.phase03,
                     }
                 }
             }
@@ -5478,6 +5642,16 @@ impl<'a> Graph<'a> {
                         self.execute_lazy_branch(scope, &branch);
                     }
                 }
+                StatementKind::ProviderWildcardImport(imports) => {
+                    if !self.supported_provider_wildcard(scope, at, imports) {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "star imports cannot resolve finite bindings at this location",
+                        );
+                    }
+                }
             }
         }
         false
@@ -5580,6 +5754,15 @@ impl<'a> Graph<'a> {
                     );
                 }
             }
+            Value::Method(object, ObjectKind::FlaskLoginManager, name)
+                if !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && flask_login_callback(&name) =>
+            {
+                self.scopes[scope]
+                    .routes
+                    .push((object, target, "flask_login_registration"));
+                return true;
+            }
             Value::Method(object, kind, name)
                 if is_route(kind, &name, self.phase03)
                     && (!matches!(kind, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
@@ -5630,6 +5813,15 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && matches!(
                         name.as_str(),
+                        "pydantic.field_serializer" | "pydantic.model_serializer"
+                    ) =>
+            {
+                self.record_pydantic_serializer(scope, target, &name, args, keywords);
+            }
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
                         "sqlalchemy.event.listens_for" | "celery.shared_task"
                     ) =>
             {
@@ -5674,8 +5866,6 @@ impl<'a> Graph<'a> {
                             | "pydantic.model_validator"
                             | "pydantic.root_validator"
                             | "pydantic.validator"
-                            | "pydantic.field_serializer"
-                            | "pydantic.model_serializer"
                             | "sqlalchemy.ext.hybrid.hybrid_property"
                     ) =>
             {
@@ -5759,6 +5949,11 @@ impl<'a> Graph<'a> {
                 if is_identity_decorator(definition) {
                     return self.local_identity_decorator(Value::Callable(invocation), decorator);
                 } else if self.phase03
+                    && self.supports_replacement_decorator(target)
+                    && self.local_replacement_decorator(invocation).is_some()
+                {
+                    return false;
+                } else if self.phase03
                     && matches!(invocation.receiver, Receiver::Ordinary)
                     && definition.kind == DefinitionKind::Function
                     && definition.decorators.is_empty()
@@ -5826,6 +6021,53 @@ impl<'a> Graph<'a> {
             && definition.has_positional_parameter
             && definition.decorators.is_empty()
             && is_identity_decorator(definition)
+    }
+
+    fn supports_replacement_decorator(&self, target: SymbolId) -> bool {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        matches!(
+            definition.kind,
+            DefinitionKind::Function | DefinitionKind::Coroutine
+        ) && self.scopes[symbol.scope].owner.is_none()
+            && matches!(definition.decorators.as_slice(), [decorator]
+                if !matches!(decorator.kind, ExpressionKind::Call { .. }))
+    }
+
+    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<SymbolId> {
+        let Binding::Definition(definition, body) = self.symbols[invocation.target].binding else {
+            return None;
+        };
+        if !matches!(invocation.receiver, Receiver::Ordinary)
+            || definition.kind != DefinitionKind::Function
+            || !definition.decorators.is_empty()
+            || !definition.simple_positional_parameters
+            || definition.parameters.len() != 1
+        {
+            return None;
+        }
+        let replacement = returned_nested_function(definition)?;
+        // A literal return cannot capture the decorated callback or call its body.
+        if !matches!(
+            body_without_docstring(replacement),
+            [Statement {
+                kind: StatementKind::Return(
+                    None | Some(Expression {
+                        kind: ExpressionKind::None
+                            | ExpressionKind::Bool(_)
+                            | ExpressionKind::Text(_)
+                            | ExpressionKind::Scalar,
+                        ..
+                    })
+                ),
+                ..
+            }]
+        ) {
+            return None;
+        }
+        self.local(body, &replacement.name.text, END)
     }
 
     fn empty_flask_lookalike(
@@ -6170,13 +6412,18 @@ impl<'a> Graph<'a> {
         names
             .iter()
             .filter(|(name, _)| name.starts_with(prefix))
-            .flat_map(|(_, bindings)| {
-                let candidates = self.effective_bindings(bindings);
-                candidates.iter().filter_map(move |id| {
-                    let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
-                    self.probe_callable_binding(*id)
-                        .map(|target| (target, certain))
-                })
+            .flat_map(|(_, bindings)| self.callable_candidates(bindings))
+            .collect()
+    }
+
+    fn callable_candidates(&self, bindings: &[SymbolId]) -> Vec<(CallableBinding, bool)> {
+        let candidates = self.effective_bindings(bindings);
+        candidates
+            .iter()
+            .filter_map(|id| {
+                let certain = candidates.len() == 1 && !self.conditional.contains_key(id);
+                self.probe_callable_binding(*id)
+                    .map(|target| (target, certain))
             })
             .collect()
     }
@@ -7707,7 +7954,8 @@ impl<'a> Graph<'a> {
                         Some(Value::Callable(_))
                     )
                 });
-            if !finite {
+            if !finite && !self.pydantic_resolves_handler(call, owner, &evidence, &reachable_scopes)
+            {
                 self.issues.push(
                     Issue::new(
                         "unresolved_call",
@@ -7751,7 +7999,10 @@ impl<'a> Graph<'a> {
             }
             if matches!(
                 kind,
-                "django_setting" | "django_application" | "fastapi_parameter"
+                "django_setting"
+                    | "django_application"
+                    | "django_converter_regex"
+                    | "fastapi_parameter"
             ) {
                 self.read.insert(id);
             }
@@ -7768,6 +8019,9 @@ impl<'a> Graph<'a> {
         for (id, symbol) in self.symbols.iter().enumerate() {
             let scope = &self.scopes[symbol.scope];
             let name = &symbol.name.text;
+            if matches!(symbol.binding, Binding::Import(import) if import.wildcard_member) {
+                continue;
+            }
             if self.phase03 {
                 let kind = match symbol.binding {
                     Binding::Definition(def, _) if def.kind == DefinitionKind::Class => "class",
@@ -8027,6 +8281,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             StatementKind::Import(import) => {
                 assigned.insert(import.local.text.as_str());
             }
+            StatementKind::ProviderWildcardImport(imports) => {
+                assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
+            }
             StatementKind::Assign {
                 names,
                 value,
@@ -8142,6 +8399,9 @@ fn suite_binds_name(body: &[Statement], name: &str) -> bool {
     body.iter().any(|statement| match &statement.kind {
         StatementKind::Define(definition) => definition.name.text == name,
         StatementKind::Import(import) => import.local.text == name,
+        StatementKind::ProviderWildcardImport(imports) => {
+            imports.iter().any(|import| import.local.text == name)
+        }
         StatementKind::Assign { names, .. } => names.iter().any(|target| target.text == name),
         StatementKind::LiteralRouteLoop { path, .. } => path.text == name,
         StatementKind::If {
@@ -8248,6 +8508,10 @@ fn is_identity_decorator(definition: &Definition) -> bool {
 }
 
 fn identity_decorator_factory(definition: &Definition) -> Option<&Definition> {
+    returned_nested_function(definition).filter(|decorator| is_identity_decorator(decorator))
+}
+
+fn returned_nested_function(definition: &Definition) -> Option<&Definition> {
     let [
         Statement {
             kind: StatementKind::Define(decorator),
@@ -8270,8 +8534,7 @@ fn identity_decorator_factory(definition: &Definition) -> Option<&Definition> {
         && decorator.decorators.is_empty()
         && decorator.simple_positional_parameters
         && decorator.annotations.is_empty()
-        && decorator.defaults.is_empty()
-        && is_identity_decorator(decorator))
+        && decorator.defaults.is_empty())
     .then_some(decorator)
 }
 
@@ -8309,6 +8572,7 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
                 || flask_callback_method(kind, name)
                 || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
+        ObjectKind::FlaskLoginManager => false,
         ObjectKind::CeleryApp => name == "task",
     }
 }
@@ -8325,8 +8589,23 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
             matches!(method, "add_url_rule" | "register_error_handler")
                 || flask_callback_method(kind, method)
         }
+        ObjectKind::FlaskLoginManager => flask_login_callback(method),
         ObjectKind::CeleryApp => method == "task",
     }
+}
+
+fn is_flask_login_constructor(name: &str) -> bool {
+    matches!(
+        name,
+        "flask_login.LoginManager" | "flask_login.login_manager.LoginManager"
+    )
+}
+
+fn flask_login_callback(name: &str) -> bool {
+    matches!(
+        name,
+        "user_loader" | "request_loader" | "unauthorized_handler" | "needs_refresh_handler"
+    )
 }
 
 fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
@@ -8373,6 +8652,7 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
             && (name.starts_with("pydantic.BaseModel.")
                 || is_fastapi_field_marker(name)
                 || is_django_signal_constructor(name)
+                || is_flask_login_constructor(name)
                 || is_django_receiver(name)
                 || matches!(
                     name,
@@ -8506,6 +8786,7 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::App | ObjectKind::Router => "fastapi_registration",
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => "flask_registration",
+        ObjectKind::FlaskLoginManager => "flask_login_registration",
         ObjectKind::CeleryApp => "celery_task",
     }
 }
@@ -8523,6 +8804,10 @@ fn callback_argument<'a>(
         "add_route" | "add_websocket_route" => (1, &["endpoint"]),
         "add_exception_handler" => (1, &["handler"]),
         "task" if arguments.len() == 1 && keywords.is_empty() => (0, &[]),
+        _ if matches!(kind, ObjectKind::FlaskLoginManager) && flask_login_callback(method) => {
+            return registration_arguments(arguments, keywords, ["callback"])
+                .and_then(|[callback]| callback);
+        }
         _ if flask_callback_method(kind, method) => {
             return match (arguments, keywords) {
                 ([callback], []) => Some(callback),

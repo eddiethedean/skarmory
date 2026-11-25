@@ -52,6 +52,7 @@ pub struct Statement {
 pub enum StatementKind {
     Define(Definition),
     Import(Import),
+    ProviderWildcardImport(Vec<Import>),
     Assign {
         names: Vec<Name>,
         value: Option<Expression>,
@@ -132,6 +133,34 @@ pub struct Import {
     pub member: Option<String>,
     pub declares_export: bool,
     pub exposes_top_level: bool,
+    pub wildcard_member: bool,
+}
+
+// CPython 3.11 typing.__all__ and the documented FastAPI top-level re-exports.
+fn provider_wildcard_members(module: &str) -> Option<&'static str> {
+    match module {
+        "fastapi" => Some(
+            "APIRouter BackgroundTasks Body Cookie Depends FastAPI File Form HTTPException Header \
+             Path Query Request Response Security UploadFile WebSocket WebSocketDisconnect \
+             WebSocketException status",
+        ),
+        "typing" => Some(
+            "AbstractSet Annotated Any AnyStr AsyncContextManager AsyncGenerator AsyncIterable \
+             AsyncIterator Awaitable BinaryIO ByteString Callable ChainMap ClassVar Collection \
+             Concatenate Container ContextManager Coroutine Counter DefaultDict Deque Dict Final \
+             ForwardRef FrozenSet Generator Generic Hashable IO ItemsView Iterable Iterator KeysView \
+             List Literal LiteralString Mapping MappingView Match MutableMapping MutableSequence \
+             MutableSet NamedTuple Never NewType NoReturn NotRequired Optional OrderedDict ParamSpec \
+             ParamSpecArgs ParamSpecKwargs Pattern Protocol Required Reversible Self Sequence Set \
+             Sized SupportsAbs SupportsBytes SupportsComplex SupportsFloat SupportsIndex SupportsInt \
+             SupportsRound TYPE_CHECKING Text TextIO Tuple Type TypeAlias TypeGuard TypeVar \
+             TypeVarTuple TypedDict Union Unpack ValuesView assert_never assert_type cast \
+             clear_overloads dataclass_transform final get_args get_origin get_overloads \
+             get_type_hints is_typeddict no_type_check no_type_check_decorator overload reveal_type \
+             runtime_checkable",
+        ),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -438,6 +467,32 @@ impl Lowering<'_> {
         for alias in names {
             let name = alias.name.as_str();
             if name == "*" {
+                if from
+                    && level == 0
+                    && let Some(members) = provider_wildcard_members(module)
+                {
+                    let at = self.0.locate(alias.start());
+                    let imports = members
+                        .split_ascii_whitespace()
+                        .map(|member| Import {
+                            local: Name {
+                                text: member.into(),
+                                at,
+                            },
+                            level: 0,
+                            module: module.into(),
+                            member: Some(member.into()),
+                            declares_export: false,
+                            exposes_top_level: false,
+                            wildcard_member: true,
+                        })
+                        .collect();
+                    output.push(Statement {
+                        at,
+                        kind: StatementKind::ProviderWildcardImport(imports),
+                    });
+                    continue;
+                }
                 return Err(self
                     .0
                     .unsupported(alias, "star imports cannot resolve finite bindings"));
@@ -465,6 +520,7 @@ impl Lowering<'_> {
                             .as_ref()
                             .is_some_and(|alias| alias.as_str() == name),
                     exposes_top_level,
+                    wildcard_member: false,
                 }),
             });
         }
