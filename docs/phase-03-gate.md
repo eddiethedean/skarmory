@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,175 have port mappings. The reported release
+milestones. Of the required cases, 1,211 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -71,6 +71,8 @@ pytest runs select `skylos-0.3` and disable upstream expected-failure markers.
 
 The SDK shard runs the original framework corpus scorer against the selected
 fixtures and records each original assertion, fixture hash, and outcome.
+The framework corpus maps 28 of 42 cases, including the DRF serializer and
+viewset declaration cases.
 The framework audit now includes the FastAPI dependency-parameter tests and
 all 40 nested-project route variants. Thirty-two route variants have SDK
 ports. The remaining eight lack a resolved router. The audit also records
@@ -94,10 +96,11 @@ Django settings protocols and ordered collection mutations.
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
 | URL function callbacks and view providers | 41 | 10 |
+| Path converter registration and protocol | 59 | 1 |
 | Authentication backend selection and hooks | 64 | 7 |
 | Named settings imports and overrides | 26 | 2 |
-| Model, command, and form hook provenance | 34 | 13 |
-| Management command reachability | 19 | 17 |
+| Model, command, and form hook provenance | 37 | 10 |
+| Management command reachability | 23 | 13 |
 | Python template liveness | 48 | 1 |
 | Form hook evidence after source edits | 2 | 0 |
 | Autoreload callback selection | 29 | 3 |
