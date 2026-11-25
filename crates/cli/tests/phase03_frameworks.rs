@@ -1484,6 +1484,83 @@ fn django_management_settings_option_selects_the_installed_commands() {
 }
 
 #[test]
+fn django_converter_protocol_requires_a_reached_registration() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let src = r#"from django.urls import register_converter
+
+class Converter:
+    regex = '[a-z]+'
+    def to_python(self, value):
+        return parse(value)
+    def to_url(self, value):
+        return value
+
+class Child(Converter):
+    pass
+
+def parse(value):
+    return value
+
+def install():
+    register_converter(Child, 'custom')
+
+class Inactive:
+    regex = '[0-9]+'
+    def to_python(self, value):
+        return value
+    def to_url(self, value):
+        return value
+
+def dormant_install():
+    register_converter(Inactive, 'inactive')
+
+instance = Child()
+inactive_instance = Inactive()
+"#;
+    let path = root.join("converters.py");
+    fs::write(&path, src).unwrap();
+    let dormant = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&dormant, "unused_functions"),
+        [
+            "converters.Converter.to_python",
+            "converters.Converter.to_url",
+            "converters.Inactive.to_python",
+            "converters.Inactive.to_url",
+            "converters.dormant_install",
+            "converters.install",
+            "converters.parse",
+        ]
+    );
+    assert!(findings(&dormant, "unused_variables").contains(&"converters.Converter.regex"));
+
+    fs::write(&path, format!("{src}\ninstall()\n")).unwrap();
+    let active = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&active, "unused_functions"),
+        [
+            "converters.Inactive.to_python",
+            "converters.Inactive.to_url",
+            "converters.dormant_install",
+        ]
+    );
+    let variables = findings(&active, "unused_variables");
+    assert!(!variables.contains(&"converters.Converter.regex"));
+    assert!(variables.contains(&"converters.Inactive.regex"));
+    let clean = scan(root);
+    for field in [
+        "coverage",
+        "dead_code_evidence",
+        "unused_functions",
+        "unused_variables",
+    ] {
+        assert_eq!(clean[field], active[field], "{field}");
+    }
+}
+
+#[test]
 fn django_command_uses_the_effective_handle_after_module_writes() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

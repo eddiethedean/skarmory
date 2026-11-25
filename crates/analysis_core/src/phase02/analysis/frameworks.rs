@@ -620,26 +620,55 @@ impl Graph<'_> {
             );
             return;
         }
-        self.edge(scope, class, kind, "certain");
-        let Binding::Definition(_, class_scope) = self.symbols[class].binding else {
-            return;
+        let certainty = if self.branch_depth == 0 {
+            "certain"
+        } else {
+            "possible"
         };
+        self.edge(scope, class, kind, certainty);
         for name in methods {
-            if let Some(target) = self.local(class_scope, name, END)
-                && matches!(self.symbols[target].binding, Binding::Definition(_, _))
-            {
-                self.framework_lifecycle.push((class, target, kind));
-            }
-        }
-        for bindings in self.scopes[class_scope].names.values() {
-            for &target in self.effective_bindings(bindings) {
-                if self.symbols[target].name.text == "regex"
-                    && matches!(self.symbols[target].binding, Binding::Variable(_, _))
+            match self.class_member_at(class, name, 0, Some((scope, at))) {
+                Some(Value::Callable(invocation))
+                    if self.bounded_converter_method(invocation.target) =>
                 {
-                    self.framework_fields.insert(target);
+                    let invocation = if self.receiver_parameter(invocation.target).is_some() {
+                        invocation.bind_receiver(Receiver::Bound(class))
+                    } else {
+                        invocation
+                    };
+                    self.invoke(scope, invocation, kind, certainty, at);
                 }
+                Some(Value::ConstantFunction) | None => {}
+                _ => self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_registration",
+                    "Django converter method could not be resolved",
+                ),
             }
         }
+        let (lineage, _) = self.class_lineage(class);
+        if let Some(target) = lineage
+            .into_iter()
+            .find_map(|body| self.local(body, "regex", END))
+            && matches!(self.symbols[target].binding, Binding::Variable(_, _))
+        {
+            self.edge(scope, target, "django_converter_regex", certainty);
+        }
+    }
+
+    fn bounded_converter_method(&mut self, target: SymbolId) -> bool {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        let scope = symbol.scope;
+        definition.kind == DefinitionKind::Function
+            && !definition.is_generator
+            && definition.decorators.iter().all(|decorator| {
+                let value = self.probe_identity(scope, decorator, definition.name.at);
+                self.local_identity_decorator(value, decorator)
+            })
     }
 
     pub(super) fn framework_class_role(

@@ -7949,7 +7949,10 @@ impl<'a> Graph<'a> {
             }
             if matches!(
                 kind,
-                "django_setting" | "django_application" | "fastapi_parameter"
+                "django_setting"
+                    | "django_application"
+                    | "django_converter_regex"
+                    | "fastapi_parameter"
             ) {
                 self.read.insert(id);
             }
