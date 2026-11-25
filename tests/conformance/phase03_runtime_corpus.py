@@ -96,5 +96,3 @@ def evaluate_runtime_control(report, selected_paths, control):
         if (name, kind) in evidence:
             failures.append(f"unexpected {kind} evidence on {name}")
     return failures
-
-

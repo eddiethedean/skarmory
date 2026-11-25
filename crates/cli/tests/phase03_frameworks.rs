@@ -586,7 +586,28 @@ dormant.add_route("/", inactive)
             .as_array()
             .unwrap()
             .iter()
-            .any(|issue| { issue["kind"] == "unresolved_registration" }),
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration"
+                    && issue["path"] == "app.py"
+                    && issue["line"] == 7
+            }),
+        "{invalid}"
+    );
+    // endpoint is accepted by Router.add_route. Starlette.add_route rejects
+    // it before registering the application callback.
+    assert!(
+        !invalid["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.homepage"
+                    && symbol["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "starlette_route")
+            }),
         "{invalid}"
     );
 
@@ -5115,6 +5136,97 @@ fn fastapi_shadows_an_unavailable_submodule_in_a_closed_regular_package() {
 }
 
 #[test]
+fn fastapi_tool_config_leaves_namespace_route_selection_to_the_scan_root() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let backend = root.join("backend");
+    let namespace = backend.join("app");
+    fs::create_dir_all(&namespace).unwrap();
+    for directory in [root, backend.as_path()] {
+        fs::write(
+            directory.join("pyproject.toml"),
+            "[tool.ruff]\nline-length = 100\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        namespace.join("main.py"),
+        "from fastapi import FastAPI\nfrom app.routes import router\n\napp = FastAPI()\napp.include_router(router)\n",
+    )
+    .unwrap();
+    fs::write(
+        namespace.join("routes.py"),
+        "from fastapi import APIRouter\nrouter = APIRouter()\n\n@router.get('/namespace_route')\ndef namespace_route(): return 1\ndef dormant(): return 2\n",
+    )
+    .unwrap();
+
+    let unresolved = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        unresolved["coverage"]["status"], "incomplete",
+        "{unresolved}"
+    );
+    assert!(
+        unresolved["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration"
+                    && issue["file"] == "backend/app/main.py"
+                    && issue["line"] == 5
+            }),
+        "{unresolved}"
+    );
+    assert!(
+        unresolved["analysis_summary"]["fastapi_route_declarations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|route| route["qualified_name"] == "backend.app.routes.namespace_route"),
+        "{unresolved}"
+    );
+    assert!(
+        !unresolved["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "backend.app.routes.namespace_route"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{unresolved}"
+    );
+
+    let resolved = scan(&backend);
+    assert_eq!(
+        findings(&resolved, "unused_functions"),
+        ["app.routes.dormant"],
+        "{resolved}"
+    );
+    assert!(
+        resolved["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.routes.namespace_route"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{resolved}"
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(&backend, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, resolved);
+    }
+}
+
+#[test]
 fn fastapi_resolves_regular_packages_from_the_importing_service() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -5623,6 +5735,17 @@ fn django_management_settings_option_selects_the_installed_commands() {
             "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self, *args, **options):\n        return record_message()\ndef record_message():\n    return '{settings}'\n",
         )).unwrap();
     }
+    let dormant = scan(root);
+    assert_eq!(
+        unreachable_functions(&dormant),
+        [
+            "alternate.management.commands.record.Command.handle",
+            "alternate.management.commands.record.record_message",
+            "primary.management.commands.record.Command.handle",
+            "primary.management.commands.record.record_message",
+        ],
+        "{dormant}"
+    );
     let launcher = |argv: &str| {
         fs::write(
             root.join("manage.py"),
@@ -9129,7 +9252,7 @@ fn django_url_import_stops_at_a_proven_unbound_view_initializer() {
 }
 
 #[test]
-fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
+fn django_url_callbacks_enter_async_views_before_validating_the_response() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
     for (file, source) in [
@@ -9147,7 +9270,7 @@ fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
         ),
         (
             "views.py",
-            "async def ordinary(request): return async_helper()\ndef stream(request): yield generator_helper()\ndef async_helper(): return 1\ndef generator_helper(): return 2\n",
+            "async def ordinary(request): return async_helper()\ndef stream(request): yield generator_helper()\ndef async_helper(): return [2026]\ndef generator_helper(): return 2\n",
         ),
     ] {
         fs::write(root.join(file), source).unwrap();
@@ -9161,6 +9284,8 @@ fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
     let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
     for (name, kind) in [
         ("views.ordinary", "django_registration"),
+        // Django reaches this call before rejecting the view's list response.
+        ("views.async_helper", "direct_call"),
         ("views.stream", "generator_creation"),
     ] {
         assert!(
