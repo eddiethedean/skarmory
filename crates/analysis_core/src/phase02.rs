@@ -128,6 +128,7 @@ struct Finding {
     line: usize,
     column: usize,
     method_owner: Option<[usize; 2]>,
+    declaration_whitelist: Option<&'static str>,
     confidence: u8,
     rule_id: &'static str,
     reason: &'static str,
@@ -1206,6 +1207,15 @@ fn scan_selected(
                     finding.confidence = finding.confidence.saturating_sub(amount)
                 }
                 config::Decision::Keep => {}
+            }
+            if let Some(reason) = finding.declaration_whitelist {
+                whitelisted.push(Diagnostic::new(
+                    finding,
+                    reason.into(),
+                    "whitelisted",
+                    source,
+                ));
+                continue;
             }
             // Skylos applies the confidence threshold to bindings and keeps file findings.
             if finding.category == Category::File || finding.confidence >= config.confidence {

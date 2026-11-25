@@ -497,6 +497,7 @@ pub(super) fn analyze_with_verification(
         phase03,
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
+        framework_class_whitelists: BTreeMap::new(),
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
@@ -669,6 +670,7 @@ struct Graph<'a> {
     phase03: bool,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
+    framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
@@ -8792,6 +8794,7 @@ impl<'a> Graph<'a> {
                     .owner
                     .filter(|&owner| category == Category::Function && self.is_class(owner))
                     .map(|owner| position(self.symbols[owner].name.at)),
+                declaration_whitelist: self.framework_class_whitelists.get(&id).copied(),
                 confidence,
                 rule_id,
                 reason,
@@ -8811,6 +8814,7 @@ impl<'a> Graph<'a> {
                     line: 1,
                     column: 1,
                     method_owner: None,
+                    declaration_whitelist: None,
                     confidence: 100,
                     rule_id: "SKY-E002",
                     reason: "empty_or_docstring_only",

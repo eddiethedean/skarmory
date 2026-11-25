@@ -131,6 +131,10 @@ impl Graph<'_> {
             let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
                 continue;
             };
+            if role == FrameworkClassRole::DjangoAdmin {
+                self.framework_class_whitelists
+                    .insert(class, "Django framework class");
+            }
             let (root, lifecycle, fields) = match role {
                 FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync

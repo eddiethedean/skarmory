@@ -1147,6 +1147,7 @@ expires = "not a date"
             line: 1,
             column: 1,
             method_owner: None,
+            declaration_whitelist: None,
             confidence: 90,
             rule_id: "SKY-U001",
             reason: "no_call_path_from_root",
