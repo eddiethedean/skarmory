@@ -40,6 +40,7 @@ pub(super) struct DjangoConverter {
     inputs: BTreeMap<SymbolId, Vec<(ScopeId, Option<SymbolId>)>>,
     pub(super) string_calls: Vec<ParameterCall>,
     wrappers: Vec<DjangoParameterRegistration>,
+    noop_wrappers: Vec<(ScopeId, Location)>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -875,6 +876,97 @@ impl Graph<'_> {
         );
     }
 
+    pub(super) fn django_converter_noop_rebinding(
+        &mut self,
+        scope: ScopeId,
+        function: &Expression,
+        at: Location,
+        before: Location,
+    ) -> Option<Invocation> {
+        let ExpressionKind::Name(name) = &function.kind else {
+            return None;
+        };
+        let module = self.scopes[scope].file;
+        let owner = self.scopes[scope].owner?;
+        let node = &self.symbols[owner];
+        let Binding::Definition(wrapper, _) = node.binding else {
+            return None;
+        };
+        if node.scope != module
+            || wrapper.kind != DefinitionKind::Function
+            || wrapper.is_generator
+            || !wrapper.decorators.is_empty()
+            || !wrapper.parameters.is_empty()
+            || !matches!(wrapper.body.as_slice(), [Statement { kind: StatementKind::Evaluate(call), .. }]
+                if position(call.at) == position(at))
+            || !matches!(self.lexical_binding(scope, name, before, true), LexicalBinding::Found(id)
+                if self.symbols[id].scope == module)
+        {
+            return None;
+        }
+        let history = self.scopes[module].names.get(name.as_str())?.clone();
+        if history.len() < 2
+            || !history.into_iter().any(|binding| {
+                matches!(self.symbols[binding].binding, Binding::Import(_))
+                    && matches!(self.binding_value(binding, 0), Value::Provider(provider)
+                        if matches!(provider.as_str(), "django.urls.register_converter"
+                            | "django.urls.converters.register_converter"))
+            })
+        {
+            return None;
+        }
+
+        // Module suites have already been visited. Resolve the global name
+        // at every witnessed direct call, not at function definition time.
+        let callers = self.direct_arguments.get(&owner)?;
+        let bindings = callers
+            .iter()
+            .map(|call| {
+                if call.caller != module
+                    || !call.arguments_bound
+                    || call.conditional
+                    || self
+                        .module_member_write(&self.files[module].module, name, (module, call.at))
+                        .is_some()
+                {
+                    return None;
+                }
+                self.local(module, name, call.at)
+            })
+            .collect::<Option<BTreeSet<_>>>()?;
+        let mut bindings = bindings.into_iter();
+        let binding = bindings.next()?;
+        if bindings.next().is_some() || self.binding_depends_on_branch(binding, END) {
+            return None;
+        }
+        let Value::Callable(invocation) = self.binding_value(binding, 0) else {
+            return None;
+        };
+        let replacement = &self.symbols[invocation.target];
+        let Binding::Definition(definition, _) = replacement.binding else {
+            return None;
+        };
+        if invocation.verified
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || replacement.scope != module
+            || definition.kind != DefinitionKind::Function
+            || definition.is_generator
+            || !definition.decorators.is_empty()
+            || !definition.simple_positional_parameters
+            || definition.parameters.len() != 2
+            || !matches!(
+                definition.body.as_slice(),
+                [Statement { kind: StatementKind::Return(Some(value)), .. }]
+                    if matches!(value.kind, ExpressionKind::None)
+            )
+        {
+            return None;
+        }
+        self.read.insert(binding);
+        self.django_converter.noop_wrappers.push((scope, at));
+        Some(invocation)
+    }
+
     fn django_converter_class(&self, value: &Value) -> Option<SymbolId> {
         let Value::Callable(invocation) = value else {
             return None;
@@ -969,6 +1061,29 @@ impl Graph<'_> {
                         "Django converter wrapper has an unresolved class argument",
                     )
                     .at(wrapper.at),
+                );
+            }
+        }
+        for &(scope, at) in &self.django_converter.noop_wrappers {
+            let row = &self.scopes[scope];
+            let owner = row.owner.expect("converter wrapper is a function body");
+            // Later-discovered nested callers and independent entry points
+            // cannot be represented by the module's direct call order.
+            let has_unordered_call = self.direct_arguments[&owner]
+                .iter()
+                .any(|call| call.caller != row.file && reach.scopes.contains(&call.caller));
+            let independently_reached = reach
+                .evidence
+                .range((owner, "", "")..)
+                .take_while(|&&(target, _, _)| target == owner)
+                .any(|&(_, kind, _)| !matches!(kind, "direct_call" | "type_reference"));
+            if has_unordered_call || independently_reached {
+                self.issues.push(
+                    Issue::new(
+                        "ambiguous_binding",
+                        &self.files[row.file].path,
+                        "Django converter binding may differ for a caller outside the bounded module order",
+                    ).at(at),
                 );
             }
         }

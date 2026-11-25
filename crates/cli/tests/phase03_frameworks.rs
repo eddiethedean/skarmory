@@ -3168,6 +3168,60 @@ register_converter(Diamond, 'diamond')
 }
 
 #[test]
+fn django_converter_wrapper_uses_the_module_binding_at_its_call() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let src = r#"from django.urls import register_converter
+
+class Converter:
+    regex = '[a-z]+'
+    def to_python(self, value):
+        return value
+    def to_url(self, value):
+        return value
+
+def configure():
+    register_converter(Converter, 'custom')
+
+def replacement(cls, name):
+    return None
+
+register_converter = replacement
+configure()
+"#;
+    let path = root.join("routes.py");
+    fs::write(&path, src).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["routes.Converter.to_python", "routes.Converter.to_url"]
+    );
+    assert!(findings(&report, "unused_variables").contains(&"routes.Converter.regex"));
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["coverage", "dead_code_evidence", "unused_functions"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+    for mutation in [
+        "from external import opaque\nregister_converter = opaque\nconfigure()\n",
+        "def separately_called():\n    configure()\nseparately_called()\n",
+    ] {
+        fs::write(&path, format!("{src}\n{mutation}")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding"),
+            "{mutation}: {report}"
+        );
+    }
+}
+
+#[test]
 fn django_converter_protocol_requires_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
