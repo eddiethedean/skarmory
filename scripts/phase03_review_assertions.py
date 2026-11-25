@@ -89,8 +89,9 @@ def observe_review(report, fixture, assertions, scan):
         elif kind == "definition":
             matched = parts[0] in definitions
         elif kind == "no-unused":
-            matched = parts[0] in definitions and not any(
-                has_finding(report, bucket, parts[0]) for bucket in FINDING_BUCKETS
+            matched = (
+                coverage["status"] == "complete" and parts[0] in definitions
+                and not any(has_finding(report, bucket, parts[0]) for bucket in FINDING_BUCKETS)
             )
         elif kind == "unused":
             matched = has_finding(report, *parts)
