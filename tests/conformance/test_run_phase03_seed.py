@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from phase03_fastapi import verify_wheels
 from run_phase03_seed import (
     CORPUS_SOURCE,
     ROOT,
@@ -80,6 +81,26 @@ class AssertionTraceTests(unittest.TestCase):
                 sys.settrace(previous)
             self.assertIn("fixture.py:2", trace.completed)
             self.assertNotIn("fixture.py:3", trace.completed)
+
+
+class FastapiRuntimeEvidenceTests(unittest.TestCase):
+    def test_runtime_wheel_must_match_the_reviewed_lock(self):
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            wheel = directory / "fastapi-0.141.1-py3-none-any.whl"
+            artifact = b"original wheel bytes"
+            wheel.write_bytes(artifact)
+            sha256 = hashlib.sha256(artifact).hexdigest()
+            lock = directory / "runtime.txt"
+            lock.write_text(f"fastapi==0.141.1 --hash=sha256:{sha256}\n", encoding="ascii")
+            environment_digest = hashlib.sha256(lock.read_bytes()).hexdigest()
+            with patch("phase03_fastapi.LOCK", lock):
+                self.assertEqual(verify_wheels(directory, environment_digest), [wheel])
+                with self.assertRaisesRegex(ValueError, "lock digest differs"):
+                    verify_wheels(directory, "another lock")
+                wheel.write_bytes(b"modified wheel bytes")
+                with self.assertRaisesRegex(ValueError, "wheel differs from its lock"):
+                    verify_wheels(directory, environment_digest)
 
 
 class BenchmarkEvidenceTests(unittest.TestCase):
@@ -184,7 +205,7 @@ class CorpusReceiptTests(unittest.TestCase):
                 args = SimpleNamespace(
                     artifact=artifact, candidate_revision=revision, inventory=root / "inventory.toml",
                     output=root / "receipt.json", sdk_python=Path(sys.executable), upstream=root,
-                    variant=variant["id"],
+                    variant=variant["id"], fastapi_wheels=None,
                 )
 
                 def run_worker(command, **_kwargs):

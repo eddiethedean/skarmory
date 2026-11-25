@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,247 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 917 have port mappings. The reported release
+milestones. Of the required cases, 985 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -79,24 +79,24 @@ Those cases still expect a complete report. Three additional engine cases
 cover import-root aliases, graph limits, and cycle handling. They need
 ports for the original inputs and assertions.
 
-Seven additional FastAPI route and hook variants have SDK ports for
-conventional factories, plain async lifespan callbacks, and source-owned
-middleware. The version-sensitive router tests remain blocked. With the same
-late direct and nested registrations, runtime checks produced HTTP 404 under
-FastAPI 0.136.0 and HTTP 200 under FastAPI 0.141.1. The original fixtures
-provide no FastAPI version. Qualification needs a reviewed version-specific
-contract. [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
+The eight version-sensitive FastAPI variants use a separate live-router
+receipt. The runner verifies the FastAPI 0.141.1 runtime wheels against a
+dedicated lock and serves the original fixture before crediting the
+installed SDK scan with the explicit live mode. The original pytest
+assertions and PyProject remain unchanged. In the runtime cross-check,
+FastAPI 0.136.0 returns HTTP 404 for both late routes, while 0.141.1 returns
+HTTP 200. [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
 
 The reviewed Django collection contains 248 original variants. Its mapped
 SDK cases also verify assertions in the pinned shared fixture helper. The
-configuration replacement suite has eight additional ports exercising
-effective Django setting protocols.
+configuration replacement suite has eighteen ports exercising effective
+Django settings protocols and ordered collection mutations.
 
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
-| URL function callbacks and view providers | 0 | 51 |
-| Authentication backend selection and hooks | 37 | 34 |
-| Named settings imports and overrides | 14 | 14 |
+| URL function callbacks and view providers | 20 | 31 |
+| Authentication backend selection and hooks | 53 | 18 |
+| Named settings imports and overrides | 18 | 10 |
 | Model, command, and form hook provenance | 4 | 43 |
 | Python template liveness | 37 | 12 |
 | Form hook evidence after source edits | 0 | 2 |
