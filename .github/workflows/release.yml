@@ -17,6 +17,7 @@ on:
       - 'scripts/update_third_party_notices.py'
       - 'scripts/check_dead_code_gate.py'
       - 'tests/conformance/baselines/skylos-5.7.0.toml'
+      - 'tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt'
       - 'tests/conformance/phase03-inventory.toml'
       - 'tests/conformance/phase03_*.py'
       - 'tests/conformance/run_phase03_seed.py'
@@ -292,6 +293,7 @@ jobs:
           || github.event_name == 'pull_request'
           || github.event_name == 'workflow_dispatch' }}
       DEAD_CODE_SDK_VARIANT: linux-x86_64-cp311-python-sdk
+      DEAD_CODE_SDK_FASTAPI_VARIANT: linux-x86_64-cp311-python-sdk-fastapi-0.141.1
       DEAD_CODE_CLI_VARIANT: linux-x86_64-cp311-python-cli
       DEAD_CODE_ENGINE_VARIANT: linux-x86_64-cp311-python-engine
     steps:
@@ -363,6 +365,24 @@ jobs:
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/sdk.receipt.json
+      - name: Run the pinned FastAPI router variant
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        shell: bash
+        run: |
+          wheels=(phase03-wheel/*.whl)
+          test "${#wheels[@]}" -eq 1
+          python -m pip download --only-binary=:all: --no-deps --require-hashes \
+            --requirement tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt \
+            --dest phase03-fastapi-runtime
+          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
+            --upstream phase03-skylos \
+            --inventory tests/conformance/phase03-inventory.toml \
+            --variant "$DEAD_CODE_SDK_FASTAPI_VARIANT" \
+            --sdk-python "$RUNNER_TEMP/phase03-sdk/bin/python" \
+            --fastapi-wheels phase03-fastapi-runtime \
+            --artifact "${wheels[0]}" \
+            --candidate-revision "$(git rev-parse HEAD)" \
+            --output phase03-evidence/sdk-fastapi.receipt.json
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         with:
@@ -433,7 +453,7 @@ jobs:
 
           _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
           report = json.loads(Path("phase03-evidence/gate.json").read_text())
-          for layer in ("SDK", "CLI", "ENGINE"):
+          for layer in ("SDK", "SDK_FASTAPI", "CLI", "ENGINE"):
               variant = os.environ[f"DEAD_CODE_{layer}_VARIANT"]
               expected = {
                   case_id
@@ -458,6 +478,7 @@ jobs:
           path: |
             tests/conformance/phase03-inventory.toml
             phase03-skylos/uv.lock
+            tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt
             phase03-evidence/
           if-no-files-found: error
 

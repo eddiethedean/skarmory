@@ -22,6 +22,7 @@ from phase03_dependencies import (
 from phase03_engine import CASE as ENGINE_CASE
 from phase03_engine import engine_case
 from phase03_framework import framework_report, patch_framework_analysis
+from phase03_fastapi import CASES as FASTAPI_CASES, LIVE_ROUTER, prove_live_router, verify_wheels
 from phase03_framework_corpus import MANIFEST as CORPUS_SOURCE
 from phase03_framework_corpus import corpus_assertions, framework_cases, score_corpus
 
@@ -144,6 +145,12 @@ def port_cases(args):
         raise ValueError("missing native SDK adapter for a mapped dependency case")
     if layer != "sdk" and any(case["source"] == CORPUS_SOURCE for case in cases.values()):
         raise ValueError("the framework corpus requires a native SDK variant")
+    live_router_cases = {
+        key for key, case in cases.items() if LIVE_ROUTER in case["prerequisites"]
+    }
+    if live_router_cases and (layer != "sdk" or set(cases) != FASTAPI_CASES
+                              or live_router_cases != FASTAPI_CASES):
+        raise ValueError("the live-router variant must contain the eight pinned FastAPI cases")
     return inventory, digest, variant, cases
 
 
@@ -360,6 +367,18 @@ def pytest_worker(args):
         raise RuntimeError("reference case requires the Python backend")
     assertion_sources = case_assertion_sources(args.upstream, cases)
 
+    live_router = bool(cases) and set(cases) == FASTAPI_CASES and all(
+        LIVE_ROUTER in case["prerequisites"] for case in cases.values()
+    )
+    router_policy = None
+    if live_router:
+        wheels = verify_wheels(args.fastapi_wheels, variant["environment"])
+        if args.mode == "candidate":
+            router_policy = args.output.with_name("fastapi-router-mode.toml").resolve()
+            router_policy.write_text(
+                'root = true\n[dead_code]\nfastapi_router_mode = "live"\n', encoding="utf-8"
+            )
+
     class Capture:
         def __init__(self):
             self.outcomes = {}
@@ -373,6 +392,7 @@ def pytest_worker(args):
             self.trace_rejections = set()
             self.unittest_evidence = set()
             self.framework_evidence = set()
+            self.live_router_receipts = set()
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
@@ -382,11 +402,18 @@ def pytest_worker(args):
             old_trace = sys.gettrace()
 
             def analyze(path, **options):
+                if router_policy is not None:
+                    if options.get("config_file") is not None:
+                        pytest.fail("the original case already supplies a configuration")
+                    prove_live_router(path, wheels, environment())
+                    options["config_file"] = router_policy
                 scanned = scan_candidate(args.sdk_python, path, options)
                 report = json.loads(scanned)
                 if report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
                 self.scans.add(key)
+                if router_policy is not None and str(router_policy) in report["config_sources"]:
+                    self.live_router_receipts.add(key)
                 grep_enabled = report["analysis_summary"]["grep_verify"]["enabled"]
                 if grep_enabled is True:
                     self.grep_scans.add(key)
@@ -412,7 +439,7 @@ def pytest_worker(args):
                     self.framework_evidence.add(key)
                     if "native-unittest-evidence" in case["prerequisites"]:
                         self.unittest_evidence.add(key)
-                    return json.dumps(framework_report(report))
+                    return json.dumps(framework_report(report, source=case["source"]))
                 if "native-unittest-evidence" in case["prerequisites"]:
                     from phase03_framework import unittest_report
 
@@ -526,6 +553,8 @@ def pytest_worker(args):
                 proven = key in capture.scans
             elif required == "native-framework-evidence":
                 proven = key in capture.framework_evidence
+            elif required == LIVE_ROUTER:
+                proven = key in capture.live_router_receipts
             elif required == "native-unittest-evidence":
                 proven = key in capture.unittest_evidence
             elif required == "grep-verification":
@@ -588,6 +617,8 @@ def write_receipt(args):
         ]
         if args.sdk_python is not None:
             common.extend(("--sdk-python", str(args.sdk_python)))
+        if args.fastapi_wheels is not None:
+            common.extend(("--fastapi-wheels", str(args.fastapi_wheels)))
         for mode in ("reference", "candidate"):
             output = work / (mode + ".json")
             commands[mode] = [*common, "--mode", mode, "--output", str(output)]
@@ -685,13 +716,14 @@ def main():
     parser.add_argument("--inventory", required=True, type=Path)
     parser.add_argument("--variant", required=True)
     parser.add_argument("--sdk-python", type=Path)
+    parser.add_argument("--fastapi-wheels", type=Path)
     parser.add_argument("--artifact", required=True, type=Path)
     parser.add_argument("--candidate-revision")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--mode", choices=("reference", "candidate"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.upstream = args.upstream.resolve()
-    for name in ("inventory", "sdk_python", "output", "artifact"):
+    for name in ("inventory", "sdk_python", "fastapi_wheels", "output", "artifact"):
         path = getattr(args, name)
         if path is not None:
             # Preserve the venv interpreter symlink and its sys.prefix.
