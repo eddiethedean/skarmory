@@ -141,7 +141,7 @@ def framework_definitions(report):
 
 def patch_framework_analysis(patch, module, analyze):
     """Route pinned public analysis entry points through the candidate SDK."""
-    from skylos.analyzer import Skylos
+    from skylos import analyzer as reference_analyzer
     from test import web_framework_fixtures
 
     def analyze_instance(analyzer, path, thr=60, exclude_folders=None, **options):
@@ -151,7 +151,8 @@ def patch_framework_analysis(patch, module, analyze):
         analyzer.defs = framework_definitions(json.loads(result))
         return result
 
-    patch.setattr(Skylos, "analyze", analyze_instance)
+    patch.setattr(reference_analyzer, "analyze", analyze)
+    patch.setattr(reference_analyzer.Skylos, "analyze", analyze_instance)
     if hasattr(module, "_scan"):
         patch.setattr(web_framework_fixtures, "analyze", analyze)
     if hasattr(module, "analyze"):
