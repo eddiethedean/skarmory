@@ -298,8 +298,10 @@ selected by a literal argument. Calling a generator view creates the
 generator and leaves its body dormant. Unresolved URL
 registrations in active URL modules produce coverage diagnostics.
 An initializer with a proven invalid URL call cannot finish constructing
-its URL table. Opaque options and selected imports of a failed URL module
-leave coverage incomplete.
+its URL table. The preview follows a final literal list's direct `clear()`
+and indexed `URLPattern.callback` edits in a closed initializer. Opaque options,
+escaped table edits, and selected imports of a failed URL module leave coverage
+incomplete.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
@@ -357,6 +359,8 @@ entries that select local callbacks. A local getter can supply a literal
 display or readonly list. `@admin.display` and `@admin.action` attach
 metadata to a callback. A loaded registration with opaque options or an
 unresolved condition produces a coverage diagnostic.
+An empty `admin.py` inside a package is treated as a convention in projects
+that import genuine Django. The filename alone does not retain definitions.
 [Django admin discovery and options](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/#discovery-of-admin-files)
 
 A reached Django autoreloader call retains the callback bound at the call

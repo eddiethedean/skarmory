@@ -850,6 +850,35 @@ impl Graph<'_> {
         });
     }
 
+    pub(super) fn django_admin_stub_packages(&self) -> BTreeSet<&Path> {
+        if !self.phase03
+            || self.modules.contains_key("django")
+            || self.files.iter().any(|source| {
+                let mut parts = source.path.split('/');
+                let first = parts.next();
+                let top = match first {
+                    Some("src" | "lib" | "python") => parts.next(),
+                    first => first,
+                };
+                matches!(top, Some("django" | "django.py"))
+            })
+            || !self.symbols.iter().any(|entry| {
+                matches!(entry.binding, Binding::Import(import)
+                    if import.level == 0
+                        && import.module.split('.').next() == Some("django")
+                        && self.import_module(self.scopes[entry.scope].file, import).as_deref()
+                            == Some(import.module.as_str()))
+            })
+        {
+            return BTreeSet::new();
+        }
+        self.files
+            .iter()
+            .filter(|source| source.is_package)
+            .filter_map(|source| Path::new(&source.path).parent())
+            .collect()
+    }
+
     pub(super) fn record_django_converter(&mut self, call: CallArguments<'_>) {
         let CallArguments {
             scope,
@@ -1744,7 +1773,7 @@ impl Graph<'_> {
                 continue;
             }
             if let Some(patterns) = self.local(file, "urlpatterns", END) {
-                let value = self.binding(patterns, END, 0);
+                let value = self.django_effective_url_patterns(file, patterns);
                 self.collect_django_patterns(file, object, value, self.symbols[patterns].name.at);
                 pending.extend(
                     self.scopes[file]
@@ -2963,6 +2992,7 @@ impl Graph<'_> {
                     );
                 }
                 Value::DjangoInclude(child) => self.scopes[file].mounts.push((parent, child)),
+                Value::ConstantFunction | Value::NullaryConstantFunction => {}
                 _ => self.django_registration_issue(
                     parent,
                     at,

@@ -3157,6 +3157,7 @@ impl<'a> Graph<'a> {
                 ExpressionKind::Await(_)
                     | ExpressionKind::FormattedString(_)
                     | ExpressionKind::KeywordMappingCall { .. }
+                    | ExpressionKind::RepeatedKeywordCall { .. }
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
@@ -3387,6 +3388,11 @@ impl<'a> Graph<'a> {
                 }
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
+                }
+                Value::DjangoViewFactory(_)
+                    if self.django_view_has_missing_option(scope, before, arguments, keywords) =>
+                {
+                    Value::DjangoInvalidRegistration
                 }
                 Value::Callable(invocation) if self.is_class(invocation.target) => {
                     if self.phase03
@@ -4029,7 +4035,14 @@ impl<'a> Graph<'a> {
                     Value::Scalar
                 }
             }
-            ExpressionKind::Await(_) | ExpressionKind::KeywordMappingCall { .. } => Value::Unknown,
+            ExpressionKind::RepeatedKeywordCall { function, .. }
+                if self.phase03 && django_urls::is_django_url_factory(&recurse(self, function)) =>
+            {
+                Value::DjangoInvalidRegistration
+            }
+            ExpressionKind::Await(_)
+            | ExpressionKind::KeywordMappingCall { .. }
+            | ExpressionKind::RepeatedKeywordCall { .. } => Value::Unknown,
         }
     }
 
@@ -4706,6 +4719,21 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::RepeatedKeywordCall {
+                function,
+                arguments,
+            } => {
+                self.walk_expression(scope, function, before, true);
+                for argument in arguments {
+                    self.walk(scope, argument, before);
+                }
+                self.scope_issue(
+                    scope,
+                    expr.at,
+                    "unsupported_construct",
+                    "keyword expansion with a duplicate argument is outside the bounded call model",
+                );
+            }
             ExpressionKind::KeywordMappingCall { function, mapping } => {
                 self.walk_expression(scope, function, before, true);
                 self.walk(scope, mapping, before);
@@ -6337,7 +6365,9 @@ impl<'a> Graph<'a> {
                     self.annotation(scope, reference, before, evaluated);
                 }
             }
-            ExpressionKind::Call { .. } | ExpressionKind::KeywordMappingCall { .. }
+            ExpressionKind::Call { .. }
+            | ExpressionKind::KeywordMappingCall { .. }
+            | ExpressionKind::RepeatedKeywordCall { .. }
                 if evaluated =>
             {
                 self.walk(scope, expr, before);
@@ -9405,11 +9435,14 @@ impl<'a> Graph<'a> {
                 reason,
             });
         }
+        let django_admin_packages = self.django_admin_stub_packages();
         for file in self.files.iter().filter(|file| file.facts.empty) {
-            if !matches!(
-                file.path.rsplit('/').next(),
-                Some("__init__.py" | "__main__.py" | "main.py")
-            ) {
+            let name = file.path.rsplit('/').next();
+            let admin_stub = name == Some("admin.py")
+                && Path::new(&file.path)
+                    .parent()
+                    .is_some_and(|parent| django_admin_packages.contains(parent));
+            if !admin_stub && !matches!(name, Some("__init__.py" | "__main__.py" | "main.py")) {
                 findings.push(Finding {
                     category: Category::File,
                     identity_name: String::new(),
@@ -9623,6 +9656,13 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::KeywordMappingCall { function, mapping } => {
                 expressions.extend([function.as_ref(), mapping.as_ref()]);
+            }
+            ExpressionKind::RepeatedKeywordCall {
+                function,
+                arguments,
+            } => {
+                expressions.push(function);
+                expressions.extend(arguments);
             }
             ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
@@ -10307,6 +10347,41 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn django_admin_stub_exemption_requires_a_package_and_a_genuine_import() {
+        let build = |source| {
+            [
+                module("settings.py", "settings", source),
+                module("shop/__init__.py", "shop", ""),
+                module(
+                    "shop/admin.py",
+                    "shop.admin",
+                    "# Register your models here.\n",
+                ),
+                module("shop/placeholder.py", "shop.placeholder", "# Empty.\n"),
+                module("standalone/admin.py", "standalone.admin", "# Empty.\n"),
+            ]
+        };
+        let context = analyze_phase03(&build("from django.apps import AppConfig\n"), &[]);
+        assert_eq!(
+            names(&context, Category::File),
+            ["shop/placeholder.py", "standalone/admin.py"]
+        );
+        let unrelated = analyze_phase03(&build("from elsewhere import AppConfig\n"), &[]);
+        assert_eq!(
+            names(&unrelated, Category::File),
+            [
+                "shop/admin.py",
+                "shop/placeholder.py",
+                "standalone/admin.py"
+            ]
+        );
+        let mut shadowed = Vec::from(build("from django.apps import AppConfig\n"));
+        shadowed.push(module("src/django/__init__.py", "src.django", ""));
+        let shadowed = analyze_phase03(&shadowed, &[]);
+        assert!(names(&shadowed, Category::File).contains(&"shop/admin.py"));
     }
 
     #[test]
@@ -12484,6 +12559,7 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     fn phase03_django_url_table_stops_at_a_proven_invalid_registration() {
         for invalid in [
             "path('broken/', view, route='duplicate/')",
+            "path('broken/', view, name='first', **{'name': 'duplicate'})",
             "path('broken/', view, view=view)",
             "path('broken/', view, unexpected=True)",
             "path('broken/', view, None, None, None)",
@@ -12526,6 +12602,62 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                     .any(|edge| { edge.full_name == target && edge.kind == "django_registration" })
             );
         }
+    }
+
+    #[test]
+    fn phase03_django_url_stops_before_an_unbound_view_option() {
+        let urls = "from django.urls import path\nfrom django.views import View\n\
+                    class Page(View):\n    def setup(self, request): return 1\n\
+                    urlpatterns = [path('page/', Page.as_view(model=Missing))]\n";
+        let report = analyze_phase03(&django_url_test_files(urls, ""), &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(!report.evidence.iter().any(|edge| {
+            (edge.full_name == "urls.Page" && edge.kind == "django_registration")
+                || (edge.full_name == "urls.Page.setup" && edge.kind == "framework_lifecycle")
+        }));
+        for option in ["external()", "ValueError"] {
+            let opaque = urls.replace("Missing", option);
+            let report = analyze_phase03(&django_url_test_files(&opaque, ""), &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call")
+            );
+        }
+    }
+
+    #[test]
+    fn django_url_table_applies_closed_initializer_edits_before_dispatch() {
+        for (edit, selected) in [
+            ("urlpatterns.clear()", None),
+            ("urlpatterns[0].callback = lambda request: None", None),
+            ("urlpatterns[0].callback = before", Some("views.before")),
+        ] {
+            let urls = format!(
+                "from django.urls import path\nfrom views import view, before\n\
+                 urlpatterns = [path('plain/', view)]\n{edit}\n"
+            );
+            let report = analyze_phase03(&django_url_test_files(&urls, ""), &[]);
+            assert!(report.issues.is_empty(), "{edit}: {:?}", report.issues);
+            let routes: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|edge| edge.kind == "django_registration")
+                .map(|edge| edge.full_name.as_str())
+                .collect();
+            assert_eq!(routes, selected.into_iter().collect::<Vec<_>>());
+        }
+        let urls = "from django.urls import path\nfrom views import view\n\
+                    urlpatterns = [path('plain/', view)]\n\
+                    alias = urlpatterns\nurlpatterns.clear()\nunknown(alias)\n";
+        let report = analyze_phase03(&django_url_test_files(urls, ""), &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
     }
 
     #[test]

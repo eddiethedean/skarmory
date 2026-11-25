@@ -260,6 +260,10 @@ pub enum ExpressionKind {
         function: Box<Expression>,
         mapping: Box<Expression>,
     },
+    RepeatedKeywordCall {
+        function: Box<Expression>,
+        arguments: Vec<Expression>,
+    },
     Text(String),
     FormattedString(Vec<Expression>),
     Bool(bool),
@@ -498,6 +502,43 @@ impl<'ast> Visitor<'ast> for BodyCoverage<'_> {
 }
 
 impl Lowering<'_> {
+    fn repeated_keyword_arguments(call: &ruff_python_ast::ExprCall) -> Option<Vec<&Expr>> {
+        let (expansion, explicit) = call.arguments.keywords.split_last()?;
+        if expansion.arg.is_some() || explicit.is_empty() {
+            return None;
+        }
+        let names: BTreeSet<_> = explicit
+            .iter()
+            .map(|keyword| keyword.arg.as_ref().map(|name| name.as_str()))
+            .collect::<Option<_>>()?;
+        if names.len() != explicit.len() {
+            return None;
+        }
+        let Expr::Dict(mapping) = &expansion.value else {
+            return None;
+        };
+        let mut keys = BTreeSet::new();
+        let mut repeated = false;
+        for item in &mapping.items {
+            let Some(Expr::StringLiteral(key)) = item.key.as_ref() else {
+                return None;
+            };
+            let name = key.value.to_str();
+            if !keys.insert(name) {
+                return None;
+            }
+            repeated |= names.contains(name);
+        }
+        repeated.then(|| {
+            call.arguments
+                .args
+                .iter()
+                .chain(explicit.iter().map(|keyword| &keyword.value))
+                .chain(mapping.items.iter().map(|item| &item.value))
+                .collect()
+        })
+    }
+
     fn check(&self, node: &impl Ranged, depth: usize) -> Result<(), FrontendError> {
         if depth >= MAX_NESTING {
             return Err(self
@@ -1080,6 +1121,12 @@ impl Lowering<'_> {
                 ExpressionKind::KeywordMappingCall {
                     function: Box::new(lower(&node.func)?),
                     mapping: Box::new(lower(&node.arguments.keywords[0].value)?),
+                }
+            }
+            Expr::Call(node) if let Some(arguments) = Self::repeated_keyword_arguments(node) => {
+                ExpressionKind::RepeatedKeywordCall {
+                    function: Box::new(lower(&node.func)?),
+                    arguments: arguments.into_iter().map(lower).collect::<Result<_, _>>()?,
                 }
             }
             Expr::Call(node) => {
