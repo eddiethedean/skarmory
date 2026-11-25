@@ -5783,6 +5783,95 @@ register_converter(Lookalike, 'lookalike')
 }
 
 #[test]
+fn flat_unpack_keeps_assignment_order_and_reports_active_unresolved_iteration() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("entry.py");
+    let code = r#"def first():
+    return 'first'
+
+def second():
+    return 'second'
+
+chosen, inactive = first, second
+[inactive, chosen] = [chosen, inactive]
+chosen()
+
+def unpack_external(source):
+    callback, label = source
+    callback(label)
+"#;
+    fs::write(&source, code).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        unreachable_functions(&report),
+        ["entry.first", "entry.unpack_external"]
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in [
+            "coverage",
+            "unused_functions",
+            "unused_variables",
+            "dead_code_evidence",
+        ] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+
+    fs::write(
+        &source,
+        format!("{code}\nfrom external import opaque\nunpack_external(opaque)\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_unpack"
+                    && issue["path"] == "entry.py"
+                    && issue["line"] == 12
+            })
+    );
+}
+
+#[test]
+fn flat_unpack_evaluates_operands_before_rejecting_wrong_arity() {
+    let project = tempfile::tempdir().unwrap();
+    let source = project.path().join("entry.py");
+    fs::write(&source, "def before():\n    return 1\n\ndef after():\n    return 2\n\nfirst, second = (before(),)\nafter()\n").unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "invalid_unpack"
+                    && issue["path"] == "entry.py"
+                    && issue["line"] == 7
+            })
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let direct_call = |name: &str| {
+        symbols.iter().any(|symbol| {
+            symbol["qualified_name"] == name
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "direct_call" && edge["certainty"] == "certain")
+        })
+    };
+    assert!(direct_call("entry.before"), "{report}");
+    assert!(!direct_call("entry.after"), "{report}");
+}
+
+#[test]
 fn django_converter_wrappers_resolve_reached_arguments_only() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

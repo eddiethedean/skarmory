@@ -971,6 +971,19 @@ impl<'a> Graph<'a> {
                         self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
                     }
                 }
+                StatementKind::AssignUnpack { names, value } => {
+                    let items = match &value.kind {
+                        ExpressionKind::Sequence { items, .. } if items.len() == names.len() => {
+                            Some(items)
+                        }
+                        _ => None,
+                    };
+                    for (index, name) in names.iter().enumerate() {
+                        // Every RHS element sees the namespace before any of the stores.
+                        let item = items.and_then(|items| items.get(index));
+                        self.bind(scope, name, Binding::Variable(item, statement.at));
+                    }
+                }
                 StatementKind::DeleteName(name)
                     if self.phase03 && scope == self.scopes[scope].file =>
                 {
@@ -6868,6 +6881,36 @@ impl<'a> Graph<'a> {
                         self.annotation(scope, annotation, at, evaluated);
                     }
                 }
+                StatementKind::AssignUnpack { names, value } => {
+                    if !self.phase03 {
+                        self.issue(
+                            self.scopes[scope].file,
+                            at,
+                            "unsupported_construct",
+                            "unpacking is outside the compatibility subset",
+                        );
+                        continue;
+                    }
+                    self.walk(scope, value, at);
+                    match &value.kind {
+                        ExpressionKind::Sequence { items, .. } if items.len() == names.len() => {}
+                        ExpressionKind::Sequence { .. } => {
+                            self.scope_issue(
+                                scope,
+                                at,
+                                "invalid_unpack",
+                                "assignment unpacking has a known element count mismatch",
+                            );
+                            return true;
+                        }
+                        _ => self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_unpack",
+                            "assignment unpacking requires a fresh list or tuple literal",
+                        ),
+                    }
+                }
                 StatementKind::AssignDjangoSettings { environment, value } => {
                     self.walk(scope, value, at);
                     self.walk(scope, environment, at);
@@ -10223,6 +10266,10 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                     expressions.extend(annotation);
                 }
             }
+            StatementKind::AssignUnpack { names, value } => {
+                assigned.extend(names.iter().map(|name| name.text.as_str()));
+                expressions.push(value);
+            }
             StatementKind::AssignDjangoSettings { environment, value } => {
                 expressions.push(environment);
                 expressions.push(value);
@@ -10394,7 +10441,9 @@ fn suite_binds_name(body: &[Statement], name: &str) -> bool {
         StatementKind::ProviderWildcardImport(imports) => {
             imports.iter().any(|import| import.local.text == name)
         }
-        StatementKind::Assign { names, .. } => names.iter().any(|target| target.text == name),
+        StatementKind::Assign { names, .. } | StatementKind::AssignUnpack { names, .. } => {
+            names.iter().any(|target| target.text == name)
+        }
         StatementKind::LiteralRouteLoop { path, .. } => path.text == name,
         StatementKind::If {
             body, otherwise, ..

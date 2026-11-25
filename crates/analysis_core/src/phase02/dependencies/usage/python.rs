@@ -115,6 +115,35 @@ impl<'a> Python<'a> {
                         bindings.insert(&name.text, origin.clone());
                     }
                 }
+                Stmt::AssignUnpack { names, value } => {
+                    self.expression(value, &bindings);
+                    if let Expr::Sequence { items, .. } = &value.kind
+                        && items.len() == names.len()
+                    {
+                        let origins: Vec<_> = items
+                            .iter()
+                            .map(|item| qualified(item, &bindings))
+                            .collect();
+                        for (name, item) in names.iter().zip(items) {
+                            if python_configuration(self.path, &name.text) {
+                                self.configuration(item, &bindings);
+                            }
+                        }
+                        for (name, origin) in names.iter().zip(origins) {
+                            bindings.insert(&name.text, origin);
+                        }
+                    } else {
+                        for name in names {
+                            bindings.insert(&name.text, None);
+                        }
+                        self.usage.reasons.push(Reason::new(
+                            "unresolved_dependency_configuration",
+                            self.path,
+                            Some(statement.at.line),
+                            "assignment unpacking may change dependency resolution",
+                        ));
+                    }
+                }
                 Stmt::DeleteName(name) => {
                     bindings.insert(&name.text, None);
                 }
@@ -608,7 +637,7 @@ pub(super) fn is_local(locals: &BTreeSet<&str>, module: &str) -> bool {
 fn shadow<'a>(body: &'a [Statement], bindings: &mut Bindings<'a>) {
     for statement in body {
         match &statement.kind {
-            Stmt::Assign { names, .. } => {
+            Stmt::Assign { names, .. } | Stmt::AssignUnpack { names, .. } => {
                 for name in names {
                     bindings.insert(&name.text, None);
                 }
