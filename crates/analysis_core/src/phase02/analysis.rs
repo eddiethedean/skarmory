@@ -339,6 +339,12 @@ enum Binding<'a> {
     Definition(&'a Definition, ScopeId),
     Import(&'a Import),
     Variable(Option<&'a Expression>, Location),
+    UnpackItem {
+        value: &'a Expression,
+        arity: usize,
+        index: usize,
+        before: Location,
+    },
     Parameter,
     Deleted,
 }
@@ -979,10 +985,25 @@ impl<'a> Graph<'a> {
                         }
                         _ => None,
                     };
+                    let split = self.phase03
+                        && matches!(&value.kind, ExpressionKind::Call { function, .. }
+                            if matches!(&function.kind, ExpressionKind::Member(_, method) if method == "split"));
                     for (index, name) in names.iter().enumerate() {
                         // Every RHS element sees the namespace before any of the stores.
-                        let item = items.and_then(|items| items.get(index));
-                        self.bind(scope, name, Binding::Variable(item, statement.at));
+                        let binding = if split {
+                            Binding::UnpackItem {
+                                value,
+                                arity: names.len(),
+                                index,
+                                before: statement.at,
+                            }
+                        } else {
+                            Binding::Variable(
+                                items.and_then(|items| items.get(index)),
+                                statement.at,
+                            )
+                        };
+                        self.bind(scope, name, binding);
                     }
                 }
                 StatementKind::DeleteName(name)
@@ -2097,6 +2118,16 @@ impl<'a> Graph<'a> {
             Binding::Variable(Some(value), before) => {
                 self.identity(scope, value, before, depth + 1)
             }
+            Binding::UnpackItem {
+                value,
+                arity,
+                index,
+                before,
+            } => self
+                .literal_split_items(scope, value, before, depth + 1)
+                .filter(|items| items.len() == arity)
+                .and_then(|items| items.into_iter().nth(index))
+                .unwrap_or(Value::Unknown),
             Binding::Variable(None, _) => Value::Unknown,
             Binding::Deleted => Value::DeletedModuleBinding,
             Binding::Parameter => {
@@ -3543,9 +3574,10 @@ impl<'a> Graph<'a> {
                         keywords,
                     },
                     depth,
-                ) =>
+                )
+                && let Value::Text(value) = call.value =>
             {
-                Value::Text(call.value)
+                Value::Text(value)
             }
             ExpressionKind::Call {
                 function,
@@ -6931,9 +6963,15 @@ impl<'a> Graph<'a> {
                         continue;
                     }
                     self.walk(scope, value, at);
-                    match &value.kind {
-                        ExpressionKind::Sequence { items, .. } if items.len() == names.len() => {}
-                        ExpressionKind::Sequence { .. } => {
+                    let known_length = match &value.kind {
+                        ExpressionKind::Sequence { items, .. } => Some(items.len()),
+                        _ => self
+                            .literal_split_items(scope, value, at, 0)
+                            .map(|items| items.len()),
+                    };
+                    match known_length {
+                        Some(length) if length == names.len() => {}
+                        Some(_) => {
                             self.scope_issue(
                                 scope,
                                 at,
@@ -6946,7 +6984,7 @@ impl<'a> Graph<'a> {
                             scope,
                             at,
                             "unresolved_unpack",
-                            "assignment unpacking requires a fresh list or tuple literal",
+                            "assignment unpacking requires a bounded list or tuple value",
                         ),
                     }
                 }
@@ -9997,7 +10035,7 @@ impl<'a> Graph<'a> {
                     Binding::Definition(def, _) if def.kind == DefinitionKind::Class => "class",
                     Binding::Definition(..) => "function",
                     Binding::Import(_) => "import",
-                    Binding::Variable(..) => "variable",
+                    Binding::Variable(..) | Binding::UnpackItem { .. } => "variable",
                     Binding::Parameter => "parameter",
                     Binding::Deleted => unreachable!("deletions do not add definitions"),
                 };
@@ -10054,7 +10092,7 @@ impl<'a> Graph<'a> {
                 Binding::Import(_) if !self.read.contains(&id) => {
                     (Category::Import, "SKY-U002", 100, "binding_is_unread")
                 }
-                Binding::Variable(_, _)
+                Binding::Variable(_, _) | Binding::UnpackItem { .. }
                     if !self.read.contains(&id)
                         && !(self.framework_fields.contains(&id)
                             && scope
