@@ -463,7 +463,7 @@ pub(super) fn plain_class(definition: &Definition) -> bool {
     definition.kind == DefinitionKind::Class
         && definition.bases.is_empty()
         && definition.decorators.is_empty()
-        && definition.table_keyword.is_none()
+        && !definition.has_class_keywords()
         && definition.metaclass.is_none()
         && body_without_docstring(definition).is_empty()
 }

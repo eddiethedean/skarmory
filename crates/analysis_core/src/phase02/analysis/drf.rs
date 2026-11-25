@@ -130,7 +130,7 @@ impl Graph<'_> {
         if declaration.kind != DefinitionKind::Class
             || !declaration.bases.is_empty()
             || !declaration.decorators.is_empty()
-            || declaration.table_keyword.is_some()
+            || declaration.has_class_keywords()
             || self.local(body, "__init_subclass__", END).is_some()
             || self.local(body, "_declared_fields", END).is_some()
         {

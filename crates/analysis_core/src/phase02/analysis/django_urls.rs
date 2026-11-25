@@ -674,7 +674,7 @@ impl Graph<'_> {
                     return true;
                 }
                 if definition.kind != DefinitionKind::Class
-                    || definition.table_keyword.is_some()
+                    || definition.has_class_keywords()
                     || !definition.decorators.is_empty()
                     || !definition.bases.iter().all(|base| {
                         matches!(&base.kind, ExpressionKind::Name(name)

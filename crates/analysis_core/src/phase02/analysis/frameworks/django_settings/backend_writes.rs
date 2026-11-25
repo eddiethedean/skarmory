@@ -204,7 +204,7 @@ fn plain_backend_initializer(statement: &Statement) -> bool {
                 || definition.kind == DefinitionKind::Class
                     && definition.bases.is_empty()
                     && definition.decorators.is_empty()
-                    && definition.table_keyword.is_none()
+                    && !definition.has_class_keywords()
                     && body_without_docstring(definition).iter().all(|item|
                         matches!(&item.kind, StatementKind::Define(method) if plain_backend_function(method)))
         }

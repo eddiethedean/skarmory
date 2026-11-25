@@ -36,7 +36,7 @@ impl<'a> Graph<'a> {
             return None;
         };
         if !definition.bases.is_empty()
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
             || !definition.decorators.is_empty()
             || !self.class_discovery_writes(class, settings).is_empty()
             || body_without_docstring(definition).iter().any(|statement| {

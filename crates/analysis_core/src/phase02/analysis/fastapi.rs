@@ -349,7 +349,7 @@ impl<'a> Graph<'a> {
         (depth < MAX_BINDING_CHAIN
             && definition.kind == DefinitionKind::Class
             && definition.decorators.is_empty()
-            && definition.table_keyword.is_none()
+            && !definition.has_class_keywords()
             && matches!(self.class_base(symbol.scope, base, definition.name.at, depth + 1),
                 Value::Provider(provider) if is_app_constructor(&provider)))
         .then_some(scope)
@@ -711,7 +711,7 @@ impl<'a> Graph<'a> {
             (StatementKind::Define(init), StatementKind::Define(call))
                 if self.is_class(invocation.target)
                     && definition.bases.is_empty()
-                    && definition.table_keyword.is_none()
+                    && !definition.has_class_keywords()
                     && init.name.text == "__init__"
                     && call.name.text == "__call__"
                     && init.kind == DefinitionKind::Function

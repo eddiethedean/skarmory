@@ -1234,7 +1234,7 @@ impl Graph<'_> {
                     || matches!(module.as_str(), "flask" | "flask.app" | "flask.blueprints" | "flask_login" | "flask_login.login_manager" | "unittest.mock")
             }),
             StatementKind::Define(definition) => (definition.kind != DefinitionKind::Class
-                || (definition.bases.is_empty() && definition.table_keyword.is_none()
+                || (definition.bases.is_empty() && !definition.has_class_keywords()
                     && body_without_docstring(definition).is_empty()))
                 && !definition.name.text.starts_with("__")
                 && (definition.decorators.is_empty()

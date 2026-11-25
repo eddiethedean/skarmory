@@ -207,6 +207,12 @@ pub struct Definition {
     pub bases: Vec<Expression>,
 }
 
+impl Definition {
+    pub fn has_class_keywords(&self) -> bool {
+        self.table_keyword.is_some() || self.metaclass.is_some()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DefinitionKind {
     Function,

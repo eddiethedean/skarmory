@@ -1068,7 +1068,7 @@ impl<'a> Graph<'a> {
         };
         if definition.kind != DefinitionKind::Class
             || !definition.decorators.is_empty()
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
         {
             return Dispatch::Unknown;
         }
