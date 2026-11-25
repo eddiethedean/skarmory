@@ -1142,6 +1142,178 @@ fn flask_login_consumer_fails_before_exposing_the_manager_to_an_unbound_name() {
 }
 
 #[test]
+fn flask_global_initializer_stops_only_when_its_replacement_is_unbound_at_call_time() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let web = root.join("web.py");
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("providers.py"),
+        "from flask_login import LoginManager\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    for (setup, global, callback) in [
+        (
+            "from providers import login\n",
+            "login",
+            "@login.user_loader\ndef callback(user_id): return user_id\n",
+        ),
+        (
+            "from providers import login\nalias = login\n",
+            "alias",
+            "@alias.user_loader\ndef callback(user_id): return user_id\n",
+        ),
+        (
+            "from flask_login import LoginManager\n",
+            "LoginManager",
+            "login = LoginManager()\n@login.user_loader\ndef callback(user_id): return user_id\n",
+        ),
+    ] {
+        let helper = format!("def replace():\n    global {global}\n    {global} = replacement\n");
+        fs::write(&web, format!("{setup}{helper}replace()\n{callback}")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["web.callback"],
+            "{report}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    let importer = root.join("consumer.py");
+    fs::write(&importer, "from web import callback\n").unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["file"] == "consumer.py" && error["kind"] == "unresolved_import"
+            }),
+        "{report}"
+    );
+    fs::remove_file(importer).unwrap();
+
+    fs::write(
+        &web,
+        "from providers import login\ndef replace():\n    global login\n    login = replacement\nreplacement = login\nreplace()\n@login.user_loader\ndef callback(user_id): return user_id\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["file"] == "web.py" && error["kind"] == "unsupported_construct" }),
+        "{report}"
+    );
+}
+
+#[test]
+fn flask_opaque_hook_can_change_a_receiver_referenced_by_an_escaped_function() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("providers.py"),
+        "from flask_login import LoginManager\nlogin = LoginManager()\nother = LoginManager()\n",
+    )
+    .unwrap();
+    let app = root.join("app.py");
+    let registered = |report: &Value| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|symbol| {
+                symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "flask_login_registration" && edge["certainty"] == "certain"
+                })
+            })
+            .map(|symbol| symbol["qualified_name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let callbacks = "@login.user_loader\ndef after(user_id): return user_id\n@other.user_loader\ndef independent(user_id): return user_id\n";
+    let patch = "def replacement(callback): return callback\ndef replace():\n    target = login\n    target.user_loader = replacement\n";
+    let imports = "from providers import login, other\nfrom extension import customize\n";
+    let before = "@login.user_loader\ndef before(user_id): return user_id\n";
+    fs::write(
+        &app,
+        format!("{imports}{before}{patch}customize(callbacks={{'patch': replace}})\n{callbacks}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        registered(&report),
+        ["app.before", "app.independent"],
+        "{report}"
+    );
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["file"] == "app.py" && error["kind"] == "unresolved_call" }),
+        "{report}"
+    );
+    let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(
+        root.join("patches.py"),
+        format!("from providers import login\n{patch}"),
+    )
+    .unwrap();
+    fs::write(
+        &app,
+        format!("{imports}from patches import replace\n{before}customize(replace)\n{callbacks}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        registered(&report),
+        ["app.before", "app.independent"],
+        "{report}"
+    );
+
+    fs::write(
+        &app,
+        format!("{imports}{before}def replace(login): pass\ncustomize(replace)\n{callbacks}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        registered(&report),
+        ["app.after", "app.before", "app.independent"],
+        "{report}"
+    );
+
+    for (parameter, target, expected) in [
+        ("", "selected", ["app.after", "app.before"]),
+        (
+            "target=selected",
+            "target",
+            ["app.before", "app.independent"],
+        ),
+    ] {
+        fs::write(
+            &app,
+            format!(
+                "{imports}{before}selected = login\ndef replace({parameter}):\n    {target}.user_loader = lambda callback: callback\nselected = other\ncustomize(replace)\n{callbacks}"
+            ),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(registered(&report), expected, "{report}");
+    }
+}
+
+#[test]
 fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

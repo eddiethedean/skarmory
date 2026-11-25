@@ -8815,6 +8815,7 @@ impl<'a> Graph<'a> {
                     "type_reference"
                         | "generator_creation"
                         | "flask_factory_failed_call"
+                        | "flask_initializer_failed_call"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
                         | aiohttp::DECLARATION
