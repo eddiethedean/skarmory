@@ -464,6 +464,7 @@ pub(super) fn plain_class(definition: &Definition) -> bool {
         && definition.bases.is_empty()
         && definition.decorators.is_empty()
         && definition.table_keyword.is_none()
+        && definition.metaclass.is_none()
         && body_without_docstring(definition).is_empty()
 }
 

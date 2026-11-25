@@ -462,7 +462,11 @@ impl Graph<'_> {
             return;
         }
         let writes = [settings_writes, &provider_writes];
-        let mut class = target.target;
+        let mut class = match self.metaclass_creation(target.target) {
+            Some(metaclasses::ClassCreation::Redirect { replacement, .. }) => replacement,
+            Some(metaclasses::ClassCreation::Unknown) => return,
+            _ => target.target,
+        };
         if matches!(protocol, Protocol::ContextProcessor) {
             if !self.is_class(class)
                 && !self.is_coroutine(class)
@@ -630,6 +634,9 @@ impl Graph<'_> {
                 Some(mutations::MemberWriteValue::Deleted) => continue,
                 Some(_) => return None,
                 None => {}
+            }
+            if let Some(binding) = self.metaclass_member(class, name) {
+                return Some(Some(binding));
             }
             // Bare class annotations update __annotations__, leaving any
             // earlier member or inherited descriptor in place.
