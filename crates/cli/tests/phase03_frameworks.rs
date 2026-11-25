@@ -1762,6 +1762,74 @@ User(name="Ada")
 }
 
 #[test]
+fn pydantic_dump_activates_selected_serializers_and_bounds_the_wrap_delegate() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("models.py"),
+        r#"from pydantic import BaseModel, field_serializer, model_serializer
+
+class User(BaseModel):
+    name: str
+
+    @field_serializer('name')
+    def serialize_name(self, value):
+        return value
+
+    @model_serializer(mode='wrap')
+    def serialize_model(self, handler):
+        return handler(self)
+
+class Preview(BaseModel):
+    name: str
+
+    @field_serializer('name')
+    def unused_serializer(self, value):
+        return value
+
+class SerializationDraft: pass
+
+def unrelated(): return 1
+
+serialize = User(name='Ada').model_dump
+serialize()
+Preview(name='Ada')
+"#,
+    )
+    .unwrap();
+
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["models.Preview.unused_serializer", "models.unrelated"],
+        "{report}"
+    );
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["models.SerializationDraft"],
+        "{report}"
+    );
+    for name in ["models.User.serialize_name", "models.User.serialize_model"] {
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["qualified_name"] == name
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "pydantic_serializer" && edge["certainty"] == "certain"
+                    })),
+            "{report}"
+        );
+    }
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
 fn pydantic_builds_an_eager_schema_when_the_class_is_defined() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

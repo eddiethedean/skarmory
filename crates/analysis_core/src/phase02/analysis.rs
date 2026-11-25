@@ -20,6 +20,7 @@ mod fastapi;
 mod flask;
 mod frameworks;
 mod mutations;
+mod pydantic;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -59,6 +60,7 @@ enum Value {
     FastapiAnnotated(Option<SymbolId>),
     FastapiFieldMarker,
     FastapiMiddleware(Option<SymbolId>),
+    PydanticDump(SymbolId),
     Executor,
     Submit,
     Process(Box<Value>),
@@ -473,6 +475,7 @@ pub(super) fn analyze_with_verification(
         framework_lifecycle: Vec::new(),
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
+        pydantic_serialization: pydantic::Serialization::default(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
         flask_hooks: Vec::new(),
@@ -536,6 +539,7 @@ pub(super) fn analyze_with_verification(
     if phase03 {
         graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
+        graph.collect_pydantic_serialization();
     }
     graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
@@ -628,6 +632,7 @@ struct Graph<'a> {
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
+    pydantic_serialization: pydantic::Serialization,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
     flask_hooks: Vec<flask::ParameterHook>,
@@ -2311,6 +2316,14 @@ impl<'a> Graph<'a> {
                     && matches!(base, Value::Callable(_))
                 {
                     return Value::Unknown;
+                }
+                if matches!(&member, Value::Provider(provider) if matches!(provider.as_str(),
+                    "pydantic.BaseModel.model_dump" | "pydantic.BaseModel.model_dump_json"))
+                {
+                    return match base {
+                        Value::Instance(_) => Value::PydanticDump(class),
+                        _ => Value::Unknown,
+                    };
                 }
                 if let Value::Callable(invocation) = &member
                     && self.unittest_property(invocation.target)
@@ -4052,6 +4065,12 @@ impl<'a> Graph<'a> {
                     Value::Provider(name)
                         if self.empty_flask_context_pop(&name, arguments, keywords) => {}
                     Value::ConstantFunction => {}
+                    Value::PydanticDump(class) => self.record_pydantic_dump(
+                        class,
+                        scope,
+                        expr.at,
+                        arguments.is_empty() && keywords.is_empty(),
+                    ),
                     Value::UnittestComparison => {
                         if !self.bounded_unittest_comparison(scope, arguments, keywords, before) {
                             self.scope_issue(
@@ -5677,6 +5696,15 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && matches!(
                         name.as_str(),
+                        "pydantic.field_serializer" | "pydantic.model_serializer"
+                    ) =>
+            {
+                self.record_pydantic_serializer(scope, target, &name, args, keywords);
+            }
+            Value::Provider(name)
+                if self.phase03
+                    && matches!(
+                        name.as_str(),
                         "sqlalchemy.event.listens_for" | "celery.shared_task"
                     ) =>
             {
@@ -5721,8 +5749,6 @@ impl<'a> Graph<'a> {
                             | "pydantic.model_validator"
                             | "pydantic.root_validator"
                             | "pydantic.validator"
-                            | "pydantic.field_serializer"
-                            | "pydantic.model_serializer"
                             | "sqlalchemy.ext.hybrid.hybrid_property"
                     ) =>
             {
@@ -7759,7 +7785,8 @@ impl<'a> Graph<'a> {
                         Some(Value::Callable(_))
                     )
                 });
-            if !finite {
+            if !finite && !self.pydantic_resolves_handler(call, owner, &evidence, &reachable_scopes)
+            {
                 self.issues.push(
                     Issue::new(
                         "unresolved_call",
