@@ -4,8 +4,8 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,247 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 985 have port mappings. The reported release
+inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
+milestones. Of the required cases, 1,143 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -87,25 +87,28 @@ assertions and PyProject remain unchanged. In the runtime cross-check,
 FastAPI 0.136.0 returns HTTP 404 for both late routes, while 0.141.1 returns
 HTTP 200. [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
 
-The reviewed Django collection contains 248 original variants. Its mapped
-SDK cases also verify assertions in the pinned shared fixture helper. The
-configuration replacement suite has eighteen ports exercising effective
+The mapped Django SDK cases also verify assertions in the pinned shared
+fixture helper. The configuration replacement suite has thirty ports exercising effective
 Django settings protocols and ordered collection mutations.
 
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
-| URL function callbacks and view providers | 20 | 31 |
-| Authentication backend selection and hooks | 53 | 18 |
+| URL function callbacks and view providers | 35 | 16 |
+| Authentication backend selection and hooks | 58 | 13 |
 | Named settings imports and overrides | 18 | 10 |
-| Model, command, and form hook provenance | 4 | 43 |
-| Python template liveness | 37 | 12 |
-| Form hook evidence after source edits | 0 | 2 |
+| Model, command, and form hook provenance | 30 | 17 |
+| Python template liveness | 47 | 2 |
+| Form hook evidence after source edits | 2 | 0 |
+| Autoreload callback selection | 29 | 3 |
+| Admin stub context | 5 | 2 |
 
-The Django hook cache cases require an installed SDK port that
-actually reuses a cache across the original edits. The separate Django
+The Django hook cache ports reuse a cache across the original edits. The separate Django
 converter probes for Skylos's private parser and index hooks exercise
 implementation call counts outside the native report contract. The broader
 framework inventory remains under review.
+
+The logging configuration suite maps 42 of 43 cases. The Flask callback
+provider suite maps 38 of 58 cases.
 
 The SDK shard also executes the pinned basic dead-code benchmark with
 the original scorer and staged fixtures. Both score reports are included in
