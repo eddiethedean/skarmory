@@ -523,10 +523,13 @@ The expanded replay still includes unqualified cases in Django command and
 signal discovery, FastAPI and Flask registration, and Celery backend selection.
 Use the pinned case ledger to assess each contract before claiming parity.
 
+DRF serializer declarations retain the bounded getter selected by a
+`SerializerMethodField`, including a compatible source mixin. The getter
+receives possible protocol evidence.
+
 Public Click command overrides and source-owned Celery task libraries can
-contribute protocol declaration evidence. The declaration does not execute
-the command or task body. A selected Celery app still needs a reached task
-registration for execution evidence. The pinned reporting policy records
+contribute protocol declaration evidence. Execution evidence requires a reached command or task. A selected Celery app
+uses the reached task registration as its execution root. The pinned reporting policy records
 unreferenced module helper names of the form `format_*` or `*_name` as
 abstentions, with their source locations and symbol names.
 
