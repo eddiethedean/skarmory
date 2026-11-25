@@ -226,7 +226,10 @@ require the mount to be reached. A unique conventional CLI factory that
 returns a resolved Flask app contributes possible-use evidence. Local teardown
 setup helpers can receive that app through a resolved call. The scanner treats
 literal `g.pop(key, None)` as empty only when the selected code establishes
-that the context key has no writers or opaque access.
+that the context key has no writers or opaque access. A resolved Flask-Login
+manager records reached loader and error callback registrations through its
+actual provider methods. A registered blueprint exported by a package can
+supply callbacks through a child import when initialization order is proved.
 [Flask registration APIs](https://flask.palletsprojects.com/en/stable/api/)
 
 FastAPI supports imperative endpoint registration and literal `Depends` or
@@ -239,7 +242,10 @@ shutdown hooks. FastAPI versions before 0.137 copy routes
 at inclusion. Newer versions retain the router and can expose routes added
 later. The analyzer reports incomplete coverage when either model can select
 different routes or postponed dependencies, or when ordering across scopes
-cannot be determined. It retains constructors of resolved class dependencies.
+cannot be determined. It retains constructors of resolved class dependencies. The preview resolves bounded
+leading wildcard imports from the supported FastAPI and typing export tables.
+Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
+incomplete.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 
 Django URL discovery follows a reachable, recognized launcher. An explicit
@@ -277,6 +283,10 @@ metadata to a callback. A loaded registration with opaque options or an
 unresolved condition produces a coverage diagnostic.
 [Django admin discovery and options](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/#discovery-of-admin-files)
 
+A reached Django autoreloader call retains the callback bound at the call
+site. Rebinding the provider, conditional calls, and unresolved callbacks
+preserve their corresponding uncertainty.
+
 Django signal discovery follows modules loaded through the launcher or selected
 project configuration, including imports in an installed app's `ready()` hook.
 It resolves selected Django signal providers, direct `Signal()` instances, and subclasses that inherit
@@ -296,7 +306,9 @@ registration is reached. The model does not prove which dispatches occur.
 [Django signal registration](https://docs.djangoproject.com/en/5.2/topics/signals/#connecting-receiver-functions)
 
 The profile also recognizes selected Celery task registrations, including
-reached `register_task` calls on a resolved app. It models SQLAlchemy listeners
+reached `register_task` calls on a resolved app. Bounded Celery backend
+configuration tracks the effective provider per app and honors the first
+reached backend read. It models SQLAlchemy listeners
 and declared fields through a resolved SQLAlchemy or SQLModel base, including
 SQLModel's literal `table` class option. It recognizes Pydantic model hooks,
 unittest tests and lifecycle methods through effective class bindings, and pytest
@@ -305,11 +317,14 @@ declarations. In a conventional unselected plugin module, a bounded hook
 signature and a resolved pytest import can contribute possible-use evidence.
 pytest autouse fixtures also apply to unittest cases collected by pytest. A reachable eager Pydantic
 model declaration can execute its core-schema hook during class creation.
+A resolved model dump can invoke the selected Pydantic serializers, including
+a bounded wrapping serializer that delegates through its handler argument.
 These are bounded models under
 [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
-Additional Django command dispatch, FastAPI dependency patterns, Celery backend
-selection, and Pydantic serializer cases still need coverage.
+The expanded replay still includes unqualified cases in Django command and
+signal discovery, FastAPI and Flask registration, and Celery backend selection.
+Use the pinned case ledger to assess each contract before claiming parity.
 
 The pinned `django-urlpatterns` and `django-signal-receiver` corpus fixtures
 omit startup and a qualifying settings/URLconf pair, leaving coverage incomplete.

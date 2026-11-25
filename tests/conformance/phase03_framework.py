@@ -5,8 +5,10 @@ from types import SimpleNamespace
 
 
 _ROOT_KINDS = {
+    "celery_backend",
     "celery_task",
     "django_admin_registration",
+    "django_autoreload",
     "django_command",
     "django_path_converter",
     "django_registration",
@@ -18,6 +20,7 @@ _ROOT_KINDS = {
     "fastapi_registration",
     "flask_login_registration",
     "flask_registration",
+    "pydantic_serializer",
     "sqlalchemy_listener",
 }
 _CLASS_ROOT_REASONS = {
