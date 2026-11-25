@@ -7628,9 +7628,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-called_registration_argument_wrapper]"
@@ -8030,9 +8029,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-called_registration_argument_wrapper]"
@@ -8432,9 +8430,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-called_registration_argument_wrapper]"
@@ -8834,9 +8831,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unsupported_construct: expression is outside the compatibility subset (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-called_registration_argument_wrapper]"
@@ -11916,9 +11912,8 @@ assertions = ["test/test_django_converter_precision.py:40", "test/test_django_co
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_converter_precision.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan reports ambiguous_binding: an enclosing name has multiple bindings and the active version is unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_converter_precision.py::test_parameter_shadowed_registration_provider_is_not_a_root"
