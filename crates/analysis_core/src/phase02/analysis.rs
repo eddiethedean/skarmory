@@ -623,6 +623,7 @@ pub(super) fn analyze_with_verification(
         fresh_field_invocations: Vec::new(),
         source_provider_calls: BTreeMap::new(),
         source_provider_invalidated: None,
+        source_provider_opaque_arguments: BTreeSet::new(),
         resolved_receiver_calls: BTreeSet::new(),
         receiver_call_issues: BTreeSet::new(),
         issues: Vec::new(),
@@ -843,6 +844,7 @@ struct Graph<'a> {
     fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
     source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
     source_provider_invalidated: Option<BTreeSet<SymbolId>>,
+    source_provider_opaque_arguments: BTreeSet<SymbolId>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
     receiver_call_issues: BTreeSet<usize>,
     issues: Vec<Issue>,
@@ -6102,6 +6104,15 @@ impl<'a> Graph<'a> {
                                 at: expr.at,
                             });
                         } else {
+                            if self.phase03 {
+                                self.record_opaque_source_provider_arguments(CallArguments {
+                                    scope,
+                                    before,
+                                    at: expr.at,
+                                    positional: arguments,
+                                    keywords,
+                                });
+                            }
                             self.scope_issue(
                                 scope,
                                 expr.at,

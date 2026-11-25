@@ -9615,3 +9615,64 @@ fn assert_provider_cache_equivalence(root: &Path, cache: &Path, report: &Value, 
         assert_eq!(&cached, report);
     }
 }
+
+#[test]
+fn source_provider_dispatch_does_not_invoke_a_factory_class_before_definition() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let header = r#"def select(kind):
+    if kind == "live":
+        return Live()
+    return Fallback()
+
+def run(kind, value):
+    provider = select(kind)
+    return provider.execute(value)
+"#;
+    let classes = r#"class Live:
+    def execute(self, value): return {"value": value}
+
+class Fallback:
+    def execute(self, value): return {"fallback": value}
+"#;
+    let call = "RESULT = run('live', 1)\n";
+    let source = root.join("main.py");
+    fs::write(&source, format!("{header}\n{call}\n{classes}")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "main.py", 8);
+    assert!(!provider_call(&report, "main.Live.execute", "certain"));
+
+    fs::write(source, format!("{header}\n{classes}\n{call}")).unwrap();
+    let report = scan(root);
+    assert_provider_call(&report, "main.Live.execute", "certain");
+    assert!(unreachable_functions(&report).contains(&"main.Fallback.execute"));
+}
+
+#[test]
+fn source_provider_dispatch_keeps_opaque_class_mutations_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("main.py"),
+        r#"from unittest.mock import patch
+
+class Provider:
+    def execute(self, value): return {"value": value}
+
+def run(provider, value):
+    return provider.execute(value)
+
+def replacement(self, value):
+    return {"replacement": value}
+
+with patch.object(Provider, 'execute', replacement):
+    RESULT = run(Provider(), 1)
+"#,
+    )
+    .unwrap();
+
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "main.py", 7);
+    assert!(!provider_call(&report, "main.Provider.execute", "certain"));
+    assert!(!provider_call(&report, "main.Provider.execute", "possible"));
+}
