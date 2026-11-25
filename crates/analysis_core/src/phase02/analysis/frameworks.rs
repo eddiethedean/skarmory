@@ -49,6 +49,8 @@ pub(super) struct DjangoConverter {
     pub(super) string_calls: Vec<ParameterCall>,
     wrappers: Vec<DjangoParameterRegistration>,
     noop_wrappers: Vec<(ScopeId, Location)>,
+    pub(super) declarations: BTreeMap<ScopeId, BTreeMap<[usize; 2], String>>,
+    pub(super) bounded_url_modules: BTreeSet<ScopeId>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -887,7 +889,7 @@ impl Graph<'_> {
             positional,
             keywords,
         } = call;
-        if let Some([Some(target), Some(_)]) =
+        if let Some([Some(target), Some(name)]) =
             registration_arguments(positional, keywords, ["converter", "type_name"])
         {
             let conditional = self.branch_depth != 0
@@ -896,7 +898,19 @@ impl Graph<'_> {
                     .is_some_and(|owner| self.conditional.contains_key(&owner));
             let value = self.identity_with_dormant_declarations(scope, target, before, 0);
             if let Some(class) = self.django_converter_class(&value) {
-                self.register_django_converter(scope, class, at, conditional);
+                let has_regex = self.register_django_converter(scope, class, at, conditional);
+                if has_regex
+                    && !conditional
+                    && scope == self.scopes[scope].file
+                    && let Some(name) = self.django_converter_name(scope, name, before, 0)
+                    && skarmory_python::simple_name(&name)
+                {
+                    self.django_converter
+                        .declarations
+                        .entry(scope)
+                        .or_default()
+                        .insert(position(at), name);
+                }
                 return;
             }
             if let Some(wrapper) =
@@ -1134,7 +1148,7 @@ impl Graph<'_> {
         class: SymbolId,
         at: Location,
         conditional: bool,
-    ) {
+    ) -> bool {
         let kind = "django_path_converter";
         let certainty = if conditional { "possible" } else { "certain" };
         self.edge(scope, class, kind, certainty);
@@ -1145,7 +1159,7 @@ impl Graph<'_> {
                 "unresolved_registration",
                 "Django converter class hierarchy could not be resolved",
             );
-            return;
+            return false;
         };
         match self.converter_member(&mro, "regex") {
             Some(ConverterMember::Source(target))
@@ -1158,7 +1172,7 @@ impl Graph<'_> {
             Some(ConverterMember::Builtin) => {}
             // Registration can store the instance without compiling a URL
             // pattern. A class without regex cannot supply its callbacks.
-            None => return,
+            None => return false,
             Some(ConverterMember::Source(_)) => {
                 self.scope_issue(
                     scope,
@@ -1166,7 +1180,7 @@ impl Graph<'_> {
                     "unresolved_registration",
                     "Django converter regex could not be resolved",
                 );
-                return;
+                return false;
             }
         }
         for name in ["to_python", "to_url"] {
@@ -1214,6 +1228,26 @@ impl Graph<'_> {
                 ),
             }
         }
+        !mro.iter().any(|entry| {
+            let ConverterBase::Source(owner) = *entry else {
+                return false;
+            };
+            let Binding::Definition(_, body) = self.symbols[owner].binding else {
+                return true;
+            };
+            [
+                "__new__",
+                "__init__",
+                "__getattribute__",
+                "__getattr__",
+                "regex",
+            ]
+            .iter()
+            .any(|name| {
+                (*name != "regex" && self.local(body, name, END).is_some())
+                    || self.class_member_write(owner, name, (scope, at)).is_some()
+            })
+        })
     }
 
     fn converter_member(&self, mro: &[ConverterBase], name: &str) -> Option<ConverterMember> {
@@ -2027,7 +2061,8 @@ impl Graph<'_> {
         let no_startup = self.django_startup_scopes.is_disjoint(&reach.scopes);
         if no_startup {
             for file in 0..self.files.len() {
-                if let Some(patterns) = self.local(file, "urlpatterns", END)
+                if !self.django_converter.bounded_url_modules.contains(&file)
+                    && let Some(patterns) = self.local(file, "urlpatterns", END)
                     && has_django_pattern(&self.binding_value(patterns, 0))
                 {
                     self.issue(

@@ -7397,9 +7397,20 @@ impl<'a> Graph<'a> {
                         && decorated.bases.is_empty()
                         && decorated.table_keyword.is_none()
                         && body_without_docstring(decorated).iter().all(|item| {
-                            matches!(&item.kind, StatementKind::Define(method)
-                            if method.kind != DefinitionKind::Class && method.decorators.is_empty()
-                                && method.defaults.is_empty() && method.annotations.is_empty())
+                            match &item.kind {
+                                StatementKind::Define(method) => method.kind != DefinitionKind::Class
+                                    && method.decorators.is_empty()
+                                    && method.defaults.is_empty() && method.annotations.is_empty(),
+                                StatementKind::Assign {
+                                    names,
+                                    value: Some(value),
+                                    annotation: None,
+                                } => matches!(names.as_slice(), [name] if !name.text.starts_with("__"))
+                                    && matches!(value.kind, ExpressionKind::Text(_)
+                                        | ExpressionKind::Bool(_) | ExpressionKind::None
+                                        | ExpressionKind::Scalar(_)),
+                                _ => false,
+                            }
                         }) =>
                 {
                     // The new class cannot invoke a hook or change the module
@@ -7416,7 +7427,11 @@ impl<'a> Graph<'a> {
                 _ => {}
             }
         }
-        if decorated.kind == DefinitionKind::Class || self.scopes[symbol.scope].owner.is_some() {
+        if decorated.kind == DefinitionKind::Class
+            || self.scopes[symbol.scope]
+                .owner
+                .is_some_and(|owner| !self.is_class(owner))
+        {
             return None;
         }
         self.local_replacement_decorator(invocation)
@@ -7452,23 +7467,27 @@ impl<'a> Graph<'a> {
             return Some(Value::NullaryConstantFunction);
         }
         let replacement = returned_nested_function(definition)?;
-        // A literal return cannot capture the decorated callback or call its body.
-        if !matches!(
-            body_without_docstring(replacement),
-            [Statement {
-                kind: StatementKind::Return(
-                    None | Some(Expression {
-                        kind: ExpressionKind::None
-                            | ExpressionKind::Bool(_)
-                            | ExpressionKind::Text(_)
-                            | ExpressionKind::Scalar(_),
-                        ..
-                    })
-                ),
+        // Returning a literal or a parameter cannot capture the decorated
+        // callback or call its body.
+        let [
+            Statement {
+                kind: StatementKind::Return(value),
                 ..
-            }]
-        ) {
+            },
+        ] = body_without_docstring(replacement)
+        else {
             return None;
+        };
+        if let Some(value) = value {
+            match &value.kind {
+                ExpressionKind::None
+                | ExpressionKind::Bool(_)
+                | ExpressionKind::Text(_)
+                | ExpressionKind::Scalar(_) => {}
+                ExpressionKind::Name(name)
+                    if replacement.parameters.iter().any(|arg| arg.text == *name) => {}
+                _ => return None,
+            }
         }
         self.local(body, &replacement.name.text, END)
             .map(|replacement| Value::Callable(Invocation::ordinary(replacement)))
@@ -9319,6 +9338,7 @@ impl<'a> Graph<'a> {
         }
         if self.phase03 && converged {
             let mut protocols = self.django_settings_protocol_roots(&reach);
+            protocols.extend(self.standalone_django_converter_roots(&reach));
             if let Some(templates) = templates {
                 protocols.extend(self.django_template_roots(&reach, templates));
             }
@@ -13829,6 +13849,123 @@ class Command:
                 .iter()
                 .any(|issue| issue.kind == "unresolved_registration")
         );
+    }
+
+    #[test]
+    fn django_standalone_converter_routes_keep_bounded_possible_callbacks() {
+        let source = "from django.http import HttpResponse\n\
+                      from django.urls import path, register_converter\n\
+                      from converters import Slug\n\
+                      name = 'cu' + 'stom'\n\
+                      register_converter(Slug, type_name=name)\n\
+                      def view(request, value): return HttpResponse(value)\n\
+                      urlpatterns = [path('<custom:value>/', view)]\n";
+        let build = |urls: &str| {
+            vec![
+                module("urls.py", "urls", urls),
+                module(
+                    "converters.py",
+                    "converters",
+                    "class Slug:\n    regex = '[a-z]+'\n    def to_python(self, value): return value\n\
+                     \x20   def to_url(self, value): return value\n",
+                ),
+            ]
+        };
+        let report = analyze_phase03(&build(source), &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(report.evidence.iter().any(|edge| {
+            edge.full_name == "urls.view"
+                && edge.kind == "django_registration"
+                && edge.certainty == "possible"
+        }));
+        assert!(!report.evidence.iter().any(|edge| {
+            edge.full_name == "urls.view"
+                && edge.kind == "django_registration"
+                && edge.certainty == "certain"
+        }));
+
+        for unproved in [
+            source.replace("<custom:value>", "<unknown:value>"),
+            format!("{source}from plugin import mutate\nmutate(urlpatterns)\n"),
+        ] {
+            let report = analyze_phase03(&build(&unproved), &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration")
+            );
+        }
+
+        let mut files = build(source);
+        files.extend([
+            module("settings.py", "settings", "ROOT_URLCONF = 'other'\nINSTALLED_APPS = []\n"),
+            module("other.py", "other", "urlpatterns = []\n"),
+            module(
+                "manage.py",
+                "manage",
+                "import os\nfrom django.core.management import execute_from_command_line\n\
+                 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+            ),
+        ]);
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            !report.evidence.iter().any(|edge| {
+                edge.full_name == "urls.view" && edge.kind == "django_registration"
+            })
+        );
+    }
+
+    #[test]
+    fn django_converter_uses_effective_class_method_and_provider_bindings() {
+        let converter = "class Converter:\n    regex = '[a-z]+'\n\
+                         \x20   def to_python(self, value): return value\n\
+                         \x20   def to_url(self, value): return value\n";
+        let urls = "from django.urls import register_converter\n\
+                    from converters import Converter\nregister_converter(Converter, 'custom')\n";
+        let class = format!(
+            "class Replacement:\n    regex = '.*'\n    def to_python(self, value): return value\n\
+             def redirect(cls): return Replacement\n@redirect\n{converter}"
+        );
+        let method = format!(
+            "def redirect(callback):\n    def replacement(self, value): return value\n\
+             \x20   return replacement\n{}",
+            converter.replace("    def to_python", "    @redirect\n    def to_python")
+        );
+        let shadowed = "import django.urls\nfrom converters import Converter\n\
+            class Registry:\n    def register_converter(self, cls, name): return None\n\
+            django.urls = Registry()\ndjango.urls.register_converter(Converter, 'custom')\n";
+        for (source, urls, replacement) in [
+            (
+                class.as_str(),
+                urls,
+                Some("converters.Replacement.to_python"),
+            ),
+            (
+                method.as_str(),
+                urls,
+                Some("converters.redirect.replacement"),
+            ),
+            (converter, shadowed, None),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("converters.py", "converters", source),
+                    module("urls.py", "urls", urls),
+                ],
+                &[],
+            );
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(!report.evidence.iter().any(|edge| {
+                edge.kind == "django_path_converter"
+                    && edge.full_name == "converters.Converter.to_python"
+            }));
+            if let Some(replacement) = replacement {
+                assert!(report.evidence.iter().any(|edge| {
+                    edge.kind == "django_path_converter" && edge.full_name == replacement
+                }));
+            }
+        }
     }
 
     #[test]

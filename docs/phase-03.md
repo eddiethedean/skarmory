@@ -308,6 +308,10 @@ without exporting `urlpatterns` contributes no callbacks when the namespace is
 closed. A source-owned function whose code is replaced by a compatible no-op
 contributes no original body when its only external consumer is the closed URL
 table.
+Closed literal URL tables can form a finite set of possible callbacks when their
+named converters are registered by the same initializer. The proof checks the
+route captures and callback signature. Unknown converter names, table escapes,
+and unresolved registrations retain coverage diagnostics.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved

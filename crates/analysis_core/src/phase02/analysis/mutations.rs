@@ -632,7 +632,10 @@ impl Graph<'_> {
                         qualified.as_str(),
                         logging_config::DICT_CONFIG | "logging.config.dictConfigClass"
                     )
-                    || qualified == "django.utils.autoreload.run_with_reloader"
+                    || matches!(
+                        qualified.as_str(),
+                        "django.urls" | "django.utils.autoreload.run_with_reloader"
+                    )
                     || member == "connect" && is_django_signal(module)
             }
             ReceiverKey::Signal(_) => member == "connect",
