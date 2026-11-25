@@ -311,15 +311,21 @@ impl Graph<'_> {
                         });
                 }
                 let qualified = format!("{module}.{member}");
-                framework_class_provider(&qualified).is_some_and(FrameworkClassRole::is_unittest)
-                    || matches!(
-                        qualified.as_str(),
-                        "flask.Flask"
-                            | "flask.app.Flask"
-                            | "flask.Blueprint"
-                            | "flask.blueprints.Blueprint"
-                    )
-                    || is_flask_login_constructor(&qualified)
+                framework_class_provider(&qualified).is_some_and(|role| {
+                    role.is_unittest()
+                        || matches!(
+                            role,
+                            FrameworkClassRole::DjangoForm
+                                | FrameworkClassRole::DjangoModelForm
+                                | FrameworkClassRole::DjangoFormField
+                        )
+                }) || matches!(
+                    qualified.as_str(),
+                    "flask.Flask"
+                        | "flask.app.Flask"
+                        | "flask.Blueprint"
+                        | "flask.blueprints.Blueprint"
+                ) || is_flask_login_constructor(&qualified)
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
                     || is_django_signal_constructor(&qualified)
@@ -681,6 +687,10 @@ fn provider_module(name: &str) -> bool {
             | "django.test"
             | "django.test.testcases"
             | "django.dispatch"
+            | "django.forms"
+            | "django.forms.fields"
+            | "django.forms.forms"
+            | "django.forms.models"
             | "django.dispatch.dispatcher"
             | "django.db.models.signals"
             | "flask"

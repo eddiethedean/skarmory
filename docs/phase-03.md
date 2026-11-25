@@ -242,7 +242,10 @@ zero-argument factory call can return one fresh Flask app through local aliases.
 Defaulted factory parameters are supported when the factory can allocate the app
 without consulting them. A closed module initializer that stops on a proven
 missing binding or incompatible decorator receiver contributes no later
-registrations. Selected importers of a failed module retain incomplete coverage. The scanner treats
+registrations. This includes a factory call that fails argument binding or
+reaches an unbound name before any application mutation. A fresh generator
+used immediately as a decorator receiver cannot register the callback.
+Selected importers of a failed module retain incomplete coverage. The scanner treats
 literal `g.pop(key, None)` as empty only when the selected code establishes
 that the context key has no writers or opaque access. A resolved Flask-Login
 manager records reached loader and error callback registrations through its
@@ -302,6 +305,9 @@ reach a source-owned provider method when a fresh object receives a provider
 selected by a literal argument. Calling a generator view creates the
 generator and leaves its body dormant. Unresolved URL
 registrations in active URL modules produce coverage diagnostics.
+An initializer with a proven invalid URL call cannot finish constructing
+its URL table. Opaque options and selected imports of a failed URL module
+leave coverage incomplete.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
@@ -311,6 +317,11 @@ subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
+
+Django `RunPython` operations preserve possible declaration use of resolved
+forward and reverse callbacks. Parameter evidence covers the two positional
+arguments Django supplies. Constructing the operation does not execute the
+callback. [Django migration operations](https://docs.djangoproject.com/en/5.2/ref/migration-operations/#runpython)
 
 The analyzer resolves local classes and functions named by effective authentication,
 storage, logging, and Django template settings. Bounded backend methods and
@@ -322,6 +333,12 @@ entries use their effective dictionary keys. Bounded literal list and
 dictionary edits follow initializer order, including directly called local
 helpers, reassignments, and finite conditional branches. Unresolved mutations
 retain their coverage diagnostics.
+
+A supported Django form validation call retains possible `clean` and
+`clean_<field>` callbacks from its effective field table. The preview
+follows supported inherited fields, `None` masks, and literal ModelForm
+field selections. Dynamic field tables or validation dispatch produce
+coverage diagnostics.
 
 Django admin discovery follows installed apps when `django.contrib.admin` or
 `AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules

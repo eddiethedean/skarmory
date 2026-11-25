@@ -22,7 +22,9 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 mod aiohttp;
 mod celery;
 mod comprehension;
+mod django_forms;
 mod django_globals;
+mod django_urls;
 mod fastapi;
 mod field_dispatch;
 mod flask;
@@ -61,9 +63,12 @@ enum Value {
     Object(Object, ObjectKind),
     Method(Object, ObjectKind, String),
     DjangoInclude(Object),
+    DjangoInvalidRegistration,
     DjangoPattern(Box<Value>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
+    DjangoField(django_forms::Field),
+    DjangoFormValidation(Option<SymbolId>),
     DjangoSignal(Object),
     DjangoSignalConnect,
     DjangoReceiver(frameworks::DjangoReceiver),
@@ -239,6 +244,9 @@ enum FrameworkClassRole {
     DjangoCommand,
     DjangoView,
     DjangoModel,
+    DjangoForm,
+    DjangoModelForm,
+    DjangoFormField,
     DjangoSignal,
     DjangoAdmin,
     CeleryTask,
@@ -2582,6 +2590,12 @@ impl<'a> Graph<'a> {
                 {
                     return Value::DjangoViewFactory(class);
                 }
+                if matches!(member, Value::DjangoFormValidation(None)) {
+                    return match base {
+                        Value::Instance(_) => Value::DjangoFormValidation(Some(class)),
+                        _ => Value::Unknown,
+                    };
+                }
                 if matches!(member, Value::DjangoSignalConnect)
                     && matches!(base, Value::Callable(_))
                 {
@@ -2900,7 +2914,10 @@ impl<'a> Graph<'a> {
                             Some(
                                 FrameworkClassRole::PydanticModel
                                 | FrameworkClassRole::CeleryTask
-                                | FrameworkClassRole::DjangoSignal,
+                                | FrameworkClassRole::DjangoSignal
+                                | FrameworkClassRole::DjangoForm
+                                | FrameworkClassRole::DjangoModelForm
+                                | FrameworkClassRole::DjangoFormField,
                             ),
                             "__init__" | "__new__",
                         ) => None,
@@ -2911,6 +2928,13 @@ impl<'a> Graph<'a> {
                         (Some(FrameworkClassRole::DjangoView), "as_view") => {
                             Some(Value::Provider("django.views.View.as_view".into()))
                         }
+                        (
+                            Some(
+                                FrameworkClassRole::DjangoForm
+                                | FrameworkClassRole::DjangoModelForm,
+                            ),
+                            "is_valid" | "full_clean" | "non_field_errors",
+                        ) => Some(Value::DjangoFormValidation(None)),
                         (Some(FrameworkClassRole::DjangoSignal), "connect") => {
                             Some(Value::DjangoSignalConnect)
                         }
@@ -2919,6 +2943,9 @@ impl<'a> Graph<'a> {
                 }
                 _ => Some(Value::Unknown),
             },
+            _ if self.phase03 => self
+                .django_form_multiple_member(id, name, depth, access)
+                .unwrap_or(Some(Value::Unknown)),
             _ => Some(Value::Unknown),
         };
         if matches!(inherited, Some(Value::UnittestComparison))
@@ -3313,6 +3340,19 @@ impl<'a> Graph<'a> {
                 {
                     Value::EmptyFlaskContextEntry
                 }
+                Value::Provider(name) if self.phase03 && django_forms::is_field_provider(&name) => {
+                    self.django_field_value(
+                        &name,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expression.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                    .map_or(Value::Unknown, Value::DjangoField)
+                }
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
                 }
@@ -3696,50 +3736,22 @@ impl<'a> Graph<'a> {
                         self.django_receiver(scope, arguments, keywords, before, depth),
                     )
                 }
-                Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
-                    let module = match (arguments.as_slice(), keywords.as_slice()) {
-                        ([module], []) => Some(module),
-                        ([], [(name, module)]) if name == "arg" => Some(module),
-                        _ => None,
-                    };
-                    match module.map(|value| recurse(self, value)) {
-                        Some(Value::Text(module)) => self
-                            .modules
-                            .get(module.as_str())
-                            .copied()
-                            .map(|file| Value::DjangoInclude(framework_module(file)))
-                            .unwrap_or(Value::Unknown),
-                        _ => Value::Unknown,
-                    }
-                }
+                Value::Provider(name) if self.phase03 && name == "django.urls.include" => self
+                    .django_include(
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expression.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                        recurse,
+                    ),
                 Value::Provider(name)
                     if self.phase03
                         && matches!(name.as_str(), "django.urls.path" | "django.urls.re_path") =>
                 {
-                    let Some(slots) = registration_arguments(
-                        arguments,
-                        keywords,
-                        ["route", "view", "kwargs", "name"],
-                    ) else {
-                        return Value::DjangoPattern(Box::new(Value::Unknown));
-                    };
-                    let callback = match slots {
-                        [Some(route), Some(callback), kwargs, name]
-                            if matches!(recurse(self, route), Value::Text(_))
-                                && kwargs.is_none_or(|value| {
-                                    matches!(recurse(self, value), Value::Mapping(_))
-                                })
-                                && name.is_none_or(|value| {
-                                    matches!(recurse(self, value), Value::Text(_))
-                                }) =>
-                        {
-                            Some(callback)
-                        }
-                        _ => None,
-                    };
-                    Value::DjangoPattern(Box::new(
-                        callback.map_or(Value::Unknown, |value| recurse(self, value)),
-                    ))
+                    self.django_path(arguments, keywords, recurse)
                 }
                 Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listens_for" => {
                     Value::Provider("sqlalchemy.event.listens_for.callback".into())
@@ -4720,6 +4732,27 @@ impl<'a> Graph<'a> {
                         self.report_unmodeled_deferred_value(scope, expr.at, &callee)
                     }
                     Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
+                    Value::DjangoFormValidation(Some(class)) => self.record_django_form_validation(
+                        class,
+                        CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        },
+                    ),
+                    Value::Provider(name) if self.phase03 && django_forms::is_field_provider(&name) => {
+                        if self.django_field_value(
+                            &name,
+                            CallArguments {
+                                scope, before, at: expr.at, positional: arguments, keywords,
+                            },
+                        ).is_none() {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_constructor",
+                                "Django field options are outside the bounded model",
+                            );
+                        }
+                    }
                     Value::PydanticDump(class) => self.record_pydantic_dump(
                         class,
                         scope,
@@ -5340,6 +5373,15 @@ impl<'a> Graph<'a> {
                             keywords,
                         });
                     }
+                    Value::Provider(name) if self.phase03 && is_django_runpython(&name) => {
+                        self.record_django_runpython(CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        });
+                    }
                     Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
                         match self.verification_member(scope, arguments, keywords, before, 0) {
                             Some((Value::Callable(invocation), at)) => {
@@ -5923,6 +5965,76 @@ impl<'a> Graph<'a> {
                 });
         }
         self.activate_callback(scope, target, "executor_submission", at);
+    }
+
+    fn record_django_runpython(&mut self, call: CallArguments<'_>) {
+        let reject = |graph: &mut Self| {
+            graph.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_registration",
+                "Django RunPython requires a resolved forward callback and optional reverse callback",
+            );
+        };
+        let Some([Some(code), reverse, ..]) = registration_arguments(
+            call.positional,
+            call.keywords,
+            ["code", "reverse_code", "atomic", "hints", "elidable"],
+        ) else {
+            reject(self);
+            return;
+        };
+        let mut callbacks = Vec::new();
+        for expression in [Some(code), reverse].into_iter().enumerate() {
+            let (index, Some(expression)) = expression else {
+                continue;
+            };
+            match self.probe_identity(call.scope, expression, call.before) {
+                Value::None if index == 1 => {}
+                Value::Provider(provider)
+                    if provider
+                        .strip_suffix(".noop")
+                        .is_some_and(is_django_runpython) => {}
+                Value::Callable(invocation) if !self.is_class(invocation.target) => {
+                    callbacks.push(invocation);
+                }
+                _ => {
+                    reject(self);
+                    return;
+                }
+            }
+        }
+        for invocation in callbacks {
+            let target = invocation.target;
+            let Binding::Definition(definition, body) = self.symbols[target].binding else {
+                continue;
+            };
+            let receiver = usize::from(matches!(invocation.receiver, Receiver::Bound(_)));
+            // Construction stores the callable. A later migration supplies
+            // two positional arguments; construction does not run its body.
+            self.edge(
+                call.scope,
+                target,
+                "django_migration_callback_declaration",
+                "possible",
+            );
+            let supplied = receiver + 2;
+            let positional = definition.positional_parameter_count;
+            let bound = if supplied > positional && definition.has_variadic_positional_parameter {
+                positional + 1
+            } else {
+                supplied.min(positional)
+            };
+            for parameter in definition.parameters.iter().take(bound).skip(receiver) {
+                let binding = self.by_location[&(body, parameter.at.line, parameter.at.column)];
+                self.edge(
+                    call.scope,
+                    binding,
+                    "django_migration_parameter",
+                    "possible",
+                );
+            }
+        }
     }
 
     fn activate_argument(
@@ -8541,7 +8653,7 @@ impl<'a> Graph<'a> {
             );
             while let Some(edge) = pending.pop_front() {
                 if !verification && is_verification_edge(edge.kind)
-                    || !possible && is_atexit_edge(edge.kind)
+                    || !possible && is_deferred_possible_edge(edge.kind)
                     || self.rejected_django_callbacks.contains(&edge.target)
                 {
                     continue;
@@ -8572,6 +8684,7 @@ impl<'a> Graph<'a> {
                     edge.kind,
                     "type_reference"
                         | "generator_creation"
+                        | "flask_factory_failed_call"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
                         | aiohttp::DECLARATION
@@ -8580,6 +8693,7 @@ impl<'a> Graph<'a> {
                         | "marshmallow_schema_options"
                         | "marshmallow_hook_declaration"
                         | "celery_backend_default"
+                        | "django_migration_callback_declaration"
                 ) {
                     continue;
                 }
@@ -8694,13 +8808,13 @@ impl<'a> Graph<'a> {
         if !self.phase03 {
             return true;
         }
-        // Keep established routes into a callback's body. Shutdown-only
-        // paths and their descendants contribute possible evidence.
+        // Keep established routes into a callback's body. Optional
+        // framework paths and their descendants contribute possible evidence.
         let pending: VecDeque<_> = reach
             .scopes
             .iter()
             .flat_map(|&scope| &self.scopes[scope].edges)
-            .filter(|edge| is_atexit_edge(edge.kind))
+            .filter(|edge| is_deferred_possible_edge(edge.kind))
             .copied()
             .collect();
         (pending.is_empty() && !self.has_reachable_django_signals(reach))
@@ -8985,8 +9099,9 @@ impl<'a> Graph<'a> {
             .iter()
             .filter_map(|&(target, kind, _)| {
                 (self.retain_sanic_listener_parameters(target, kind)
-                    || self.retain_fastapi_callback_parameters(target, kind))
-                .then_some(target)
+                    || self.retain_fastapi_callback_parameters(target, kind)
+                    || kind == "django_migration_callback_declaration")
+                    .then_some(target)
             })
             .collect();
         let django_callback_contracts: BTreeSet<_> = evidence
@@ -9017,6 +9132,7 @@ impl<'a> Graph<'a> {
                     | "django_setting"
                     | "django_application"
                     | "django_converter_regex"
+                    | "django_migration_parameter"
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
             ) {
@@ -9693,6 +9809,10 @@ fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
         })
 }
 
+fn is_deferred_possible_edge(kind: &str) -> bool {
+    is_atexit_edge(kind) || kind == django_forms::VALIDATION_HOOK
+}
+
 fn is_atexit_edge(kind: &str) -> bool {
     matches!(kind, "atexit_registration" | "atexit_argument")
 }
@@ -9986,6 +10106,13 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.db.models.Model" | "django.db.models.base.Model" => {
             Some(FrameworkClassRole::DjangoModel)
         }
+        "django.forms.Form" | "django.forms.forms.Form" => Some(FrameworkClassRole::DjangoForm),
+        "django.forms.ModelForm" | "django.forms.models.ModelForm" => {
+            Some(FrameworkClassRole::DjangoModelForm)
+        }
+        name if django_forms::provider_field_role(name).is_some() => {
+            django_forms::provider_field_role(name)
+        }
         name if is_django_signal_constructor(name) => Some(FrameworkClassRole::DjangoSignal),
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
@@ -10007,7 +10134,21 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
 }
 
 fn framework_managed_base(name: &str) -> bool {
-    framework_class_provider(name).is_some() || is_django_string_converter(name)
+    framework_class_provider(name).is_some()
+        || is_django_string_converter(name)
+        || matches!(
+            name,
+            "django.db.migrations.Migration" | "django.db.migrations.migration.Migration"
+        )
+}
+
+fn is_django_runpython(name: &str) -> bool {
+    matches!(
+        name,
+        "django.db.migrations.RunPython"
+            | "django.db.migrations.operations.RunPython"
+            | "django.db.migrations.operations.special.RunPython"
+    )
 }
 
 fn is_django_string_converter(name: &str) -> bool {
@@ -10047,6 +10188,51 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn django_runpython_preserves_only_supplied_callback_parameters() {
+        let files = [
+            module(
+                "callbacks.py",
+                "callbacks",
+                "def apply_change(apps, editor, /, extra=None): pass\n",
+            ),
+            module(
+                "shop/migrations/0001_data.py",
+                "shop.migrations.0001_data",
+                r#"from django.db import migrations
+from callbacks import apply_change as forwards
+
+def backwards(first, /, *rest, extra=None): pass
+def unused(untouched): pass
+
+class Migration(migrations.Migration):
+    operations = [migrations.RunPython(forwards, reverse_code=backwards)]
+"#,
+            ),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(
+            names(&report, Category::Parameter),
+            ["extra", "extra", "untouched"]
+        );
+        let retained: BTreeSet<_> = report
+            .evidence
+            .iter()
+            .filter(|row| row.kind == "django_migration_parameter" && row.certainty == "possible")
+            .map(|row| row.full_name.as_str())
+            .collect();
+        assert_eq!(
+            retained,
+            BTreeSet::from([
+                "callbacks.apply_change.apps",
+                "callbacks.apply_change.editor",
+                "shop.migrations.0001_data.backwards.first",
+                "shop.migrations.0001_data.backwards.rest",
+            ])
+        );
     }
 
     #[test]
@@ -11449,6 +11635,159 @@ print(Status.default)
     }
 
     #[test]
+    fn phase03_django_form_validation_retains_only_effective_callbacks() {
+        let source = "
+from django import forms
+from fields import PHONE
+
+def normalize():
+    return 'number'
+
+class Replaced:
+    pass
+
+Form = forms.Form
+forms.Form = Replaced
+
+class Parent(Form):
+    phone = PHONE
+
+class Active(Parent):
+    phone = 0
+    def clean_phone(self):
+        return normalize()
+    def clean_missing(self):
+        return 'unused'
+
+class Removed(Parent):
+    phone = None
+    def clean_phone(self):
+        return 'unused'
+
+class Inactive(Form):
+    def clean(self):
+        return 'unused'
+
+class Lookalike(forms.Form):
+    def clean(self):
+        return 'unused'
+
+Active({'phone': '123'}).is_valid()
+Removed({}).full_clean()
+Inactive()
+Lookalike()
+";
+        let result = analyze_phase03(
+            &[
+                module("forms.py", "forms", source),
+                module(
+                    "fields.py",
+                    "fields",
+                    "from django.forms.fields import CharField\nPHONE = CharField()\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["clean", "clean", "clean_missing", "clean_phone"],
+        );
+        for (target, kind) in [
+            ("forms.Active.clean_phone", django_forms::VALIDATION_HOOK),
+            ("forms.normalize", "direct_call"),
+        ] {
+            assert!(result.evidence.iter().any(|entry| {
+                entry.full_name == target && entry.kind == kind && entry.certainty == "possible"
+            }));
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|entry| { entry.full_name == target && entry.certainty == "certain" })
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_form_validation_uses_c3_field_tables() {
+        for (first, second, dispatched) in [("B", "C", false), ("C", "B", true)] {
+            let source = format!(
+                "
+from django.forms import Form, CharField
+
+class A(Form):
+    phone = CharField()
+
+class B(A):
+    phone = None
+
+class C(A):
+    pass
+
+class Contact({first}, {second}):
+    def clean_phone(self):
+        return 'number'
+
+Contact({{'phone': '123'}}).is_valid()
+"
+            );
+            let result = analyze_phase03(&[module("forms.py", "forms", &source)], &[]);
+            assert!(result.issues.is_empty(), "{source}\n{:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|entry| {
+                    entry.full_name == "forms.Contact.clean_phone"
+                        && entry.kind == django_forms::VALIDATION_HOOK
+                }),
+                dispatched,
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_model_form_validation_keeps_selected_and_declared_fields() {
+        let source = "
+from django.forms import ModelForm, CharField
+from django.db.models import Model, CharField as Column
+
+class Person(Model):
+    phone = Column(max_length=20)
+    private = Column(max_length=20, editable=False)
+
+class Contact(ModelForm):
+    private = CharField()
+    class Meta:
+        model = Person
+        fields = ['phone']
+        exclude = ['private']
+    def clean_phone(self):
+        return 'phone'
+    def clean_private(self):
+        return 'private'
+    def clean_dormant(self):
+        return 'dormant'
+
+Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
+";
+        let result = analyze_phase03(&[module("forms.py", "forms", source)], &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["clean_dormant"]);
+        for name in ["clean_phone", "clean_private"] {
+            assert!(result.evidence.iter().any(|entry| {
+                entry.full_name == format!("forms.Contact.{name}")
+                    && entry.kind == django_forms::VALIDATION_HOOK
+                    && entry.certainty == "possible"
+            }));
+        }
+        let unresolved = source.replace("fields = ['phone']", "fields = ['unknown']");
+        let result = analyze_phase03(&[module("forms.py", "forms", &unresolved)], &[]);
+        assert!(result.issues.iter().any(|issue| {
+            issue.kind == "unresolved_registration"
+                && issue.message.contains("Django form validation")
+        }));
+    }
+
+    #[test]
     fn phase03_selects_the_configured_django_urlconf() {
         let files = [
             module("settings.py", "settings", "ROOT_URLCONF = 'project.urls'\n"),
@@ -11530,6 +11869,136 @@ print(Status.default)
             unused,
             BTreeSet::from(["config.unused_value", "dormant.DEBUG"])
         );
+    }
+
+    #[test]
+    fn phase03_django_url_table_stops_at_a_proven_invalid_registration() {
+        for invalid in [
+            "path('broken/', view, route='duplicate/')",
+            "path('broken/', view, view=view)",
+            "path('broken/', view, unexpected=True)",
+            "path('broken/', view, None, None, None)",
+            "path('broken/', view, kwargs='invalid')",
+            "path('broken/', view, kwargs=[])",
+            "path('', include('child_urls', arg='child_urls'))",
+            "path('', include('child_urls', unexpected=True))",
+            "path('', include('child_urls', None, None))",
+            "path('', include('child_urls', namespace='missing'))",
+        ] {
+            let urls = format!(
+                "from django.urls import include, path\nfrom views import view, before, after\n\
+                 urlpatterns = [path('good/', before), {invalid}, path('after/', after())]\n\
+                 handler404 = view\n"
+            );
+            let result = analyze_phase03(&django_url_test_files(&urls, ""), &[]);
+            assert!(result.issues.is_empty(), "{invalid}: {:?}", result.issues);
+            for target in ["views.view", "views.before", "views.after", "views.helper"] {
+                assert!(
+                    !result.evidence.iter().any(|edge| edge.full_name == target
+                        && matches!(edge.kind, "django_registration" | "direct_call")),
+                    "{invalid} should not reach {target}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_defaults_and_child_namespace_activate_callbacks() {
+        let urls = "from django.urls import include, path\nfrom views import before\n\
+                    urlpatterns = [path('direct/', before, kwargs=None, name=None), \
+                                    path('nested/', include(arg='child_urls', namespace='named'))]\n";
+        let result = analyze_phase03(&django_url_test_files(urls, "app_name = 'child'\n"), &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        for target in ["views.view", "views.before"] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|edge| { edge.full_name == target && edge.kind == "django_registration" })
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_opaque_options_keep_coverage_incomplete() {
+        for (invalid, child_body) in [
+            ("path('opaque/', view, kwargs=options)", ""),
+            ("path('opaque/', view, Pattern=pattern)", ""),
+            (
+                "path('', include('child_urls', namespace='site'))",
+                "def __getattr__(name):\n    return lookup(name)\n",
+            ),
+        ] {
+            let urls = format!(
+                "from django.urls import include, path\nfrom views import view\n\
+                 urlpatterns = [{invalid}]\n"
+            );
+            let result = analyze_phase03(&django_url_test_files(&urls, child_body), &[]);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration")
+            );
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|edge| edge.kind == "django_registration")
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_include_keeps_failed_import_coverage_incomplete() {
+        let urls = "from django.urls import include, path\n\
+                    urlpatterns = [path('', include('child_urls'))]\n";
+        let child = "urlpatterns = [path('', view, unexpected=True)]\n";
+        let result = analyze_phase03(&django_url_test_files(urls, child), &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|edge| edge.kind == "django_registration")
+        );
+    }
+
+    fn django_url_test_files(urls: &str, child_tail: &str) -> Vec<AnalyzedFile> {
+        vec![
+            module(
+                "settings.py",
+                "settings",
+                "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+            ),
+            module("urls.py", "urls", urls),
+            module(
+                "child_urls.py",
+                "child_urls",
+                &format!(
+                    "from django.urls import path\nfrom views import view\n\
+                     urlpatterns = [path('', view)]\n{child_tail}"
+                ),
+            ),
+            module(
+                "views.py",
+                "views",
+                "def view(request): return helper()\ndef helper(): return 1\n\
+                 def before(request): return 2\ndef after(): return view\n",
+            ),
+            module(
+                "manage.py",
+                "manage",
+                "import os\nfrom django.core.management import execute_from_command_line\n\
+                 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n\
+                 execute_from_command_line([])\n",
+            ),
+        ]
     }
 
     #[test]
