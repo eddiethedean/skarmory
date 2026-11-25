@@ -200,3 +200,10 @@ blocked for the 129 reviewed cases without receipts and the incomplete audit.
 The six deferred cases did not enter that count. The local wheel and native
 artifacts were development builds. Their receipts do not qualify the Linux
 release variants.
+
+The later framework audit adds 106 pinned Python cases for Django application
+and lifecycle behavior, Celery routing, and logging configuration. Each row
+records the original assertion locations and either an installed SDK port or
+the outstanding compatibility difference. The Django source-edit cases reuse
+the native fact cache across the original edits. They verify that the changed
+file is re-extracted and that the resulting report agrees with a fresh scan.
