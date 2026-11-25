@@ -3400,6 +3400,83 @@ fn project_wildcard_reads_finite_settings_exports_from_a_selected_sibling() {
 }
 
 #[test]
+fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let conf = root.join("conf");
+    fs::create_dir(&conf).unwrap();
+    let initializer = conf.join("__init__.py");
+    fs::write(conf.join("base.py"), "DEV = False\nCUSTOM_FLAG = True\n").unwrap();
+    fs::write(
+        conf.join("consumer.py"),
+        "from conf import CUSTOM_FLAG\nassert CUSTOM_FLAG\n",
+    )
+    .unwrap();
+    let source = "from .base import *\n";
+    fs::write(&initializer, source).unwrap();
+    let report = scan(root);
+    assert!(!findings(&report, "unused_variables").contains(&"conf.base.CUSTOM_FLAG"));
+
+    for guard in ["True", "False"] {
+        let body = format!(
+            "{source}try:\n    from .local import *\nexcept ImportError:\n    pass\n\
+             if {guard}:\n    from .dev import *\nRETAINED = True\n"
+        );
+        fs::write(&initializer, body).unwrap();
+        let uncached = scan_with_exit(root, None, None, 2);
+        assert_eq!(uncached["coverage"]["status"], "incomplete", "{uncached}");
+        assert_eq!(uncached["coverage"]["extracted_files"], 3, "{uncached}");
+        assert!(
+            uncached["definitions"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|definition| definition["name"] == "conf.RETAINED"),
+            "{uncached}"
+        );
+        assert!(
+            findings(&uncached, "unused_variables").is_empty(),
+            "{uncached}"
+        );
+        assert!(
+            uncached["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{uncached}"
+        );
+        let errors: Vec<_> = uncached["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|error| (&error["file"], &error["line"], &error["kind"]))
+            .collect();
+        assert_eq!(
+            errors,
+            vec![
+                (
+                    &Value::from("conf/__init__.py"),
+                    &Value::from(2),
+                    &Value::from("unsupported_construct")
+                ),
+                (
+                    &Value::from("conf/__init__.py"),
+                    &Value::from(7),
+                    &Value::from("unsupported_construct")
+                ),
+            ],
+            "{uncached}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, uncached);
+        }
+    }
+}
+
+#[test]
 fn fastapi_wildcard_imports_require_known_external_provider_identity() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

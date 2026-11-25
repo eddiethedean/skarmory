@@ -299,7 +299,14 @@ impl Graph<'_> {
             return None;
         }
         for (name, expression) in call.keywords {
-            if !names.insert(name) || !field_option(provider, name, form) {
+            if !names.insert(name) {
+                return None;
+            }
+            if name == "choices" && matches!(provider, CHAR_FIELD | "django.db.models.CharField") {
+                self.django_direct_field_choices(call, expression)?;
+                continue;
+            }
+            if !field_option(provider, name, form) {
                 return None;
             }
             let value = self.probe_identity(call.scope, expression, call.before);

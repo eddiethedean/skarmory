@@ -4,8 +4,8 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ruff_python_ast::{
-    Alias, BoolOp, CmpOp, ElifElseClause, Expr, InterpolatedStringElement, Mod, Operator, Stmt,
-    UnaryOp,
+    Alias, BoolOp, CmpOp, ElifElseClause, ExceptHandler, Expr, InterpolatedStringElement, Mod,
+    Operator, Stmt, StmtTry, UnaryOp,
 };
 use ruff_python_ast::{
     token::TokenKind,
@@ -98,7 +98,11 @@ pub enum StatementKind {
     Define(Definition),
     Import(Import),
     ProviderWildcardImport(Vec<Import>),
-    ProjectWildcardImport(String),
+    ProjectWildcardImport {
+        module: String,
+        level: u32,
+        optional: bool,
+    },
     Assign {
         names: Vec<Name>,
         value: Option<Expression>,
@@ -265,6 +269,27 @@ fn provider_wildcard_members(module: &str) -> Option<&'static str> {
     }
 }
 
+fn optional_project_wildcard(node: &StmtTry) -> Option<&str> {
+    let [Stmt::ImportFrom(import)] = node.body.as_ref() else {
+        return None;
+    };
+    let [ExceptHandler::ExceptHandler(handler)] = node.handlers.as_slice() else {
+        return None;
+    };
+    let module = import.module.as_ref()?.as_str();
+    (!node.is_star
+        && !import.is_lazy
+        && import.level == 1
+        && !module.contains('.')
+        && matches!(import.names.as_slice(), [alias] if alias.name.as_str() == "*" && alias.asname.is_none())
+        && node.orelse.is_empty()
+        && node.finalbody.is_empty()
+        && matches!(handler.type_.as_deref(), Some(Expr::Name(name)) if name.id.as_str() == "ImportError")
+        && handler.name.is_none()
+        && matches!(handler.body.as_ref(), [Stmt::Pass(_)]))
+    .then_some(module)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Expression {
     pub at: Location,
@@ -428,7 +453,7 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
     let named_condition = Cell::new(None);
     let body = Lowering(
         &lines,
-        SyntaxScope::ModuleOrClass,
+        SyntaxScope::Module,
         BTreeMap::new(),
         &named_condition,
         project_wildcards,
@@ -496,7 +521,8 @@ fn ignore_rules(lower: &str) -> Option<Vec<String>> {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SyntaxScope {
-    ModuleOrClass,
+    Module,
+    Class,
     Function,
     AsyncFunction,
 }
@@ -735,7 +761,6 @@ impl Lowering<'_> {
         module: &str,
         level: u32,
         from: bool,
-        top_level: bool,
     ) -> Result<(), FrontendError> {
         for alias in names {
             let name = alias.name.as_str();
@@ -766,10 +791,14 @@ impl Lowering<'_> {
                     });
                     continue;
                 }
-                if self.4 && top_level && from && level == 0 {
+                if self.4 && self.1 == SyntaxScope::Module && from {
                     output.push(Statement {
                         at: self.0.locate(alias.start()),
-                        kind: StatementKind::ProjectWildcardImport(module.into()),
+                        kind: StatementKind::ProjectWildcardImport {
+                            module: module.into(),
+                            level,
+                            optional: false,
+                        },
                     });
                     continue;
                 }
@@ -845,19 +874,12 @@ impl Lowering<'_> {
             let kind = match statement {
                 Stmt::Pass(_) => continue,
                 Stmt::Import(node) if !node.is_lazy => {
-                    self.imports(&mut result, &node.names, "", 0, false, depth == 0)?;
+                    self.imports(&mut result, &node.names, "", 0, false)?;
                     continue;
                 }
                 Stmt::ImportFrom(node) if !node.is_lazy => {
                     let module = node.module.as_ref().map_or("", |module| module.as_str());
-                    self.imports(
-                        &mut result,
-                        &node.names,
-                        module,
-                        node.level,
-                        true,
-                        depth == 0,
-                    )?;
+                    self.imports(&mut result, &node.names, module, node.level, true)?;
                     continue;
                 }
                 Stmt::FunctionDef(node) => {
@@ -1032,14 +1054,8 @@ impl Lowering<'_> {
                             .map(|keyword| expression(&keyword.value))
                             .transpose()?,
                         is_generator: false,
-                        body: Lowering(
-                            self.0,
-                            SyntaxScope::ModuleOrClass,
-                            BTreeMap::new(),
-                            self.3,
-                            self.4,
-                        )
-                        .suite(&node.body, next)?,
+                        body: Lowering(self.0, SyntaxScope::Class, BTreeMap::new(), self.3, self.4)
+                            .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
                         decorators: node
                             .decorator_list
@@ -1191,8 +1207,19 @@ impl Lowering<'_> {
                         .collect::<Result<_, FrontendError>>()?,
                     body: self.suite(&node.body, next)?,
                 },
+                Stmt::Try(node)
+                    if self.4
+                        && self.1 == SyntaxScope::Module
+                        && let Some(module) = optional_project_wildcard(node) =>
+                {
+                    StatementKind::ProjectWildcardImport {
+                        module: module.into(),
+                        level: 1,
+                        optional: true,
+                    }
+                }
                 Stmt::Return(node) => {
-                    if self.1 == SyntaxScope::ModuleOrClass {
+                    if matches!(self.1, SyntaxScope::Module | SyntaxScope::Class) {
                         return Err(self
                             .0
                             .error("parse_error", node, "return outside a function"));
@@ -1237,7 +1264,7 @@ impl Lowering<'_> {
                     } else if let Some(iterable) = discarded_comprehension_iterable(&node.value) {
                         StatementKind::DiscardedComprehension(expression(iterable)?)
                     } else if let Expr::Yield(yielded) = &*node.value
-                        && self.1 != SyntaxScope::ModuleOrClass
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
                     {
                         let Some(value) = &yielded.value else {
                             continue;

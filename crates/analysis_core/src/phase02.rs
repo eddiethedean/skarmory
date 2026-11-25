@@ -813,7 +813,7 @@ fn scan_selected(
         FactCache::for_project(
             directory,
             if project_wildcards {
-                "phase03-module-v39/ruff-0.0.12/py311/utf8-universal"
+                "phase03-module-v40/ruff-0.0.12/py311/utf8-universal"
             } else {
                 "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
             },
@@ -986,16 +986,18 @@ fn scan_selected(
         }
     }
 
-    if project_wildcards && issues.is_empty() {
-        issues.extend(wildcards::resolve(&project, &mut files));
-    }
-    let dependency_sources_complete = issues.is_empty();
-    let package_entrypoints = (include_dead_code && phase03 && issues.is_empty())
+    let wildcard_issues = if project_wildcards {
+        wildcards::resolve(&project, &mut files)
+    } else {
+        Vec::new()
+    };
+    let dependency_sources_complete = issues.is_empty() && wildcard_issues.is_empty();
+    let package_entrypoints = (include_dead_code && phase03 && dependency_sources_complete)
         .then(|| package_entrypoints::Snapshot::read(path, &files));
     let available_package_entrypoints = package_entrypoints
         .as_ref()
         .filter(|metadata| metadata.issues.is_empty());
-    let runtime = (include_dead_code && phase03 && issues.is_empty()).then(|| {
+    let runtime = (include_dead_code && phase03 && dependency_sources_complete).then(|| {
         runtime_evidence::Snapshot::read(
             path,
             &project,
@@ -1005,7 +1007,7 @@ fn scan_selected(
             &options.coverage_file,
         )
     });
-    let verification = (grep_verify && issues.is_empty())
+    let verification = (grep_verify && dependency_sources_complete)
         .then(|| grep_verification::Snapshot::read(&project, Some(&config.selection)));
     let django_settings = (include_dead_code && phase03)
         .then(|| std::env::var_os("DJANGO_SETTINGS_MODULE"))
@@ -1016,6 +1018,7 @@ fn scan_selected(
         settings: django_settings.as_deref(),
         templates: django_templates.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
+        unresolved_project_wildcards: !wildcard_issues.is_empty(),
     };
     let mut analysis = if include_dead_code && issues.is_empty() {
         if local_configs.is_empty() {
@@ -1058,6 +1061,7 @@ fn scan_selected(
     } else {
         Analysis::default()
     };
+    analysis.issues.extend(wildcard_issues);
     if include_dead_code
         && has_javascript
         && issues.is_empty()
