@@ -5994,6 +5994,7 @@ impl<'a> Graph<'a> {
             };
             match self.probe_identity(call.scope, expression, call.before) {
                 Value::None if index == 1 => {}
+                Value::Scalar if index == 1 && self.django_migration_none(call, expression) => {}
                 Value::Provider(provider)
                     if provider
                         .strip_suffix(".noop")
@@ -6037,6 +6038,16 @@ impl<'a> Graph<'a> {
                     "possible",
                 );
             }
+        }
+    }
+
+    fn django_migration_none(&self, call: CallArguments<'_>, expression: &Expression) -> bool {
+        match &expression.kind {
+            ExpressionKind::None => true,
+            ExpressionKind::Name(name) => self
+                .lexical(call.scope, name, call.before)
+                .is_some_and(|id| self.django_literal_none(id, 0) == Some(true)),
+            _ => false,
         }
     }
 
@@ -10236,6 +10247,67 @@ class Migration(migrations.Migration):
                 "shop.migrations.0001_data.backwards.rest",
             ])
         );
+    }
+
+    #[test]
+    fn django_runpython_accepts_an_explicit_absent_reverse_callback() {
+        for reverse in ["None", "absent"] {
+            let source = format!(
+                "from django.db.migrations import RunPython\n\
+                 def forward(apps, editor, extra=None): pass\n\
+                 absent = None\n\
+                 operation = RunPython(forward, reverse_code={reverse})\n"
+            );
+            let files = [module("migration.py", "migration", &source)];
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert_eq!(names(&report, Category::Parameter), ["extra"]);
+        }
+        let source = "from django.db.migrations import RunPython\n\
+                      def forward(apps, editor): pass\n\
+                      absent = 0\n\
+                      operation = RunPython(forward, reverse_code=absent)\n";
+        let files = [module("migration.py", "migration", source)];
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+    }
+
+    #[test]
+    fn django_runpython_rebinding_preserves_only_the_original_capture() {
+        for (replacement, complete) in [("replace", true), ("install()", false)] {
+            let source = format!(
+                "from django.db import migrations\n\
+                 def replace(callback): return None\n\
+                 def retained(apps, editor): pass\n\
+                 def retired(apps, editor): pass\n\
+                 captured = migrations.RunPython\n\
+                 migrations.RunPython = {replacement}\n\
+                 old = captured(retained)\n\
+                 new = migrations.RunPython(retired)\n"
+            );
+            let report = analyze_phase03(&[module("migration.py", "migration", &source)], &[]);
+            let retained: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_migration_callback_declaration")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(retained, ["migration.retained"], "{replacement}");
+            assert_eq!(report.issues.is_empty(), complete, "{:?}", report.issues);
+            if !complete {
+                assert!(
+                    report
+                        .issues
+                        .iter()
+                        .any(|issue| issue.kind == "unresolved_attribute_write")
+                );
+            }
+        }
     }
 
     #[test]
