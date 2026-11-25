@@ -24,6 +24,7 @@ _ROOT_KINDS = {
     "flask_registration",
     "pydantic_serializer",
     "sqlalchemy_listener",
+    "typer_callback",
 }
 _CLASS_ROOT_REASONS = {
     "django_command": "dead_code_liveness:django_web_management_command_handle",

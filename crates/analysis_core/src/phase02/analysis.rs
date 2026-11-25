@@ -206,6 +206,7 @@ enum ObjectKind {
     FlaskApp,
     FlaskBlueprint,
     FlaskLoginManager,
+    TyperApp,
     CeleryApp,
 }
 
@@ -2498,6 +2499,9 @@ impl<'a> Graph<'a> {
                     Some(mutations::MemberWriteValue::Ambiguous) => Value::Unknown,
                 }
             }
+            Value::Object(object, ObjectKind::TyperApp) if name == "callback" => {
+                self.typer_callback_member(object, access)
+            }
             Value::Object(object, ObjectKind::FlaskLoginManager) => {
                 self.flask_login_member(object, name, access)
             }
@@ -3376,6 +3380,21 @@ impl<'a> Graph<'a> {
                             expression.at.column,
                         ),
                         ObjectKind::FlaskLoginManager,
+                    )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && is_typer_constructor(&name)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::TyperApp,
                     )
                 }
                 Value::Provider(name) if self.phase03 && name == "celery.Celery" => Value::Object(
@@ -5004,6 +5023,7 @@ impl<'a> Graph<'a> {
                                 ObjectKind::App
                                     | ObjectKind::FlaskApp
                                     | ObjectKind::FlaskLoginManager
+                                    | ObjectKind::TyperApp
                                     | ObjectKind::CeleryApp
                             )
                         {
@@ -6169,6 +6189,17 @@ impl<'a> Graph<'a> {
                         "FastAPI middleware protocol could not be resolved",
                     );
                 }
+            }
+            Value::Method(object, ObjectKind::TyperApp, name)
+                if name == "callback"
+                    && matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && args.is_empty()
+                    && keywords.is_empty() =>
+            {
+                self.scopes[scope]
+                    .routes
+                    .push((object, target, "typer_callback"));
+                return true;
             }
             Value::Method(object, ObjectKind::FlaskLoginManager, name)
                 if !matches!(decorator.kind, ExpressionKind::Call { .. })
@@ -9074,7 +9105,7 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
                 || flask_callback_method(kind, name)
                 || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
-        ObjectKind::FlaskLoginManager => false,
+        ObjectKind::FlaskLoginManager | ObjectKind::TyperApp => false,
         ObjectKind::CeleryApp => name == "task",
     }
 }
@@ -9092,6 +9123,7 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
                 || flask_callback_method(kind, method)
         }
         ObjectKind::FlaskLoginManager => flask_login_callback(method),
+        ObjectKind::TyperApp => false,
         ObjectKind::CeleryApp => method == "task",
     }
 }
@@ -9148,6 +9180,10 @@ fn is_fastapi_field_marker(name: &str) -> bool {
     })
 }
 
+fn is_typer_constructor(name: &str) -> bool {
+    matches!(name, "typer.Typer" | "typer.main.Typer")
+}
+
 fn is_known_call(name: &str, phase03: bool) -> bool {
     name.starts_with("builtins.")
         || phase03
@@ -9155,6 +9191,7 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
                 || is_fastapi_field_marker(name)
                 || is_django_signal_constructor(name)
                 || is_flask_login_constructor(name)
+                || is_typer_constructor(name)
                 || is_django_receiver(name)
                 || matches!(
                     name,
@@ -9290,6 +9327,7 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
         ObjectKind::App | ObjectKind::Router => "fastapi_registration",
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => "flask_registration",
         ObjectKind::FlaskLoginManager => "flask_login_registration",
+        ObjectKind::TyperApp => "typer_callback",
         ObjectKind::CeleryApp => "celery_task",
     }
 }

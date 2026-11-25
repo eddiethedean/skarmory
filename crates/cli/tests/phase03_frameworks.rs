@@ -4408,3 +4408,58 @@ fn phase03_reports_the_dead_class_without_duplicate_method_findings() {
             && row["reason"] == "covered by the unused class finding"
     }));
 }
+
+#[test]
+fn typer_callback_discovery_requires_the_real_reached_owner() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("commands.py"),
+        concat!(
+            "from typer import Typer as CommandLine\n",
+            "app = CommandLine()\n",
+            "@app.callback()\ndef main(verbose=False): return prepare(verbose)\n",
+            "def prepare(value): return value\n",
+            "def independent(): return 0\n",
+            "def dormant():\n",
+            "    local = CommandLine()\n",
+            "    @local.callback()\n",
+            "    def nested(): return dormant_helper()\n",
+            "def dormant_helper(): return 0\n",
+            "def identity_factory():\n",
+            "    def identity(function): return function\n",
+            "    return identity\n",
+            "alias = app\n",
+            "alias.callback = identity_factory\n",
+            "@app.callback()\ndef replaced(): return 0\n",
+        ),
+    )
+    .unwrap();
+
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    for name in ["commands.main", "commands.prepare"] {
+        assert!(!unused.contains(&name), "{report}");
+    }
+    for name in [
+        "commands.independent",
+        "commands.dormant",
+        "commands.dormant_helper",
+        "commands.replaced",
+    ] {
+        assert!(unused.contains(&name), "{report}");
+    }
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|symbol| {
+        symbol["qualified_name"] == "commands.main"
+            && symbol["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["kind"] == "typer_callback" && event["certainty"] == "certain")
+    }));
+    assert!(
+        !symbols
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "commands.dormant.nested")
+    );
+}

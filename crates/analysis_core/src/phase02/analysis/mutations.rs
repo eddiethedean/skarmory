@@ -8,6 +8,7 @@ enum ReceiverKey {
     Module(String),
     Signal(Object),
     FlaskLoginManager(Object),
+    TyperApp(Object),
     Fastapi(Object),
 }
 
@@ -222,12 +223,14 @@ impl Graph<'_> {
                 let qualified = format!("{module}.{member}");
                 framework_class_provider(&qualified).is_some_and(FrameworkClassRole::is_unittest)
                     || is_flask_login_constructor(&qualified)
+                    || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
                     || is_django_signal_constructor(&qualified)
                     || qualified == "django.utils.autoreload.run_with_reloader"
                     || member == "connect" && is_django_signal(module)
             }
             ReceiverKey::Signal(_) => member == "connect",
+            ReceiverKey::TyperApp(_) => matches!(member, "callback" | "__class__"),
             ReceiverKey::FlaskLoginManager(_) => {
                 flask_login_callback(member) || matches!(member, "__class__" | "login_view")
             }
@@ -252,6 +255,7 @@ impl Graph<'_> {
                 Some(ReceiverKey::Module(module.clone()))
             }
             Value::DjangoSignal(site) => Some(ReceiverKey::Signal(*site)),
+            Value::Object(site, ObjectKind::TyperApp) => Some(ReceiverKey::TyperApp(*site)),
             Value::Object(site, ObjectKind::FlaskLoginManager) => {
                 Some(ReceiverKey::FlaskLoginManager(*site))
             }
@@ -309,6 +313,20 @@ impl Graph<'_> {
         access: (ScopeId, Location),
     ) -> Option<MemberWriteValue> {
         self.member_write(&ReceiverKey::Module(module.into()), name, access)
+    }
+
+    pub(super) fn typer_callback_member(&self, site: Object, access: (ScopeId, Location)) -> Value {
+        let receiver = ReceiverKey::TyperApp(site);
+        if self.member_write(&receiver, "__class__", access).is_some() {
+            return Value::Unknown;
+        }
+        match self.member_write(&receiver, "callback", access) {
+            Some(MemberWriteValue::Replacement(value)) => value,
+            Some(MemberWriteValue::Ambiguous) => Value::Unknown,
+            Some(MemberWriteValue::Deleted) | None => {
+                Value::Method(site, ObjectKind::TyperApp, "callback".into())
+            }
+        }
     }
 
     pub(super) fn flask_login_member(
@@ -371,7 +389,8 @@ impl Graph<'_> {
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
-            | ReceiverKey::Fastapi(site) => Some(site.0),
+            | ReceiverKey::Fastapi(site)
+            | ReceiverKey::TyperApp(site) => Some(site.0),
         };
         self.write_value(
             self.mutations.members.get(receiver)?.get(name)?,
@@ -442,6 +461,8 @@ fn provider_module(name: &str) -> bool {
             | "django.db.models.signals"
             | "flask_login"
             | "flask_login.login_manager"
+            | "typer"
+            | "typer.main"
             | "django.utils.autoreload"
     )
 }
