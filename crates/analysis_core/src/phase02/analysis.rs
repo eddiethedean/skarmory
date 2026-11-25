@@ -2001,11 +2001,11 @@ impl<'a> Graph<'a> {
         match symbol.binding {
             Binding::Definition(definition, _) => {
                 if self.phase03
-                    && self.supports_replacement_decorator(id)
                     && let [decorator] = definition.decorators.as_slice()
+                    && !matches!(decorator.kind, ExpressionKind::Call { .. })
                     && let Value::Callable(decorator_fn) =
                         self.identity(scope, decorator, definition.name.at, depth + 1)
-                    && let Some(replacement) = self.local_replacement_decorator(decorator_fn)
+                    && let Some(replacement) = self.known_definition_replacement(id, decorator_fn)
                 {
                     return replacement;
                 }
@@ -3028,6 +3028,16 @@ impl<'a> Graph<'a> {
         before: Location,
         depth: usize,
     ) -> Value {
+        if self.phase03
+            && matches!(&base.kind, ExpressionKind::Name(name) if name == "type"
+                && matches!(self.lexical_binding(scope, name, before, true), LexicalBinding::Missing))
+            && !self.scopes[self.scopes[scope].file].open_wildcard
+            && self
+                .module_member_write("builtins", "type", (scope, before))
+                .is_none()
+        {
+            return Value::Provider("builtins.type".into());
+        }
         let value = self.identity(scope, base, before, depth);
         if !self.phase03 || !matches!(value, Value::Unknown) || depth >= MAX_BINDING_CHAIN {
             return value;
@@ -3072,7 +3082,8 @@ impl<'a> Graph<'a> {
             Value::Provider(name)
                 if builtin_noop_subclass_hook(&name)
                     || self.phase03
-                        && (framework_managed_base(&name)
+                        && (name == "builtins.type"
+                            || framework_managed_base(&name)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -7228,8 +7239,10 @@ impl<'a> Graph<'a> {
                 if is_identity_decorator(definition) {
                     return self.local_identity_decorator(Value::Callable(invocation), decorator);
                 } else if self.phase03
-                    && self.supports_replacement_decorator(target)
-                    && self.local_replacement_decorator(invocation).is_some()
+                    && !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && self
+                        .known_definition_replacement(target, invocation)
+                        .is_some()
                 {
                     return false;
                 } else if self.phase03
@@ -7322,31 +7335,81 @@ impl<'a> Graph<'a> {
             && is_identity_decorator(definition)
     }
 
-    fn supports_replacement_decorator(&self, target: SymbolId) -> bool {
+    fn known_definition_replacement(
+        &self,
+        target: SymbolId,
+        invocation: Invocation,
+    ) -> Option<Value> {
         let symbol = &self.symbols[target];
-        let Binding::Definition(definition, _) = symbol.binding else {
-            return false;
+        let Binding::Definition(decorated, _) = symbol.binding else {
+            return None;
         };
-        matches!(
-            definition.kind,
-            DefinitionKind::Function | DefinitionKind::Coroutine
-        ) && self.scopes[symbol.scope].owner.is_none()
-            && matches!(definition.decorators.as_slice(), [decorator]
-                if !matches!(decorator.kind, ExpressionKind::Call { .. }))
+        if decorated.decorators.len() != 1 {
+            return None;
+        }
+        let (definition, _) = self.bounded_replacement_function(invocation)?;
+        if let [
+            Statement {
+                kind: StatementKind::Return(Some(value)),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        {
+            match &value.kind {
+                ExpressionKind::ConstantLambda => return Some(Value::ConstantFunction),
+                ExpressionKind::NullaryConstantLambda => {
+                    return Some(Value::NullaryConstantFunction);
+                }
+                ExpressionKind::Name(name)
+                    if decorated.kind == DefinitionKind::Class
+                        && symbol.scope == self.symbols[invocation.target].scope
+                        && self.scopes[symbol.scope].owner.is_none()
+                        && definition.parameters[0].text != *name
+                        && decorated.bases.is_empty()
+                        && decorated.table_keyword.is_none()
+                        && body_without_docstring(decorated).iter().all(|item| {
+                            matches!(&item.kind, StatementKind::Define(method)
+                            if method.kind != DefinitionKind::Class && method.decorators.is_empty()
+                                && method.defaults.is_empty() && method.annotations.is_empty())
+                        }) =>
+                {
+                    // The new class cannot invoke a hook or change the module
+                    // binding before this decorator reads its return value.
+                    let replacement = self.local(symbol.scope, name, decorated.name.at)?;
+                    if !self.binding_depends_on_branch(replacement, decorated.name.at)
+                        && matches!(self.symbols[replacement].binding,
+                            Binding::Definition(class, _) if class.kind == DefinitionKind::Class
+                                && class.decorators.is_empty())
+                    {
+                        return Some(Value::Callable(Invocation::ordinary(replacement)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if decorated.kind == DefinitionKind::Class || self.scopes[symbol.scope].owner.is_some() {
+            return None;
+        }
+        self.local_replacement_decorator(invocation)
     }
 
-    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<Value> {
+    fn bounded_replacement_function(
+        &self,
+        invocation: Invocation,
+    ) -> Option<(&Definition, ScopeId)> {
         let Binding::Definition(definition, body) = self.symbols[invocation.target].binding else {
             return None;
         };
-        if !matches!(invocation.receiver, Receiver::Ordinary)
-            || definition.kind != DefinitionKind::Function
-            || !definition.decorators.is_empty()
-            || !definition.simple_positional_parameters
-            || definition.parameters.len() != 1
-        {
-            return None;
-        }
+        (matches!(invocation.receiver, Receiver::Ordinary)
+            && definition.kind == DefinitionKind::Function
+            && definition.decorators.is_empty()
+            && definition.simple_positional_parameters
+            && definition.parameters.len() == 1)
+            .then_some((definition, body))
+    }
+
+    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<Value> {
+        let (definition, body) = self.bounded_replacement_function(invocation)?;
         if matches!(
             body_without_docstring(definition),
             [Statement {
@@ -10581,6 +10644,167 @@ configure()
                 .collect();
             assert_eq!(hooks, expected.into_iter().collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn django_settings_keeps_source_imports_in_finite_initializer_branches() {
+        for (initializer, expected) in [
+            (
+                "if enabled:\n    from .options import SELECTED as AUTHENTICATION_BACKENDS\n",
+                vec!["shop.backends.Active.get_user"],
+            ),
+            (
+                "AUTHENTICATION_BACKENDS = ['shop.backends.Retired']\n\
+                 if enabled:\n    from .options import SELECTED as AUTHENTICATION_BACKENDS\n",
+                vec![
+                    "shop.backends.Active.get_user",
+                    "shop.backends.Retired.get_user",
+                ],
+            ),
+            (
+                "if False:\n    from .options import SELECTED as AUTHENTICATION_BACKENDS\n",
+                vec![],
+            ),
+        ] {
+            let settings =
+                format!("INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n{initializer}");
+            let report = analyze_phase03(
+                &[
+                    module("shop/__init__.py", "shop", ""),
+                    module(
+                        "shop/options.py",
+                        "shop.options",
+                        "SELECTED = ['shop.backends.Active']\nTIMEOUT = 60\n",
+                    ),
+                    module(
+                        "shop/backends.py",
+                        "shop.backends",
+                        "class Active:\n    def get_user(self, pk): return pk\n\
+                         class Retired:\n    def get_user(self, pk): return pk\n",
+                    ),
+                    module("shop/settings.py", "shop.settings", &settings),
+                ],
+                &[],
+            );
+            assert!(
+                report.issues.is_empty(),
+                "{initializer}: {:?}",
+                report.issues
+            );
+            let roots: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_auth_backend")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(roots, expected, "{initializer}");
+        }
+    }
+
+    #[test]
+    fn django_auth_backend_stops_at_proven_invalid_initializer_operations() {
+        let header = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n";
+        let selected = "AUTHENTICATION_BACKENDS = ['shop.backends.Configured']\n";
+        for statement in [
+            "AUTHENTICATION_BACKENDS = []\nAUTHENTICATION_BACKENDS[0]['why'] = 'unused'\n",
+            "AUTHENTICATION_BACKENDS = []\nAUTHENTICATION_BACKENDS.missing_method(missing_argument())\n",
+            "AUTHENTICATION_BACKENDS = []\nmissing_mutator(AUTHENTICATION_BACKENDS)\n",
+            "AUTHENTICATION_BACKENDS = []\ndef configure():\n    AUTHENTICATION_BACKENDS.append('other.Backend')\nconfigure = replacement\nconfigure()\n",
+        ] {
+            let settings = format!("{header}{statement}{selected}");
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings),
+                module(
+                    "shop/backends.py",
+                    "shop.backends",
+                    "class Configured:\n    def get_user(self, pk): return pk\n",
+                ),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{statement}: {:?}", report.issues);
+            assert!(
+                !report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_auth_backend"),
+                "{statement}"
+            );
+        }
+
+        let settings = format!(
+            "{header}{selected}from outside import mutate\nmutate(AUTHENTICATION_BACKENDS)\n"
+        );
+        let mutator = "from shop.settings import AUTHENTICATION_BACKENDS\nexternal(AUTHENTICATION_BACKENDS)\n";
+        let files = [
+            module("shop/__init__.py", "shop", ""),
+            module("shop/settings.py", "shop.settings", &settings),
+            module(
+                "outside.py",
+                "outside",
+                "def mutate(value): external(value)\n",
+            ),
+            module("consumer.py", "consumer", mutator),
+            module(
+                "shop/backends.py",
+                "shop.backends",
+                "class Configured:\n    def get_user(self, pk): return pk\n",
+            ),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+    }
+
+    #[test]
+    fn django_auth_backend_uses_the_replacement_from_a_closed_decorator() {
+        let files = [
+            module("shop/__init__.py", "shop", ""),
+            module(
+                "shop/settings.py",
+                "shop.settings",
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n\
+                AUTHENTICATION_BACKENDS = ['shop.backends.Configured', 'shop.backends.Filtered']\n",
+            ),
+            module(
+                "shop/backends.py",
+                "shop.backends",
+                r#"class Actual:
+    def get_user(self, pk):
+        return pk
+def redirect(cls):
+    return Actual
+class Redirect(type):
+    def __new__(mcls, name, bases, namespace):
+        return Actual
+@redirect
+class Configured:
+    def get_user(self, pk):
+        return retired(pk)
+def discard(fn):
+    return lambda self, pk: None
+class Filtered:
+    @discard
+    def get_user(self, pk):
+        return retired(pk)
+def retired(pk):
+    return pk
+"#,
+            ),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let hooks: Vec<_> = report
+            .evidence
+            .iter()
+            .filter_map(|row| (row.kind == "django_auth_backend").then_some(row.full_name.as_str()))
+            .collect();
+        assert_eq!(hooks, ["shop.backends.Actual.get_user"]);
+        assert!(names(&report, Category::Function).contains(&"retired"));
     }
 
     #[test]

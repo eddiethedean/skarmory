@@ -4,6 +4,7 @@ use super::*;
 
 const MAX_STATES: usize = 64;
 const MAX_ITEMS: usize = 4096;
+const AUTH_BACKENDS: &str = "AUTHENTICATION_BACKENDS";
 
 #[derive(Clone)]
 enum Collection {
@@ -195,6 +196,7 @@ struct Replay<'g, 'a> {
     name: &'static str,
     mutations: BTreeSet<(ScopeId, [usize; 2])>,
     helpers: BTreeMap<SymbolId, BTreeSet<[usize; 2]>>,
+    selected_import: bool,
 }
 
 impl<'a> Replay<'_, 'a> {
@@ -245,6 +247,28 @@ impl<'a> Replay<'_, 'a> {
                 }
                 StatementKind::Import(import)
                     if scope == self.module && import.local.text != self.name => {}
+                StatementKind::Import(import) if scope == self.module => {
+                    let module = self.graph.import_module(scope, import)?;
+                    let source = *self.graph.modules.get(module.as_str())?;
+                    if source == self.module || import.member.is_none() {
+                        return None;
+                    }
+                    let binding = self.graph.by_location
+                        [&(scope, import.local.at.line, import.local.at.column)];
+                    // This branch has reached the import. Resolve the source
+                    // member directly and keep the other branches' prior values.
+                    let value = self.graph.binding_value(binding, 0);
+                    if value.contains_unknown() {
+                        return None;
+                    }
+                    self.graph.read.insert(binding);
+                    self.selected_import = true;
+                    for state in states.iter_mut().filter(|state| !state.stopped) {
+                        // Imported containers can be shared with other modules.
+                        // Mutating one still requires tracking the source identity.
+                        state.module = Some(Collection::Immutable(value.clone()));
+                    }
+                }
                 StatementKind::Define(definition)
                     if definition.kind != DefinitionKind::Class
                         && definition.name.text != self.name
@@ -417,6 +441,134 @@ impl<'a> Replay<'_, 'a> {
 }
 
 impl Graph<'_> {
+    pub(in crate::phase02::analysis) fn terminal_django_auth_initializer(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let at = statement.at;
+        let (receiver, item_index) = match &statement.kind {
+            StatementKind::WriteModuleEntry {
+                mapping:
+                    Expression {
+                        kind:
+                            ExpressionKind::Subscript {
+                                value: owner,
+                                index,
+                            },
+                        ..
+                    },
+                value,
+                ..
+            } if backend_name(owner)
+                && value.as_ref().is_none_or(|value| literal(value).is_some()) =>
+            {
+                let ExpressionKind::Scalar(Some(index)) = index.kind else {
+                    return false;
+                };
+                (Some(owner.as_ref()), Some(index))
+            }
+            StatementKind::Evaluate(Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        ..
+                    },
+                ..
+            }) => match &function.kind {
+                ExpressionKind::Member(owner, member)
+                    if backend_name(owner) && missing_list_method(member) =>
+                {
+                    (Some(owner.as_ref()), None)
+                }
+                ExpressionKind::Name(_)
+                    if matches!(arguments.as_slice(), [owner] if backend_name(owner))
+                        && self.unbound_module_name(scope, function, at) =>
+                {
+                    (None, None)
+                }
+                _ => return false,
+            },
+            StatementKind::Assign {
+                names,
+                value: Some(value),
+                annotation: None,
+            } if self.unbound_module_name(scope, value, at) => {
+                let [name] = names.as_slice() else {
+                    return false;
+                };
+                let Some(old) = self.local(scope, &name.text, at) else {
+                    return false;
+                };
+                let Binding::Definition(definition, _) = self.symbols[old].binding else {
+                    return false;
+                };
+                if !body_without_docstring(definition)
+                    .iter()
+                    .any(backend_mutator_call)
+                {
+                    return false;
+                }
+                (None, None)
+            }
+            _ => return false,
+        };
+        let Some(items) = self.closed_auth_backend_list(scope, statement) else {
+            return false;
+        };
+        if let Some(index) = item_index {
+            let Ok(length) = i64::try_from(items.len()) else {
+                return false;
+            };
+            if (-length..length).contains(&index) {
+                return false;
+            }
+        }
+        if let Some(receiver) = receiver {
+            self.walk(scope, receiver, at);
+        }
+        true
+    }
+
+    fn closed_auth_backend_list(
+        &self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> Option<&[Expression]> {
+        let file = self.scopes[scope].body;
+        let index = file.iter().position(|item| std::ptr::eq(item, statement))?;
+        let prefix = &file[..index];
+        if !prefix.iter().all(|item| match &item.kind {
+            StatementKind::Assign {
+                value: Some(value),
+                annotation: None,
+                ..
+            } => literal(value).is_some(),
+            StatementKind::Define(definition) => {
+                definition.kind == DefinitionKind::Function
+                    && definition.decorators.is_empty()
+                    && definition.annotations.is_empty()
+                    && definition.defaults.is_empty()
+            }
+            StatementKind::Evaluate(Expression {
+                kind: ExpressionKind::Text(_),
+                ..
+            }) => true,
+            _ => false,
+        }) {
+            return None;
+        }
+        let binding = self.local(scope, AUTH_BACKENDS, statement.at)?;
+        let Binding::Variable(Some(value), _) = self.symbols[binding].binding else {
+            return None;
+        };
+        let ExpressionKind::Sequence { list: true, items } = &value.kind else {
+            return None;
+        };
+        Some(items)
+    }
+
     pub(super) fn django_collection_values(
         &mut self,
         module: ScopeId,
@@ -429,10 +581,13 @@ impl Graph<'_> {
             name,
             mutations: BTreeSet::new(),
             helpers: BTreeMap::new(),
+            selected_import: false,
         };
         let statements = replay.graph.scopes[module].body;
         let states = replay.suite(module, statements, vec![State::default()])?;
-        if replay.mutations.is_empty() || !replay.accounts_for_helpers(reach) {
+        if (replay.mutations.is_empty() && !replay.selected_import)
+            || !replay.accounts_for_helpers(reach)
+        {
             return None;
         }
         // Preserve diagnostics from arguments and every statement the replay
@@ -446,11 +601,45 @@ impl Graph<'_> {
                 .zip(issue.column)
                 .is_some_and(|(line, column)| replay.mutations.contains(&(*scope, [line, column])))
         });
-        Some(Value::alternatives(
-            states
-                .into_iter()
-                .map(|state| state.module.map_or(Value::Unknown, Collection::into_value))
-                .collect(),
-        ))
+        let mut values = states
+            .into_iter()
+            .map(|state| state.module.map_or(Value::Unknown, Collection::into_value));
+        if values.len() == 1 {
+            values.next()
+        } else {
+            Some(Value::alternatives(values.collect()))
+        }
     }
+}
+
+fn backend_name(expression: &Expression) -> bool {
+    matches!(&expression.kind, ExpressionKind::Name(name) if name == AUTH_BACKENDS)
+}
+
+fn backend_mutator_call(statement: &Statement) -> bool {
+    let expression = match &statement.kind {
+        StatementKind::Evaluate(expression)
+        | StatementKind::DjangoSettingsGlobalCall(expression) => expression,
+        _ => return false,
+    };
+    matches!(&expression.kind, ExpressionKind::Call { function, .. }
+        if matches!(&function.kind, ExpressionKind::Member(receiver, _) if backend_name(receiver)))
+}
+
+fn missing_list_method(member: &str) -> bool {
+    !member.starts_with('_')
+        && !matches!(
+            member,
+            "append"
+                | "clear"
+                | "copy"
+                | "count"
+                | "extend"
+                | "index"
+                | "insert"
+                | "pop"
+                | "remove"
+                | "reverse"
+                | "sort"
+        )
 }

@@ -351,7 +351,7 @@ impl Graph<'_> {
             return;
         }
         let writes = [settings_writes, &provider_writes];
-        let class = target.target;
+        let mut class = target.target;
         if matches!(protocol, Protocol::ContextProcessor) {
             if !self.is_class(class)
                 && !self.is_coroutine(class)
@@ -366,6 +366,20 @@ impl Graph<'_> {
         }
         if !self.is_class(class) {
             return;
+        }
+        let symbol = &self.symbols[class];
+        if let Binding::Definition(definition, _) = symbol.binding
+            && let [decorator] = definition.decorators.as_slice()
+            && !matches!(decorator.kind, ExpressionKind::Call { .. })
+            && let Value::Callable(invocation) =
+                self.probe_identity(symbol.scope, decorator, definition.name.at)
+            && let Some(replacement) = self.known_definition_replacement(class, invocation)
+        {
+            let Value::Callable(replacement) = replacement else {
+                // A function returned by the decorator has no class protocol.
+                return;
+            };
+            class = replacement.target;
         }
         let Some(mro) = self.converter_mro(class, &mut BTreeMap::new(), 0) else {
             return;
