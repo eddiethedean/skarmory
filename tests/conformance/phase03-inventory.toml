@@ -10153,10 +10153,9 @@ assertions = ["absent:unused_functions:list", "absent:unused_functions:PreviewAc
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/drf_viewset.py; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/drf_viewset.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::drf-serializer"
@@ -10167,10 +10166,9 @@ assertions = ["absent:unused_functions:validate_email", "absent:unused_functions
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/drf_serializer.py; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/drf_serializer.py"]
-blocker = "The installed SDK reports incomplete analysis on the pinned fixture (#43)"
 
 [[cases]]
 id = "corpus/manifest.json::sqlalchemy-model"
