@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 
 _ROOT_KINDS = {
+    "celery_task",
     "django_admin_registration",
+    "django_command",
     "django_path_converter",
     "django_registration",
     "fastapi_dependency",
@@ -14,6 +16,10 @@ _ROOT_KINDS = {
     "fastapi_middleware",
     "fastapi_registration",
     "flask_registration",
+    "sqlalchemy_listener",
+}
+_CLASS_ROOT_REASONS = {
+    "django_command": "dead_code_liveness:django_web_management_command_handle",
 }
 _SIGNAL_REASONS = {
     ("django_signal", "certain"): "django_web_signal_receiver",
@@ -108,15 +114,20 @@ def framework_report(report):
 
 def framework_definitions(report):
     """Expose the pinned analyzer's definition fields backed by native evidence."""
-    return {
-        name: SimpleNamespace(
-            name=name,
-            heuristic_refs={
-                "framework_root": 1.0
-                for evidence in definition["dead_code_evidence"]
-                if evidence["kind"] == "framework_root"
-                and evidence["certainty"] == "certain"
-            },
+    definitions = {}
+    for name, definition in report["definitions"].items():
+        root_evidence = [
+            evidence
+            for evidence in definition["dead_code_evidence"]
+            if evidence["kind"] == "framework_root" and evidence["certainty"] == "certain"
+        ]
+        refs = {"framework_root": 1.0} if root_evidence else {}
+        for evidence in root_evidence:
+            if reason := _CLASS_ROOT_REASONS.get(evidence["native_kind"]):
+                refs[reason] = 1.0
+        definitions[name] = SimpleNamespace(
+            **definition,
+            simple_name=name.rpartition(".")[2],
+            heuristic_refs=refs,
         )
-        for name, definition in report["definitions"].items()
-    }
+    return definitions
