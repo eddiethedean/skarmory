@@ -992,6 +992,131 @@ def detached(): return {}
 }
 
 #[test]
+fn fastapi_deployment_factory_preserves_possible_routes() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let source = r#"from fastapi import FastAPI
+
+def helper(): return 1
+def retired(): return 2
+
+def create_app():
+    application = FastAPI()
+    @application.get('/')
+    def handler():
+        return helper()
+    return application
+"#;
+    for (suffix, certainty) in [("", "possible"), ("app = create_app()\n", "certain")] {
+        fs::write(&path, format!("{source}{suffix}")).unwrap();
+        let report = scan(project.path());
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["app.retired"],
+            "{report}"
+        );
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(
+            symbols.iter().any(|symbol| {
+                symbol["qualified_name"] == "app.create_app.handler"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "fastapi_registration" && edge["certainty"] == certainty
+                    })
+            }),
+            "{report}"
+        );
+    }
+    for changed in [
+        source.replace("return application", "return None"),
+        format!("{source}create_app = None\n"),
+        source.replace(
+            "from fastapi import FastAPI",
+            "class FastAPI:\n    def get(self, path): return lambda callback: callback",
+        ),
+    ] {
+        fs::write(&path, changed).unwrap();
+        let report = scan(project.path());
+        assert!(
+            findings(&report, "unused_functions").contains(&"app.helper"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn fastapi_plain_async_lifespan_does_not_open_its_body() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        "from fastapi import FastAPI\nasync def lifespan(app): return helper()\ndef helper(): return 1\napp = FastAPI(lifespan=lifespan)\n",
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert!(
+        findings(&report, "unused_functions").contains(&"app.helper"),
+        "{report}"
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        !symbols.iter().any(|symbol| {
+            symbol["qualified_name"] == "app.lifespan"
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "fastapi_lifespan")
+        }),
+        "{report}"
+    );
+}
+
+#[test]
+fn fastapi_source_middleware_does_not_consume_an_ignored_dispatch_option() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir_all(root.join("starlette/middleware")).unwrap();
+    for name in ["starlette/__init__.py", "starlette/middleware/__init__.py"] {
+        fs::write(root.join(name), "").unwrap();
+    }
+    fs::write(
+        root.join("app.py"),
+        "from fastapi import FastAPI\nfrom starlette.middleware.base import BaseHTTPMiddleware\ndef helper(): return 1\ndef dispatch(request, call_next): return helper()\napplication = FastAPI()\napplication.add_middleware(BaseHTTPMiddleware, dispatch=dispatch)\n",
+    ).unwrap();
+    let path = root.join("starlette/middleware/base.py");
+    for provider in [
+        "class BaseHTTPMiddleware:\n    def __init__(self, app, **kwargs): pass\n    async def __call__(self, scope, receive, send): pass\n",
+        "def BaseHTTPMiddleware(app, **kwargs):\n    async def middleware(scope, receive, send): pass\n    return middleware\n",
+    ] {
+        fs::write(&path, provider).unwrap();
+        let report = scan(root);
+        assert!(
+            findings(&report, "unused_functions").contains(&"app.helper"),
+            "{report}"
+        );
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(
+            !symbols
+                .iter()
+                .any(|symbol| symbol["qualified_name"] == "app.dispatch"),
+            "{report}"
+        );
+    }
+    fs::write(
+        &path,
+        "def BaseHTTPMiddleware(app, **kwargs): return unknown(app, kwargs)\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_registration" })
+    );
+}
+
+#[test]
 fn fastapi_startup_keeps_callbacks_with_proven_identity_decorators() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

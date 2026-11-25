@@ -647,6 +647,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
+        graph.collect_fastapi_deployment_factory();
         graph.collect_conventional_app(ObjectKind::SanicApp);
         graph.collect_conventional_app(ObjectKind::StarletteApp);
         graph.collect_gunicorn_config();
@@ -678,7 +679,10 @@ pub(super) fn analyze_with_verification(
     let mut possible_roots = Vec::new();
     if phase03 {
         for edge in graph.phase03_framework_edges() {
-            if matches!(edge.kind, "pytest_hook_candidate" | "flask_cli_factory") {
+            if matches!(
+                edge.kind,
+                "pytest_hook_candidate" | "flask_cli_factory" | "fastapi_deployment_factory"
+            ) {
                 possible_roots.push(edge);
             } else {
                 roots.push(edge);

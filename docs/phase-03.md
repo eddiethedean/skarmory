@@ -242,6 +242,13 @@ own source root. Services can use the same package name while retaining
 only the callbacks they register. A missing local submodule keeps coverage
 incomplete when the registration depends on it.
 
+A conventional module-level `create_app` factory that returns its resolved
+FastAPI instance contributes possible deployment evidence. A plain async
+function used as a lifespan provider does not enter its coroutine body.
+Source-owned no-op ASGI middleware receives possible-use evidence and leaves
+an ignored `dispatch` option unrooted.
+[Uvicorn factory setting](https://uvicorn.dev/settings/#application)
+
 FastAPI supports imperative endpoint registration and literal `Depends` or
 `Security` dependencies in defaults, `Annotated` parameters and imported type
 aliases, and route and router registration options. App-wide dependencies apply
