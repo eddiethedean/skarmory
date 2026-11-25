@@ -88,8 +88,9 @@ to track implementation:
 2. Give parity credit when a required case and variant executes against Skarmory
    and all original assertions run and pass. For an approved runtime correction,
    record the original results and give separate release credit when every
-   corrected assertion runs and passes with the expected coverage. Check fixture prerequisites
-   explicitly and record setup failures or early returns as blocking outcomes.
+   corrected assertion runs and passes with the expected coverage. Check
+   fixture prerequisites explicitly and record setup failures or early returns
+   as blocking outcomes.
    For example, verify symlink creation before running the legacy trace symlink
    control. A missing prerequisite, collection error, skip, deselection, xfail,
    xpass, or absent implementation blocks that case. An upstream-only run,

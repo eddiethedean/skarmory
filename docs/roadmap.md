@@ -46,7 +46,7 @@ Compatibility is versioned and limited to explicitly declared features. The
 | Phase 0 | Compatibility contract, benchmark baseline, native vertical slice | Initial scaffold | Reproducible baseline and measured native prototype |
 | 0.1 | Native unreachable-function preview for packaged Python 3.11 projects | Phase 0 | Reviewed reachability, coverage, and worker-equivalence checks pass |
 | 0.2 | [Declared Python dead-code compatibility and persistent module facts](phase-02.md) | 0.1 | Reviewed reference differences, independent controls, and cached/clean equivalence |
-| 0.3 | [Expanded Python dead-code coverage and workflows](phase-03.md) | 0.2 | Every in-scope pinned Python dead-code case and variant passes against Skarmory |
+| 0.3 | [Expanded Python dead-code coverage and workflows](phase-03.md) | 0.2 | Every in-scope pinned Python dead-code case and variant qualifies through parity or a reviewed runtime correction |
 | 0.4 | Quality and secrets | 0.3 | Rule-level conformance and independent controls |
 | 0.5 | Security and data flow | 0.4 and semantic infrastructure | Accuracy, completeness, and resource budgets verified |
 | 0.6 | Developer workflows | Phase 0.3 workflow contracts and relevant stable rule families | Integration and narrow edit contracts verified |

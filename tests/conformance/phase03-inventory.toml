@@ -16482,9 +16482,9 @@ assertions = ["test/test_django_quiet_dead_code.py:262", "test/test_django_quiet
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The fixture leaves DJANGO_SETTINGS_MODULE unspecified. Project star imports remain outside the bounded model (#43)"
+runtime_review = { reason = "The fixture supplies no settings selection and its auth application cannot finish setup without ContentType even under either explicit settings selection. The settings declarations and isolated dead constant remain testable.", evidence = "CPython directly imports the production settings and exposes both flags. Django 4.2.1 and 5.2.1 both fail settings access with the environment unset. Explicit production selection reads both values before setup fails with missing django.contrib.contenttypes. The native finite wildcard consumer regression verifies the import binding. The unchanged fixture records unresolved app activation, both setting definitions and the original dead constant in its complete file scope.", assertions = ["coverage:incomplete", "issue:unresolved_registration:conf/settings.py:1", "definition:conf.settings.CUSTOM_FLAG", "definition:conf.settings_production.PRODUCTION_ONLY", "no-evidence:django_setting:*:conf.settings_production.PRODUCTION_ONLY", "scoped-unused:conf/constants.py:unused_variables:constants.STALE_CONSTANT"] }
 
 [[cases]]
 id = "test/test_django_wagtail_conventions.py::test_django_signatures_and_format_files"
@@ -16495,9 +16495,9 @@ assertions = ["test/test_django_wagtail_conventions.py:19", "test/test_django_wa
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Standard CPython 3.11 resolves site to its frozen non-package module. The original supplies no alternate import configuration or startup for its site checks and signals (#43)"
+runtime_review = { reason = "Standard CPython startup binds the frozen non-package site module. The project supplies neither an alternate package import nor Django activation, which leaves its checks, signals, views, format overrides, and model callbacks unselected.", evidence = "Reproduce the fixture at Skylos 87978e69adf91b3811e97b00c40aa39d7937cd94. CPython 3.11.15 reports site.__spec__.origin == 'frozen' and every ordinary import of site.checks, site.views and site.signals fails because site is not a package. Directly executing the original views.py, fields.py and helpers.py with runpy under Django 4.2.1 and 5.2.1 succeeds. Widget's MediaDefiningClass installs a deferred media property; CharField uses type and object.__init_subclass__. Positive instance controls read configured widget media and select a field converter. Installed SDK per-file scans retain all three original dead controls while the full report preserves the unresolved checks and signal diagnostics.", assertions = ["coverage:incomplete", "issue:unresolved_decorator:site/checks.py:4", "issue:unresolved_registration:site/signals.py:8", "definition:site.checks.check_x", "definition:site.signals.on_save", "definition:site.locale.fr.formats.DATE_FORMAT", "definition:site.fields.call_checks", "no-evidence:django_registration:*:site.checks.check_x", "no-evidence:django_signal:*:site.signals.on_save", "evidence:direct_call:certain:site.views.use", "evidence:direct_call:certain:site.fields._private", "scoped-unused:site/views.py:unused_parameters:views.Thing.helper.unused_arg", "scoped-unused:site/helpers.py:unused_variables:helpers.LOCAL_CONSTANT", "scoped-unused:site/fields.py:unused_parameters:fields._private.unused_flag"] }
 
 [[cases]]
 id = "test/test_django_wagtail_conventions.py::test_wagtail_page_fields_attributes_blocks_and_registries_are_live"
