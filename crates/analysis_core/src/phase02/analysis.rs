@@ -7442,6 +7442,14 @@ impl<'a> Graph<'a> {
                         );
                     }
                 }
+                StatementKind::ProjectWildcardImport(_) => {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unsupported_construct",
+                        "star imports cannot resolve finite bindings at this location",
+                    );
+                }
             }
         }
         false
@@ -10511,6 +10519,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             StatementKind::ProviderWildcardImport(imports) => {
                 assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
             }
+            StatementKind::ProjectWildcardImport(_) => {}
             StatementKind::Assign {
                 names,
                 value,

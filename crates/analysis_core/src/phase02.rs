@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::{Value, json};
 use skarmory_python::Location;
-use skarmory_python::phase02::{ModuleFacts, extract};
+use skarmory_python::phase02::{ModuleFacts, extract, extract_with_project_wildcards};
 
 use crate::fact_cache::{CacheStats, FactCache};
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
@@ -24,6 +24,7 @@ mod javascript;
 mod package_entrypoints;
 mod runtime_evidence;
 pub use runtime_evidence::Input as EvidenceInput;
+mod wildcards;
 pub mod workflow;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -780,6 +781,7 @@ fn scan_selected(
     let enable_quality =
         options.enable_quality.unwrap_or(config.quality_enabled) || options.quality_only;
     let include_dead_code = !options.quality_only;
+    let project_wildcards = phase03 && include_dead_code;
     let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
     if enable_quality && !phase03 {
         return Err(ConfigError::new(
@@ -803,7 +805,11 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v39/ruff-0.0.12/py311/utf8-universal",
+            if project_wildcards {
+                "phase03-module-v39/ruff-0.0.12/py311/utf8-universal"
+            } else {
+                "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
+            },
             path,
             &roots,
         )
@@ -841,6 +847,11 @@ fn scan_selected(
     let mut file_configs = BTreeMap::new();
     let mut directory_configs = BTreeMap::new();
     let mut local_configs = Vec::new();
+    let extract_python = if project_wildcards {
+        extract_with_project_wildcards
+    } else {
+        extract
+    };
     match project.map_file_sources(options.workers, |file, source| {
         let facts = if let Some(extension) =
             preview_source::javascript_extension(OsStr::new(&file.label))
@@ -849,8 +860,8 @@ fn scan_selected(
                 .map(FileFacts::JavaScript)
         } else {
             match &cache {
-                Some(cache) => cache.get_or_extract(source, extract),
-                None => extract(source),
+                Some(cache) => cache.get_or_extract(source, extract_python),
+                None => extract_python(source),
             }
             .map(FileFacts::Python)
         }
@@ -968,6 +979,9 @@ fn scan_selected(
         }
     }
 
+    if project_wildcards && issues.is_empty() {
+        issues.extend(wildcards::resolve(&project, &mut files));
+    }
     let dependency_sources_complete = issues.is_empty();
     let package_entrypoints = (include_dead_code && phase03 && issues.is_empty())
         .then(|| package_entrypoints::Snapshot::read(path, &files));

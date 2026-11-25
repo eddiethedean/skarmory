@@ -3325,6 +3325,81 @@ app = FastAPI()
 }
 
 #[test]
+fn project_wildcard_reads_finite_settings_exports_from_a_selected_sibling() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let conf = root.join("conf");
+    fs::create_dir(&conf).unwrap();
+    fs::write(conf.join("__init__.py"), "").unwrap();
+    let base = conf.join("settings.py");
+    let provider = "INSTALLED_APPS = ['django.contrib.auth']\n\
+                    CUSTOM_FLAG = True\n\
+                    _PRIVATE = False\n";
+    fs::write(&base, provider).unwrap();
+    fs::write(
+        conf.join("settings_production.py"),
+        "from conf.settings import *\nPRODUCTION_ONLY = True\n",
+    )
+    .unwrap();
+    fs::write(conf.join("constants.py"), "STALE_CONSTANT = 1\n").unwrap();
+    fs::write(
+        conf.join("consumer.py"),
+        "from conf.settings_production import CUSTOM_FLAG\n\
+         if not CUSTOM_FLAG:\n    raise RuntimeError()\n",
+    )
+    .unwrap();
+
+    let report = scan(root);
+    let unused = findings(&report, "unused_variables");
+    assert!(
+        unused.contains(&"conf.constants.STALE_CONSTANT"),
+        "{report}"
+    );
+    assert!(!unused.contains(&"conf.settings.CUSTOM_FLAG"), "{report}");
+    assert!(findings(&report, "unused_imports").is_empty(), "{report}");
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let unresolved = |report: &Value| {
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| {
+                    error["kind"] == "unsupported_construct"
+                        && error["file"] == "conf/settings_production.py"
+                        && error["line"] == 1
+                }),
+            "{report}"
+        );
+    };
+    fs::write(&base, format!("{provider}__all__ = []\n")).unwrap();
+    unresolved(&scan_with_exit(root, None, Some(cache.path()), 2));
+    fs::write(
+        &base,
+        format!("from __future__ import annotations\n{provider}"),
+    )
+    .unwrap();
+    unresolved(&scan_with_exit(root, None, Some(cache.path()), 2));
+    fs::write(&base, provider).unwrap();
+    fs::create_dir(conf.join("settings")).unwrap();
+    fs::write(conf.join("settings/__init__.py"), "CUSTOM_FLAG = False\n").unwrap();
+    unresolved(&scan_with_excludes(
+        root,
+        None,
+        Some(cache.path()),
+        &["conf/settings/"],
+        2,
+    ));
+}
+
+#[test]
 fn fastapi_wildcard_imports_require_known_external_provider_identity() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
