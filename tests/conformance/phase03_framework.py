@@ -45,6 +45,7 @@ _SIGNAL_REASONS = {
     ): "django_signal_registration_unknown_loading",
 }
 _METHOD_FINDING_SOURCES = {
+    "test_django_converter_precision.py",
     "test_django_function_view_roots.py",
     "test_django_template_liveness.py",
 }

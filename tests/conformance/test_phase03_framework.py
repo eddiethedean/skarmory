@@ -61,9 +61,10 @@ def test_grouped_methods_expand_for_django_view_assertions():
         "unused_parameters": [],
         "suppressed": [method, {**method, "full_name": "app.filtered", "reason": "whitelist"}],
     }
-    projected = framework_report(report, source="test/test_django_function_view_roots.py")
-    assert projected["unused_functions"] == [method]
-    assert projected["dead_code_evidence"]["symbols"][0]["classification"] == "likely_dead"
+    for source in ("test_django_function_view_roots.py", "test_django_converter_precision.py"):
+        projected = framework_report(report, source=f"test/{source}")
+        assert projected["unused_functions"] == [method]
+        assert projected["dead_code_evidence"]["symbols"][0]["classification"] == "likely_dead"
     assert framework_report(report)["unused_functions"] == report["unused_functions"] == []
 
 
