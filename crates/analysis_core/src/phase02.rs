@@ -780,7 +780,8 @@ fn scan_selected(
             "runtime evidence options require the skylos-0.3 profile",
         ));
     }
-    let roots = if path.is_dir() && path.join("src").is_dir() {
+    let src_is_package = phase03 && path.join("src/__init__.py").is_file();
+    let roots = if path.is_dir() && path.join("src").is_dir() && !src_is_package {
         vec![PathBuf::from("src"), PathBuf::from(".")]
     } else {
         Vec::new()

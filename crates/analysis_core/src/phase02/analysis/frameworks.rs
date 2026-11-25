@@ -2805,11 +2805,12 @@ fn literal_settings_entries(value: &Expression) -> impl Iterator<Item = (&str, &
         ExpressionKind::Dictionary(items) => items.as_slice(),
         _ => &[],
     };
-    items.chunks_exact(2).filter_map(|pair| {
-        let [key, value] = pair else { return None };
-        match &key.kind {
+    items
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter_map(|[key, value]| match &key.kind {
             ExpressionKind::Text(name) => Some((name.as_str(), value)),
             _ => None,
-        }
-    })
+        })
 }
