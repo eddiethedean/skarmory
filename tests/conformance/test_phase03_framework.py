@@ -38,3 +38,52 @@ class UnittestReportTests(unittest.TestCase):
         })
         self.assertEqual(projected["unused_classes"], findings)
         self.assertEqual(original["definitions"], definitions)
+
+
+def test_grouped_methods_expand_for_django_view_assertions():
+    method = {
+        "type": "function",
+        "full_name": "app.Client.schedule",
+        "file": "app.py",
+        "line": 2,
+        "dead_code_classification": "likely_dead",
+        "reason": "covered by the unused class finding",
+    }
+    report = {
+        "definitions": {
+            "schedule": {"name": "app.Client.schedule", "file": "app.py", "line": 2},
+        },
+        "analysis_summary": {},
+        "dead_code_evidence": {"symbols": []},
+        "unused_functions": [],
+        "unused_classes": [],
+        "unused_variables": [],
+        "unused_parameters": [],
+        "suppressed": [method, {**method, "full_name": "app.filtered", "reason": "whitelist"}],
+    }
+    projected = framework_report(report, source="test/test_django_function_view_roots.py")
+    assert projected["unused_functions"] == [method]
+    assert projected["dead_code_evidence"]["symbols"][0]["classification"] == "likely_dead"
+    assert framework_report(report)["unused_functions"] == report["unused_functions"] == []
+
+
+def test_admin_stub_projection_uses_the_fixture_root(tmp_path):
+    findings = [{"file": "shop/placeholder.py", "rule_id": "SKY-E002"}]
+    report = {
+        "definitions": {},
+        "analysis_summary": {},
+        "dead_code_evidence": {"symbols": []},
+        "unused_functions": [],
+        "unused_classes": [],
+        "unused_variables": [],
+        "unused_parameters": [],
+        "unused_files": findings,
+    }
+    projected = framework_report(
+        report, source="test/test_django_admin_stubs.py", project=tmp_path,
+    )
+    assert projected["unused_files"] == [
+        {"file": str(tmp_path / "shop/placeholder.py"), "rule_id": "SKY-E002"},
+    ]
+    assert framework_report(report)["unused_files"] == findings
+    assert report["unused_files"] == findings
