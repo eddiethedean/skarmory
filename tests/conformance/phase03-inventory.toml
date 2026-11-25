@@ -12126,9 +12126,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-conditional_include_in_uncalled_factory]"
@@ -12151,9 +12150,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original FastAPI project assertions differ from the installed SDK report (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-nested_router_never_included]"
@@ -12178,7 +12176,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Nested service has no selected provider for the imported router (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-requirements_service_package]"
@@ -12189,9 +12187,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-same_package_in_two_projects]"
@@ -12202,9 +12199,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-src_layout_member]"
@@ -12215,9 +12211,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-tool_config_only_namespace_dir]"
@@ -12230,7 +12225,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-uv_member_included]"
@@ -12241,9 +12236,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-conditional_and_constant_false_includes]"
@@ -12254,9 +12248,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-conditional_include_in_uncalled_factory]"
@@ -12279,9 +12272,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original FastAPI project assertions differ from the installed SDK report (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-nested_router_never_included]"
@@ -12306,7 +12298,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Nested service has no selected provider for the imported router (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-requirements_service_package]"
@@ -12317,9 +12309,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-same_package_in_two_projects]"
@@ -12330,9 +12321,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-src_layout_member]"
@@ -12343,9 +12333,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-tool_config_only_namespace_dir]"
@@ -12358,7 +12347,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-uv_member_included]"
@@ -12369,9 +12358,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-conditional_and_constant_false_includes]"
@@ -12382,9 +12370,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-conditional_include_in_uncalled_factory]"
@@ -12407,9 +12394,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original FastAPI project assertions differ from the installed SDK report (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-nested_router_never_included]"
@@ -12434,7 +12420,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Nested service has no selected provider for the imported router (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-requirements_service_package]"
@@ -12445,9 +12431,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-same_package_in_two_projects]"
@@ -12458,9 +12443,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-src_layout_member]"
@@ -12471,9 +12455,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-tool_config_only_namespace_dir]"
@@ -12486,7 +12469,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-uv_member_included]"
@@ -12497,9 +12480,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-conditional_and_constant_false_includes]"
@@ -12510,9 +12492,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-conditional_include_in_uncalled_factory]"
@@ -12535,9 +12516,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original FastAPI project assertions differ from the installed SDK report (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-nested_router_never_included]"
@@ -12562,7 +12542,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Nested service has no selected provider for the imported router (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-requirements_service_package]"
@@ -12573,9 +12553,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-same_package_in_two_projects]"
@@ -12586,9 +12565,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-src_layout_member]"
@@ -12599,9 +12577,8 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-tool_config_only_namespace_dir]"
@@ -12614,7 +12591,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "Tool-only project metadata cannot establish an import root for the namespace directory (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-uv_member_included]"
@@ -12625,6 +12602,117 @@ assertions = ["test/test_fastapi_nested_projects.py:185", "test/test_fastapi_nes
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification"]
 provenance = "Unmodified Python project fixture constructed by the pinned test in test/test_fastapi_nested_projects.py"
 variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[False-0-from app.routes import router\\napp.include_router(router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_registration): router identity could not be resolved (#43)"
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[False-0-import app.routes as api\\napp.include_router(api.router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[False-80-from app.routes import router\\napp.include_router(router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[False-80-import app.routes as api\\napp.include_router(api.router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[True-0-from app.routes import router\\napp.include_router(router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[True-0-import app.routes as api\\napp.include_router(api.router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[True-80-from app.routes import router\\napp.include_router(router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
+
+
+[[cases]]
+id = "test/test_fastapi_import_scope_boundaries.py::test_missing_nested_submodule_does_not_resolve_from_root_package[True-80-import app.routes as api\\napp.include_router(api.router)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_import_scope_boundaries.py"
+assertions = ["test/test_fastapi_import_scope_boundaries.py:51", "test/test_fastapi_import_scope_boundaries.py:52", "test/test_fastapi_import_scope_boundaries.py:53", "test/test_fastapi_import_scope_boundaries.py:54", "test/test_fastapi_import_scope_boundaries.py:56", "test/test_fastapi_import_scope_boundaries.py:57"]
+prerequisites = ["installed-sdk", "selected project-local regular package", "shadowed root route control"]
+provenance = "Original temporary project and paired route evidence and report assertions constructed by the pinned test/test_fastapi_import_scope_boundaries.py"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected package has no routes submodule. Skarmory reports the unresolved import and registration instead of attaching the root package's route. The pinned assertions require a complete report and an unused finding (#43)"
