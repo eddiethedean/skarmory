@@ -1602,6 +1602,144 @@ fn flask_failed_provider_import_cannot_supply_a_callback() {
 }
 
 #[test]
+fn flask_failed_provider_imports_stop_an_ordered_chain_of_reexports() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let provider = root.join("provider.py");
+    let wrapper = root.join("wrapper.py");
+    let bridge = root.join("bridge.py");
+    let app = root.join("app.py");
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    fs::write(
+        &provider,
+        format!("{setup}login.__dict__['user_loader'] = replacement\n"),
+    )
+    .unwrap();
+    fs::write(&wrapper, "from provider import login\n").unwrap();
+    fs::write(&bridge, "from wrapper import login\n").unwrap();
+    let callback = "@bridge.login.user_loader\ndef callback(user_id): return user_id\n";
+    fs::write(&app, format!("import bridge\n{callback}")).unwrap();
+
+    let report = scan_with_exit(root, None, None, 2);
+    let imports: Vec<_> = report["analysis_errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|error| error["kind"] == "unresolved_import")
+        .map(|error| error["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(imports, ["app.py", "bridge.py", "wrapper.py"], "{report}");
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| { symbol["qualified_name"] == "app.callback" }),
+        "{report}"
+    );
+    let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(
+        &wrapper,
+        "from extension import prepare_imports\nprepare_imports()\nfrom provider import login\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert!(
+        errors
+            .iter()
+            .any(|error| { error["file"] == "wrapper.py" && error["kind"] == "unresolved_call" }),
+        "{report}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error["kind"] == "unresolved_import"),
+        "{report}"
+    );
+
+    fs::write(&wrapper, "from provider import login\n").unwrap();
+    fs::write(&provider, setup).unwrap();
+    let report = scan(root);
+    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.callback"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "flask_login_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn flask_circular_named_exports_report_failed_imports_without_resolving_final_bindings() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("providers.py"), "from other import login\n").unwrap();
+    let other = root.join("other.py");
+    fs::write(&other, "from providers import login\n").unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef callback(user_id): return user_id\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert!(
+        errors
+            .iter()
+            .all(|error| error["kind"] == "unresolved_import"),
+        "{report}"
+    );
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error["file"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["app.py", "other.py", "providers.py"],
+        "{report}"
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| { symbol["qualified_name"] == "app.callback" }),
+        "{report}"
+    );
+
+    fs::write(
+        &other,
+        "from flask_login import LoginManager\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.callback"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "flask_login_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn flask_factory_stops_at_the_failed_blueprint_export() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1643,6 +1781,40 @@ fn flask_factory_stops_at_the_failed_blueprint_export() {
             .unwrap()
             .iter()
             .any(|symbol| { symbol["qualified_name"] == "app.views.routes.prepare" }),
+        "{report}"
+    );
+
+    fs::write(root.join("lookalike.py"), "class Blueprint: pass\n").unwrap();
+    fs::write(
+        &views,
+        "from lookalike import Blueprint\nblueprint = Blueprint('main', __name__)\nfrom app.views import routes\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert!(
+        errors.iter().any(|error| {
+            error["file"] == "app/views/routes.py" && error["kind"] == "unresolved_import"
+        }),
+        "{report}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|error| error["kind"] == "unresolved_import"),
+        "{report}"
+    );
+
+    fs::write(
+        root.join("lookalike.py"),
+        "class Blueprint:\n    def __init__(self, name, import_name): pass\n    def before_app_request(self, callback): return callback\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        !report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_import" }),
         "{report}"
     );
 
@@ -2000,6 +2172,73 @@ def detached(): return {}
     .unwrap();
     let report = scan(project.path());
     assert_eq!(findings(&report, "unused_functions"), ["app.detached"]);
+}
+
+#[test]
+fn fastapi_router_cycle_preserves_snapshot_order_and_live_uncertainty() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        r#"from fastapi import APIRouter, FastAPI
+app = FastAPI()
+first = APIRouter()
+second = APIRouter()
+orphan = APIRouter()
+
+@second.get('/live')
+def endpoint(): return 1
+
+@orphan.get('/orphan')
+def unreachable(): return 2
+
+def uncalled_factory():
+    app.include_router(orphan)
+
+first.include_router(second)
+second.include_router(first)
+app.include_router(first)
+"#,
+    )
+    .unwrap();
+    for (mode, code) in [("snapshot", 0), ("live", 2)] {
+        fs::write(
+            root.join(".skylos.toml"),
+            format!("root = true\n[dead_code]\nfastapi_router_mode = '{mode}'\n"),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+            .current_dir(root)
+            .env_remove("SKYLOS_CONFIG_FILE")
+            .args([
+                "--profile",
+                "skylos-0.3",
+                ".",
+                "--json",
+                "--no-grep-verify",
+                "--confidence",
+                "0",
+            ])
+            .output()
+            .unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code(), Some(code), "{report}");
+        if mode == "snapshot" {
+            assert_eq!(
+                findings(&report, "unused_functions"),
+                ["app.uncalled_factory", "app.unreachable"]
+            );
+        } else {
+            assert!(
+                report["analysis_errors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|error| { error["kind"] == "analysis_limit" }),
+                "{report}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -4106,6 +4345,110 @@ router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
         let stats = cached.as_object_mut().unwrap().remove("cache").unwrap();
         assert_eq!(stats["hits"], hits);
         assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn inert_flat_django_provider_keeps_competing_imports_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("django.py"), "class BaseCommand: pass\n").unwrap();
+    fs::write(
+        root.join("commands.py"),
+        "from django.core.management.base import BaseCommand\nclass Command(BaseCommand): pass\n",
+    )
+    .unwrap();
+    scan(root);
+
+    fs::write(root.join("django.abi3.so"), "").unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_import" }),
+        "{opaque}"
+    );
+    fs::remove_file(root.join("django.abi3.so")).unwrap();
+
+    fs::create_dir(root.join("django")).unwrap();
+    fs::write(root.join("django/__init__.py"), "").unwrap();
+    let excluded = scan_with_excludes(root, None, None, &["django"], 2);
+    assert!(
+        excluded["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_import" }),
+        "{excluded}"
+    );
+}
+
+#[test]
+fn inert_root_framework_packages_do_not_register_unavailable_providers() {
+    for (provider, hidden, source) in [
+        (
+            "django",
+            "django/db.py",
+            "from django.db import migrations\ndef forwards(apps, editor): pass\noperation = migrations.RunPython(forwards)\n",
+        ),
+        (
+            "celery",
+            "celery/Celery.py",
+            "from celery import Celery\napp = Celery('shop', task_routes=('routers.route_task',))\n",
+        ),
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::create_dir(root.join(provider)).unwrap();
+        fs::write(root.join(provider).join("__init__.py"), "").unwrap();
+        fs::write(root.join("app.py"), source).unwrap();
+        fs::write(
+            root.join("routers.py"),
+            "def route_task(name, args, kwargs, options): return None\n",
+        )
+        .unwrap();
+        let missing = scan(root);
+        let unused = findings(&missing, "unused_parameters");
+        assert!(unused.contains(&"routers.route_task.args"));
+        if provider == "django" {
+            assert!(unused.contains(&"app.forwards.apps"));
+        }
+        let mut warm = scan_with_settings(root, None, Some(cache.path()));
+        warm.as_object_mut().unwrap().remove("cache");
+        assert_eq!(warm, missing);
+
+        fs::write(root.join(hidden), "").unwrap();
+        let hidden_report = scan_with_excludes(root, None, Some(cache.path()), &[hidden], 2);
+        assert!(
+            hidden_report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    matches!(
+                        issue["kind"].as_str(),
+                        Some("unresolved_import" | "unresolved_call")
+                    )
+                }),
+            "{hidden_report}"
+        );
+        fs::remove_file(root.join(hidden)).unwrap();
+
+        fs::write(root.join("consumer.py"), "import app\n").unwrap();
+        let consumer = scan_with_exit(root, None, None, 2);
+        assert!(
+            consumer["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unresolved_import" && issue["path"] == "consumer.py"
+                }),
+            "{consumer}"
+        );
     }
 }
 

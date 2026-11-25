@@ -24,7 +24,9 @@ impl Graph<'_> {
             || self.terminal_flask_factory_initializer(scope, statement)
             || self.terminal_flask_global_initializer(scope, statement)
             || self.phase03
-                && (self.terminal_missing_django_reloader(scope, statement)
+                && (self.terminal_shadowed_framework_package(scope, statement)
+                    || self.terminal_shadowed_django_command_provider(scope, statement)
+                    || self.terminal_missing_django_reloader(scope, statement)
                     || self.terminal_django_auth_initializer(scope, statement)
                     || self.terminal_django_backend_replacement(scope, statement)
                     || self.terminal_django_runpython(scope, statement)
@@ -82,6 +84,86 @@ impl Graph<'_> {
             }
             _ => false,
         }
+    }
+
+    fn terminal_shadowed_framework_package(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Import(import) = &statement.kind else {
+            return false;
+        };
+        let (package, child) = match (
+            import.level,
+            import.module.as_str(),
+            import.member.as_deref(),
+        ) {
+            (0, "django.db", Some("migrations")) => ("django", "db"),
+            (0, "celery", Some("Celery")) => ("celery", "Celery"),
+            _ => return false,
+        };
+        if !first_initializer_statement(self.scopes[scope].body, statement)
+            || self.nested_packages.resolve(scope, package) != package
+        {
+            return false;
+        }
+        let Some(&provider) = self.modules.get(package) else {
+            return false;
+        };
+        if !self.files[provider].is_package
+            || !self.scopes[provider]
+                .body
+                .iter()
+                .all(literal_initializer_statement)
+            || self.discovery.is_none_or(|project| {
+                !project.root_package_submodule_absent(&self.files[provider].path, child)
+            })
+        {
+            return false;
+        }
+        self.scopes[scope].imports.push(provider);
+        true
+    }
+
+    fn terminal_shadowed_django_command_provider(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Import(import) = &statement.kind else {
+            return false;
+        };
+        if import.level != 0
+            || import.module != "django.core.management.base"
+            || import.member.as_deref() != Some("BaseCommand")
+            || self.nested_packages.resolve(scope, "django") != "django"
+            || !first_initializer_statement(self.scopes[scope].body, statement)
+        {
+            return false;
+        }
+        let Some(&shadow) = self.modules.get("django") else {
+            return false;
+        };
+        // A flat, inert module cannot expose a package path or preinstall
+        // the missing child modules in sys.modules during the import.
+        if self.files[shadow].is_package
+            || self.discovery.is_some_and(|project| {
+                !project.root_flat_module_unambiguous(&self.files[shadow].path, "django")
+            })
+            || !self.scopes[shadow].body.iter().all(|row| match &row.kind {
+                StatementKind::Define(definition) => plain_class(definition),
+                StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }) => true,
+                _ => false,
+            })
+        {
+            return false;
+        }
+        self.scopes[scope].imports.push(shadow);
+        true
     }
 
     fn terminal_missing_django_reloader(&mut self, scope: ScopeId, statement: &Statement) -> bool {
@@ -266,6 +348,22 @@ impl Graph<'_> {
             );
         }
     }
+}
+
+fn first_initializer_statement(body: &[Statement], statement: &Statement) -> bool {
+    body.iter()
+        .find(|row| !literal_initializer_statement(row))
+        .is_some_and(|first| std::ptr::eq(first, statement))
+}
+
+fn literal_initializer_statement(statement: &Statement) -> bool {
+    matches!(
+        statement.kind,
+        StatementKind::Evaluate(Expression {
+            kind: ExpressionKind::Text(_),
+            ..
+        })
+    )
 }
 
 pub(super) fn plain_class(definition: &Definition) -> bool {

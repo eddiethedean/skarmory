@@ -697,16 +697,40 @@ impl Project {
                 .iter()
                 .all(|root| has_no_import(root, &[provider]))
             && has_no_import(&self.base.join(service), &["__init__", provider])
-            && self
-                .directories
-                .get(&self.base.join(package))
-                .is_some_and(|entries| {
-                    !entries.iter().any(|(name, kind)| {
-                        entry_may_supply_module(name, *kind, module)
-                            || *kind == SeenEntry::OpaquePythonModule
-                                && entry_may_supply_module(name, *kind, "__init__")
-                    })
+            && self.package_submodule_absent(package, module)
+    }
+
+    pub(super) fn root_package_submodule_absent(&self, initializer: &str, module: &str) -> bool {
+        let Some(package) = Path::new(initializer).parent() else {
+            return false;
+        };
+        package.components().count() == 1
+            && self.search.iter().all(|root| root == &self.base)
+            && self.package_submodule_absent(package, module)
+    }
+
+    pub(super) fn root_flat_module_unambiguous(&self, source: &str, module: &str) -> bool {
+        Path::new(source)
+            .parent()
+            .is_some_and(|parent| parent.as_os_str().is_empty())
+            && self.search.iter().all(|root| root == &self.base)
+            && self.directories.get(&self.base).is_some_and(|entries| {
+                !entries.iter().any(|(name, kind)| {
+                    name != OsStr::new(source) && entry_may_supply_module(name, *kind, module)
                 })
+            })
+    }
+
+    fn package_submodule_absent(&self, package: &Path, module: &str) -> bool {
+        self.directories
+            .get(&self.base.join(package))
+            .is_some_and(|entries| {
+                !entries.iter().any(|(name, kind)| {
+                    entry_may_supply_module(name, *kind, module)
+                        || *kind == SeenEntry::OpaquePythonModule
+                            && entry_may_supply_module(name, *kind, "__init__")
+                })
+            })
     }
 
     pub(super) fn base(&self) -> &Path {

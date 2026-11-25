@@ -3,6 +3,7 @@
 use super::*;
 
 const MAX_SNAPSHOTS: usize = 16_384;
+const MAX_ROUTER_GRAPH_STEPS: usize = 8 * MAX_SNAPSHOTS;
 
 pub(super) fn is_app_constructor(provider: &str) -> bool {
     matches!(provider, "fastapi.FastAPI" | "fastapi.applications.FastAPI")
@@ -32,6 +33,62 @@ pub(super) struct Fastapi {
     observable_objects: BTreeSet<Object>,
     parameter_routes: Vec<ParameterRoute>,
     pub(super) route_declarations: BTreeSet<SymbolId>,
+}
+
+#[derive(Debug)]
+struct RouterGraphLimit;
+
+struct ActiveRouterGraph {
+    roots: Vec<Object>,
+    events: BTreeMap<Object, Vec<usize>>,
+}
+
+impl Fastapi {
+    fn active_router_graph(
+        &self,
+        reached_scopes: &BTreeSet<ScopeId>,
+        limit: usize,
+    ) -> Result<ActiveRouterGraph, RouterGraphLimit> {
+        let roots: Vec<_> = self
+            .apps
+            .iter()
+            .filter_map(|(&object, scope)| {
+                (reached_scopes.contains(scope) && self.observable_objects.contains(&object))
+                    .then_some(object)
+            })
+            .collect();
+        let mut pending = roots.clone();
+        let mut discovered: BTreeSet<_> = roots.iter().copied().collect();
+        let mut events = BTreeMap::new();
+        let mut remaining = limit;
+        let mut charge = || {
+            remaining = remaining.checked_sub(1).ok_or(RouterGraphLimit)?;
+            Ok(())
+        };
+
+        while let Some(object) = pending.pop() {
+            charge()?;
+            let mut eligible = Vec::new();
+            for &id in self.by_object.get(&object).into_iter().flatten() {
+                charge()?;
+                let event = &self.events[id];
+                if !reached_scopes.contains(&event.site.scope) {
+                    continue;
+                }
+                if let Some(child) = event.included_router {
+                    if !self.observable_objects.contains(&child) {
+                        continue;
+                    }
+                    if discovered.insert(child) {
+                        pending.push(child);
+                    }
+                }
+                eligible.push(id);
+            }
+            events.insert(object, eligible);
+        }
+        Ok(ActiveRouterGraph { roots, events })
+    }
 }
 
 struct ParameterRoute {
@@ -82,12 +139,26 @@ struct Inclusion {
     mode: FastapiRouterMode,
 }
 
-#[derive(Default)]
-struct Snapshots {
-    visited: BTreeMap<(Object, Option<Inclusion>), bool>,
+struct Snapshots<'a> {
+    events: &'a BTreeMap<Object, Vec<usize>>,
+    visited: BTreeMap<(Object, Option<Inclusion>), Option<bool>>,
+    remaining: usize,
     unordered_mounts: BTreeSet<usize>,
     version_sensitive_mounts: BTreeSet<usize>,
     limited: bool,
+}
+
+impl<'a> Snapshots<'a> {
+    fn new(events: &'a BTreeMap<Object, Vec<usize>>) -> Self {
+        Self {
+            events,
+            visited: BTreeMap::new(),
+            remaining: MAX_ROUTER_GRAPH_STEPS,
+            unordered_mounts: BTreeSet::new(),
+            version_sensitive_mounts: BTreeSet::new(),
+            limited: false,
+        }
+    }
 }
 
 enum DecoratorLayer<'a> {
@@ -1768,11 +1839,16 @@ impl<'a> Graph<'a> {
     }
 
     pub(super) fn activate_fastapi(&self, reach: &mut Reachability, pending: &mut VecDeque<Edge>) {
-        let mut snapshots = Snapshots::default();
-        for (&object, &scope) in &self.fastapi.apps {
-            if reach.scopes.contains(&scope) {
-                self.fastapi_snapshot(object, None, reach, pending, &mut snapshots, 0);
-            }
+        let Ok(graph) = self
+            .fastapi
+            .active_router_graph(&reach.scopes, MAX_ROUTER_GRAPH_STEPS)
+        else {
+            reach.fastapi_router_graph_limited = true;
+            return;
+        };
+        let mut snapshots = Snapshots::new(&graph.events);
+        for object in graph.roots {
+            self.fastapi_snapshot(object, None, reach, pending, &mut snapshots, 0);
         }
         reach
             .unordered_fastapi_mounts
@@ -1789,20 +1865,21 @@ impl<'a> Graph<'a> {
         inclusion: Option<Inclusion>,
         reach: &mut Reachability,
         pending: &mut VecDeque<Edge>,
-        snapshots: &mut Snapshots,
+        snapshots: &mut Snapshots<'_>,
         depth: usize,
     ) -> bool {
         let key = (object, inclusion);
-        if !self.fastapi.observable_objects.contains(&object) {
-            return false;
-        }
         if let Some(&has_routes) = snapshots.visited.get(&key) {
-            return has_routes;
+            // A live router may lead back to an in-progress snapshot. Keep
+            // that order unresolved and allow other eligible routes to run.
+            snapshots.limited |= has_routes.is_none();
+            return has_routes.unwrap_or(false);
         }
         if depth >= MAX_BINDING_CHAIN || snapshots.visited.len() >= MAX_SNAPSHOTS {
             snapshots.limited = true;
             return false;
         }
+        snapshots.visited.insert(key, None);
         let lifecycle_reached = inclusion.is_none_or(|inclusion| inclusion.lifecycle_reached);
         if lifecycle_reached
             && let Some(&(site, effects)) = self.fastapi.lifespans.get(&object)
@@ -1818,17 +1895,13 @@ impl<'a> Graph<'a> {
         let mode = inclusion.map_or(self.files[object.0].fastapi_router_mode, |item| item.mode);
         let conditional = inclusion.is_some_and(|inclusion| inclusion.conditional);
         let mut has_routes = false;
-        for &id in self.fastapi.by_object.get(&object).into_iter().flatten() {
+        for &id in snapshots.events.get(&object).into_iter().flatten() {
+            let Some(remaining) = snapshots.remaining.checked_sub(1) else {
+                snapshots.limited = true;
+                break;
+            };
+            snapshots.remaining = remaining;
             let event = &self.fastapi.events[id];
-            if !reach.scopes.contains(&event.site.scope) {
-                continue;
-            }
-            if event
-                .included_router
-                .is_some_and(|child| !self.fastapi.observable_objects.contains(&child))
-            {
-                continue;
-            }
             if event.startup_or_shutdown && !legacy_default_reached {
                 continue;
             }
@@ -1891,7 +1964,7 @@ impl<'a> Graph<'a> {
         if has_routes && let Some(&scope) = self.fastapi.defaults.get(&object) {
             self.open_fastapi_effects(scope, reach, pending);
         }
-        snapshots.visited.insert(key, has_routes);
+        snapshots.visited.insert(key, Some(has_routes));
         has_routes
     }
 
@@ -1901,7 +1974,7 @@ impl<'a> Graph<'a> {
         inclusion: Option<Inclusion>,
         reach: &mut Reachability,
         pending: &mut VecDeque<Edge>,
-        snapshots: &mut Snapshots,
+        snapshots: &mut Snapshots<'_>,
     ) {
         let timing = match inclusion {
             Some(item) if item.mode == FastapiRouterMode::Live => SignatureSite::ModuleEnd,
@@ -2001,6 +2074,13 @@ impl<'a> Graph<'a> {
                 );
             }
         }
+        if reach.fastapi_router_graph_limited {
+            self.issues.push(Issue::new(
+                "analysis_limit",
+                ".",
+                "FastAPI router inclusion graph step budget exceeded",
+            ));
+        }
         if reach.fastapi_limited {
             self.issues.push(Issue::new(
                 "analysis_limit",
@@ -2061,5 +2141,107 @@ impl Event {
 
     fn carries_routes(&self) -> bool {
         self.included_router.is_some() || self.api_route
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct IncludeGraphFixture {
+        roots: Vec<String>,
+        edges: Vec<IncludeEdge>,
+        limit: Option<usize>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct IncludeEdge {
+        receiver: String,
+        child: String,
+        owner: Option<String>,
+    }
+
+    #[test]
+    #[ignore = "requires the pinned FastAPI graph fixture"]
+    fn pinned_fastapi_include_graph() {
+        let fixture = std::env::var_os("SKARMORY_PHASE03_FASTAPI_INCLUDE_FIXTURE").unwrap();
+        let report_path = std::env::var_os("SKARMORY_PHASE03_FASTAPI_INCLUDE_REPORT").unwrap();
+        let fixture: IncludeGraphFixture =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+
+        let names: BTreeSet<_> = fixture
+            .roots
+            .iter()
+            .chain(
+                fixture
+                    .edges
+                    .iter()
+                    .flat_map(|edge| [&edge.receiver, &edge.child]),
+            )
+            .collect();
+        let objects: BTreeMap<_, _> = names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| (name, (0, index + 1, 0)))
+            .collect();
+        let scopes: BTreeMap<_, _> = fixture
+            .edges
+            .iter()
+            .filter_map(|edge| edge.owner.as_deref())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .enumerate()
+            .map(|(index, owner)| (owner, index + 1))
+            .collect();
+        let mut fastapi = Fastapi {
+            apps: fixture
+                .roots
+                .iter()
+                .map(|name| (objects[name], 0))
+                .collect(),
+            observable_objects: objects.values().copied().collect(),
+            ..Fastapi::default()
+        };
+        for edge in &fixture.edges {
+            let scope = edge.owner.as_deref().map_or(0, |owner| scopes[owner]);
+            let mut registration = Event::new(
+                Site {
+                    scope,
+                    at: END,
+                    before: END,
+                },
+                scope,
+            );
+            registration.included_router = Some(objects[&edge.child]);
+            fastapi
+                .by_object
+                .entry(objects[&edge.receiver])
+                .or_default()
+                .push(fastapi.events.len());
+            fastapi.events.push(registration);
+        }
+
+        let result = fastapi.active_router_graph(
+            &BTreeSet::from([0]),
+            fixture.limit.unwrap_or(MAX_ROUTER_GRAPH_STEPS),
+        );
+        let report = match result {
+            Ok(graph) => {
+                let reached: Vec<_> = objects
+                    .iter()
+                    .filter_map(|(&name, object)| {
+                        (graph.events.contains_key(object) && !graph.roots.contains(object))
+                            .then_some(name)
+                    })
+                    .collect();
+                serde_json::json!({"status": "complete", "reachable": reached})
+            }
+            Err(RouterGraphLimit) => serde_json::json!({
+                "status": "incomplete",
+                "reason": "abstract_step_budget",
+            }),
+        };
+        std::fs::write(report_path, serde_json::to_vec(&report).unwrap()).unwrap();
     }
 }

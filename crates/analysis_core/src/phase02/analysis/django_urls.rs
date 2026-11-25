@@ -168,19 +168,20 @@ impl Graph<'_> {
         &mut self,
         positional: &'expr [Expression],
         keywords: &'expr [(String, Expression)],
+        simple_path: bool,
         evaluate: impl Fn(&mut Self, &'expr Expression) -> Value,
     ) -> Value {
         // Django exports a partial. An explicit Pattern can replace the
         // default pattern factory, whose behavior we do not model.
         if keywords.iter().any(|(name, _)| name == "Pattern") {
-            return Value::DjangoPattern(Box::new(Value::Unknown));
+            return Value::DjangoPattern(Box::new(Value::Unknown), None);
         }
         let Some([Some(route), Some(view), kwargs, _]) =
             registration_arguments(positional, keywords, ["route", "view", "kwargs", "name"])
         else {
             return Value::DjangoInvalidRegistration;
         };
-        if let Some(kwargs) = kwargs
+        let defaults = if let Some(kwargs) = kwargs
             && !matches!(kwargs.kind, ExpressionKind::None)
         {
             match evaluate(self, kwargs) {
@@ -190,17 +191,26 @@ impl Graph<'_> {
                 Value::Scalar if matches!(kwargs.kind, ExpressionKind::Scalar(_)) => {
                     return Value::DjangoInvalidRegistration;
                 }
-                Value::Mapping(_) => {}
-                _ => return Value::DjangoPattern(Box::new(Value::Unknown)),
+                Value::Mapping(_) => literal_view_keywords(kwargs),
+                _ => return Value::DjangoPattern(Box::new(Value::Unknown), None),
             }
-        }
+        } else {
+            Some(BTreeMap::new())
+        };
         let view = evaluate(self, view);
         match view {
             Value::DjangoInvalidRegistration => Value::DjangoInvalidRegistration,
-            _ if matches!(evaluate(self, route), Value::Text(_)) => {
-                Value::DjangoPattern(Box::new(view))
-            }
-            _ => Value::DjangoPattern(Box::new(Value::Unknown)),
+            _ => match evaluate(self, route) {
+                Value::Text(path) => Value::DjangoPattern(
+                    Box::new(view),
+                    defaults.filter(|_| {
+                        simple_path
+                            && matches!(route.kind, ExpressionKind::Text(_))
+                            && !path.contains(['<', '>'])
+                    }),
+                ),
+                _ => Value::DjangoPattern(Box::new(Value::Unknown), None),
+            },
         }
     }
 
@@ -337,7 +347,7 @@ impl Graph<'_> {
         let Value::Sequence(mut rows) = initial else {
             return Value::Unknown;
         };
-        if !rows.iter().all(|item| matches!(item, Value::DjangoPattern(callback) if self.plain_url_callback(callback))) {
+        if !rows.iter().all(|item| matches!(item, Value::DjangoPattern(callback, _) if self.plain_url_callback(callback))) {
             return Value::Unknown;
         }
 
@@ -361,7 +371,7 @@ impl Graph<'_> {
                     if !self.plain_url_callback(&replacement) {
                         return Value::Unknown;
                     }
-                    let Some(Value::DjangoPattern(callback)) = rows.get_mut(index) else {
+                    let Some(Value::DjangoPattern(callback, _)) = rows.get_mut(index) else {
                         return Value::Unknown;
                     };
                     **callback = replacement;
@@ -692,6 +702,26 @@ impl Graph<'_> {
         }
         true
     }
+}
+
+fn literal_view_keywords(expression: &Expression) -> Option<django_views::ViewArguments> {
+    let ExpressionKind::Dictionary(items) = &expression.kind else {
+        return None;
+    };
+    let (items, remainder) = items.as_chunks::<2>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    items
+        .iter()
+        .map(|[key, value]| {
+            let (ExpressionKind::Text(key), ExpressionKind::Text(value)) = (&key.kind, &value.kind)
+            else {
+                return None;
+            };
+            Some((key.clone(), value.clone()))
+        })
+        .collect()
 }
 
 fn plain_code_function(definition: &Definition) -> bool {

@@ -7,7 +7,7 @@ pub(super) const DIRECT: &str = "fresh_field_call";
 pub(super) struct FreshFieldInvocation {
     caller: ScopeId,
     at: Location,
-    method: Invocation,
+    pub(super) method: Invocation,
     provider_method: Invocation,
     dependencies: [SymbolId; 3],
 }
@@ -24,14 +24,61 @@ impl Graph<'_> {
         function: &Expression,
         call: CallArguments<'_>,
     ) -> bool {
-        if invocation.verified || !call.positional.is_empty() || !call.keywords.is_empty() {
-            return false;
-        }
-        let Receiver::Bound(class) = invocation.receiver else {
+        let Some(proof) = self.prove_fresh_field_method(invocation, function, call, None) else {
             return false;
         };
+        self.fresh_field_invocations.push(proof);
+        true
+    }
+
+    pub(super) fn prove_selected_field_call(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        parameter: &str,
+        text: &str,
+    ) -> Option<FreshFieldInvocation> {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &expression.kind
+        else {
+            return None;
+        };
+        let Value::Callable(invocation) = self.probe_identity(scope, function, before) else {
+            return None;
+        };
+        self.prove_fresh_field_method(
+            invocation,
+            function,
+            CallArguments {
+                scope,
+                before,
+                at: expression.at,
+                positional: arguments,
+                keywords,
+            },
+            Some((parameter, text)),
+        )
+    }
+
+    fn prove_fresh_field_method(
+        &mut self,
+        invocation: Invocation,
+        function: &Expression,
+        call: CallArguments<'_>,
+        selector: Option<(&str, &str)>,
+    ) -> Option<FreshFieldInvocation> {
+        if invocation.verified || !call.positional.is_empty() || !call.keywords.is_empty() {
+            return None;
+        }
+        let Receiver::Bound(class) = invocation.receiver else {
+            return None;
+        };
         let ExpressionKind::Member(receiver, _) = &function.kind else {
-            return false;
+            return None;
         };
         let ExpressionKind::Call {
             function,
@@ -39,54 +86,48 @@ impl Graph<'_> {
             keywords,
         } = &receiver.kind
         else {
-            return false;
+            return None;
         };
         let [stored] = arguments.as_slice() else {
-            return false;
+            return None;
         };
         if !keywords.is_empty()
             || !matches!(self.probe_identity(call.scope, function, call.before),
                 Value::Callable(constructor) if constructor.target == class && !constructor.verified)
         {
-            return false;
+            return None;
         }
         let Binding::Definition(method, _) = self.symbols[invocation.target].binding else {
-            return false;
+            return None;
         };
-        let Some((_, field, member, supplied)) = field_method(method) else {
-            return false;
-        };
+        let (_, field, member, supplied) = field_method(method)?;
         if self.scopes[self.symbols[invocation.target].scope].owner != Some(class)
             || !matches!(self.fresh_constructor_field(class), Some(ConstructorField::FromArgument(member)) if member == field)
             || !self.class_discovery_writes(class, call.scope).is_empty()
         {
-            return false;
+            return None;
         }
-        let Some((provider, factory)) =
-            self.literal_factory_instance(call.scope, stored, call.before)
-        else {
-            return false;
-        };
+        let (provider, factory) =
+            self.literal_factory_instance(call.scope, stored, call.before, selector)?;
         let access = Some((call.scope, call.before));
         let Some(Value::Callable(selected)) = self.class_member_at(provider, member, 0, access)
         else {
-            return false;
+            return None;
         };
         let Binding::Definition(selected_definition, _) = self.symbols[selected.target].binding
         else {
-            return false;
+            return None;
         };
         if selected.verified || !plain_method(selected_definition, supplied + 1) {
-            return false;
+            return None;
         }
-        self.fresh_field_invocations.push(FreshFieldInvocation {
+        Some(FreshFieldInvocation {
             caller: call.scope,
             at: call.at,
             method: invocation,
             provider_method: selected.bind_receiver(Receiver::Bound(provider)),
             dependencies: [class, provider, factory],
-        });
-        true
+        })
     }
 
     pub(super) fn resolve_fresh_field_invocations(&mut self) {
@@ -105,12 +146,7 @@ impl Graph<'_> {
                 })
             })
             .collect();
-        let mut replaced = BTreeSet::new();
-        let reads = std::mem::take(&mut self.read);
-        for scope in 0..self.scopes.len() {
-            self.collect_field_callback_replacements(scope, self.scopes[scope].body, &mut replaced);
-        }
-        self.read = reads;
+        let replaced = self.field_callback_replacements();
         for proof in std::mem::take(&mut self.fresh_field_invocations) {
             self.direct.insert(proof.method.target);
             if proof
@@ -139,6 +175,16 @@ impl Graph<'_> {
                 proof.at,
             );
         }
+    }
+
+    pub(super) fn field_callback_replacements(&mut self) -> BTreeSet<SymbolId> {
+        let mut replaced = BTreeSet::new();
+        let reads = std::mem::take(&mut self.read);
+        for scope in 0..self.scopes.len() {
+            self.collect_field_callback_replacements(scope, self.scopes[scope].body, &mut replaced);
+        }
+        self.read = reads;
+        replaced
     }
 
     fn collect_field_callback_replacements(
@@ -339,6 +385,7 @@ impl Graph<'_> {
         scope: ScopeId,
         expression: &Expression,
         before: Location,
+        selector: Option<(&str, &str)>,
     ) -> Option<(SymbolId, SymbolId)> {
         let ExpressionKind::Call {
             function,
@@ -354,7 +401,14 @@ impl Graph<'_> {
         if !keywords.is_empty() {
             return None;
         }
-        let Value::Text(actual) = self.probe_identity(scope, argument, before) else {
+        let actual = if let Some((parameter, value)) = selector {
+            if !matches!(&argument.kind, ExpressionKind::Name(argument) if argument == parameter) {
+                return None;
+            }
+            value.to_owned()
+        } else if let Value::Text(value) = self.probe_identity(scope, argument, before) {
+            value
+        } else {
             return None;
         };
         let Value::Callable(factory) = self.probe_identity(scope, function, before) else {

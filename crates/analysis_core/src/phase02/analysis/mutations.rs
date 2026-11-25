@@ -712,6 +712,7 @@ impl Graph<'_> {
                                     | "__init__"
                                     | "__getattribute__"
                                     | "run_from_argv"
+                                    | "print_help"
                                     | "create_parser"
                                     | "add_arguments"
                                     | "execute"

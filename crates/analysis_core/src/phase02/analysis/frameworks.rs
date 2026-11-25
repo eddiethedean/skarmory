@@ -15,6 +15,67 @@ pub(super) enum DjangoCommands {
     None,
     Available,
     Selected(String),
+    Help { name: String, through_argv: bool },
+    UnresolvedHelp,
+}
+
+impl DjangoCommands {
+    pub(super) fn from_argv(argv: &[Value]) -> Self {
+        if argv.is_empty() {
+            // Django's utility falls back to sys.argv for a falsey list.
+            return Self::Available;
+        }
+        let tail = argv.get(2..).unwrap_or_default();
+        match argv.get(1) {
+            Some(Value::Text(command)) if command == "help" => Self::help_target(tail),
+            Some(Value::Text(command)) if command != "version" && !command.starts_with('-') => {
+                if tail.iter().take_while(|arg| !matches!(arg, Value::Text(text) if text == "--"))
+                    .any(|arg| matches!(arg, Value::Text(text) if matches!(text.as_str(), "-h" | "--help")))
+                    && tail.iter().all(|arg| matches!(arg, Value::Text(_)))
+                {
+                    Self::Help { name: command.clone(), through_argv: true }
+                } else {
+                    Self::Selected(command.clone())
+                }
+            }
+            Some(Value::Text(_)) | None => Self::None,
+            _ => Self::Available,
+        }
+    }
+
+    fn help_target(tail: &[Value]) -> Self {
+        let mut options = true;
+        let mut target = None;
+        let mut argv = tail.iter();
+        while let Some(value) = argv.next() {
+            let Value::Text(word) = value else {
+                return Self::UnresolvedHelp;
+            };
+            if options {
+                match word.as_str() {
+                    "--" => {
+                        options = false;
+                        continue;
+                    }
+                    "--commands" => return Self::None,
+                    "--settings" | "--pythonpath" => {
+                        if !matches!(argv.next(), Some(Value::Text(value)) if !value.starts_with('-'))
+                        {
+                            return Self::UnresolvedHelp;
+                        }
+                        continue;
+                    }
+                    _ if word.starts_with('-') => continue,
+                    _ => {}
+                }
+            }
+            target.get_or_insert(word);
+        }
+        target.map_or(Self::None, |name| Self::Help {
+            name: name.clone(),
+            through_argv: false,
+        })
+    }
 }
 
 struct DjangoAppEntry {
@@ -2050,6 +2111,10 @@ impl Graph<'_> {
                             invocation.target,
                             "django_registration",
                         ));
+                        self.django_view_arguments
+                            .entry((object, invocation.target))
+                            .or_default()
+                            .push(None);
                     } else {
                         self.django_registration_issue(
                             object,
@@ -2480,7 +2545,10 @@ impl Graph<'_> {
                     .activated_apps
                     .push(django_loaded_module(module));
             }
-            if matches!(commands, DjangoCommands::None) {
+            if matches!(
+                commands,
+                DjangoCommands::None | DjangoCommands::UnresolvedHelp
+            ) {
                 continue;
             }
             let prefix = format!("{prefix}management.commands.");
@@ -2494,8 +2562,16 @@ impl Graph<'_> {
                 }
             }
         }
+        if matches!(commands, DjangoCommands::UnresolvedHelp) {
+            self.django_registration_issue(
+                object,
+                at,
+                "Django management help target could not be resolved",
+            );
+        }
         for (name, file) in registered_commands {
-            if matches!(commands, DjangoCommands::Selected(command) if *command != name) {
+            if matches!(commands, DjangoCommands::Selected(command) | DjangoCommands::Help { name: command, .. } if *command != name)
+            {
                 continue;
             }
             let module = &self.files[file].module;
@@ -2537,7 +2613,7 @@ impl Graph<'_> {
             }
             if let Some(command) = command {
                 self.read.extend(command.bindings);
-                self.activate_django_command(scope, file, object, command.target, at);
+                self.activate_django_command(scope, file, object, command.target, commands, at);
             } else {
                 self.django_registration_issue(
                     object,
@@ -2586,6 +2662,7 @@ impl Graph<'_> {
         module: ScopeId,
         object: Object,
         class: SymbolId,
+        commands: &DjangoCommands,
         at: Location,
     ) {
         let kind = "django_command";
@@ -2597,11 +2674,25 @@ impl Graph<'_> {
             ("__init__", Some(1)),
             ("__getattribute__", Some(2)),
             ("run_from_argv", Some(2)),
+            ("print_help", Some(3)),
             ("create_parser", Some(3)),
             ("add_arguments", Some(2)),
             ("execute", None),
             ("handle", None),
         ] {
+            let direct_help = matches!(
+                commands,
+                DjangoCommands::Help {
+                    through_argv: false,
+                    ..
+                }
+            );
+            if (name == "run_from_argv" && direct_help) || (name == "print_help" && !direct_help) {
+                continue;
+            }
+            if name == "execute" && matches!(commands, DjangoCommands::Help { .. }) {
+                break;
+            }
             if name == "__getattribute__"
                 && self
                     .django_class_value(class, "__getattr__", module)
@@ -2634,7 +2725,12 @@ impl Graph<'_> {
             }
             let unknown_dispatch = matches!(
                 name,
-                "__new__" | "__getattribute__" | "run_from_argv" | "create_parser" | "execute"
+                "__new__"
+                    | "__getattribute__"
+                    | "run_from_argv"
+                    | "print_help"
+                    | "create_parser"
+                    | "execute"
             );
             if let Value::Callable(invocation) = value
                 && self.bounded_framework_function(invocation.target)
@@ -3617,7 +3713,16 @@ impl Graph<'_> {
                     self.collect_django_patterns(file, parent, value, at);
                 }
             }
-            Value::DjangoPattern(callback) => match *callback {
+            Value::DjangoPattern(callback, defaults) => match *callback {
+                Value::Callable(invocation)
+                    if self.django_view_provider_failed(invocation.target) =>
+                {
+                    self.django_registration_issue(
+                        parent,
+                        at,
+                        "Django URL callback module cannot finish initialization",
+                    );
+                }
                 Value::Callable(invocation)
                     if self.django_constant_callback_code(file, invocation.target) => {}
                 Value::Callable(invocation) if !self.is_class(invocation.target) => {
@@ -3631,6 +3736,16 @@ impl Graph<'_> {
                     self.scopes[file]
                         .routes
                         .push((parent, invocation.target, kind));
+                    if kind == "django_registration" {
+                        self.django_view_arguments
+                            .entry((parent, invocation.target))
+                            .or_default()
+                            .push(defaults.filter(|_| {
+                                !invocation.verified
+                                    && matches!(invocation.receiver, Receiver::Ordinary)
+                                    && !invocation.implicit_descriptor_receiver
+                            }));
+                    }
                 }
                 Value::DjangoView(class) => {
                     self.scopes[file]
@@ -3680,7 +3795,7 @@ impl Graph<'_> {
 
 fn has_django_pattern(value: &Value) -> bool {
     match value {
-        Value::DjangoPattern(_) => true,
+        Value::DjangoPattern(_, _) => true,
         Value::Sequence(values) | Value::Alternatives(values) => {
             values.iter().any(has_django_pattern)
         }

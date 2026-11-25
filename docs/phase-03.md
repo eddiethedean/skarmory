@@ -286,6 +286,10 @@ callbacks still come from the lifecycle list captured at inclusion. It retains c
 leading wildcard imports from the supported FastAPI and typing export tables.
 Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
 incomplete.
+Router discovery bounds work across the reachable graph and visits shared
+routers once before evaluating inclusion order. Unexecuted owners contribute
+no inclusions. A cycle in live snapshot evaluation or exhaustion of a graph
+budget leaves coverage incomplete.
 When a nested regular package shadows a root package, the preview can prove
 that a specific missing submodule stops a FastAPI initializer. This requires
 an inert package initializer, a closed import prefix and a verified package
@@ -294,6 +298,16 @@ initializer preserve incomplete coverage. The optional
 `analysis_summary.fastapi_route_declarations` field records identified route
 declaration locations separately from activation evidence.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
+
+A source-owned, inert root Django or Celery package can prove that the
+initializer stops at a missing provider. This requires a checked package
+directory and an import before any executable initializer work. Consumers of
+the failed module retain incomplete coverage.
+
+Django model relationship field subclasses have no class-creation callback
+for rendering choices. The preview recognizes these declarations and keeps
+constructor or rendering effects outside this declaration proof.
+[Django relationship fields](https://docs.djangoproject.com/en/5.2/ref/forms/fields/#fields-which-handle-relationships)
 
 FastMCP records possible-use evidence for tool decorators applied through a
 resolved server and a bounded project wrapper. Plain identity, caching and
@@ -316,9 +330,12 @@ the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
 class-based views reach their effective `setup()` hook. Function views can
 reach a source-owned provider method when a fresh object receives a provider
-selected by a literal argument. Calling a generator view creates the
-generator and leaves its body dormant. Unresolved URL
-registrations in active URL modules produce coverage diagnostics.
+selected by a literal argument. A direct path can supply a literal string
+keyword or let the view use its literal string default. Captures, include
+arguments, and unbounded callers keep this dispatch unresolved. Calling a generator view
+creates the generator and leaves its body dormant. If a view’s defining module
+cannot finish initialization, the selected registration remains incomplete.
+Unresolved URL registrations in active URL modules produce coverage diagnostics.
 An initializer with a proven invalid URL call cannot finish constructing
 its URL table. The preview follows a final literal list's direct `clear()`
 and indexed `URLPattern.callback` edits in a closed initializer. Opaque options,
@@ -343,6 +360,8 @@ subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
+Command-specific help can construct the command and run argument setup before
+exiting. The built-in command listing and version paths need no local command.
 The selected command follows its effective lifecycle after module initialization.
 Ordered writes through the command module's own globals dictionary or module
 object can replace the export before Django reads it. Later ordinary assignments

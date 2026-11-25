@@ -30,6 +30,7 @@ mod django_migrations;
 mod django_template_paths;
 mod django_templates;
 mod django_urls;
+mod django_views;
 mod drf;
 mod fastapi;
 mod field_dispatch;
@@ -77,7 +78,7 @@ enum Value {
     Method(Object, ObjectKind, String),
     DjangoInclude(Object),
     DjangoInvalidRegistration,
-    DjangoPattern(Box<Value>),
+    DjangoPattern(Box<Value>, Option<django_views::ViewArguments>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
     DjangoField(django_forms::Field),
@@ -629,6 +630,7 @@ pub(super) fn analyze_with_verification(
             && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
         failed_terminal_modules: BTreeSet::new(),
         failed_flask_provider_initializers: BTreeMap::new(),
+        failed_flask_import_initializers: BTreeMap::new(),
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
         framework_class_whitelists: BTreeMap::new(),
@@ -643,6 +645,7 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_view_arguments: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
@@ -703,9 +706,9 @@ pub(super) fn analyze_with_verification(
     }
     graph.index_base_classes();
     if phase03 {
-        graph.index_flask_context();
         graph.index_django_global_writes();
         graph.index_failed_flask_provider_initializers();
+        graph.index_flask_context();
     }
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
@@ -828,6 +831,7 @@ struct Graph<'a> {
     terminal_proofs: bool,
     failed_terminal_modules: BTreeSet<ScopeId>,
     failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
+    failed_flask_import_initializers: BTreeMap<ScopeId, Location>,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
@@ -842,6 +846,7 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_view_arguments: django_views::ViewRouteArguments,
     django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
@@ -2022,6 +2027,15 @@ impl<'a> Graph<'a> {
         let symbol = &self.symbols[id];
         let scope = symbol.scope;
         let file = self.scopes[scope].file;
+        if scope == file
+            && self
+                .failed_flask_import_initializers
+                .get(&file)
+                .is_some_and(|&failure| position(failure) <= position(symbol.name.at))
+        {
+            // This binding cannot be installed on the initializer path.
+            return Value::Unknown;
+        }
         match symbol.binding {
             Binding::Definition(definition, _) => {
                 if self.phase03
@@ -3022,7 +3036,10 @@ impl<'a> Graph<'a> {
                     }
                 }
                 Value::Provider(base)
-                    if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
+                    if name == "__init_subclass__"
+                        && (builtin_noop_subclass_hook(&base)
+                            || self.phase03
+                                && django_forms::is_relationship_field_class(&base)) =>
                 {
                     None
                 }
@@ -3159,6 +3176,7 @@ impl<'a> Graph<'a> {
                     || self.phase03
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
+                            || django_forms::is_relationship_field_class(&name)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -3945,7 +3963,7 @@ impl<'a> Graph<'a> {
                     if self.phase03
                         && matches!(name.as_str(), "django.urls.path" | "django.urls.re_path") =>
                 {
-                    self.django_path(arguments, keywords, recurse)
+                    self.django_path(arguments, keywords, name == "django.urls.path", recurse)
                 }
                 Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listens_for" => {
                     Value::Provider("sqlalchemy.event.listens_for.callback".into())
@@ -5569,15 +5587,7 @@ impl<'a> Graph<'a> {
                                         DjangoSettings::Module(module) => settings = Some(module),
                                         DjangoSettings::Unknown => settings = None,
                                     }
-                                    match values.get(1) {
-                                        Some(Value::Text(command)) if !command.starts_with('-') => {
-                                            frameworks::DjangoCommands::Selected(command.clone())
-                                        }
-                                        Some(Value::Text(_)) | None => {
-                                            frameworks::DjangoCommands::None
-                                        }
-                                        _ => frameworks::DjangoCommands::Available,
-                                    }
+                                    frameworks::DjangoCommands::from_argv(&values)
                                 }
                                 _ => frameworks::DjangoCommands::Available,
                             }
@@ -9584,6 +9594,12 @@ impl<'a> Graph<'a> {
                     self.establish_reachability(&roots, &possible_roots, snapshot);
             }
         }
+        if self.phase03 && converged && self.resolve_django_view_dispatch(&reach) {
+            self.resolve_receiver_calls();
+            self.resolve_class_invocations();
+            (reach, static_reach, verification, converged) =
+                self.establish_reachability(&roots, &possible_roots, snapshot);
+        }
         if !converged {
             self.issues.push(framework_limit());
         }
@@ -9966,6 +9982,7 @@ struct Reachability {
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
     fastapi_limited: bool,
+    fastapi_router_graph_limited: bool,
     evidence: BTreeSet<(SymbolId, &'static str, &'static str)>,
 }
 
@@ -13647,6 +13664,123 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     }
 
     #[test]
+    fn django_view_dispatch_uses_bound_literal_parameters() {
+        let make_files = |view, route, extra: &str| {
+            [
+                module(
+                    "manage.py",
+                    "manage",
+                    "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+                ),
+                module(
+                    "settings.py",
+                    "settings",
+                    "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+                ),
+                module(
+                    "urls.py",
+                    "urls",
+                    &format!(
+                        "from django.urls import path\nfrom views import view\nurlpatterns = [{route}]\n"
+                    ),
+                ),
+                module("views.py", "views", view),
+                module(
+                    "pipeline.py",
+                    "pipeline",
+                    &format!(
+                        "from providers import get_client\nclass Pipeline:\n    def __init__(self, client): self.client = client\n    def update(self): return self.client.schedule()\ndef dispatch(slug): return Pipeline(get_client(slug)).update()\n{extra}"
+                    ),
+                ),
+                module(
+                    "providers.py",
+                    "providers",
+                    "class First:\n    def schedule(self): return 1\nclass Second:\n    def schedule(self): return 2\ndef get_client(slug):\n    if slug == 'first': return First()\n    return Second()\n",
+                ),
+            ]
+        };
+        let default = "from pipeline import dispatch\ndef view(request, slug='first'): return dispatch(slug)\n";
+        let required = default.replace("slug='first'", "slug");
+        for (view, route, expected) in [
+            (default, "path('', view)", "providers.First.schedule"),
+            (
+                default,
+                "path('', view, {'slug': 'second'})",
+                "providers.Second.schedule",
+            ),
+            (
+                required.as_str(),
+                "path('', view, {'slug': 'first'})",
+                "providers.First.schedule",
+            ),
+        ] {
+            let report = analyze_phase03(&make_files(view, route, ""), &[]);
+            assert!(report.issues.is_empty(), "{route}: {:?}", report.issues);
+            let reached: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|edge| edge.kind == "direct_call" && edge.full_name.ends_with(".schedule"))
+                .map(|edge| edge.full_name.as_str())
+                .collect();
+            assert_eq!(reached, [expected], "{route}");
+        }
+        for (route, extra) in [
+            ("path('<str:slug>/', view)", ""),
+            ("path('', view)", "dispatch(input())\n"),
+        ] {
+            let report = analyze_phase03(&make_files(default, route, extra), &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"),
+                "{route}: {:?}",
+                report.issues
+            );
+        }
+        let mut files = make_files(default, "path('', view)", "");
+        files[2] = module(
+            "urls.py",
+            "urls",
+            "from django.urls import path\nfrom views import view\nfrom external import mutate\nurlpatterns = [path('', view)]\nmutate(urlpatterns)\n",
+        );
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name.ends_with(".schedule"))
+        );
+    }
+
+    #[test]
+    fn django_failed_view_initializer_cannot_register_a_callback() {
+        let urls = "from django.urls import path\nfrom rejected import view\nurlpatterns = [path('', view)]\n";
+        let mut files = django_url_test_files(urls, "");
+        files.push(module("rejected.py", "rejected", "def view(request): return helper()\ndef helper(): return 1\nraise RuntimeError('not ready')\n"));
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "urls.py" && issue.kind == "unresolved_registration")
+        );
+        assert!(!report.evidence.iter().any(|edge| edge.kind == "django_registration" && edge.full_name == "rejected.view"));
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|edge| edge.kind == "direct_call" && edge.full_name == "rejected.helper")
+        );
+    }
+
+    #[test]
     fn phase03_django_url_stops_before_an_unbound_view_option() {
         let urls = "from django.urls import path\nfrom django.views import View\n\
                     class Page(View):\n    def setup(self, request): return 1\n\
@@ -14109,6 +14243,103 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     }
 
     #[test]
+    fn phase03_django_management_help_stops_after_parser_setup() {
+        let command = "from django.core.management.base import BaseCommand\n\
+class Command(BaseCommand):\n    def add_arguments(self, parser): return parser\n    def handle(self, *args, **options): return None\n";
+        for (arguments, parser, handle) in [
+            ("'audit'", true, true),
+            ("'audit', '--help'", true, false),
+            ("'audit', '-h'", true, false),
+            ("'help', 'audit'", true, false),
+            ("'help', 'audit', '--commands'", false, false),
+            ("'help'", false, false),
+            ("'version'", false, false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        &format!(
+                            "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', {arguments}, '--settings=settings'])\n"
+                        ),
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        command,
+                    ),
+                    module(
+                        "demo/management/commands/version.py",
+                        "demo.management.commands.version",
+                        command,
+                    ),
+                    module(
+                        "demo/management/commands/help.py",
+                        "demo.management.commands.help",
+                        command,
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{arguments}: {:?}", result.issues);
+            let reached = |method: &str| {
+                result
+                    .evidence
+                    .iter()
+                    .any(|edge| edge.kind == "django_command" && edge.full_name.ends_with(method))
+            };
+            assert_eq!(reached(".add_arguments"), parser, "{arguments}");
+            assert_eq!(reached(".handle"), handle, "{arguments}");
+        }
+        assert!(matches!(frameworks::DjangoCommands::from_argv(&[
+            Value::Text("manage.py".into()),
+            Value::Text("audit".into()),
+            Value::Text("--".into()),
+            Value::Text("--help".into()),
+        ]), frameworks::DjangoCommands::Selected(name) if name == "audit"));
+    }
+
+    #[test]
+    fn phase03_flat_inert_django_shadow_stops_a_command_import() {
+        let command = "from django.core.management.base import BaseCommand\ndef prepare(): return 1\nclass Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\nprepare()\n";
+        for (shadow, closed) in [
+            ("class BaseCommand: pass\n", true),
+            ("modify_imports()\n", false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("django.py", "django", shadow),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        command,
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                result.issues.is_empty(),
+                closed,
+                "{shadow}: {:?}",
+                result.issues
+            );
+            if closed {
+                assert!(names(&result, Category::Function).contains(&"prepare"));
+                assert!(
+                    !result
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.kind == "django_command"
+                            || edge.full_name.ends_with(".prepare"))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn phase03_django_loader_reads_the_effective_command_module_namespace() {
         let body = "from django.core.management.base import BaseCommand\n\
 class Command(BaseCommand):\n    def handle(self, *args, **options):\n        return 1\n\
@@ -14347,6 +14578,37 @@ WorkManager()\nWorkSet()\n",
                     .any(|entry| entry.kind == "django_command")
             );
         }
+    }
+
+    #[test]
+    fn phase03_django_relationship_field_declaration_does_not_render_choices() {
+        let definition = "from django import forms\n\
+class RelatedField(forms.ModelChoiceField):\n    def label_from_instance(self, obj): return str(obj)\n\
+class AnotherField(RelatedField): pass\n";
+        let declaration = analyze_phase03(&[module("fields.py", "fields", definition)], &[]);
+        assert!(declaration.issues.is_empty(), "{:?}", declaration.issues);
+        assert!(
+            !declaration
+                .evidence
+                .iter()
+                .any(|row| row.full_name == "fields.RelatedField.label_from_instance")
+        );
+        let constructed = analyze_phase03(
+            &[module(
+                "fields.py",
+                "fields",
+                &format!("{definition}AnotherField(queryset=None)\n"),
+            )],
+            &[],
+        );
+        assert!(
+            constructed
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_constructor"),
+            "{:?}",
+            constructed.issues
+        );
     }
 
     #[test]
