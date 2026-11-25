@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruff_python_ast::{Alias, BoolOp, CmpOp, ElifElseClause, Expr, Mod, Stmt, UnaryOp};
+use ruff_python_ast::{
+    Alias, BoolOp, CmpOp, ElifElseClause, Expr, InterpolatedStringElement, Mod, Stmt, UnaryOp,
+};
 use ruff_python_ast::{
     token::TokenKind,
     visitor::{self, Visitor},
@@ -181,6 +183,7 @@ pub enum ExpressionKind {
         keywords: Vec<(String, Expression)>,
     },
     Text(String),
+    FormattedString(Vec<Expression>),
     Bool(bool),
     None,
     Scalar,
@@ -914,6 +917,18 @@ impl Lowering<'_> {
                 }
             }
             Expr::StringLiteral(node) => ExpressionKind::Text(node.value.to_str().into()),
+            Expr::FString(node) => {
+                let mut expressions = Vec::new();
+                for part in node.value.elements() {
+                    if let InterpolatedStringElement::Interpolation(part) = part {
+                        if !part.conversion.is_none() || part.format_spec.is_some() || part.debug_text.is_some() {
+                            return Err(self.0.unsupported(part, "formatted string has an unbounded conversion or format specification"));
+                        }
+                        expressions.push(lower(&part.expression)?);
+                    }
+                }
+                ExpressionKind::FormattedString(expressions)
+            }
             Expr::BooleanLiteral(node) => ExpressionKind::Bool(node.value),
             Expr::Lambda(node)
                 if lambda_parameter(node).is_some()

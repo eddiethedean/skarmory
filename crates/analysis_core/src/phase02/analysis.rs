@@ -484,6 +484,7 @@ pub(super) fn analyze_with_verification(
         has_hash_hooks: false,
         has_bool_hooks: false,
         has_length_hooks: false,
+        has_format_hooks: false,
         has_iteration_hooks: false,
         iteration_locals: Vec::new(),
         grep_verify: verification.is_some(),
@@ -543,6 +544,7 @@ pub(super) fn analyze_with_verification(
                 "__hash__" => graph.has_hash_hooks = true,
                 "__bool__" => graph.has_bool_hooks = true,
                 "__len__" => graph.has_length_hooks = true,
+                "__format__" | "__str__" | "__repr__" => graph.has_format_hooks = true,
                 "__iter__" | "__next__" | "__getitem__" => graph.has_iteration_hooks = true,
                 _ => {}
             }
@@ -652,6 +654,7 @@ struct Graph<'a> {
     has_hash_hooks: bool,
     has_bool_hooks: bool,
     has_length_hooks: bool,
+    has_format_hooks: bool,
     has_iteration_hooks: bool,
     iteration_locals: Vec<([usize; 2], Value)>,
     grep_verify: bool,
@@ -1566,6 +1569,7 @@ impl<'a> Graph<'a> {
                     | "pydantic_schema_build"
                     | "truth_test"
                     | "length_call"
+                    | "formatting_hook"
             ) || include_verification && edge.kind == "grep_dynamic_call")
                 && let Binding::Definition(_, body) = self.symbols[edge.target].binding
             {
@@ -2881,6 +2885,7 @@ impl<'a> Graph<'a> {
             && matches!(
                 expression.kind,
                 ExpressionKind::Await(_)
+                    | ExpressionKind::FormattedString(_)
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
@@ -2923,6 +2928,7 @@ impl<'a> Graph<'a> {
                 ..
             } => Value::DeferredComprehension,
             ExpressionKind::Comprehension { .. } => Value::ComprehensionResult,
+            ExpressionKind::FormattedString(_) => Value::Scalar,
             ExpressionKind::Name(name) => {
                 let lazy = matches!(evaluation, ValueEvaluation::Lazy { .. });
                 let binding = self.lexical_binding(
@@ -4167,6 +4173,55 @@ impl<'a> Graph<'a> {
             .is_some_and(|owner| !self.is_class(owner))
     }
 
+    fn record_formatting(&mut self, scope: ScopeId, value: Value, at: Location) {
+        if value.is_builtin_scalar() {
+            return;
+        }
+        match value {
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.record_formatting(scope, value, at);
+                }
+                return;
+            }
+            Value::Instance(class) => {
+                // With an empty format specification, object's default
+                // formatter uses str(value), which can fall back to repr.
+                let hook = [("__format__", 2), ("__str__", 1), ("__repr__", 1)]
+                    .into_iter()
+                    .find_map(|(name, arity)| {
+                        self.class_member_at(class, name, 0, Some((scope, at)))
+                            .map(|value| (value, arity))
+                    });
+                match hook {
+                    None => return,
+                    Some((Value::Callable(invocation), arity))
+                        if matches!(self.symbols[invocation.target].binding, Binding::Definition(definition, _)
+                            if definition.simple_positional_parameters && definition.parameters.len() == arity)
+                            && self.invoke_instance_hook(
+                                scope,
+                                class,
+                                Value::Callable(invocation),
+                                "formatting_hook",
+                                at,
+                            ) =>
+                    {
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            _ if !self.has_format_hooks => return,
+            _ => {}
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_formatting",
+            "formatted string dispatch is outside the bounded model",
+        );
+    }
+
     fn namespace_is_nonempty(&self, owner: ScopeId, first: [usize; 2]) -> bool {
         let at = Location {
             line: first[0],
@@ -5082,6 +5137,23 @@ impl<'a> Graph<'a> {
             | ExpressionKind::Operands(values) => {
                 for item in values {
                     self.walk(scope, item, before);
+                }
+            }
+            ExpressionKind::FormattedString(values) => {
+                for value in values {
+                    self.walk(scope, value, before);
+                    if self.phase03 {
+                        let formatted = self.identity(scope, value, before, 0);
+                        self.record_formatting(scope, formatted, value.at);
+                    }
+                }
+                if !self.phase03 {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unsupported_construct",
+                        "formatted strings are outside this compatibility profile",
+                    );
                 }
             }
             ExpressionKind::Comprehension {
@@ -8772,6 +8844,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
+            | ExpressionKind::FormattedString(values)
             | ExpressionKind::Boolean { values, .. }
             | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),

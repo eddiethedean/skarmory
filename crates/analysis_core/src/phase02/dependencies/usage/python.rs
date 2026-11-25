@@ -382,6 +382,7 @@ impl<'a> Python<'a> {
             }
             Expr::Sequence(values)
             | Expr::Dictionary(values)
+            | Expr::FormattedString(values)
             | Expr::Boolean { values, .. }
             | Expr::Addition(values)
             | Expr::Operands(values) => {

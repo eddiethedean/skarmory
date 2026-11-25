@@ -89,9 +89,9 @@ fn pydantic_computed_fields_follow_dump_and_property_access() {
         root.join("models.py"),
         concat!(
             "from pydantic import BaseModel, computed_field\n",
-            "class Dumped(BaseModel):\n",
+            "class Dumped(BaseModel):\n    prefix: str\n",
             "    @computed_field\n    @property\n",
-            "    def name(self) -> str: return dump_name()\n",
+            "    def name(self) -> str: return f'{self.prefix} {dump_name()}'\n",
             "class Accessed(BaseModel):\n",
             "    @computed_field\n    def name(self) -> str: return accessed_name()\n",
             "class Constructed(BaseModel):\n",
@@ -100,7 +100,7 @@ fn pydantic_computed_fields_follow_dump_and_property_access() {
             "def dump_name(): return 'dumped'\n",
             "def accessed_name(): return 'accessed'\n",
             "def dormant_name(): return 'dormant'\n",
-            "Dumped().model_dump()\n",
+            "Dumped(prefix='model').model_dump()\n",
             "Accessed().name\n",
             "Constructed()\n",
         ),
@@ -119,6 +119,49 @@ fn pydantic_computed_fields_follow_dump_and_property_access() {
     for dormant in ["models.Constructed.name", "models.dormant_name"] {
         assert!(unused.contains(&dormant), "{dormant}: {report}");
     }
+}
+
+#[test]
+fn formatted_string_retains_known_special_methods_and_reports_unresolved_dispatch() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("formatting.py");
+    let source = concat!(
+        "class Formatter:\n",
+        "    def __format__(self, spec): return render()\n",
+        "def render(): return 'value'\n",
+        "def dormant(): return 'dormant'\n",
+        "def never_called(): return f'{dormant()}'\n",
+        "print(f'{Formatter()} formatted')\n",
+    );
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["formatting.dormant", "formatting.never_called"],
+        "{report}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        path,
+        format!("{source}from config import opaque\nprint(f'{{opaque}}')\n"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_formatting"),
+        "{incomplete}"
+    );
 }
 
 #[test]
