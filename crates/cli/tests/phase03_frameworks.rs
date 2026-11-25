@@ -21,6 +21,16 @@ fn scan_with_exit(
     cache: Option<&Path>,
     code: i32,
 ) -> Value {
+    scan_with_excludes(project, settings, cache, &[], code)
+}
+
+fn scan_with_excludes(
+    project: &Path,
+    settings: Option<&str>,
+    cache: Option<&Path>,
+    excludes: &[&str],
+    code: i32,
+) -> Value {
     fs::write(project.join(".skylos.toml"), "root = true\n").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
     command.env_remove("DJANGO_SETTINGS_MODULE");
@@ -35,6 +45,7 @@ fn scan_with_exit(
     let output = command
         .current_dir(project)
         .env_remove("SKYLOS_CONFIG_FILE")
+        .args(excludes.iter().flat_map(|pattern| ["--exclude", *pattern]))
         .args([
             "--profile",
             "skylos-0.3",
@@ -4027,8 +4038,14 @@ fn fastapi_shadows_an_unavailable_submodule_in_a_closed_regular_package() {
         }
     }
 
-    for artifact in ["routes.cpython-311.so", "__init__.abi3.so", "routes.pyc"] {
-        let native_candidate = root.join("backend/app").join(artifact);
+    for artifact in [
+        "backend/app/routes.cpython-311.so",
+        "backend/app/__init__.abi3.so",
+        "backend/__init__.abi3.so",
+        "backend/app/routes.pyc",
+        "backend/app/routes.pyw",
+    ] {
+        let native_candidate = root.join(artifact);
         fs::write(&native_candidate, "").unwrap();
         let unavailable = scan_with_exit(root, None, Some(cache.path()), 2);
         assert!(
@@ -4039,6 +4056,32 @@ fn fastapi_shadows_an_unavailable_submodule_in_a_closed_regular_package() {
                 .any(|issue| issue["kind"] == "unresolved_import")
         );
         fs::remove_file(native_candidate).unwrap();
+    }
+
+    for hidden in [
+        "backend/__init__.py",
+        "backend/app/routes.py",
+        "backend/fastapi.py",
+        "fastapi.py",
+    ] {
+        let source = root.join(hidden);
+        fs::write(&source, "").unwrap();
+        let unavailable = scan_with_excludes(root, None, Some(cache.path()), &[hidden], 2);
+        assert!(
+            unavailable["selected_paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|path| path != hidden)
+        );
+        assert!(
+            unavailable["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_import")
+        );
+        fs::remove_file(source).unwrap();
     }
 
     let consumer = root.join("consumer.py");

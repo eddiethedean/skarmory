@@ -667,27 +667,46 @@ impl Project {
         self.directories.keys()
     }
 
-    pub(super) fn direct_submodule_absent(&self, initializer: &str, module: &str) -> bool {
+    pub(super) fn direct_submodule_absent(
+        &self,
+        initializer: &str,
+        module: &str,
+        provider: &str,
+    ) -> bool {
         let Some(package) = Path::new(initializer).parent() else {
             return false;
         };
-        self.directories
-            .get(&self.base.join(package))
-            .is_some_and(|entries| {
+        let Some(service) = package.parent() else {
+            return false;
+        };
+        // Selection can hide a package initializer or a local framework shim
+        // without changing Python's import path. Use the verified directory
+        // snapshot to close both the constructor prefix and the attempted import.
+        let has_no_import = |directory: &Path, names: &[&str]| {
+            self.directories.get(directory).is_some_and(|entries| {
                 !entries.iter().any(|(name, kind)| {
-                    // Retain uncertainty for an excluded source, namespace
-                    // directory, extension module, or sourceless bytecode.
-                    name.to_str().is_none_or(|name| {
-                        let candidate = match kind {
-                            SeenEntry::Directory | SeenEntry::LinkedDirectory => name,
-                            _ => name.split('.').next().unwrap_or(name),
-                        };
-                        candidate.eq_ignore_ascii_case(module)
-                            || *kind == SeenEntry::OpaquePythonModule
-                                && candidate.eq_ignore_ascii_case("__init__")
-                    })
+                    names
+                        .iter()
+                        .any(|module| entry_may_supply_module(name, *kind, module))
                 })
             })
+        };
+        has_no_import(&self.base, &[provider])
+            && self
+                .search
+                .iter()
+                .all(|root| has_no_import(root, &[provider]))
+            && has_no_import(&self.base.join(service), &["__init__", provider])
+            && self
+                .directories
+                .get(&self.base.join(package))
+                .is_some_and(|entries| {
+                    !entries.iter().any(|(name, kind)| {
+                        entry_may_supply_module(name, *kind, module)
+                            || *kind == SeenEntry::OpaquePythonModule
+                                && entry_may_supply_module(name, *kind, "__init__")
+                    })
+                })
     }
 
     pub(super) fn base(&self) -> &Path {
@@ -772,6 +791,16 @@ pub(super) fn is_javascript_context(name: &OsStr) -> bool {
     })
 }
 
+fn entry_may_supply_module(name: &OsStr, kind: SeenEntry, module: &str) -> bool {
+    name.to_str().is_none_or(|name| {
+        let candidate = match kind {
+            SeenEntry::Directory | SeenEntry::LinkedDirectory => name,
+            _ => name.split('.').next().unwrap_or(name),
+        };
+        candidate.eq_ignore_ascii_case(module)
+    })
+}
+
 /// Record entries that can affect source selection or module resolution.
 fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<SeenEntry> {
     let name = path.file_name()?;
@@ -804,7 +833,7 @@ fn opaque_python_module(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
         .is_some_and(|suffix| {
-            ["pyc", "so", "pyd"]
+            ["pyc", "pyw", "so", "pyd"]
                 .iter()
                 .any(|known| suffix.eq_ignore_ascii_case(known))
         })

@@ -143,7 +143,7 @@ impl<'a> Graph<'a> {
                 )
             })
             || self.discovery.is_none_or(|project| {
-                !project.direct_submodule_absent(&self.files[package].path, child)
+                !project.direct_submodule_absent(&self.files[package].path, child, "fastapi")
             })
         {
             return false;
