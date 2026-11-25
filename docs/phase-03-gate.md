@@ -4,8 +4,8 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 946 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 742 have port mappings. The reported release
+inventory assigns 988 cases to Phase 0.3 and defers six to later language
+milestones. Of the required cases, 786 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -71,6 +71,13 @@ pytest runs select `skylos-0.3` and disable upstream expected-failure markers.
 
 The SDK shard runs the original framework corpus scorer against the selected
 fixtures and records each original assertion, fixture hash, and outcome.
+The framework audit now includes the FastAPI dependency-parameter tests and
+all 40 nested-project route variants. The direct `PythonImportRoots.aliases`
+test in the nested-project file also needs a resolution-layer review.
+Outstanding collections include Django URL callbacks and view providers,
+authentication backends, named settings, Python template liveness, model and
+form hooks, and FastAPI import-scope evidence. Review their assertions and
+backend requirements before concluding the framework inventory.
 The separate Django converter probes for Skylos's private parser and index
 hooks are implementation tests. Their exact call-count checks are outside
 the native report assertions.
