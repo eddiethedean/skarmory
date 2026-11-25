@@ -24,7 +24,8 @@ impl Graph<'_> {
             || self.terminal_flask_factory_initializer(scope, statement)
             || self.terminal_flask_global_initializer(scope, statement)
             || self.phase03
-                && (self.terminal_missing_django_reloader(scope, statement)
+                && (self.terminal_shadowed_framework_package(scope, statement)
+                    || self.terminal_missing_django_reloader(scope, statement)
                     || self.terminal_django_auth_initializer(scope, statement)
                     || self.terminal_django_backend_replacement(scope, statement)
                     || self.terminal_django_runpython(scope, statement)
@@ -82,6 +83,56 @@ impl Graph<'_> {
             }
             _ => false,
         }
+    }
+
+    fn terminal_shadowed_framework_package(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Import(import) = &statement.kind else {
+            return false;
+        };
+        let (package, child) = match (
+            import.level,
+            import.module.as_str(),
+            import.member.as_deref(),
+        ) {
+            (0, "django.db", Some("migrations")) => ("django", "db"),
+            (0, "celery", Some("Celery")) => ("celery", "Celery"),
+            _ => return false,
+        };
+        let is_literal = |row: &Statement| {
+            matches!(
+                row.kind,
+                StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                })
+            )
+        };
+        if !self.scopes[scope]
+            .body
+            .iter()
+            .find(|row| !is_literal(row))
+            .is_some_and(|first| std::ptr::eq(first, statement))
+            || self.nested_packages.resolve(scope, package) != package
+        {
+            return false;
+        }
+        let Some(&provider) = self.modules.get(package) else {
+            return false;
+        };
+        if !self.files[provider].is_package
+            || !self.scopes[provider].body.iter().all(is_literal)
+            || self.discovery.is_none_or(|project| {
+                !project.root_package_submodule_absent(&self.files[provider].path, child)
+            })
+        {
+            return false;
+        }
+        self.scopes[scope].imports.push(provider);
+        true
     }
 
     fn terminal_missing_django_reloader(&mut self, scope: ScopeId, statement: &Statement) -> bool {

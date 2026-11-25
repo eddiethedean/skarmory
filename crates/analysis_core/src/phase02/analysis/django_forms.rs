@@ -10,6 +10,16 @@ pub(super) enum Field {
     Model { editable: bool },
 }
 
+pub(super) fn is_relationship_field_class(provider: &str) -> bool {
+    matches!(
+        provider,
+        "django.forms.ModelChoiceField"
+            | "django.forms.ModelMultipleChoiceField"
+            | "django.forms.models.ModelChoiceField"
+            | "django.forms.models.ModelMultipleChoiceField"
+    )
+}
+
 pub(super) fn provider_field_role(provider: &str) -> Option<FrameworkClassRole> {
     if provider
         .strip_prefix("django.forms.fields.")

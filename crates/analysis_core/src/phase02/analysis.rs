@@ -3022,7 +3022,10 @@ impl<'a> Graph<'a> {
                     }
                 }
                 Value::Provider(base)
-                    if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
+                    if name == "__init_subclass__"
+                        && (builtin_noop_subclass_hook(&base)
+                            || self.phase03
+                                && django_forms::is_relationship_field_class(&base)) =>
                 {
                     None
                 }
@@ -3159,6 +3162,7 @@ impl<'a> Graph<'a> {
                     || self.phase03
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
+                            || django_forms::is_relationship_field_class(&name)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -9957,6 +9961,7 @@ struct Reachability {
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
     fastapi_limited: bool,
+    fastapi_router_graph_limited: bool,
     evidence: BTreeSet<(SymbolId, &'static str, &'static str)>,
 }
 
@@ -14279,6 +14284,37 @@ WorkManager()\nWorkSet()\n",
                     .any(|entry| entry.kind == "django_command")
             );
         }
+    }
+
+    #[test]
+    fn phase03_django_relationship_field_declaration_does_not_render_choices() {
+        let definition = "from django import forms\n\
+class RelatedField(forms.ModelChoiceField):\n    def label_from_instance(self, obj): return str(obj)\n\
+class AnotherField(RelatedField): pass\n";
+        let declaration = analyze_phase03(&[module("fields.py", "fields", definition)], &[]);
+        assert!(declaration.issues.is_empty(), "{:?}", declaration.issues);
+        assert!(
+            !declaration
+                .evidence
+                .iter()
+                .any(|row| row.full_name == "fields.RelatedField.label_from_instance")
+        );
+        let constructed = analyze_phase03(
+            &[module(
+                "fields.py",
+                "fields",
+                &format!("{definition}AnotherField(queryset=None)\n"),
+            )],
+            &[],
+        );
+        assert!(
+            constructed
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_constructor"),
+            "{:?}",
+            constructed.issues
+        );
     }
 
     #[test]

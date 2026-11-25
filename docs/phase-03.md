@@ -278,6 +278,10 @@ callbacks still come from the lifecycle list captured at inclusion. It retains c
 leading wildcard imports from the supported FastAPI and typing export tables.
 Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
 incomplete.
+Router discovery bounds work across the reachable graph and visits shared
+routers once before evaluating inclusion order. Unexecuted owners contribute
+no inclusions. A cycle in live snapshot evaluation or exhaustion of a graph
+budget leaves coverage incomplete.
 When a nested regular package shadows a root package, the preview can prove
 that a specific missing submodule stops a FastAPI initializer. This requires
 an inert package initializer, a closed import prefix and a verified package
@@ -286,6 +290,16 @@ initializer preserve incomplete coverage. The optional
 `analysis_summary.fastapi_route_declarations` field records identified route
 declaration locations separately from activation evidence.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
+
+A source-owned, inert root Django or Celery package can prove that the
+initializer stops at a missing provider. This requires a checked package
+directory and an import before any executable initializer work. Consumers of
+the failed module retain incomplete coverage.
+
+Django model relationship field subclasses have no class-creation callback
+for rendering choices. The preview recognizes these declarations and keeps
+constructor or rendering effects outside this declaration proof.
+[Django relationship fields](https://docs.djangoproject.com/en/5.2/ref/forms/fields/#fields-which-handle-relationships)
 
 FastMCP records possible-use evidence for tool decorators applied through a
 resolved server and a bounded project wrapper. Plain identity, caching and
