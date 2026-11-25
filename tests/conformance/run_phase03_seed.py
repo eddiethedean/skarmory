@@ -11,6 +11,7 @@ import sys
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from phase03_cli import CASE as CLI_CASE
 from phase03_cli import CLEANUP_CASES, WORKFLOW_SOURCES, CleanupCaseCli, RecursiveCaseCli, WorkflowCaseCli
@@ -22,7 +23,16 @@ from phase03_dependencies import (
 )
 from phase03_engine import ENGINE_CASES, engine_case
 from phase03_framework import framework_report, patch_framework_analysis
-from phase03_fastapi import CASES as FASTAPI_CASES, LIVE_ROUTER, prove_live_router, verify_wheels
+from phase03_fastapi import CASES as FASTAPI_CASES
+from phase03_fastapi import (
+    IMPORT_SCOPE_CASE,
+    IMPORT_SCOPE_PREREQUISITES,
+    LIVE_ROUTER,
+    import_scope_prerequisites,
+    import_scope_report,
+    prove_live_router,
+    verify_wheels,
+)
 from phase03_framework_corpus import MANIFEST as CORPUS_SOURCE
 from phase03_framework_corpus import corpus_assertions, framework_cases, score_corpus
 
@@ -146,6 +156,12 @@ def port_cases(args):
         raise ValueError("missing native SDK adapter for a mapped dependency case")
     if layer != "sdk" and any(case["source"] == CORPUS_SOURCE for case in cases.values()):
         raise ValueError("the framework corpus requires a native SDK variant")
+    if any(
+        IMPORT_SCOPE_PREREQUISITES & set(case["prerequisites"])
+        and (layer != "sdk" or not key.startswith(IMPORT_SCOPE_CASE))
+        for key, case in cases.items()
+    ):
+        raise ValueError("missing native SDK adapter for a mapped FastAPI import case")
     live_router_cases = {
         key for key, case in cases.items() if LIVE_ROUTER in case["prerequisites"]
     }
@@ -396,6 +412,7 @@ def pytest_worker(args):
             self.framework_evidence = set()
             self.live_router_receipts = set()
             self.source_edit_cache = set()
+            self.import_scope_prerequisites = {}
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
@@ -504,6 +521,22 @@ def pytest_worker(args):
                         else:
                             cli = WorkflowCaseCli(args.artifact, item.funcargs["tmp_path"], key)
                             patch.setattr(item.module.cli, "main", cli.run)
+                    elif key.startswith(IMPORT_SCOPE_CASE):
+                        def fastapi_project(_definitions, _parsed, path):
+                            def collect():
+                                report = json.loads(analyze(path, conf=0, grep_verify=False))
+                                self.import_scope_prerequisites[key] = import_scope_prerequisites(
+                                    report, path,
+                                )
+                                return import_scope_report(report, path)
+
+                            return SimpleNamespace(collect=collect)
+
+                        def analyze_instance(_instance, path, thr=60, **options):
+                            return analyze(path, conf=thr, **options)
+
+                        patch.setattr(item.module, "FastAPIProject", fastapi_project)
+                        patch.setattr(item.module.Skylos, "analyze", analyze_instance)
                     elif "native-framework-evidence" in case["prerequisites"]:
                         patch_framework_analysis(patch, item.module, analyze)
                     elif "shared-framework-fixture" in case["prerequisites"]:
@@ -588,6 +621,8 @@ def pytest_worker(args):
                 proven = key in capture.scans
             elif required == "native-framework-evidence":
                 proven = key in capture.framework_evidence
+            elif required in IMPORT_SCOPE_PREREQUISITES:
+                proven = required in capture.import_scope_prerequisites.get(key, ())
             elif required == LIVE_ROUTER:
                 proven = key in capture.live_router_receipts
             elif required == "native-unittest-evidence":

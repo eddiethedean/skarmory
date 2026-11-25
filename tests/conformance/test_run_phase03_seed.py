@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from phase03_fastapi import verify_wheels
+from phase03_fastapi import import_scope_report, verify_wheels
 from run_phase03_seed import (
     CORPUS_SOURCE,
     ROOT,
@@ -20,6 +20,33 @@ from run_phase03_seed import (
     scan_candidate,
     write_receipt,
 )
+
+
+class FastapiImportScopeTests(unittest.TestCase):
+    def test_projects_declarations_separately_from_registration_evidence(self):
+        project = Path("/example").resolve()
+        dormant = {"file": "app/routes.py", "line": 4}
+        active = {"file": "backend/app/routes.py", "line": 6}
+        possible = {"file": "backend/app/routes.py", "line": 8}
+        native = {
+            "analysis_summary": {"fastapi_route_declarations": [dormant, active, possible]},
+            "coverage": {"status": "complete"},
+            "dead_code_evidence": {"symbols": [
+                {**dormant, "evidence": [{"kind": "grep_rescue", "certainty": "possible"}]},
+                {**active, "evidence": [{"kind": "fastapi_registration", "certainty": "certain"}]},
+                {**possible, "evidence": [{"kind": "fastapi_registration", "certainty": "possible"}]},
+            ]},
+        }
+        report = import_scope_report(native, project)
+        dormant_at = (str(project / dormant["file"]), dormant["line"])
+        active_at = (str(project / active["file"]), active["line"])
+        possible_at = (str(project / possible["file"]), possible["line"])
+        self.assertTrue(report.complete)
+        self.assertEqual(report.candidates, {dormant_at, active_at, possible_at})
+        self.assertEqual(report.roots, {active_at})
+        self.assertEqual(report.uncertain, {possible_at})
+        native["coverage"]["status"] = "incomplete"
+        self.assertFalse(import_scope_report(native, project).complete)
 
 
 def original_assertions(stop, value):
