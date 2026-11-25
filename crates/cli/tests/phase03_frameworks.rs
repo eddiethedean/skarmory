@@ -2963,6 +2963,45 @@ def endpoint(): return 1
 }
 
 #[test]
+fn fastapi_subclass_inheritance_abstains_after_a_base_class_method_write() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import FastAPI
+from fastapi.applications import FastAPI as Provider
+
+class Application(FastAPI): pass
+app = Application()
+
+@app.get('/live')
+def registered(): return 1
+
+def no_registration(self, path):
+    return lambda callback: callback
+
+Provider.get = no_registration
+
+@app.get('/phantom')
+def phantom(): return 1
+"#,
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, live) in [("web.registered", true), ("web.phantom", false)] {
+        assert_eq!(
+            symbols.iter().any(|row| row["qualified_name"] == name
+                && row["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "fastapi_registration")),
+            live
+        );
+    }
+}
+
+#[test]
 fn fastapi_uses_registration_time_for_postponed_but_not_eager_annotations() {
     for (postponed, nested, app_default) in [
         (false, false, false),

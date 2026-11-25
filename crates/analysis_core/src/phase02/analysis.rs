@@ -2572,6 +2572,12 @@ impl<'a> Graph<'a> {
                 | ObjectKind::AiohttpRouteTable),
             ) if self.phase03 => match self.fastapi_member_write(site, name, access) {
                 Some(mutations::MemberWriteValue::Replacement(value)) => value,
+                Some(mutations::MemberWriteValue::Deleted) | None
+                    if matches!(kind, ObjectKind::App)
+                        && self.fastapi_base_member_changed(name, access) =>
+                {
+                    Value::Unknown
+                }
                 Some(mutations::MemberWriteValue::Deleted) | None => {
                     Value::Method(site, kind, name.into())
                 }
@@ -2770,6 +2776,9 @@ impl<'a> Graph<'a> {
                 Value::Provider(provider)
                     if self.phase03 && fastapi::is_app_constructor(&provider) =>
                 {
+                    if access.is_some_and(|site| self.fastapi_base_member_changed(name, site)) {
+                        return Some(Value::Unknown);
+                    }
                     match name {
                         "__init__" | "__new__" | "__init_subclass__" => None,
                         _ if fastapi::is_supported_app_method(name) => {

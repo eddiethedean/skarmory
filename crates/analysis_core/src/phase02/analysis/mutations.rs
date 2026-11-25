@@ -11,6 +11,7 @@ enum ReceiverKey {
     TyperApp(Object),
     FlaskApplication(Object),
     Fastapi(Object),
+    FastapiBase,
 }
 
 #[derive(Clone)]
@@ -154,7 +155,10 @@ impl Graph<'_> {
                 self.member_write(&receiver, member, (file, at)),
                 Some(MemberWriteValue::Replacement(_))
             );
-        let value = if conditional || deletes_inherited_method {
+        let value = if conditional
+            || deletes_inherited_method
+            || matches!(receiver, ReceiverKey::FastapiBase)
+        {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
             let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
@@ -280,6 +284,13 @@ impl Graph<'_> {
                         "include_router" | "mount" | "middleware" | "add_middleware"
                     )
             }
+            ReceiverKey::FastapiBase => {
+                fastapi::is_supported_app_method(member)
+                    || matches!(
+                        member,
+                        "__new__" | "__init__" | "__getattr__" | "__getattribute__"
+                    )
+            }
         }
     }
 
@@ -289,6 +300,9 @@ impl Graph<'_> {
                 Some(ReceiverKey::Class(invocation.target))
             }
             Value::Module(file) => Some(ReceiverKey::Module(self.files[*file].module.clone())),
+            Value::Provider(provider) if fastapi::is_app_constructor(provider) => {
+                Some(ReceiverKey::FastapiBase)
+            }
             Value::Provider(module) if provider_module(module) || is_django_signal(module) => {
                 Some(ReceiverKey::Module(module.clone()))
             }
@@ -415,6 +429,15 @@ impl Graph<'_> {
         self.member_write(&ReceiverKey::Fastapi(site), name, access)
     }
 
+    pub(super) fn fastapi_base_member_changed(
+        &self,
+        name: &str,
+        access: (ScopeId, Location),
+    ) -> bool {
+        self.member_write(&ReceiverKey::FastapiBase, name, access)
+            .is_some()
+    }
+
     pub(super) fn imported_module_write(
         &self,
         module: &str,
@@ -436,6 +459,7 @@ impl Graph<'_> {
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
+            ReceiverKey::FastapiBase => None,
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
             | ReceiverKey::FlaskApplication(site)

@@ -243,6 +243,7 @@ impl<'a> Graph<'a> {
         .any(|name| {
             self.local(class_scope, name, END).is_some()
                 || self.class_member_write(class, name, access).is_some()
+                || self.fastapi_base_member_changed(name, access)
         }) {
             return None;
         }
@@ -259,7 +260,10 @@ impl<'a> Graph<'a> {
     ) -> Value {
         if ["__getattr__", "__getattribute__"]
             .into_iter()
-            .any(|attribute| self.class_member_write(class, attribute, access).is_some())
+            .any(|attribute| {
+                self.class_member_write(class, attribute, access).is_some()
+                    || self.fastapi_base_member_changed(attribute, access)
+            })
         {
             self.scope_issue(
                 access.0,
