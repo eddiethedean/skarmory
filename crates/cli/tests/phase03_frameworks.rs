@@ -9004,6 +9004,26 @@ fn django_url_import_stops_at_a_proven_unbound_view_initializer() {
             .any(|row| row["kind"] == "unresolved_decorator"),
         "{report}"
     );
+
+    fs::write(
+        root.join("settings.py"),
+        "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\nimport builtins\ndef identity(view): return view\nbuiltins.install = identity\n",
+    )
+    .unwrap();
+    fs::write(
+        &views,
+        format!("from helpers import render\n@install\n{body}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["file"] == "views.py" && row["kind"] == "unresolved_decorator"),
+        "{report}"
+    );
 }
 
 #[test]
