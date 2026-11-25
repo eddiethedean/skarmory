@@ -1602,6 +1602,144 @@ fn flask_failed_provider_import_cannot_supply_a_callback() {
 }
 
 #[test]
+fn flask_failed_provider_imports_stop_an_ordered_chain_of_reexports() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let provider = root.join("provider.py");
+    let wrapper = root.join("wrapper.py");
+    let bridge = root.join("bridge.py");
+    let app = root.join("app.py");
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    fs::write(
+        &provider,
+        format!("{setup}login.__dict__['user_loader'] = replacement\n"),
+    )
+    .unwrap();
+    fs::write(&wrapper, "from provider import login\n").unwrap();
+    fs::write(&bridge, "from wrapper import login\n").unwrap();
+    let callback = "@bridge.login.user_loader\ndef callback(user_id): return user_id\n";
+    fs::write(&app, format!("import bridge\n{callback}")).unwrap();
+
+    let report = scan_with_exit(root, None, None, 2);
+    let imports: Vec<_> = report["analysis_errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|error| error["kind"] == "unresolved_import")
+        .map(|error| error["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(imports, ["app.py", "bridge.py", "wrapper.py"], "{report}");
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| { symbol["qualified_name"] == "app.callback" }),
+        "{report}"
+    );
+    let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(
+        &wrapper,
+        "from extension import prepare_imports\nprepare_imports()\nfrom provider import login\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert!(
+        errors
+            .iter()
+            .any(|error| { error["file"] == "wrapper.py" && error["kind"] == "unresolved_call" }),
+        "{report}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error["kind"] == "unresolved_import"),
+        "{report}"
+    );
+
+    fs::write(&wrapper, "from provider import login\n").unwrap();
+    fs::write(&provider, setup).unwrap();
+    let report = scan(root);
+    assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.callback"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "flask_login_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn flask_circular_named_exports_report_failed_imports_without_resolving_final_bindings() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("providers.py"), "from other import login\n").unwrap();
+    let other = root.join("other.py");
+    fs::write(&other, "from providers import login\n").unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef callback(user_id): return user_id\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert!(
+        errors
+            .iter()
+            .all(|error| error["kind"] == "unresolved_import"),
+        "{report}"
+    );
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error["file"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["app.py", "other.py", "providers.py"],
+        "{report}"
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| { symbol["qualified_name"] == "app.callback" }),
+        "{report}"
+    );
+
+    fs::write(
+        &other,
+        "from flask_login import LoginManager\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.callback"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "flask_login_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn flask_factory_stops_at_the_failed_blueprint_export() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1643,6 +1781,40 @@ fn flask_factory_stops_at_the_failed_blueprint_export() {
             .unwrap()
             .iter()
             .any(|symbol| { symbol["qualified_name"] == "app.views.routes.prepare" }),
+        "{report}"
+    );
+
+    fs::write(root.join("lookalike.py"), "class Blueprint: pass\n").unwrap();
+    fs::write(
+        &views,
+        "from lookalike import Blueprint\nblueprint = Blueprint('main', __name__)\nfrom app.views import routes\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert!(
+        errors.iter().any(|error| {
+            error["file"] == "app/views/routes.py" && error["kind"] == "unresolved_import"
+        }),
+        "{report}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|error| error["kind"] == "unresolved_import"),
+        "{report}"
+    );
+
+    fs::write(
+        root.join("lookalike.py"),
+        "class Blueprint:\n    def __init__(self, name, import_name): pass\n    def before_app_request(self, callback): return callback\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        !report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_import" }),
         "{report}"
     );
 

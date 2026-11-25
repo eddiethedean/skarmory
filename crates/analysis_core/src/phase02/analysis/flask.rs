@@ -7,6 +7,8 @@ enum FailedProvider<'a> {
     GlobalWrite(&'a Expression, SymbolId),
 }
 
+type FlaskImporters = BTreeMap<ScopeId, BTreeMap<ScopeId, usize>>;
+
 pub(super) fn provider_kind(name: &str) -> Option<ObjectKind> {
     match name {
         "flask.Flask" | "flask.app.Flask" => Some(ObjectKind::FlaskApp),
@@ -460,13 +462,20 @@ impl Graph<'_> {
         if !self.terminal_proofs {
             return;
         }
-        let mut imports = BTreeMap::<ScopeId, BTreeMap<ScopeId, usize>>::new();
+        let has_flask_provider = (0..self.files.len()).any(|file| {
+            self.scopes[file]
+                .body
+                .iter()
+                .any(|item| self.flask_constructor_import(file, item))
+        });
+        let mut imports = FlaskImporters::new();
         for file in 0..self.files.len() {
             for (index, statement) in self.scopes[file].body.iter().enumerate() {
                 if let StatementKind::Import(import) = &statement.kind
                     && let Some(module) = self.import_module(file, import)
                     && let Some(&provider) = self.modules.get(module.as_str())
                     && provider != file
+                    && self.import_member_position(file, &module, import).is_none()
                 {
                     imports
                         .entry(provider)
@@ -477,59 +486,337 @@ impl Graph<'_> {
             }
         }
         let read = std::mem::take(&mut self.read);
-        for (provider, importers) in imports {
+        for (&provider, direct_importers) in &imports {
             if self.is_pytest_file(provider)
                 || self.files[provider].path.rsplit('/').next() == Some("conftest.py")
             {
                 continue;
             }
-            let body = self.scopes[provider].body;
-            let Some(start) = body
-                .iter()
-                .position(|stmt| self.flask_constructor_import(provider, stmt))
-            else {
-                continue;
-            };
-            // A selected source import in the provider's prefix could
-            // re-enter the provider and observe a partial module namespace.
-            if !self.closed_flask_decorator_prefix(provider, &body[..=start])
-                || body[..start]
-                    .iter()
-                    .any(|statement| self.flask_local_import(provider, statement))
+            if has_flask_provider
+                && let Some(failure) =
+                    self.closed_flask_provider_failure(provider, direct_importers)
             {
-                continue;
-            }
-            for statement in &body[start + 1..] {
-                if self.flask_provider_failure(provider, statement).is_some()
-                    && (0..self.files.len())
-                        .filter(|&file| file != provider)
-                        .all(|file| {
-                            let body = self.scopes[file].body;
-                            // Code after the failed import cannot execute or supply
-                            // a missing binding on the importer's path.
-                            let prefix = importers.get(&file).map_or(body, |&index| &body[..index]);
-                            self.closed_flask_decorator_prefix(file, prefix)
-                        })
-                {
+                let stopped = self.closed_flask_importer_prefixes(provider, &imports);
+                if self.closed_flask_project_prefixes(&stopped, Some(provider)) {
                     self.failed_flask_provider_initializers
-                        .insert(provider, statement.at);
-                    break;
+                        .insert(provider, failure);
+                    self.record_failed_flask_imports(stopped);
                 }
-                if self.flask_local_import(provider, statement)
-                    || !self
-                        .closed_flask_decorator_prefix(provider, std::slice::from_ref(statement))
-                {
-                    break;
+            }
+            if let Some(failure) = self.flask_reexport_cycle(provider, direct_importers) {
+                let mut stopped = self.closed_flask_importer_prefixes(provider, &imports);
+                stopped.insert(provider, failure);
+                if self.closed_flask_project_prefixes(&stopped, None) {
+                    self.record_failed_flask_imports(stopped);
                 }
             }
         }
         self.read = read;
     }
 
+    fn closed_flask_project_prefixes(
+        &mut self,
+        stopped: &BTreeMap<ScopeId, usize>,
+        checked_provider: Option<ScopeId>,
+    ) -> bool {
+        (0..self.files.len())
+            .filter(|&file| Some(file) != checked_provider)
+            .all(|file| {
+                let body = self.scopes[file].body;
+                let prefix = stopped.get(&file).map_or(body, |&index| &body[..index]);
+                self.closed_flask_decorator_prefix(file, prefix)
+            })
+    }
+
+    fn record_failed_flask_imports(&mut self, stopped: BTreeMap<ScopeId, usize>) {
+        for (file, index) in stopped {
+            let at = self.scopes[file].body[index].at;
+            self.failed_flask_import_initializers
+                .entry(file)
+                .and_modify(|earlier| {
+                    if position(at) < position(*earlier) {
+                        *earlier = at;
+                    }
+                })
+                .or_insert(at);
+        }
+    }
+
+    fn flask_reexport_cycle(
+        &self,
+        provider: ScopeId,
+        importers: &BTreeMap<ScopeId, usize>,
+    ) -> Option<usize> {
+        let (initial, import) = self.initial_flask_reexport(provider)?;
+        let name = import.local.text.as_str();
+        if !importers.iter().any(|(&file, &index)| {
+            self.reads_flask_receiver_decorator(file, index, name, ObjectKind::FlaskLoginManager)
+        }) {
+            return None;
+        }
+        let mut visited = BTreeSet::new();
+        let mut file = provider;
+        let mut expected = name;
+        for _ in 0..MAX_BINDING_CHAIN {
+            if !visited.insert((file, expected)) {
+                // The named import must finish before any participant binds
+                // the requested export, whichever member Python enters first.
+                return Some(initial);
+            }
+            let (_, import) = self.initial_flask_reexport(file)?;
+            if import.local.text != expected {
+                return None;
+            }
+            expected = import.member.as_deref()?;
+            let module = self.import_module(file, import)?;
+            file = *self.modules.get(module.as_str())?;
+        }
+        None
+    }
+
+    fn initial_flask_reexport(&self, file: ScopeId) -> Option<(usize, &Import)> {
+        let row = &self.files[file];
+        if row.is_package
+            || row.module.contains('.')
+            || self.is_pytest_file(file)
+            || row.path.rsplit('/').next() == Some("conftest.py")
+        {
+            return None;
+        }
+        let (index, statement) =
+            self.scopes[file]
+                .body
+                .iter()
+                .enumerate()
+                .find(|(_, statement)| {
+                    !matches!(
+                        statement.kind,
+                        StatementKind::Evaluate(Expression {
+                            kind: ExpressionKind::Text(_),
+                            ..
+                        })
+                    )
+                })?;
+        let StatementKind::Import(import) = &statement.kind else {
+            return None;
+        };
+        (import.level == 0
+            && import
+                .member
+                .as_deref()
+                .is_some_and(|member| !member.starts_with('_')))
+        .then_some((index, import))
+    }
+
+    fn closed_flask_importer_prefixes(
+        &self,
+        provider: ScopeId,
+        imports: &FlaskImporters,
+    ) -> BTreeMap<ScopeId, usize> {
+        let mut stopped = BTreeMap::new();
+        let mut pending = vec![provider];
+        while let Some(target) = pending.pop() {
+            let Some(importers) = imports.get(&target) else {
+                continue;
+            };
+            for (&file, &index) in importers {
+                // Without an earlier selected import, this initializer cannot
+                // be re-entered through a partially initialized source module.
+                if file == provider
+                    || self.is_pytest_file(file)
+                    || self.files[file].path.rsplit('/').next() == Some("conftest.py")
+                    || self.scopes[file].body[..index]
+                        .iter()
+                        .any(|item| self.flask_local_import(file, item))
+                {
+                    continue;
+                }
+                if let Entry::Vacant(entry) = stopped.entry(file) {
+                    entry.insert(index);
+                    pending.push(file);
+                }
+            }
+        }
+        stopped
+    }
+
+    fn closed_flask_provider_failure(
+        &mut self,
+        provider: ScopeId,
+        importers: &BTreeMap<ScopeId, usize>,
+    ) -> Option<Location> {
+        let body = self.scopes[provider].body;
+        let Some(start) = body
+            .iter()
+            .position(|stmt| self.flask_constructor_import(provider, stmt))
+        else {
+            return self.closed_blueprint_lookalike_failure(provider, importers);
+        };
+        if !self.closed_flask_decorator_prefix(provider, &body[..=start])
+            || body[..start]
+                .iter()
+                .any(|statement| self.flask_local_import(provider, statement))
+        {
+            return None;
+        }
+        for statement in &body[start + 1..] {
+            if self.flask_provider_failure(provider, statement).is_some() {
+                return Some(statement.at);
+            }
+            if self.flask_local_import(provider, statement)
+                || !self.closed_flask_decorator_prefix(provider, std::slice::from_ref(statement))
+            {
+                break;
+            }
+        }
+        None
+    }
+
     fn flask_local_import(&self, file: ScopeId, statement: &Statement) -> bool {
         matches!(&statement.kind, StatementKind::Import(import)
             if self.import_module(file, import)
                 .is_some_and(|module| self.modules.contains_key(module.as_str())))
+    }
+
+    fn closed_blueprint_lookalike_failure(
+        &mut self,
+        provider: ScopeId,
+        importers: &BTreeMap<ScopeId, usize>,
+    ) -> Option<Location> {
+        let body = self.scopes[provider].body;
+        for (index, statement) in body.iter().enumerate() {
+            let Some((export, _, class_file)) = self.blueprint_lookalike_call(provider, statement)
+            else {
+                continue;
+            };
+            if !importers.iter().any(|(&file, &index)| {
+                self.reads_flask_receiver_decorator(
+                    file,
+                    index,
+                    &export.text,
+                    ObjectKind::FlaskBlueprint,
+                )
+            }) {
+                continue;
+            }
+            let prefix = &body[..index];
+            if !self.closed_flask_decorator_prefix(provider, prefix)
+                || prefix.iter().any(|item| {
+                    if let StatementKind::Import(import) = &item.kind
+                        && let Some(module) = self.import_module(provider, import)
+                        && let Some(&source) = self.modules.get(module.as_str())
+                    {
+                        return source != class_file || class_file == provider;
+                    }
+                    false
+                })
+            {
+                continue;
+            }
+            if class_file != provider {
+                let body = self.scopes[class_file].body;
+                if !self.closed_flask_decorator_prefix(class_file, body)
+                    || body
+                        .iter()
+                        .any(|item| self.flask_local_import(class_file, item))
+                {
+                    continue;
+                }
+            }
+            return Some(statement.at);
+        }
+        None
+    }
+
+    fn reads_flask_receiver_decorator(
+        &self,
+        file: ScopeId,
+        index: usize,
+        export: &str,
+        kind: ObjectKind,
+    ) -> bool {
+        let body = self.scopes[file].body;
+        let StatementKind::Import(import) = &body[index].kind else {
+            return false;
+        };
+        if import.member.as_deref() != Some(export) {
+            return false;
+        }
+        body[index + 1..].iter().any(|statement| {
+            let StatementKind::Define(definition) = &statement.kind else {
+                return false;
+            };
+            definition.decorators.iter().any(|decorator| {
+                let lookup = match &decorator.kind {
+                    ExpressionKind::Call { function, .. } => function.as_ref(),
+                    _ => decorator,
+                };
+                matches!(&lookup.kind, ExpressionKind::Member(base, member)
+                    if (is_route(kind, member, true) || kind == ObjectKind::FlaskLoginManager && flask_login_callback(member))
+                    && matches!(&base.kind, ExpressionKind::Name(name) if name == &import.local.text)
+                    && self.local(file, &import.local.text, statement.at)
+                        .is_some_and(|id| matches!(self.symbols[id].binding, Binding::Import(active)
+                            if std::ptr::eq(active, import))))
+            })
+        })
+    }
+
+    fn blueprint_lookalike_call<'a>(
+        &mut self,
+        provider: ScopeId,
+        statement: &'a Statement,
+    ) -> Option<(&'a Name, &'a Expression, ScopeId)> {
+        let StatementKind::Assign {
+            names,
+            value:
+                Some(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }),
+            annotation: None,
+        } = &statement.kind
+        else {
+            return None;
+        };
+        let [export] = names.as_slice() else {
+            return None;
+        };
+        let [
+            Expression {
+                kind: ExpressionKind::Text(_),
+                ..
+            },
+            import_name,
+        ] = arguments.as_slice()
+        else {
+            return None;
+        };
+        if !matches!(function.kind, ExpressionKind::Name(_))
+            || !keywords.is_empty()
+            || !self.flask_literal_import_name(provider, import_name, statement.at)
+        {
+            return None;
+        }
+        let Value::Callable(call) = self.probe_identity(provider, function, statement.at) else {
+            return None;
+        };
+        let symbol = &self.symbols[call.target];
+        let Binding::Definition(class, _) = symbol.binding else {
+            return None;
+        };
+        // object.__new__ and object.__init__ together reject these arguments
+        // on an undecorated empty class, before any blueprint is available.
+        (symbol.scope == self.scopes[symbol.scope].file
+            && symbol.name.text == "Blueprint"
+            && !call.verified
+            && matches!(call.receiver, Receiver::Ordinary)
+            && super::terminal::plain_class(class))
+        .then_some((export, function.as_ref(), symbol.scope))
     }
 
     pub(super) fn terminal_failed_flask_provider(
@@ -545,7 +832,10 @@ impl Graph<'_> {
             return false;
         }
         let read = std::mem::take(&mut self.read);
-        let failure = self.flask_provider_failure(scope, statement);
+        let failure = self.flask_provider_failure(scope, statement).or_else(|| {
+            self.blueprint_lookalike_call(scope, statement)
+                .map(|(_, function, _)| FailedProvider::Expressions(vec![function]))
+        });
         self.read = read;
         match failure {
             Some(FailedProvider::Expressions(expressions)) => {
@@ -580,14 +870,26 @@ impl Graph<'_> {
         let Some(&provider) = self.modules.get(module) else {
             return false;
         };
-        if !self
+        if !(self
             .failed_flask_provider_initializers
             .contains_key(&provider)
+            || self
+                .failed_flask_import_initializers
+                .contains_key(&provider))
             || self.import_member_position(scope, module, import).is_some()
         {
             return false;
         }
-        if scope != file {
+        if scope == file {
+            if !self.failed_flask_import_initializers.get(&file).is_some_and(|&failure| {
+                let row = self.scopes[file].body.iter().find(|statement| {
+                    matches!(&statement.kind, StatementKind::Import(item) if std::ptr::eq(item, import))
+                });
+                row.is_some_and(|statement| position(statement.at) == position(failure))
+            }) {
+                return false;
+            }
+        } else {
             let body = self.scopes[scope].body;
             let Some(index) = body.iter().position(|statement| {
                 matches!(&statement.kind, StatementKind::Import(item) if std::ptr::eq(item, import))

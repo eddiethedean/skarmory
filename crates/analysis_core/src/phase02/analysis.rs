@@ -629,6 +629,7 @@ pub(super) fn analyze_with_verification(
             && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
         failed_terminal_modules: BTreeSet::new(),
         failed_flask_provider_initializers: BTreeMap::new(),
+        failed_flask_import_initializers: BTreeMap::new(),
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
         framework_class_whitelists: BTreeMap::new(),
@@ -703,9 +704,9 @@ pub(super) fn analyze_with_verification(
     }
     graph.index_base_classes();
     if phase03 {
-        graph.index_flask_context();
         graph.index_django_global_writes();
         graph.index_failed_flask_provider_initializers();
+        graph.index_flask_context();
     }
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
@@ -828,6 +829,7 @@ struct Graph<'a> {
     terminal_proofs: bool,
     failed_terminal_modules: BTreeSet<ScopeId>,
     failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
+    failed_flask_import_initializers: BTreeMap<ScopeId, Location>,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
@@ -2022,6 +2024,15 @@ impl<'a> Graph<'a> {
         let symbol = &self.symbols[id];
         let scope = symbol.scope;
         let file = self.scopes[scope].file;
+        if scope == file
+            && self
+                .failed_flask_import_initializers
+                .get(&file)
+                .is_some_and(|&failure| position(failure) <= position(symbol.name.at))
+        {
+            // This binding cannot be installed on the initializer path.
+            return Value::Unknown;
+        }
         match symbol.binding {
             Binding::Definition(definition, _) => {
                 if self.phase03
