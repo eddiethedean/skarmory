@@ -86,6 +86,14 @@ pub(super) struct Receipt {
     reasons: Vec<Reason>,
     abstained_count: usize,
     abstained_dependencies: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declarations: Option<DeclaredDependencies>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeclaredDependencies {
+    dependencies: Vec<String>,
+    project_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -144,6 +152,7 @@ impl Result {
                 }],
                 abstained_count: 0,
                 abstained_dependencies: Vec::new(),
+                declarations: None,
             },
             evidence: Vec::new(),
         }
@@ -207,6 +216,7 @@ pub(super) fn scan(
     let mut findings = Vec::new();
     let mut evidence = Vec::new();
     let mut abstained = Vec::new();
+    let dependencies = declared.dependencies.keys().cloned().collect();
 
     for (name, declaration) in declared.dependencies {
         if declared.project_name.as_deref() == Some(&name) {
@@ -238,6 +248,10 @@ pub(super) fn scan(
             reasons,
             abstained_count: abstained.len(),
             abstained_dependencies: abstained,
+            declarations: Some(DeclaredDependencies {
+                dependencies,
+                project_name: declared.project_name,
+            }),
         },
         evidence,
     }

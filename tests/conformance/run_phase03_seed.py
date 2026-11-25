@@ -17,8 +17,11 @@ from phase03_cli import CASE as CLI_CASE
 from phase03_cli import CLEANUP_CASES, WORKFLOW_SOURCES, CleanupCaseCli, RecursiveCaseCli, WorkflowCaseCli
 from phase03_cleanup_execution import CLEANUP_EXECUTION_CASES, CleanupExecutionCli
 from phase03_dependencies import (
+    DECLARATION_CASE,
+    DECLARATION_PREREQUISITES,
     UNUSED_DEPENDENCY_PREREQUISITE,
     UNUSED_DEPENDENCY_SOURCES,
+    dependency_declarations,
     unused_dependencies,
 )
 from phase03_engine import ENGINE_CASES, INCLUDE_CASES, INCLUDE_SOURCE, engine_case
@@ -417,6 +420,7 @@ def pytest_worker(args):
             self.lines = {}
             self.failed_assertions = {}
             self.scans = set()
+            self.dependency_declarations = set()
             self.grep_scans = set()
             self.grep_disables = set()
             self.trace_imports = set()
@@ -567,6 +571,13 @@ def pytest_worker(args):
                             return findings
 
                         patch.setattr(item.module, "scan_unused_dependencies", analyze_dependencies)
+                        if key == DECLARATION_CASE:
+                            def collect_declarations(path):
+                                result = dependency_declarations(scan_rule, path)
+                                self.dependency_declarations.add(key)
+                                return result
+
+                            patch.setattr(item.module, "_collect_declared_deps", collect_declarations)
                     else:
                         patch.setattr(item.module, "analyze", analyze)
                 try:
@@ -633,6 +644,8 @@ def pytest_worker(args):
                 proven = key in capture.scans
             elif required == UNUSED_DEPENDENCY_PREREQUISITE:
                 proven = key in capture.scans
+            elif required in DECLARATION_PREREQUISITES:
+                proven = key in capture.dependency_declarations
             elif required == "native-framework-evidence":
                 proven = key in capture.framework_evidence
             elif required in IMPORT_SCOPE_PREREQUISITES:
