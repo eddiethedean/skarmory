@@ -222,7 +222,11 @@ supports the pinned recursive-group and caller-edit cases. [#52](https://github.
 The `skylos-0.3` profile uses resolved imports for the framework identities in
 these models. A selected Flask app can register routes, request and context
 callbacks, and error handlers directly or mount a blueprint. Blueprint callbacks
-require the mount to be reached.
+require the mount to be reached. A unique conventional CLI factory that
+returns a resolved Flask app contributes possible-use evidence. Local teardown
+setup helpers can receive that app through a resolved call. The scanner treats
+literal `g.pop(key, None)` as empty only when the selected code establishes
+that the context key has no writers or opaque access.
 [Flask registration APIs](https://flask.palletsprojects.com/en/stable/api/)
 
 FastAPI supports imperative endpoint registration and literal `Depends` or

@@ -31,6 +31,7 @@ struct Event {
     effects: ScopeId,
     included_router: Option<Object>,
     startup_or_shutdown: bool,
+    iterated: bool,
     signature_targets: Vec<SymbolId>,
     signatures: BTreeMap<SignatureSite, ScopeId>,
     // Proven execution prefixes before this inclusion. Completed imports use END.
@@ -111,12 +112,17 @@ impl Graph<'_> {
         let Value::Callable(invocation) = callable else {
             return None;
         };
-        let Binding::Definition(definition, _) = self.symbols[invocation.target].binding else {
+        let symbol = &self.symbols[invocation.target];
+        let Binding::Definition(definition, _) = symbol.binding else {
             return None;
         };
+        let scope = symbol.scope;
         ((dependency || definition.kind != DefinitionKind::Class)
             && (dependency || !definition.is_generator)
-            && definition.decorators.is_empty())
+            && definition.decorators.iter().all(|decorator| {
+                let value = self.probe_identity(scope, decorator, definition.name.at);
+                self.local_identity_decorator(value, decorator)
+            }))
         .then_some(invocation.target)
     }
 
@@ -268,6 +274,68 @@ impl Graph<'_> {
         call: CallArguments<'_>,
         method: &str,
     ) {
+        self.record_fastapi_route(object, target, call, method, false);
+    }
+
+    pub(super) fn fastapi_literal_route_loop(
+        &mut self,
+        scope: ScopeId,
+        registration: &Expression,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &registration.kind
+        else {
+            return false;
+        };
+        let [_, endpoint] = arguments.as_slice() else {
+            return false;
+        };
+        let at = registration.at;
+        let Value::Method(object, ObjectKind::App | ObjectKind::Router, method) =
+            self.call_target_identity(scope, function, at, 0)
+        else {
+            return false;
+        };
+        if method != "add_api_route" {
+            return false;
+        }
+        let Value::Callable(callback) = self.identity(scope, endpoint, at, 0) else {
+            return false;
+        };
+        if self.is_class(callback.target) {
+            return false;
+        }
+        self.walk(scope, function, at);
+        for argument in arguments {
+            self.walk(scope, argument, at);
+        }
+        self.record_fastapi_route(
+            object,
+            callback.target,
+            CallArguments {
+                scope,
+                before: at,
+                at,
+                positional: arguments,
+                keywords,
+            },
+            &method,
+            true,
+        );
+        true
+    }
+
+    fn record_fastapi_route(
+        &mut self,
+        object: Object,
+        target: SymbolId,
+        call: CallArguments<'_>,
+        method: &str,
+        iterated: bool,
+    ) {
         let CallArguments {
             scope,
             before,
@@ -283,13 +351,14 @@ impl Graph<'_> {
             "middleware" | "add_middleware" => "fastapi_middleware",
             _ => "fastapi_registration",
         };
-        let certainty = if self.branch_depth == 0 {
+        let certainty = if self.branch_depth == 0 && !iterated {
             "certain"
         } else {
             "possible"
         };
         self.edge(effects, target, kind, certainty);
         let mut event = Event::new(site, effects);
+        event.iterated = iterated;
         if kind == "fastapi_registration" {
             event.signature_targets = self.fastapi_options(effects, site, keywords);
             event.signature_targets.push(target);
@@ -664,10 +733,16 @@ impl Graph<'_> {
             },
         };
         let targets = event.signature_targets.clone();
+        let iterated = event.iterated;
         let effects = self.fastapi_effect_scope(site);
         let mut visited = BTreeSet::new();
         for target in targets {
             self.fastapi_deferred_parameters(effects, site, target, &mut visited);
+        }
+        if iterated {
+            for edge in &mut self.scopes[effects].edges {
+                edge.certainty = "possible";
+            }
         }
         self.fastapi.events[id].signatures.insert(timing, effects);
         true
@@ -868,6 +943,7 @@ impl Event {
             effects,
             included_router: None,
             startup_or_shutdown: false,
+            iterated: false,
             signature_targets: Vec::new(),
             signatures: BTreeMap::new(),
             prior_scopes: BTreeMap::new(),

@@ -107,6 +107,12 @@ impl<'a> Python<'a> {
                         bindings.insert(&name.text, origin.clone());
                     }
                 }
+                Stmt::LiteralRouteLoop {
+                    path, registration, ..
+                } => {
+                    bindings.insert(&path.text, None);
+                    self.expression(registration, &bindings);
+                }
                 Stmt::Define(definition) => {
                     for expression in definition
                         .decorators
@@ -490,6 +496,9 @@ fn shadow<'a>(body: &'a [Statement], bindings: &mut Bindings<'a>) {
                 for name in names {
                     bindings.insert(&name.text, None);
                 }
+            }
+            Stmt::LiteralRouteLoop { path, .. } => {
+                bindings.insert(&path.text, None);
             }
             Stmt::Define(definition) => {
                 bindings.insert(&definition.name.text, None);

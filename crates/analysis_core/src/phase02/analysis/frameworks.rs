@@ -42,6 +42,7 @@ pub(super) fn is_django_signal_edge(kind: &str) -> bool {
 impl Graph<'_> {
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
+        self.collect_flask_cli_factory();
 
         let classes: Vec<_> = (0..self.symbols.len())
             .filter(|&id| self.is_class(id) && !self.dormant_classes.contains(&id))
@@ -435,11 +436,12 @@ impl Graph<'_> {
         };
         let scope = symbol.scope;
         definition.decorators.iter().all(|decorator| {
+            let value = self.probe_identity(scope, decorator, definition.name.at);
             matches!(
-                self.probe_identity(scope, decorator, definition.name.at),
+                &value,
                 Value::Provider(provider)
                     if matches!(provider.as_str(), "builtins.classmethod" | "builtins.staticmethod")
-            )
+            ) || self.local_identity_decorator(value, decorator)
         })
     }
 

@@ -62,6 +62,11 @@ pub enum StatementKind {
         value: Expression,
     },
     DiscardedComprehension(Expression),
+    LiteralRouteLoop {
+        path: Name,
+        last: Expression,
+        registration: Expression,
+    },
     WriteAttribute {
         receiver: Expression,
         member: String,
@@ -687,6 +692,18 @@ impl Lowering<'_> {
                         otherwise,
                     }
                 }
+                Stmt::For(node) => {
+                    let Some((last, registration)) = literal_route_loop(node) else {
+                        return Err(self
+                            .0
+                            .unsupported(node, "statement is outside the compatibility subset"));
+                    };
+                    StatementKind::LiteralRouteLoop {
+                        path: self.target(&node.target)?,
+                        last: expression(last)?,
+                        registration: expression(registration)?,
+                    }
+                }
                 Stmt::With(node) if !node.is_async => StatementKind::With {
                     items: node
                         .items
@@ -930,6 +947,43 @@ fn discarded_comprehension_iterable(expression: &Expr) -> Option<&Expr> {
         _ => return None,
     };
     (!generator.is_async && (!must_be_empty || elements.is_empty())).then_some(&generator.iter)
+}
+
+fn literal_route_loop(node: &ruff_python_ast::StmtFor) -> Option<(&Expr, &Expr)> {
+    if node.is_async || !node.orelse.is_empty() {
+        return None;
+    }
+    let Expr::Name(path) = node.target.as_ref() else {
+        return None;
+    };
+    let values = match node.iter.as_ref() {
+        Expr::Tuple(tuple) => &tuple.elts,
+        Expr::List(list) => &list.elts,
+        _ => return None,
+    };
+    let [Stmt::Expr(statement)] = node.body.as_slice() else {
+        return None;
+    };
+    let Expr::Call(call) = statement.value.as_ref() else {
+        return None;
+    };
+    let Expr::Attribute(method) = call.func.as_ref() else {
+        return None;
+    };
+    let [Expr::Name(argument), Expr::Name(endpoint)] = &*call.arguments.args else {
+        return None;
+    };
+    let last = values.last()?;
+    (method.attr.as_str() == "add_api_route"
+        && matches!(method.value.as_ref(), Expr::Name(owner) if owner.id != path.id)
+        && argument.id == path.id
+        && endpoint.id != path.id
+        && call.arguments.keywords.is_empty()
+        && values.iter().all(|value| {
+            matches!(value, Expr::StringLiteral(path)
+            if path.value.to_str().starts_with('/') && !path.value.to_str().contains('{'))
+        }))
+    .then_some((last, statement.value.as_ref()))
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
 mod fastapi;
+mod flask;
 mod frameworks;
 mod mutations;
 
@@ -77,6 +78,7 @@ enum Value {
     Scalar,
     ConstantFunction,
     IdentityDecoratorFactory,
+    EmptyFlaskContextEntry,
     MissingFrameworkMember,
     UnittestComparison,
     OperatorResult,
@@ -472,6 +474,8 @@ pub(super) fn analyze_with_verification(
         framework_fields: BTreeSet::new(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
+        flask_hooks: Vec::new(),
+        flask_context_writes: None,
         django_roots: BTreeSet::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
@@ -521,6 +525,9 @@ pub(super) fn analyze_with_verification(
         graph.index_framework_mutations();
     }
     graph.index_base_classes();
+    if phase03 {
+        graph.index_flask_context();
+    }
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
         graph.suite(scope, body);
@@ -553,7 +560,7 @@ pub(super) fn analyze_with_verification(
     let mut possible_roots = Vec::new();
     if phase03 {
         for edge in graph.phase03_framework_edges() {
-            if edge.kind == "pytest_hook_candidate" {
+            if matches!(edge.kind, "pytest_hook_candidate" | "flask_cli_factory") {
                 possible_roots.push(edge);
             } else {
                 roots.push(edge);
@@ -622,6 +629,8 @@ struct Graph<'a> {
     framework_fields: BTreeSet<SymbolId>,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
+    flask_hooks: Vec<flask::ParameterHook>,
+    flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
@@ -710,6 +719,9 @@ impl<'a> Graph<'a> {
                     for name in names {
                         self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
                     }
+                }
+                StatementKind::LiteralRouteLoop { path, last, .. } => {
+                    self.bind(scope, path, Binding::Variable(Some(last), statement.at));
                 }
                 StatementKind::With { items, body } => {
                     for (expression, name) in items {
@@ -2811,6 +2823,11 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => match self.call_target_identity(scope, function, before, depth + 1) {
+                Value::Provider(name)
+                    if self.empty_flask_context_pop(&name, arguments, keywords) =>
+                {
+                    Value::EmptyFlaskContextEntry
+                }
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
                 }
@@ -3290,8 +3307,16 @@ impl<'a> Graph<'a> {
                 equal,
                 identity,
             } => {
+                let left_none = matches!(left.kind, ExpressionKind::None);
+                let right_none = matches!(right.kind, ExpressionKind::None);
                 let left = recurse(self, left);
                 let right = recurse(self, right);
+                if *identity
+                    && (left_none && matches!(right, Value::EmptyFlaskContextEntry)
+                        || right_none && matches!(left, Value::EmptyFlaskContextEntry))
+                {
+                    return Value::Bool(*equal);
+                }
                 let same = match (&left, &right) {
                     (Value::Text(left), Value::Text(right)) if !identity => left == right,
                     (Value::Bool(left), Value::Bool(right)) => left == right,
@@ -3980,6 +4005,8 @@ impl<'a> Graph<'a> {
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
                 match callee {
+                    Value::Provider(name)
+                        if self.empty_flask_context_pop(&name, arguments, keywords) => {}
                     Value::ConstantFunction => {}
                     Value::UnittestComparison => {
                         if !self.bounded_unittest_comparison(scope, arguments, keywords, before) {
@@ -4554,6 +4581,13 @@ impl<'a> Graph<'a> {
                         }
                     }
                     _ => {
+                        if self.phase03
+                            && self.record_flask_parameter_hook(
+                                scope, function, arguments, keywords, before, expr.at,
+                            )
+                        {
+                            return;
+                        }
                         let parameter = match &function.kind {
                             ExpressionKind::Name(name) => self.lexical(scope, name, before),
                             _ => None,
@@ -5297,7 +5331,10 @@ impl<'a> Graph<'a> {
                         self.walk(scope, value, at);
                     }
                     self.walk(scope, receiver, at);
-                    if !self.modeled_framework_write(scope, at) {
+                    let flask_write = matches!(&statement.kind,
+                        StatementKind::WriteAttribute { member, value: Some(_), .. }
+                        if self.modeled_flask_context_write(scope, receiver, member, at));
+                    if !flask_write && !self.modeled_framework_write(scope, at) {
                         self.scope_issue(
                             scope,
                             at,
@@ -5340,6 +5377,16 @@ impl<'a> Graph<'a> {
                             at,
                             "unsupported_construct",
                             "comprehensions are outside the compatibility subset",
+                        );
+                    }
+                }
+                StatementKind::LiteralRouteLoop { registration, .. } => {
+                    if !self.phase03 || !self.fastapi_literal_route_loop(scope, registration) {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "route loop is outside the bounded FastAPI registration model",
                         );
                     }
                 }
@@ -5701,10 +5748,7 @@ impl<'a> Graph<'a> {
                     unreachable!()
                 };
                 if is_identity_decorator(definition) {
-                    return definition.kind == DefinitionKind::Function
-                        && definition.has_positional_parameter
-                        && definition.decorators.is_empty()
-                        && !matches!(decorator.kind, ExpressionKind::Call { .. });
+                    return self.local_identity_decorator(Value::Callable(invocation), decorator);
                 } else if self.phase03
                     && matches!(invocation.receiver, Receiver::Ordinary)
                     && definition.kind == DefinitionKind::Function
@@ -5758,6 +5802,21 @@ impl<'a> Graph<'a> {
             ),
         };
         false
+    }
+
+    fn local_identity_decorator(&self, value: Value, decorator: &Expression) -> bool {
+        let Value::Callable(invocation) = value else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = self.symbols[invocation.target].binding else {
+            return false;
+        };
+        matches!(invocation.receiver, Receiver::Ordinary)
+            && !matches!(decorator.kind, ExpressionKind::Call { .. })
+            && definition.kind == DefinitionKind::Function
+            && definition.has_positional_parameter
+            && definition.decorators.is_empty()
+            && is_identity_decorator(definition)
     }
 
     fn empty_flask_lookalike(
@@ -7349,6 +7408,7 @@ impl<'a> Graph<'a> {
             if self.phase03 {
                 self.activate_django_signals(reach, &mut pending, verification, possible);
                 self.activate_fastapi(reach, &mut pending);
+                self.activate_flask_parameter_hooks(reach, &mut pending);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
             }
             for &(owner, target, kind) in &self.framework_lifecycle {
@@ -7582,6 +7642,7 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.report_flask_parameter_hooks(&reach);
         }
         self.issues.extend(
             self.django_registration_issues
@@ -7972,6 +8033,12 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.push(environment);
                 expressions.push(value);
             }
+            StatementKind::LiteralRouteLoop {
+                path, registration, ..
+            } => {
+                assigned.insert(path.text.as_str());
+                expressions.push(registration);
+            }
             StatementKind::WriteAttribute {
                 receiver, value, ..
             }
@@ -8067,6 +8134,7 @@ fn suite_binds_name(body: &[Statement], name: &str) -> bool {
         StatementKind::Define(definition) => definition.name.text == name,
         StatementKind::Import(import) => import.local.text == name,
         StatementKind::Assign { names, .. } => names.iter().any(|target| target.text == name),
+        StatementKind::LiteralRouteLoop { path, .. } => path.text == name,
         StatementKind::If {
             body, otherwise, ..
         } => suite_binds_name(body, name) || suite_binds_name(otherwise, name),

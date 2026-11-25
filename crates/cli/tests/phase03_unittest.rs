@@ -58,6 +58,42 @@ fn unused(report: &Value, bucket: &str, name: &str) -> bool {
 }
 
 #[test]
+fn unittest_keeps_tests_with_proven_identity_decorators() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("test_service.py"),
+        r#"from unittest import TestCase
+
+def label(test):
+    return test
+
+def exercise_service(): return 1
+def abandoned(): return 2
+
+class ServiceTests(TestCase):
+    @label
+    def test_service(self):
+        return exercise_service()
+"#,
+    )
+    .unwrap();
+    let report = scan(root, None);
+    assert!(discovery(&report, "test_service.ServiceTests.test_service"));
+    assert!(!unused(
+        &report,
+        "unused_functions",
+        "test_service.exercise_service"
+    ));
+    assert!(unused(
+        &report,
+        "unused_functions",
+        "test_service.abandoned"
+    ));
+}
+
+#[test]
 fn runner_flavors_preserve_callable_lifecycle_and_ignore_unexecuted_bodies() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

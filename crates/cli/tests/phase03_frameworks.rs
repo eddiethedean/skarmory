@@ -68,6 +68,184 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn flask_cli_factory_reaches_bound_setup_and_context_hooks() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    fs::create_dir(root.join("fake")).unwrap();
+    fs::write(
+        root.join("shop/__init__.py"),
+        r#"from flask import Flask
+
+def create_app(config=None):
+    app = Flask(__name__)
+    from . import db, auth
+    db.init_app(app)
+    app.register_blueprint(auth.bp)
+    return app
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("fake/__init__.py"),
+        "def create_app(): return object()\n",
+    )
+    .unwrap();
+    let auth = r#"from flask import Blueprint, g
+bp = Blueprint('auth', __name__)
+
+@bp.before_app_request
+def load_user():
+    g.user = None
+"#;
+    fs::write(root.join("shop/auth.py"), auth).unwrap();
+    fs::write(
+        root.join("shop/db.py"),
+        r#"from flask import g
+
+def close_db(exc=None):
+    connection = g.pop('db', None)
+    if connection is not None:
+        connection.close()
+
+def init_app(app):
+    app.teardown_appcontext(close_db)
+
+def unused(required): return 1
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["fake.create_app", "shop.db.unused"]
+    );
+    assert!(!findings(&report, "unused_parameters").contains(&"shop.db.close_db.exc"));
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for callback in ["shop.create_app", "shop.auth.load_user", "shop.db.close_db"] {
+        assert!(
+            symbols.iter().any(|row| row["qualified_name"] == callback
+                && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"].as_str().unwrap().starts_with("flask_")
+                        && edge["certainty"] == "possible"
+                })),
+            "{report}"
+        );
+    }
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for key in [
+            "unused_functions",
+            "unused_parameters",
+            "dead_code_evidence",
+            "coverage",
+        ] {
+            assert_eq!(report[key], cached[key], "{key}");
+        }
+    }
+
+    // An additional context writer in a different file voids the absence proof.
+    fs::write(
+        root.join("shop/auth.py"),
+        format!("{auth}    g.db = object()\n"),
+    )
+    .unwrap();
+    let changed = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        changed["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["file"] == "shop/db.py" && row["kind"] == "unresolved_call" }),
+        "{changed}"
+    );
+}
+
+#[test]
+fn fastapi_startup_keeps_callbacks_with_proven_identity_decorators() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import FastAPI
+
+def label(callback):
+    return callback
+
+def initialize(): return 1
+def abandoned(): return 2
+
+@label
+def startup(): return initialize()
+
+app = FastAPI(on_startup=[startup])
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["web.abandoned"]);
+}
+
+#[test]
+fn fastapi_literal_route_loops_retain_only_reached_registrations() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import Depends, FastAPI
+
+def active_dependency(): return 1
+def dormant_dependency(): return 2
+def endpoint(session=Depends(active_dependency)): return 1
+def dormant(session=Depends(dormant_dependency)): return 2
+
+app = FastAPI()
+for path in ('/a', '/b'):
+    app.add_api_route(path, endpoint)
+
+def unused_setup():
+    for path in ['/c', '/d']:
+        app.add_api_route(path, dormant)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dormant", "web.dormant_dependency", "web.unused_setup",]
+    );
+    assert!(!findings(&report, "unused_parameters").contains(&"web.endpoint.session"));
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let dependency = symbols
+        .iter()
+        .find(|row| row["qualified_name"] == "web.active_dependency")
+        .unwrap();
+    let edges = dependency["evidence"].as_array().unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge["kind"] == "fastapi_dependency")
+    );
+    assert!(
+        edges
+            .iter()
+            .filter(|edge| edge["kind"] == "fastapi_dependency")
+            .all(|edge| edge["certainty"] == "possible")
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        for key in [
+            "unused_functions",
+            "unused_parameters",
+            "dead_code_evidence",
+            "coverage",
+        ] {
+            assert_eq!(report[key], cached[key], "{key}");
+        }
+    }
+}
+
+#[test]
 fn conventional_pytest_hooks_have_possible_use_without_discovery() {
     let project = tempfile::tempdir().unwrap();
     for (path, source) in [
