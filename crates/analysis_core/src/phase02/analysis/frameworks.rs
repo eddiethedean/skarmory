@@ -1738,6 +1738,9 @@ impl Graph<'_> {
                 continue;
             }
             let file = object.0;
+            if self.failed_terminal_modules.contains(&file) {
+                continue;
+            }
             if let Some(patterns) = self.local(file, "urlpatterns", END) {
                 let value = self.binding(patterns, END, 0);
                 self.collect_django_patterns(file, object, value, self.symbols[patterns].name.at);
@@ -1759,6 +1762,9 @@ impl Graph<'_> {
 
         for object in self.django_roots.clone() {
             let file = object.0;
+            if self.failed_terminal_modules.contains(&file) {
+                continue;
+            }
             for name in ["handler400", "handler403", "handler404", "handler500"] {
                 if let Some(binding) = self.lexical(file, name, END) {
                     let value = match self.binding(binding, END, 0) {

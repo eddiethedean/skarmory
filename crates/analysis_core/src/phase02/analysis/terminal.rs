@@ -16,7 +16,9 @@ impl Graph<'_> {
         {
             return false;
         }
-        if self.terminal_unbound_flask_initializer(scope, statement) {
+        if self.terminal_django_url_assignment(scope, statement)
+            || self.terminal_unbound_flask_initializer(scope, statement)
+        {
             return true;
         }
         let Some((last, earlier)) = self.scopes[scope].body.split_last() else {

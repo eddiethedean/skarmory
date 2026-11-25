@@ -23,6 +23,7 @@ mod aiohttp;
 mod celery;
 mod comprehension;
 mod django_globals;
+mod django_urls;
 mod fastapi;
 mod field_dispatch;
 mod flask;
@@ -61,6 +62,7 @@ enum Value {
     Object(Object, ObjectKind),
     Method(Object, ObjectKind, String),
     DjangoInclude(Object),
+    DjangoInvalidRegistration,
     DjangoPattern(Box<Value>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
@@ -3696,50 +3698,22 @@ impl<'a> Graph<'a> {
                         self.django_receiver(scope, arguments, keywords, before, depth),
                     )
                 }
-                Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
-                    let module = match (arguments.as_slice(), keywords.as_slice()) {
-                        ([module], []) => Some(module),
-                        ([], [(name, module)]) if name == "arg" => Some(module),
-                        _ => None,
-                    };
-                    match module.map(|value| recurse(self, value)) {
-                        Some(Value::Text(module)) => self
-                            .modules
-                            .get(module.as_str())
-                            .copied()
-                            .map(|file| Value::DjangoInclude(framework_module(file)))
-                            .unwrap_or(Value::Unknown),
-                        _ => Value::Unknown,
-                    }
-                }
+                Value::Provider(name) if self.phase03 && name == "django.urls.include" => self
+                    .django_include(
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expression.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                        recurse,
+                    ),
                 Value::Provider(name)
                     if self.phase03
                         && matches!(name.as_str(), "django.urls.path" | "django.urls.re_path") =>
                 {
-                    let Some(slots) = registration_arguments(
-                        arguments,
-                        keywords,
-                        ["route", "view", "kwargs", "name"],
-                    ) else {
-                        return Value::DjangoPattern(Box::new(Value::Unknown));
-                    };
-                    let callback = match slots {
-                        [Some(route), Some(callback), kwargs, name]
-                            if matches!(recurse(self, route), Value::Text(_))
-                                && kwargs.is_none_or(|value| {
-                                    matches!(recurse(self, value), Value::Mapping(_))
-                                })
-                                && name.is_none_or(|value| {
-                                    matches!(recurse(self, value), Value::Text(_))
-                                }) =>
-                        {
-                            Some(callback)
-                        }
-                        _ => None,
-                    };
-                    Value::DjangoPattern(Box::new(
-                        callback.map_or(Value::Unknown, |value| recurse(self, value)),
-                    ))
+                    self.django_path(arguments, keywords, recurse)
                 }
                 Value::Provider(name) if self.phase03 && name == "sqlalchemy.event.listens_for" => {
                     Value::Provider("sqlalchemy.event.listens_for.callback".into())
@@ -11603,6 +11577,136 @@ print(Status.default)
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "child_urls.Child.get" && entry.kind == "framework_lifecycle"
         }));
+    }
+
+    #[test]
+    fn phase03_django_url_table_stops_at_a_proven_invalid_registration() {
+        for invalid in [
+            "path('broken/', view, route='duplicate/')",
+            "path('broken/', view, view=view)",
+            "path('broken/', view, unexpected=True)",
+            "path('broken/', view, None, None, None)",
+            "path('broken/', view, kwargs='invalid')",
+            "path('broken/', view, kwargs=[])",
+            "path('', include('child_urls', arg='child_urls'))",
+            "path('', include('child_urls', unexpected=True))",
+            "path('', include('child_urls', None, None))",
+            "path('', include('child_urls', namespace='missing'))",
+        ] {
+            let urls = format!(
+                "from django.urls import include, path\nfrom views import view, before, after\n\
+                 urlpatterns = [path('good/', before), {invalid}, path('after/', after())]\n\
+                 handler404 = view\n"
+            );
+            let result = analyze_phase03(&django_url_test_files(&urls, ""), &[]);
+            assert!(result.issues.is_empty(), "{invalid}: {:?}", result.issues);
+            for target in ["views.view", "views.before", "views.after", "views.helper"] {
+                assert!(
+                    !result.evidence.iter().any(|edge| edge.full_name == target
+                        && matches!(edge.kind, "django_registration" | "direct_call")),
+                    "{invalid} should not reach {target}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_defaults_and_child_namespace_activate_callbacks() {
+        let urls = "from django.urls import include, path\nfrom views import before\n\
+                    urlpatterns = [path('direct/', before, kwargs=None, name=None), \
+                                    path('nested/', include(arg='child_urls', namespace='named'))]\n";
+        let result = analyze_phase03(&django_url_test_files(urls, "app_name = 'child'\n"), &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        for target in ["views.view", "views.before"] {
+            assert!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|edge| { edge.full_name == target && edge.kind == "django_registration" })
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_opaque_options_keep_coverage_incomplete() {
+        for (invalid, child_body) in [
+            ("path('opaque/', view, kwargs=options)", ""),
+            ("path('opaque/', view, Pattern=pattern)", ""),
+            (
+                "path('', include('child_urls', namespace='site'))",
+                "def __getattr__(name):\n    return lookup(name)\n",
+            ),
+        ] {
+            let urls = format!(
+                "from django.urls import include, path\nfrom views import view\n\
+                 urlpatterns = [{invalid}]\n"
+            );
+            let result = analyze_phase03(&django_url_test_files(&urls, child_body), &[]);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration")
+            );
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|edge| edge.kind == "django_registration")
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_include_keeps_failed_import_coverage_incomplete() {
+        let urls = "from django.urls import include, path\n\
+                    urlpatterns = [path('', include('child_urls'))]\n";
+        let child = "urlpatterns = [path('', view, unexpected=True)]\n";
+        let result = analyze_phase03(&django_url_test_files(urls, child), &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|edge| edge.kind == "django_registration")
+        );
+    }
+
+    fn django_url_test_files(urls: &str, child_tail: &str) -> Vec<AnalyzedFile> {
+        vec![
+            module(
+                "settings.py",
+                "settings",
+                "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+            ),
+            module("urls.py", "urls", urls),
+            module(
+                "child_urls.py",
+                "child_urls",
+                &format!(
+                    "from django.urls import path\nfrom views import view\n\
+                     urlpatterns = [path('', view)]\n{child_tail}"
+                ),
+            ),
+            module(
+                "views.py",
+                "views",
+                "def view(request): return helper()\ndef helper(): return 1\n\
+                 def before(request): return 2\ndef after(): return view\n",
+            ),
+            module(
+                "manage.py",
+                "manage",
+                "import os\nfrom django.core.management import execute_from_command_line\n\
+                 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n\
+                 execute_from_command_line([])\n",
+            ),
+        ]
     }
 
     #[test]
