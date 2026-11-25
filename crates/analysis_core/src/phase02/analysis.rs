@@ -5741,6 +5741,9 @@ impl<'a> Graph<'a> {
                 ("constructor", certainty)
             };
             self.constructor(scope, id, kind, certainty, at);
+            if self.phase03 {
+                self.check_django_form_initializer(id, call);
+            }
         }
         // Callback parameter substitution is bounded by retaining the finite
         // supplied values even if the callee dispatches dynamically.
@@ -11664,6 +11667,27 @@ Lookalike()
                     .any(|entry| { entry.full_name == target && entry.certainty == "certain" })
             );
         }
+    }
+
+    #[test]
+    fn phase03_django_form_reports_unresolved_custom_submission_dispatch() {
+        let source = "
+from django.forms import Form, CharField
+
+class Payload:
+    def get(self, key):
+        return 'number'
+
+class Contact(Form):
+    phone = CharField()
+
+Contact(Payload()).is_valid()
+";
+        let result = analyze_phase03(&[module("forms.py", "forms", source)], &[]);
+        assert!(result.issues.iter().any(|issue| {
+            issue.kind == "unresolved_constructor"
+                && issue.message.contains("Django form arguments")
+        }));
     }
 
     #[test]

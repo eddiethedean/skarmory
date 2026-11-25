@@ -189,6 +189,72 @@ impl Graph<'_> {
         }
     }
 
+    pub(super) fn check_django_form_initializer(
+        &mut self,
+        class: SymbolId,
+        call: CallArguments<'_>,
+    ) {
+        if call.positional.is_empty() && call.keywords.is_empty()
+            || self
+                .django_table_lineage(
+                    class,
+                    &[
+                        FrameworkClassRole::DjangoForm,
+                        FrameworkClassRole::DjangoModelForm,
+                    ],
+                )
+                .is_none()
+            || self.class_member(class, "__init__", 0).is_some()
+        {
+            return;
+        }
+        let positional = ["data", "files"];
+        let mut seen = BTreeSet::new();
+        if call.positional.len() > positional.len()
+            || !positional
+                .into_iter()
+                .zip(call.positional)
+                .chain(
+                    call.keywords
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value)),
+                )
+                .all(|(name, value)| {
+                    seen.insert(name) && self.django_form_initializer_argument(name, value, call)
+                })
+        {
+            self.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_constructor",
+                "Django form arguments may dispatch into unmodeled data or initialization hooks",
+            );
+        }
+    }
+
+    fn django_form_initializer_argument(
+        &mut self,
+        name: &str,
+        expression: &Expression,
+        call: CallArguments<'_>,
+    ) -> bool {
+        let value = self.probe_identity(call.scope, expression, call.before);
+        match name {
+            "data" | "files" | "initial" => {
+                matches!(expression.kind, ExpressionKind::None)
+                    || matches!(value, Value::Mapping(_)) && inert_submission(&value)
+            }
+            "auto_id"
+            | "empty_permitted"
+            | "label_suffix"
+            | "prefix"
+            | "use_required_attribute" => {
+                value.is_builtin_scalar() || matches!(value, Value::Integer(_) | Value::None)
+            }
+            _ => false,
+        }
+    }
+
     fn django_table_lineage(
         &mut self,
         class: SymbolId,
@@ -624,6 +690,14 @@ impl Graph<'_> {
             );
         }
         Some(())
+    }
+}
+
+fn inert_submission(value: &Value) -> bool {
+    match value {
+        Value::Mapping(items) | Value::Sequence(items) => items.iter().all(inert_submission),
+        Value::Integer(_) | Value::None => true,
+        _ => value.is_builtin_scalar(),
     }
 }
 
