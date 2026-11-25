@@ -709,6 +709,18 @@ impl Project {
             && self.package_submodule_absent(package, module)
     }
 
+    pub(super) fn root_flat_module_unambiguous(&self, source: &str, module: &str) -> bool {
+        Path::new(source)
+            .parent()
+            .is_some_and(|parent| parent.as_os_str().is_empty())
+            && self.search.iter().all(|root| root == &self.base)
+            && self.directories.get(&self.base).is_some_and(|entries| {
+                !entries.iter().any(|(name, kind)| {
+                    name != OsStr::new(source) && entry_may_supply_module(name, *kind, module)
+                })
+            })
+    }
+
     fn package_submodule_absent(&self, package: &Path, module: &str) -> bool {
         self.directories
             .get(&self.base.join(package))

@@ -4177,6 +4177,43 @@ router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
 }
 
 #[test]
+fn inert_flat_django_provider_keeps_competing_imports_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("django.py"), "class BaseCommand: pass\n").unwrap();
+    fs::write(
+        root.join("commands.py"),
+        "from django.core.management.base import BaseCommand\nclass Command(BaseCommand): pass\n",
+    )
+    .unwrap();
+    scan(root);
+
+    fs::write(root.join("django.abi3.so"), "").unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_import" }),
+        "{opaque}"
+    );
+    fs::remove_file(root.join("django.abi3.so")).unwrap();
+
+    fs::create_dir(root.join("django")).unwrap();
+    fs::write(root.join("django/__init__.py"), "").unwrap();
+    let excluded = scan_with_excludes(root, None, None, &["django"], 2);
+    assert!(
+        excluded["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_import" }),
+        "{excluded}"
+    );
+}
+
+#[test]
 fn inert_root_framework_packages_do_not_register_unavailable_providers() {
     for (provider, hidden, source) in [
         (
