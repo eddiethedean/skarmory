@@ -208,3 +208,27 @@ def unittest_report(report):
         else:
             definitions.setdefault(name, definition)
     return {**report, "definitions": definitions}
+
+
+def patch_framework_analysis(patch, module, analyze):
+    """Route pinned public analysis entry points through the candidate SDK."""
+    from skylos import analyzer as reference_analyzer
+    from test import web_framework_fixtures
+
+    def analyze_instance(analyzer, path, thr=60, exclude_folders=None, **options):
+        options.setdefault("grep_verify", True)
+        options.setdefault("grep_cache", True)
+        result = analyze(path, conf=thr, exclude_folders=exclude_folders, **options)
+        analyzer.defs = framework_definitions(json.loads(result))
+        return result
+
+    patch.setattr(reference_analyzer, "analyze", analyze)
+    patch.setattr(reference_analyzer.Skylos, "analyze", analyze_instance)
+    if hasattr(module, "_scan"):
+        patch.setattr(web_framework_fixtures, "analyze", analyze)
+    if module.__name__ == "test.test_django_historical_consumer_controls":
+        from test import test_django_app_repro_liveness
+
+        patch.setattr(test_django_app_repro_liveness, "analyze", analyze)
+    if hasattr(module, "analyze"):
+        patch.setattr(module, "analyze", analyze)

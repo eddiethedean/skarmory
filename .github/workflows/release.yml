@@ -16,6 +16,7 @@ on:
       - 'scripts/publish_crates.py'
       - 'scripts/update_third_party_notices.py'
       - 'scripts/check_dead_code_gate.py'
+      - 'scripts/phase03_review_assertions.py'
       - 'tests/conformance/baselines/skylos-5.7.0.toml'
       - 'tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt'
       - 'tests/conformance/phase03-inventory.toml'

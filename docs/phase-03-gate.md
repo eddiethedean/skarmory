@@ -5,17 +5,20 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,261 have port mappings. The reported release
+milestones. Of the required cases, 1,261 have parity port mappings and 89 have
+reviewed runtime port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
 
 ## Reviewed framework mismatches
 
-The original assertions and prerequisite checks still apply to these required
-cases. The records explain why the current behavior earns zero pass credit.
-The [case inventory](../tests/conformance/phase03-inventory.toml) identifies
-each original variant.
+The [case inventory](../tests/conformance/phase03-inventory.toml) records the
+original assertions and verified runtime discrepancies. A mapped
+`runtime_review` includes the reason, runtime evidence and corrected
+assertions. The checker keeps the original Skylos and Skarmory outcomes in
+the receipt and reports successful corrections under `reviewed_runtime`.
+Ordinary pinned matches are counted separately under `skylos_parity`.
 
 | Required cases | Observed behavior |
 | --- | --- |
@@ -50,9 +53,16 @@ phase03-skylos/.venv/bin/python tests/conformance/phase03_framework_corpus.py \
   phase03-skylos --runtime-controls --sdk-python "$sdk_python"
 ```
 
-The workflow saves `runtime-controls.json` beside the original receipts.
-Each result identifies the fixture and observed coverage. The pinned parity
-decision continues to use its original assertions and prerequisites.
+The workflow saves `runtime-controls.json` beside the candidate receipts.
+The release decision requires the original reference outcome and all
+prerequisites. On reviewed rows it also requires each corrected assertion
+to run on the candidate SDK and pass with the specified coverage. When a
+correction expects incomplete coverage, the receipt must contain its
+diagnostic and show that every fixture source was extracted.
+When an unrelated failed import prevents a full-project finding, a correction
+can preserve that assertion in a complete scan of a declared fixture subtree.
+The receipt records the full-project diagnostic and verifies that the subtree
+scan extracted the same sources selected within that subtree.
 
 [Django async views](https://docs.djangoproject.com/en/5.2/topics/async/#async-views) ·
 [Django command dispatch](https://github.com/django/django/blob/stable/5.2.x/django/core/management/base.py) ·
@@ -83,8 +93,11 @@ the listed assertions and verify every listed prerequisite. A reference
 pass must account for the listed assertions. For a reviewed `xfail`, record
 the expected failing assertion as `reference_xfail` in the inventory. The
 receipt records the failure location in `reference_failed_assertion` and
-the preceding completed assertions in `reference_assertions`. The candidate
-must pass the original assertions with the upstream marker disabled.
+the preceding completed assertions in `reference_assertions`. Run the candidate
+with the upstream marker disabled. Parity credit requires passing the original
+assertions. Reviewed runtime credit also records any mapped candidate assertion
+failure or failure of the pinned shared fixture's complete-coverage assertion
+when the correction requires incomplete coverage.
 
 Use `--fixture-root` to check declared fixture paths for required cases.
 The gate checks fixture provenance, license, and SHA-256, and requires

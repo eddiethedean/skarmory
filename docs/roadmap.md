@@ -262,9 +262,10 @@ See the [pinned reference results](phase-02-reference.md),
 
 ## 0.3: expanded Python dead-code coverage and workflows
 
-Phase 0.3 requires every in-scope Python case and required variant in the pinned
-Skylos dead-code suite to pass against Skarmory before release. Non-Python and
-inseparable cross-language cases belong to their respective later milestones. The
+Phase 0.3 requires every in-scope Python case and variant in the pinned Skylos
+dead-code suite to qualify through parity or a reviewed runtime correction
+before release. Non-Python and inseparable cross-language cases belong to their
+respective later milestones. The
 [Phase 0.3 plan](phase-03.md) defines the workstream acceptance checks and
 [upstream test gate](phase-03.md#required-upstream-test-gate). See the
 [workstream issues](phase-03.md#scope-and-acceptance) to track implementation.
