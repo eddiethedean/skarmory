@@ -644,6 +644,7 @@ pub(super) fn analyze_with_verification(
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
+        django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_settings_sources: BTreeSet::new(),
@@ -840,6 +841,7 @@ struct Graph<'a> {
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
+    django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
@@ -6041,6 +6043,7 @@ impl<'a> Graph<'a> {
                 self.with_explicit_receiver(invocation, positional, keywords, |graph, value| {
                     graph.identity(scope, value, before, 0)
                 });
+            self.record_django_autoreload_method_arguments(invocation, call, certainty);
             if !invocation.verified
                 && let Some(class) = invocation.receiver.supplied()
                 && self.is_django_command_class(class)
@@ -14479,6 +14482,85 @@ class Command:
                 .evidence
                 .iter()
                 .any(|event| event.full_name == "app.blocked" || event.full_name == "app.later")
+        );
+    }
+
+    #[test]
+    fn phase03_launched_django_command_forwards_autoreload_through_a_bound_method() {
+        for call in [
+            "self.start(callback)",
+            "saved = self.start\n        saved(target=callback)",
+        ] {
+            let command = format!(
+                "from django.core.management.base import BaseCommand\nfrom django.utils import autoreload\ndef callback(): return None\n\
+class Command(BaseCommand):\n    def handle(self, *args, **options):\n        {call}\n    def start(self, target):\n        autoreload.run_with_reloader(target)\n"
+            );
+            let selected = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        &command,
+                    ),
+                ],
+                &[],
+            );
+            assert!(selected.issues.is_empty(), "{call}: {:?}", selected.issues);
+            assert!(
+                selected
+                    .evidence
+                    .iter()
+                    .any(|event| event.full_name.ends_with(".callback")
+                        && event.kind == "django_autoreload"
+                        && event.certainty == "certain"),
+                "{call}: {:?}",
+                selected.evidence
+            );
+            let dormant = analyze_phase03(
+                &[module(
+                    "demo/management/commands/audit.py",
+                    "demo.management.commands.audit",
+                    &command,
+                )],
+                &[],
+            );
+            assert!(
+                !dormant
+                    .evidence
+                    .iter()
+                    .any(|event| event.kind == "django_autoreload")
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_autoreload_wrapper_rejects_an_unmapped_descriptor_receiver() {
+        let result = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                "from django.utils import autoreload\ndef callback(): return None\ndef forward(target, extra=None):\n    autoreload.run_with_reloader(target)\nclass Adapter:\n    run = forward\nAdapter().run(callback)\n",
+            )],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|event| event.kind == "django_autoreload")
         );
     }
 

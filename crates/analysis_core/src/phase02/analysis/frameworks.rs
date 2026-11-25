@@ -1558,6 +1558,66 @@ impl Graph<'_> {
         .then_some(invocation)
     }
 
+    pub(super) fn record_django_autoreload_method_arguments(
+        &mut self,
+        invocation: Invocation,
+        call: CallArguments<'_>,
+        certainty: &'static str,
+    ) {
+        let Receiver::Bound(class) = invocation.receiver else {
+            return;
+        };
+        let target = invocation.target;
+        if invocation.verified
+            || !self.is_django_command_class(class)
+            || self.receiver_parameter(target).is_none()
+            || !self.bounded_framework_function(target)
+        {
+            return;
+        }
+        let Binding::Definition(definition, _) = self.symbols[target].binding else {
+            return;
+        };
+        if !definition.simple_positional_parameters {
+            return;
+        }
+        let parameters = &definition.parameters[1..];
+        let required = parameters.len().saturating_sub(definition.defaults.len());
+        let mut values = BTreeMap::new();
+        for (name, expression) in parameters
+            .iter()
+            .map(|p| &p.text)
+            .zip(call.positional)
+            .chain(call.keywords.iter().map(|(name, expr)| (name, expr)))
+        {
+            values.insert(
+                name.clone(),
+                self.identity_with_dormant_declarations(call.scope, expression, call.before, 0),
+            );
+        }
+        let arguments_bound = call.positional.len() <= parameters.len()
+            && values.len() == call.positional.len() + call.keywords.len()
+            && parameters[..required]
+                .iter()
+                .all(|p| values.contains_key(&p.text))
+            && call
+                .keywords
+                .iter()
+                .all(|(name, _)| parameters.iter().any(|p| p.text == *name));
+        self.django_autoreload_method_arguments
+            .entry(target)
+            .or_default()
+            .push(DirectArguments {
+                caller: call.scope,
+                at: call.at,
+                implicit_receiver: false,
+                values,
+                forwarded: BTreeMap::new(),
+                conditional: certainty != "certain" || self.branch_depth != 0,
+                arguments_bound,
+            });
+    }
+
     fn django_autoreload_wrapper_targets(
         &mut self,
         hook: DjangoParameterRegistration,
@@ -1569,14 +1629,25 @@ impl Graph<'_> {
             .get(&hook.owner)
             .into_iter()
             .flatten()
+            .chain(
+                self.django_autoreload_method_arguments
+                    .get(&hook.owner)
+                    .into_iter()
+                    .flatten(),
+            )
             .filter(|call| reach.scopes.contains(&call.caller))
             .map(|call| {
+                let deferred = self.scopes[call.caller].owner.is_some_and(|caller| {
+                    !reach
+                        .evidence
+                        .contains(&(caller, "django_command", "certain"))
+                });
                 (
-                    call.arguments_bound
+                    (call.arguments_bound && !call.implicit_receiver)
                         .then(|| call.values.get(parameter).cloned())
                         .flatten()
                         .unwrap_or(Value::Unknown),
-                    call.conditional || self.scopes[call.caller].owner.is_some(),
+                    call.conditional || deferred,
                 )
             })
             .collect();

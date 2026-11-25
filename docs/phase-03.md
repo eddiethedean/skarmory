@@ -338,6 +338,9 @@ replacement. Reading code metadata does not execute the method.
 Proven construction or argument setup failures leave later stages dormant.
 Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.
+An activated command can forward an autoreload callback through a resolved
+bound method or captured bound alias. Argument binding accounts for the
+implicit receiver.
 An explicit call on a resolved `BaseCommand` instance can identify `handle`
 parameters as part of its callback contract. Bounded zero-argument Manager
 and QuerySet construction follows actual initializer hooks. ORM operations
