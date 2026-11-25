@@ -217,6 +217,7 @@ impl Graph<'_> {
                     || is_flask_login_constructor(&qualified)
                     || is_django_receiver(&qualified)
                     || is_django_signal_constructor(&qualified)
+                    || qualified == "django.utils.autoreload.run_with_reloader"
                     || member == "connect" && is_django_signal(module)
             }
             ReceiverKey::Signal(_) => member == "connect",
@@ -412,5 +413,6 @@ fn provider_module(name: &str) -> bool {
             | "django.db.models.signals"
             | "flask_login"
             | "flask_login.login_manager"
+            | "django.utils.autoreload"
     )
 }

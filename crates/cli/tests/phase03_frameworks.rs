@@ -312,6 +312,82 @@ app = FastAPI(on_startup=[startup])
 }
 
 #[test]
+fn fastapi_environment_guard_keeps_possible_handler_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"import os
+from fastapi import FastAPI
+
+def handle_error(request, exc): return helper()
+def helper(): return 1
+def retired(): return 2
+
+app = FastAPI()
+if os.getenv('USE_HANDLER'):
+    app.add_exception_handler(Exception, handle_error)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["web.retired"]);
+    assert!(findings(&report, "unused_parameters").is_empty());
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|row| {
+        row["qualified_name"] == "web.handle_error"
+            && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                edge["kind"] == "fastapi_exception_handler" && edge["certainty"] == "possible"
+            })
+    }));
+}
+
+#[test]
+fn fastapi_mounted_asgi_callback_does_not_activate_api_dependencies() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import Depends, FastAPI
+
+def api_only(): return 1
+def side_effect(): return 2
+def dormant_effect(): return 3
+
+async def active(scope, receive, send): return side_effect()
+async def dormant(scope, receive, send): return dormant_effect()
+
+app = FastAPI(dependencies=[Depends(api_only)])
+app.mount('/active', app=active)
+
+def unused_setup():
+    app.mount('/dormant', dormant)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "web.api_only",
+            "web.dormant",
+            "web.dormant_effect",
+            "web.unused_setup"
+        ]
+    );
+    assert!(
+        findings(&report, "unused_parameters")
+            .iter()
+            .all(|name| !name.starts_with("web.active."))
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|row| {
+        row["qualified_name"] == "web.active"
+            && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                edge["kind"] == "fastapi_asgi_application" && edge["certainty"] == "certain"
+            })
+    }));
+}
+
+#[test]
 fn fastapi_dependency_uses_the_effective_replacement_binding() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -969,6 +1045,83 @@ print(Item, Owner, Ordinary, Linked)
 }
 
 #[test]
+fn celery_backends_follow_effective_settings_and_the_first_load() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        "class Selected: pass\nclass Replacement: pass\nclass Dormant: pass\nclass Substitute: pass\nAlias = Selected\nSelected = Substitute\n",
+    )
+    .unwrap();
+    let app = root.join("jobs.py");
+    let first = r#"from celery import Celery
+
+app = Celery('jobs', backend='providers:Alias')
+config = app.conf
+config.update({'task_serializer': 'json'})
+app.backend
+config['result_backend'] = 'providers:Replacement'
+
+other = Celery('other')
+other.conf.result_backend = 'providers:Dormant'
+del other.conf['result_backend']
+"#;
+    fs::write(&app, first).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["providers.Dormant", "providers.Replacement"],
+        "{report}"
+    );
+    let assert_backend = |report: &Value, expected: &str| {
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["qualified_name"] == expected
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "celery_backend" && edge["certainty"] == "certain"
+                    })),
+            "{report}"
+        );
+    };
+    assert_backend(&report, "providers.Selected");
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        app,
+        first.replace("app.backend\n", "False and app.backend\n"),
+    )
+    .unwrap();
+    let changed = scan(root);
+    assert_eq!(
+        findings(&changed, "unused_classes"),
+        ["providers.Dormant"],
+        "{changed}"
+    );
+    assert_backend(&changed, "providers.Replacement");
+    assert!(
+        changed["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["qualified_name"] == "providers.Selected")
+            .flat_map(|row| row["evidence"].as_array().unwrap())
+            .all(|edge| edge["kind"] != "celery_backend"),
+        "{changed}"
+    );
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, changed);
+}
+
+#[test]
 fn celery_task_class_needs_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -1563,6 +1716,56 @@ fn django_management_settings_option_selects_the_installed_commands() {
             }),
         "{report}"
     );
+}
+
+#[test]
+fn django_autoreload_requires_a_reached_genuine_provider() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("startup.py"),
+        r#"from django.utils import autoreload
+
+def start():
+    return helper()
+
+def helper():
+    return 1
+
+def dormant():
+    return 2
+
+def unreached():
+    autoreload.run_with_reloader(dormant)
+
+def replaced():
+    return 3
+
+def noop(callback):
+    pass
+
+reload = autoreload.run_with_reloader
+autoreload.run_with_reloader = noop
+autoreload.run_with_reloader(replaced)
+reload(main_func=start)
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    let callbacks = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let roots: Vec<_> = callbacks
+        .iter()
+        .filter(|row| {
+            row["evidence"].as_array().unwrap().iter().any(|event| {
+                event["kind"] == "django_autoreload" && event["certainty"] == "certain"
+            })
+        })
+        .map(|row| row["qualified_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(roots, ["startup.start"]);
+    let unused = findings(&report, "unused_functions");
+    assert!(unused.contains(&"startup.dormant"));
+    assert!(!unused.contains(&"startup.helper"));
 }
 
 #[test]

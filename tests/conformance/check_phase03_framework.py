@@ -112,7 +112,8 @@ def run(upstream, sdk_python, selected, backend, diagnostics_path=None):
             if sdk_python is None:
                 return (yield)
 
-            scans = self.diagnostics[item.nodeid] = []
+            scans = []
+            self.diagnostics[item.nodeid] = {"scans": scans, "outcome": "error"}
 
             def analyze(path, **options):
                 candidate_path = Path(path).absolute()
@@ -157,6 +158,9 @@ def run(upstream, sdk_python, selected, backend, diagnostics_path=None):
         def pytest_runtest_logreport(self, report):
             if report.skipped:
                 self.skipped.append(report.nodeid)
+            if sdk_python is not None and (report.when == "call" or not report.passed):
+                case = self.diagnostics.setdefault(report.nodeid, {"scans": []})
+                case["outcome"] = report.outcome
 
     args = ["-q", "-p", "no:cacheprovider"]
     if sdk_python:

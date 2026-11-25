@@ -226,6 +226,7 @@ impl Graph<'_> {
         let slots = match kind {
             "fastapi_lifespan" => 1,
             "fastapi_exception_handler" | "fastapi_middleware" => 2,
+            "fastapi_asgi_application" => 3,
             _ => return false,
         };
         let Binding::Definition(definition, scope) = self.symbols[target].binding else {
@@ -275,6 +276,40 @@ impl Graph<'_> {
         method: &str,
     ) {
         self.record_fastapi_route(object, target, call, method, false);
+    }
+
+    pub(super) fn fastapi_asgi_mount(&mut self, object: Object, call: CallArguments<'_>) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        if let Some([Some(path), Some(app), _]) =
+            registration_arguments(positional, keywords, ["path", "app", "name"])
+            && matches!(self.probe_identity(scope, path, before), Value::Text(path) if path.is_empty() || path.starts_with('/'))
+        {
+            let value = self.identity(scope, app, before, 0);
+            if let Some(target) = self.fastapi_hook_target(value)
+                && matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                    if definition.kind == DefinitionKind::Coroutine
+                        && definition.simple_positional_parameters
+                        && definition.parameters.len() == 3)
+                && self.scopes[self.symbols[target].scope]
+                    .owner
+                    .is_none_or(|owner| !self.is_class(owner))
+            {
+                self.fastapi_route(object, target, call, "mount");
+                return;
+            }
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_registration",
+            "FastAPI mount requires a supported ASGI application and literal path",
+        );
     }
 
     pub(super) fn fastapi_literal_route_loop(
@@ -347,6 +382,7 @@ impl Graph<'_> {
         let effects = self.fastapi_effect_scope(site);
         let kind = match method {
             "on_event" => "fastapi_lifecycle",
+            "mount" => "fastapi_asgi_application",
             "exception_handler" | "add_exception_handler" => "fastapi_exception_handler",
             "middleware" | "add_middleware" => "fastapi_middleware",
             _ => "fastapi_registration",
