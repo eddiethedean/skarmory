@@ -258,6 +258,9 @@ impl<'a> Replay<'_, 'a> {
                     // This branch has reached the import. Resolve the source
                     // member directly and keep the other branches' prior values.
                     let value = self.graph.binding_value(binding, 0);
+                    let value = self
+                        .graph
+                        .exact_settings_collection_version(self.name, binding, value);
                     if value.contains_unknown() {
                         return None;
                     }

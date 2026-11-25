@@ -164,10 +164,19 @@ impl Graph<'_> {
                 {
                     continue;
                 }
-                let value = effective_collections
-                    .remove(name)
-                    .unwrap_or_else(|| self.binding(binding, END, 0));
+                let value = effective_collections.remove(name).unwrap_or_else(|| {
+                    let value = self.binding(binding, END, 0);
+                    self.exact_settings_collection_version(name, binding, value)
+                });
                 let mut paths = Vec::new();
+                if name == "LOGGING" && opaque_logging_version(&value) {
+                    self.scope_issue(
+                        settings,
+                        self.symbols[binding].name.at,
+                        "unresolved_registration",
+                        "Django logging configuration version could not be resolved",
+                    );
+                }
                 collect_settings_paths(name, &value, &mut paths);
                 for (path, protocol) in paths {
                     self.django_settings_protocol(
@@ -190,6 +199,82 @@ impl Graph<'_> {
             );
         }
         roots
+    }
+
+    fn exact_settings_collection_version(
+        &self,
+        name: &str,
+        binding: SymbolId,
+        mut value: Value,
+    ) -> Value {
+        if name == "LOGGING"
+            && let Value::Mapping(items) = &mut value
+            && let Some(pair) = items
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .rev()
+                .find(|[key, _]| matches!(key, Value::Text(key) if key == "version"))
+            && matches!(pair[1], Value::Scalar)
+            && let Some(version) = self.literal_logging_version(binding, 0)
+        {
+            pair[1] = Value::Integer(version);
+        }
+        value
+    }
+
+    fn literal_logging_version(&self, binding: SymbolId, depth: usize) -> Option<i64> {
+        if depth >= MAX_BINDING_CHAIN || self.binding_depends_on_branch(binding, END) {
+            return None;
+        }
+        let row = &self.symbols[binding];
+        match row.binding {
+            Binding::Variable(Some(value), before) => match &value.kind {
+                ExpressionKind::Scalar(Some(version)) => Some(*version),
+                ExpressionKind::Name(name) => {
+                    self.literal_logging_version(self.lexical(row.scope, name, before)?, depth + 1)
+                }
+                ExpressionKind::Dictionary(items) => {
+                    let [_, version] = items.as_chunks::<2>().0.iter().rev().find(
+                        |[key, _]| matches!(&key.kind, ExpressionKind::Text(key) if key == "version"),
+                    )?;
+                    match &version.kind {
+                        ExpressionKind::Scalar(Some(version)) => Some(*version),
+                        ExpressionKind::Name(name) => self.literal_logging_version(
+                            self.lexical(row.scope, name, before)?,
+                            depth + 1,
+                        ),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            Binding::Import(import) => {
+                let module = self.import_module(self.scopes[row.scope].file, import)?;
+                let file = *self.modules.get(module.as_str())?;
+                let member = import.member.as_deref()?;
+                let access = (row.scope, import.local.at);
+                let before = self
+                    .import_member_position(row.scope, &module, import)
+                    .unwrap_or(END);
+                if self.failed_terminal_modules.contains(&file)
+                    || self.module_member_write(&module, member, access).is_some()
+                {
+                    return None;
+                }
+                let ModuleMember::Binding(source, _) = self.selected_module_member(
+                    file,
+                    member,
+                    before,
+                    access,
+                    ModuleMemberAccess::FromImport,
+                ) else {
+                    return None;
+                };
+                self.literal_logging_version(source, depth + 1)
+            }
+            _ => None,
+        }
     }
 
     fn django_settings_initializer_writes(&mut self, start: ScopeId) -> Option<SettingsWrites> {
@@ -579,6 +664,13 @@ fn possible_edge(target: SymbolId, kind: &'static str) -> Edge {
     }
 }
 
+fn opaque_logging_version(value: &Value) -> bool {
+    match value {
+        Value::Alternatives(values) => values.iter().any(opaque_logging_version),
+        _ => matches!(get(value, "version"), Some(Value::Scalar | Value::Unknown)),
+    }
+}
+
 fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a str, Protocol)>) {
     if let Value::Alternatives(values) = value {
         for value in values {
@@ -609,12 +701,12 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                 }
             }
         }
-        // Replayed literals keep the exact integer value. Other sources
-        // may still use the coarse scalar model.
+        // dictConfig rejects an omitted or unsupported version before
+        // resolving any formatter or filter factories.
         ("LOGGING", _)
             if matches!(
                 get(value, "version"),
-                Some(Value::Integer(1) | Value::Scalar | Value::Bool(true))
+                Some(Value::Integer(1) | Value::Bool(true))
             ) =>
         {
             for section in ["filters", "formatters"] {

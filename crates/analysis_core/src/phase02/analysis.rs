@@ -11318,6 +11318,50 @@ configure()
     }
 
     #[test]
+    fn django_settings_prove_literal_logging_versions_through_named_imports() {
+        let formatters = "import logging\nclass Formatter(logging.Formatter):\n    def format(self, record): return record.getMessage()\n";
+        for (version, active) in [(0, false), (1, true), (2, false)] {
+            let logging = format!(
+                "{{'version': {version}, 'formatters': {{'active': {{'()': 'shop.formatters.Formatter'}}}}}}"
+            );
+            let base = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n";
+            let origin = format!("ORIGINAL = {logging}\n");
+            for settings in [
+                format!("{base}LOGGING = {logging}\n"),
+                format!(
+                    "{base}VERSION = {version}\nLOGGING = {}\n",
+                    logging.replace(&format!("'version': {version}"), "'version': VERSION")
+                ),
+                format!("{base}from shop.reexports import EXPORTED as LOGGING\n"),
+            ] {
+                let report = analyze_phase03(
+                    &[
+                        module("shop/__init__.py", "shop", ""),
+                        module("shop/settings.py", "shop.settings", &settings),
+                        module(
+                            "shop/reexports.py",
+                            "shop.reexports",
+                            "from shop.logging_data import ORIGINAL as EXPORTED\n",
+                        ),
+                        module("shop/logging_data.py", "shop.logging_data", &origin),
+                        module("shop/formatters.py", "shop.formatters", formatters),
+                    ],
+                    &[],
+                );
+                assert!(report.issues.is_empty(), "{settings}: {:?}", report.issues);
+                assert_eq!(
+                    report
+                        .evidence
+                        .iter()
+                        .any(|row| row.kind == "django_logging_factory"),
+                    active,
+                    "{version}: {settings}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn wagtail_registration_and_block_schema_use_canonical_providers() {
         let providers = "from django.db import models\nfrom wagtail.contrib.settings.models import BaseSiteSetting, register_setting\nfrom wagtail.blocks import CharBlock, ListBlock, StreamBlock, StructBlock\n";
         let declarations = "@register_setting(icon='site')\nclass SiteSettings(BaseSiteSetting):\n    footer = models.CharField(max_length=10)\n    unrelated = 1\n\nclass Quote(StructBlock):\n    text = CharBlock()\n    class Meta:\n        label_format = '{text}'\n        ignored = 'control'\n\nclass Body(StreamBlock):\n    items = ListBlock(CharBlock())\n";
