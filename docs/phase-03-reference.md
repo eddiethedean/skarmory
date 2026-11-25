@@ -207,3 +207,13 @@ records the original assertion locations and either an installed SDK port or
 the outstanding compatibility difference. The Django source-edit cases reuse
 the native fact cache across the original edits. They verify that the changed
 file is re-extracted and that the resulting report agrees with a fresh scan.
+
+The next framework qualification covers bounded logging configuration edits,
+Celery router selection and argument binding, Django backend list edits, and
+model methods referenced through mounted Django DetailView templates. The
+original cases still distinguish declared settings references from framework
+activation evidence. Some pinned named-setting assertions classify the same
+configured method as a framework root when no startup is proved. Skarmory
+retains possible-use evidence in that situation, so those rows remain open.
+The Celery class-scope fixture also remains open. Its router does not accept
+the task keyword used by the provider.
