@@ -417,6 +417,12 @@ constructor. Selected formatter overrides can format a standard log record
 and serialize its literal string fields. An opaque configuration or consumer
 leaves coverage incomplete.
 
+Wagtail settings registration supports direct subclasses of the standard site or
+generic settings base and a literal registration icon. The analyzer also
+recognizes bounded Wagtail StructBlock and StreamBlock field declarations and
+literal block metadata. Registry evidence represents declarations, with admin
+request dispatch analyzed separately.
+
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
 Django template directories, literal inheritance and includes, and supported

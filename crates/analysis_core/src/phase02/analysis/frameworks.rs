@@ -300,6 +300,7 @@ impl Graph<'_> {
             .filter(|&id| self.is_class(id) && !self.dormant_classes.contains(&id))
             .collect();
         for class in classes {
+            self.collect_wagtail_declaration(class);
             let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
                 continue;
             };

@@ -47,6 +47,7 @@ mod pydantic;
 mod sanic;
 mod starlette;
 mod terminal;
+mod wagtail;
 
 pub(super) use django_templates::TemplateProject;
 
@@ -3188,6 +3189,7 @@ impl<'a> Graph<'a> {
                     || self.phase03
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
+                            || self.wagtail_declaration_base(&name)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -5074,6 +5076,13 @@ impl<'a> Graph<'a> {
                             scope, before, at: expr.at, positional: arguments, keywords,
                         },
                     ),
+                    Value::Provider(name) if self.phase03
+                        && self.wagtail_field_constructor(
+                            CallArguments {
+                                scope, before, at: expr.at, positional: arguments, keywords,
+                            },
+                            &name,
+                        ) => {}
                     Value::Provider(name) if self.phase03 && django_forms::is_field_provider(&name) => {
                         if self.django_field_value(
                             &name,
@@ -7465,6 +7474,9 @@ impl<'a> Graph<'a> {
                         .push((owner, target, "framework_lifecycle"));
                 }
             }
+            Value::Provider(name) if self.phase03 && wagtail::is_setting_registrar(&name) => {
+                self.register_wagtail_setting(scope, decorator, target, args, keywords);
+            }
             Value::Provider(name)
                 if self.phase03
                     && matches!(
@@ -9403,6 +9415,8 @@ impl<'a> Graph<'a> {
                         | "django_migration_callback_declaration"
                         | drf::PROTOCOL_DECLARATION
                         | drf::FIELD_DECLARATION
+                        | wagtail::FIELD_DECLARATION
+                        | wagtail::BLOCK_METADATA
                         | mcp_tools::DECORATOR_APPLICATION
                         | "click_command_declaration"
                         | "celery_task_declaration"
@@ -9866,6 +9880,8 @@ impl<'a> Graph<'a> {
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
                     | drf::FIELD_DECLARATION
+                    | wagtail::FIELD_DECLARATION
+                    | wagtail::BLOCK_METADATA
             ) {
                 self.read.insert(id);
             }
@@ -11206,6 +11222,105 @@ configure()
                 .issues
                 .iter()
                 .any(|issue| issue.kind == "unresolved_call")
+        );
+    }
+
+    #[test]
+    fn wagtail_registration_and_block_schema_use_canonical_providers() {
+        let providers = "from django.db import models\nfrom wagtail.contrib.settings.models import BaseSiteSetting, register_setting\nfrom wagtail.blocks import CharBlock, ListBlock, StreamBlock, StructBlock\n";
+        let declarations = "@register_setting(icon='site')\nclass SiteSettings(BaseSiteSetting):\n    footer = models.CharField(max_length=10)\n    unrelated = 1\n\nclass Quote(StructBlock):\n    text = CharBlock()\n    class Meta:\n        label_format = '{text}'\n        ignored = 'control'\n\nclass Body(StreamBlock):\n    items = ListBlock(CharBlock())\n";
+        let report = analyze_phase03(
+            &[module(
+                "site/models.py",
+                "site.models",
+                &format!("{providers}{declarations}"),
+            )],
+            &[],
+        );
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for (name, kind) in [
+            ("site.models.SiteSettings", "wagtail_setting_registration"),
+            (
+                "site.models.SiteSettings.footer",
+                "wagtail_field_declaration",
+            ),
+            ("site.models.Quote.text", "wagtail_field_declaration"),
+            ("site.models.Body.items", "wagtail_field_declaration"),
+        ] {
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name == name && row.kind == kind),
+                "{name}: {:?}",
+                report.evidence
+            );
+        }
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|row| row.full_name.ends_with(".Meta.label_format")
+                    && row.kind == "wagtail_block_metadata")
+        );
+        let reported: BTreeSet<_> = report
+            .findings
+            .iter()
+            .map(|row| row.full_name.as_str())
+            .collect();
+        assert!(!reported.iter().any(|name| name.ends_with(".footer")));
+        assert!(!reported.iter().any(|name| name.ends_with(".items")));
+        assert!(!reported.iter().any(|name| name.ends_with(".label_format")));
+        assert!(reported.iter().any(|name| name.ends_with(".unrelated")));
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind.starts_with("wagtail_")
+                    && (row.full_name.ends_with(".unrelated")
+                        || row.full_name.ends_with(".ignored")))
+        );
+
+        let report = analyze_phase03(
+            &[module(
+                "site/models.py",
+                "site.models",
+                &format!(
+                    "{providers}from external import ICON\n{}",
+                    declarations.replace("icon='site'", "icon=ICON")
+                ),
+            )],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind == "wagtail_setting_registration")
+        );
+
+        let report = analyze_phase03(
+            &[
+                module("wagtail/__init__.py", "wagtail", ""),
+                module(
+                    "site/models.py",
+                    "site.models",
+                    &format!("{providers}{declarations}"),
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind.starts_with("wagtail_"))
         );
     }
 
