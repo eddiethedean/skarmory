@@ -286,9 +286,13 @@ impl Graph<'_> {
             Value::Object(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint) => {
                 Some(ReceiverKey::FlaskApplication(*site))
             }
-            Value::Object(site, ObjectKind::App | ObjectKind::Router) => {
-                Some(ReceiverKey::Fastapi(*site))
-            }
+            Value::Object(
+                site,
+                ObjectKind::App
+                | ObjectKind::Router
+                | ObjectKind::StarletteApp
+                | ObjectKind::AiohttpRouteTable,
+            ) => Some(ReceiverKey::Fastapi(*site)),
             _ => None,
         }
     }

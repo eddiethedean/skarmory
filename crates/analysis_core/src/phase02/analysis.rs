@@ -17,14 +17,17 @@ use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
+mod aiohttp;
 mod celery;
 mod comprehension;
 mod fastapi;
 mod flask;
 mod frameworks;
+mod gunicorn;
 mod mutations;
 mod pydantic;
 mod sanic;
+mod starlette;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -202,7 +205,7 @@ impl Receiver {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum ObjectKind {
     App,
     Router,
@@ -211,6 +214,8 @@ enum ObjectKind {
     FlaskLoginManager,
     TyperApp,
     SanicApp,
+    StarletteApp,
+    AiohttpRouteTable,
     CeleryApp,
 }
 
@@ -574,7 +579,9 @@ pub(super) fn analyze_with_verification(
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
-        graph.collect_sanic_cli_app();
+        graph.collect_conventional_app(ObjectKind::SanicApp);
+        graph.collect_conventional_app(ObjectKind::StarletteApp);
+        graph.collect_gunicorn_config();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
@@ -2530,23 +2537,27 @@ impl<'a> Graph<'a> {
             Value::CeleryConfig(object) if name == "update" => {
                 Value::Method(object, ObjectKind::CeleryApp, "conf.update".into())
             }
-            Value::Object(site, kind @ (ObjectKind::App | ObjectKind::Router)) if self.phase03 => {
-                match self.fastapi_member_write(site, name, access) {
-                    Some(mutations::MemberWriteValue::Replacement(value)) => value,
-                    Some(mutations::MemberWriteValue::Deleted) | None => {
-                        Value::Method(site, kind, name.into())
-                    }
-                    Some(mutations::MemberWriteValue::Ambiguous) => {
-                        self.scope_issue(
-                            access.0,
-                            access.1,
-                            "unresolved_attribute_write",
-                            "FastAPI registration method depends on an unresolved write",
-                        );
-                        Value::Unknown
-                    }
+            Value::Object(
+                site,
+                kind @ (ObjectKind::App
+                | ObjectKind::Router
+                | ObjectKind::StarletteApp
+                | ObjectKind::AiohttpRouteTable),
+            ) if self.phase03 => match self.fastapi_member_write(site, name, access) {
+                Some(mutations::MemberWriteValue::Replacement(value)) => value,
+                Some(mutations::MemberWriteValue::Deleted) | None => {
+                    Value::Method(site, kind, name.into())
                 }
-            }
+                Some(mutations::MemberWriteValue::Ambiguous) => {
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "unresolved_attribute_write",
+                        "ASGI registration method depends on an unresolved write",
+                    );
+                    Value::Unknown
+                }
+            },
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
@@ -3476,6 +3487,36 @@ impl<'a> Graph<'a> {
                         }
                         _ => Value::Unknown,
                     }
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && aiohttp::is_route_table(&name)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::AiohttpRouteTable,
+                    )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && starlette::is_constructor(&name)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::StarletteApp,
+                    )
                 }
                 Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
                     self.sanic_constructor(scope, expression.at, before, arguments, keywords)
@@ -4761,6 +4802,11 @@ impl<'a> Graph<'a> {
                     {
                         self.scopes[scope].activated_apps.push(object);
                     }
+                    Value::Method(object, ObjectKind::StarletteApp, method) if method == "add_route" => {
+                        self.register_starlette_route(object, CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
                     Value::Method(object, ObjectKind::CeleryApp, method)
                         if self.phase03
                             && matches!(method.as_str(), "conf.update" | "config_from_object") =>
@@ -5119,6 +5165,16 @@ impl<'a> Graph<'a> {
                     Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
                         if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && starlette::is_constructor(&name) => {
+                        if !arguments.is_empty() || !keywords.is_empty() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Starlette constructor arguments are outside the bounded model");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && aiohttp::is_route_table(&name) => {
+                        if !arguments.is_empty() || !keywords.is_empty() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
                         }
                     }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
@@ -6287,6 +6343,12 @@ impl<'a> Graph<'a> {
             return false;
         }
         match self.call_target_identity(scope, function, before, 0) {
+            Value::Method(_, ObjectKind::AiohttpRouteTable, name)
+                if aiohttp::is_http_decorator(&name)
+                    && self.aiohttp_route_declaration(scope, target, decorator, before) =>
+            {
+                return true;
+            }
             Value::Method(object, ObjectKind::App, name)
                 if self.phase03 && name == "middleware" =>
             {
@@ -8262,6 +8324,8 @@ impl<'a> Graph<'a> {
                         | "generator_creation"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
+                        | aiohttp::DECLARATION
+                        | gunicorn::DECLARATION
                         | "marshmallow_schema_registry"
                         | "marshmallow_schema_options"
                         | "marshmallow_hook_declaration"
@@ -8327,7 +8391,7 @@ impl<'a> Graph<'a> {
                         pending.push_back(Edge {
                             target,
                             kind,
-                            certainty: if kind == "sanic_listener" {
+                            certainty: if matches!(kind, "sanic_listener" | "starlette_route") {
                                 "possible"
                             } else {
                                 "certain"
@@ -8691,6 +8755,7 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_converter_regex"
                     | "fastapi_parameter"
+                    | gunicorn::DECLARATION
             ) {
                 self.read.insert(id);
             }
@@ -9294,7 +9359,11 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
                 || flask_callback_method(kind, name)
                 || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
-        ObjectKind::FlaskLoginManager | ObjectKind::TyperApp | ObjectKind::SanicApp => false,
+        ObjectKind::FlaskLoginManager
+        | ObjectKind::TyperApp
+        | ObjectKind::SanicApp
+        | ObjectKind::StarletteApp
+        | ObjectKind::AiohttpRouteTable => false,
         ObjectKind::CeleryApp => name == "task",
     }
 }
@@ -9312,7 +9381,10 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
                 || flask_callback_method(kind, method)
         }
         ObjectKind::FlaskLoginManager => flask_login_callback(method),
-        ObjectKind::TyperApp | ObjectKind::SanicApp => false,
+        ObjectKind::TyperApp
+        | ObjectKind::SanicApp
+        | ObjectKind::StarletteApp
+        | ObjectKind::AiohttpRouteTable => false,
         ObjectKind::CeleryApp => method == "task",
     }
 }
@@ -9518,6 +9590,8 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
         ObjectKind::FlaskLoginManager => "flask_login_registration",
         ObjectKind::TyperApp => "typer_callback",
         ObjectKind::SanicApp => "sanic_listener",
+        ObjectKind::StarletteApp => "starlette_route",
+        ObjectKind::AiohttpRouteTable => aiohttp::DECLARATION,
         ObjectKind::CeleryApp => "celery_task",
     }
 }

@@ -82,6 +82,173 @@ fn unreachable_functions(report: &Value) -> Vec<&str> {
 }
 
 #[test]
+fn gunicorn_config_retains_effective_declarations_with_possible_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = "workers = 2\nworkers = 4\nworker_hint = 3\n\n\
+                  def worker_exit(server, worker):\n    server.log.info(worker.pid)\n\n\
+                  def on_message(server, message):\n    return message\n";
+    fs::write(root.join("gunicorn_config.py"), source).unwrap();
+    fs::write(
+        root.join("other.py"),
+        "workers = 2\ndef worker_exit(server, worker): return None\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["gunicorn_config.on_message", "other.worker_exit"]
+    );
+    assert_eq!(
+        findings(&report, "unused_variables"),
+        [
+            "gunicorn_config.worker_hint",
+            "gunicorn_config.workers",
+            "other.workers"
+        ]
+    );
+    for name in ["gunicorn_config.worker_exit", "gunicorn_config.workers"] {
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| symbol["qualified_name"] == name
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "gunicorn_config_declaration"
+                            && edge["certainty"] == "possible"
+                    })),
+            "{report}"
+        );
+    }
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn starlette_routes_require_a_supported_call_and_application() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("app.py");
+    let source = r#"from starlette.applications import Starlette as Application
+
+app = Application()
+dormant = Application()
+async def homepage(request): return None
+async def inactive(request): return None
+app.add_route("/", route=homepage, methods=["GET"])
+dormant.add_route("/", inactive)
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.inactive"]);
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "app.homepage"
+                && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "starlette_route" && edge["certainty"] == "possible"
+                })),
+        "{report}"
+    );
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&path, source.replace("route=homepage", "endpoint=homepage")).unwrap();
+    let invalid = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        invalid["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_registration" }),
+        "{invalid}"
+    );
+
+    fs::write(
+        &path,
+        source.replace(
+            "app.add_route(\"/\"",
+            "def replacement(path, route, methods): return None\napp.add_route = replacement\napp.add_route(\"/\"",
+        ),
+    )
+    .unwrap();
+    let replaced = scan_with_settings(root, None, Some(cache.path()));
+    assert!(
+        !replaced["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "app.homepage"
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| { edge["kind"] == "starlette_route" })),
+        "{replaced}"
+    );
+}
+
+#[test]
+fn aiohttp_route_table_captures_handler_without_running_it() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"from aiohttp import web
+
+routes = web.RouteTableDef()
+
+def helper(): return "ok"
+
+@routes.get("/")
+async def endpoint(request): return helper()
+"#;
+    let path = root.join("routes.py");
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["routes.helper"]);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|symbol| {
+        symbol["qualified_name"] == "routes.endpoint"
+            && symbol["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "aiohttp_route_declaration")
+    }));
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        &path,
+        source.replace(
+            "@routes.get",
+            "routes.get = lambda path: lambda callback: callback\n@routes.get",
+        ),
+    )
+    .unwrap();
+    let replaced = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&replaced, "unused_functions"),
+        ["routes.endpoint", "routes.helper"]
+    );
+}
+
+#[test]
 fn sanic_worker_listener_requires_resolved_registration_and_app_selection() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
