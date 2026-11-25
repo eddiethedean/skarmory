@@ -342,6 +342,93 @@ impl Graph<'_> {
         true
     }
 
+    pub(super) fn terminal_flask_global_initializer(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Evaluate(Expression {
+            kind:
+                ExpressionKind::Call {
+                    function,
+                    arguments,
+                    keywords,
+                },
+            ..
+        }) = &statement.kind
+        else {
+            return false;
+        };
+        if !matches!(function.kind, ExpressionKind::Name(_))
+            || !arguments.is_empty()
+            || !keywords.is_empty()
+        {
+            return false;
+        }
+        let at = statement.at;
+        let read = std::mem::take(&mut self.read);
+        let found = self.probe_identity(scope, function, at);
+        self.read = read;
+        let Value::Callable(Invocation {
+            target,
+            receiver: Receiver::Ordinary,
+            verified: false,
+        }) = found
+        else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = self.symbols[target].binding else {
+            return false;
+        };
+        if self.symbols[target].scope != scope
+            || definition.kind != DefinitionKind::Function
+            || definition.is_generator
+            || !definition.parameters.is_empty()
+            || !definition.decorators.is_empty()
+        {
+            return false;
+        }
+        let [
+            Statement {
+                kind: StatementKind::SetGlobalName { name, value },
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return false;
+        };
+        // The helper reads its global at the call position, before changing the
+        // receiver. A declaration earlier in the module cannot establish absence.
+        if !self.unbound_module_name(scope, value, at) {
+            return false;
+        }
+        let receiver = Expression {
+            kind: ExpressionKind::Name(name.text.clone()),
+            at,
+        };
+        let read = std::mem::take(&mut self.read);
+        let receiver = self.probe_identity(scope, &receiver, at);
+        self.read = read;
+        let flask_receiver = match receiver {
+            Value::Object(
+                _,
+                ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint | ObjectKind::FlaskLoginManager,
+            ) => true,
+            Value::Provider(name) => provider_kind(&name).is_some(),
+            _ => false,
+        };
+        let prefix = &self.scopes[scope].body;
+        let Some(index) = prefix.iter().position(|item| std::ptr::eq(item, statement)) else {
+            return false;
+        };
+        if !flask_receiver || !self.closed_flask_initializers(scope, &prefix[..index]) {
+            return false;
+        }
+        self.walk(scope, function, at);
+        self.edge(scope, target, "flask_initializer_failed_call", "certain");
+        true
+    }
+
     fn flask_constructor_import(&self, scope: ScopeId, statement: &Statement) -> bool {
         matches!(&statement.kind, StatementKind::Import(import) if import.level == 0
             && matches!(import.module.as_str(), "flask" | "flask.app" | "flask_login" | "flask_login.login_manager")

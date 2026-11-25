@@ -391,6 +391,21 @@ impl<'a> Python<'a> {
                     "expanded keyword dependency bindings are outside the bounded model",
                 ));
             }
+            Expr::RepeatedKeywordCall {
+                function,
+                arguments,
+            } => {
+                self.expression(function, bindings);
+                for argument in arguments {
+                    self.expression(argument, bindings);
+                }
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "expanded keyword dependency bindings are outside the bounded model",
+                ));
+            }
             Expr::Member(value, _) => {
                 let origin = qualified(expression, bindings);
                 let plugin = match origin.as_deref() {

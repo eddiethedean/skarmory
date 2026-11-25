@@ -2,6 +2,10 @@
 
 use super::*;
 
+mod instances;
+
+use instances::{Instance, Method};
+
 pub(super) const DICT_CONFIG: &str = "logging.config.dictConfig";
 const MAX_ITEMS: usize = 256;
 const MAX_REPLAY_DEPTH: usize = 16;
@@ -9,6 +13,8 @@ const MAX_REPLAY_DEPTH: usize = 16;
 #[derive(Clone)]
 enum Data {
     Dictionary(usize),
+    Class(SymbolId),
+    Instance(usize),
     Text(String),
     Integer(i64),
     Bool(bool),
@@ -22,9 +28,17 @@ type Site = (ScopeId, [usize; 2]);
 struct Replay<'a> {
     names: BTreeMap<&'a str, Data>,
     dictionaries: Vec<Dictionary>,
+    classes: BTreeMap<SymbolId, BTreeMap<&'a str, Method<'a>>>,
+    instances: Vec<Instance<'a>>,
     mutations: BTreeSet<Site>,
     helpers: BTreeMap<SymbolId, BTreeSet<[usize; 2]>>,
     call: Option<(Location, Vec<Factory>)>,
+    calls: BTreeSet<(ScopeId, [usize; 2], SymbolId)>,
+    method_scopes: BTreeSet<ScopeId>,
+    depth: usize,
+    returned: bool,
+    stopped: bool,
+    dictionary_is_pathlike: bool,
     steps: usize,
 }
 
@@ -58,6 +72,12 @@ impl<'a> Replay<'a> {
             ExpressionKind::Bool(value) => Data::Bool(*value),
             ExpressionKind::None => Data::None,
             ExpressionKind::Name(name) => self.names.get(name.as_str())?.clone(),
+            ExpressionKind::Member(owner, name) => {
+                let Data::Instance(id) = self.evaluate(owner, depth + 1)? else {
+                    return None;
+                };
+                self.instances[id].fields.get(name.as_str())?.clone()
+            }
             ExpressionKind::Subscript { value, index } => {
                 let Data::Dictionary(id) = self.evaluate(value, depth + 1)? else {
                     return None;
@@ -95,6 +115,11 @@ impl<'a> Replay<'a> {
         scope: ScopeId,
         statement: &'a Statement,
     ) -> Option<()> {
+        // Factory construction may raise or call user code. Only an empty
+        // return may follow a configuration call in the replayed initializer.
+        if self.call.is_some() && !matches!(statement.kind, StatementKind::Return(_)) {
+            return None;
+        }
         let at = statement.at;
         match &statement.kind {
             StatementKind::Import(import) => {
@@ -115,6 +140,9 @@ impl<'a> Replay<'a> {
                 };
                 if let Some(value) = self.evaluate(value, 0) {
                     self.names.insert(&name.text, value);
+                } else if self.is_constructor(value) {
+                    let instance = self.construct(graph, scope, value)?;
+                    self.names.insert(&name.text, Data::Instance(instance));
                 } else if provider_alias(graph, scope, value, at) {
                     self.names.remove(name.text.as_str());
                 } else {
@@ -147,6 +175,23 @@ impl<'a> Replay<'a> {
             StatementKind::WriteAttribute {
                 receiver,
                 member,
+                value,
+            } if let Some(Data::Instance(id)) = self.evaluate(receiver, 0) => {
+                let value = value.as_ref().map(|value| self.evaluate(value, 0));
+                let instance = &mut self.instances[id];
+                if instance.has_method(member, &self.classes) || member.starts_with("__") {
+                    return None;
+                }
+                if let Some(value) = value {
+                    instance.fields.insert(member, value?);
+                } else {
+                    instance.fields.remove(member.as_str())?;
+                }
+                self.mutations.insert((scope, position(at)));
+            }
+            StatementKind::WriteAttribute {
+                receiver,
+                member,
                 value: Some(value),
             } if member == "dictConfig"
                 && graph.modeled_framework_write(scope, at)
@@ -162,6 +207,9 @@ impl<'a> Replay<'a> {
             StatementKind::Define(definition) if plain_function(definition) => {
                 self.names.remove(definition.name.text.as_str());
             }
+            StatementKind::Define(definition) if definition.kind == DefinitionKind::Class => {
+                self.define_class(graph, scope, definition)?;
+            }
             StatementKind::Evaluate(Expression {
                 kind: ExpressionKind::Text(_),
                 ..
@@ -174,17 +222,25 @@ impl<'a> Replay<'a> {
                 body,
                 otherwise,
             } => {
-                let branch = match self.evaluate(test, 0).or_else(|| {
-                    self.builtin_type_test(graph, scope, test, at)
-                        .map(Data::Bool)
-                })? {
-                    Data::Bool(true) => body,
-                    Data::Bool(false) => otherwise,
-                    _ => return None,
+                let branch = if self.condition(graph, scope, test, at, 0)? {
+                    body
+                } else {
+                    otherwise
                 };
-                for statement in branch {
-                    self.statement(graph, scope, statement)?;
+                for item in branch {
+                    self.statement(graph, scope, item)?;
+                    if self.returned || self.stopped {
+                        break;
+                    }
                 }
+            }
+            StatementKind::Return(value)
+                if self.depth > 0
+                    && value
+                        .as_ref()
+                        .is_none_or(|value| matches!(value.kind, ExpressionKind::None)) =>
+            {
+                self.returned = true;
             }
             _ => return None,
         }
@@ -198,6 +254,10 @@ impl<'a> Replay<'a> {
         expression: &'a Expression,
         before: Location,
     ) -> Option<()> {
+        if self.is_constructor(expression) {
+            self.construct(graph, scope, expression)?;
+            return Some(());
+        }
         if self.mutate(scope, expression).is_some() {
             return Some(());
         }
@@ -209,9 +269,22 @@ impl<'a> Replay<'a> {
         else {
             return None;
         };
+        if let ExpressionKind::Member(receiver, name) = &function.kind
+            && let Some(Data::Instance(id)) = self.evaluate(receiver, 0)
+        {
+            return self.invoke_method(graph, scope, id, name, expression);
+        }
         let provider = graph.probe_identity(scope, function, before);
         if let Value::Callable(invocation) = provider {
             return self.invoke_mutator(graph, invocation, expression.at, arguments, keywords);
+        }
+        if matches!(&provider, Value::Provider(name) if name == "os.PathLike.register")
+            && let ([ty], []) = (arguments.as_slice(), keywords.as_slice())
+            && matches!(graph.probe_identity(scope, ty, before), Value::Provider(name) if name == "builtins.dict")
+        {
+            self.dictionary_is_pathlike = true;
+            self.mutations.insert((scope, position(expression.at)));
+            return Some(());
         }
         if !matches!(provider, Value::Provider(provider) if provider == DICT_CONFIG)
             || graph
@@ -223,13 +296,19 @@ impl<'a> Replay<'a> {
         let Some([Some(argument)]) = registration_arguments(arguments, keywords, ["config"]) else {
             return None;
         };
-        let Data::Dictionary(id) = self.evaluate(argument, 0)? else {
-            return None;
-        };
         if self.call.is_some() {
             return None;
         }
-        self.call = Some((expression.at, self.factories(id)?));
+        let factories = match self.evaluate(argument, 0) {
+            Some(Data::Dictionary(id)) => self.factories(id)?,
+            None if self.missing_instance_field(argument) => {
+                self.stopped = true;
+                Vec::new()
+            }
+            _ => return None,
+        };
+        self.mutations.insert((scope, position(expression.at)));
+        self.call = Some((expression.at, factories));
         Some(())
     }
 
@@ -350,10 +429,39 @@ impl<'a> Replay<'a> {
         let result = match provider.as_str() {
             "builtins.str" => matches!(value, Data::Text(_)),
             "builtins.dict" => matches!(value, Data::Dictionary(_)),
+            "os.PathLike" if !matches!(value, Data::Instance(_) | Data::Class(_)) => {
+                self.dictionary_is_pathlike && matches!(value, Data::Dictionary(_))
+            }
             _ => return None,
         };
         self.mutations.insert((scope, position(expression.at)));
         Some(result)
+    }
+
+    fn condition(
+        &mut self,
+        graph: &mut Graph<'a>,
+        scope: ScopeId,
+        expression: &'a Expression,
+        before: Location,
+        depth: usize,
+    ) -> Option<bool> {
+        if depth >= MAX_REPLAY_DEPTH {
+            return None;
+        }
+        if let ExpressionKind::Boolean { and, values } = &expression.kind {
+            for value in values {
+                let truth = self.condition(graph, scope, value, before, depth + 1)?;
+                if truth != *and {
+                    return Some(truth);
+                }
+            }
+            return Some(*and);
+        }
+        match self.evaluate(expression, 0) {
+            Some(Data::Bool(value)) => Some(value),
+            _ => self.builtin_type_test(graph, scope, expression, before),
+        }
     }
 
     fn accounts_for_helpers(&self, graph: &Graph<'_>, file: ScopeId) -> bool {
@@ -453,8 +561,9 @@ fn provider_alias(graph: &mut Graph<'_>, scope: ScopeId, expr: &Expression, at: 
     matches!(
         expr.kind,
         ExpressionKind::Name(_) | ExpressionKind::Member(_, _)
-    ) && matches!(graph.probe_identity(scope, expr, at),
-            Value::Provider(name) if matches!(name.as_str(), "logging" | "logging.config" | DICT_CONFIG))
+    ) && matches!(graph.probe_identity(scope, expr, at), Value::Provider(name)
+        if matches!(name.as_str(), "logging" | "logging.config" | DICT_CONFIG
+            | "os" | "os.PathLike" | "os.PathLike.register"))
 }
 
 fn plain_function(definition: &Definition) -> bool {
@@ -464,16 +573,161 @@ fn plain_function(definition: &Definition) -> bool {
         && definition.defaults.is_empty()
 }
 
+fn imports_logging(statement: &Statement) -> bool {
+    matches!(&statement.kind, StatementKind::Import(import)
+        if import.level == 0 && matches!(import.module.as_str(), "logging" | "logging.config"))
+}
+
 impl<'a> Graph<'a> {
+    pub(super) fn terminal_logging_config_failure(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let at = statement.at;
+        let missing = match &statement.kind {
+            StatementKind::WriteAttribute {
+                value: Some(value), ..
+            } => value,
+            StatementKind::Evaluate(Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    },
+                ..
+            }) if keywords.is_empty() => match arguments.as_slice() {
+                [_] if self.unbound_module_name(scope, function, at) => function,
+                [operand] | [_, _, operand] => operand,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        if !self.unbound_module_name(scope, missing, at) {
+            return false;
+        }
+        let body = self.scopes[scope].body;
+        let Some(index) = body.iter().position(|item| std::ptr::eq(item, statement)) else {
+            return false;
+        };
+        let (prefix, remaining) = body.split_at(index);
+        if !prefix.iter().any(imports_logging) {
+            return false;
+        }
+        let statement = &remaining[0];
+        let (receiver, argument) = match &statement.kind {
+            StatementKind::WriteAttribute {
+                receiver,
+                member,
+                value: Some(value),
+            } if self.unbound_module_name(scope, value, at)
+                && matches!(
+                    member.as_str(),
+                    "dictConfig" | "PathLike" | "__subclasshook__"
+                )
+                && self.logging_member(scope, receiver, member, at) =>
+            {
+                // The failed right hand side is evaluated before the assignment receiver.
+                (None, None)
+            }
+            StatementKind::Evaluate(Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    },
+                ..
+            }) if keywords.is_empty() => match arguments.as_slice() {
+                [argument] if self.unbound_module_name(scope, function, at) => {
+                    (None, Some(argument))
+                }
+                [argument]
+                    if self.unbound_module_name(scope, argument, at)
+                        && matches!(&function.kind, ExpressionKind::Name(_))
+                        && self.logging_wrapper(scope, function, at) =>
+                {
+                    (Some(function.as_ref()), None)
+                }
+                [
+                    receiver,
+                    Expression {
+                        kind: ExpressionKind::Text(member),
+                        ..
+                    },
+                    value,
+                ] if self.unbound_module_name(scope, value, at)
+                    && matches!(&function.kind, ExpressionKind::Name(_))
+                    && matches!(self.probe_identity(scope, function, at),
+                            Value::Provider(name) if name == "builtins.setattr")
+                    && self.logging_member(scope, receiver, member, at) =>
+                {
+                    (Some(receiver), None)
+                }
+                _ => return false,
+            },
+            _ => return false,
+        };
+        let mut replay = Replay::default();
+        for item in prefix {
+            if replay.statement(self, scope, item).is_none()
+                || replay.call.is_some()
+                || !replay.instances.is_empty()
+            {
+                return false;
+            }
+        }
+        if let Some(argument) = argument
+            && !matches!(self.probe_identity(scope, argument, at),
+                Value::Provider(name) if name == "os.PathLike" || name == DICT_CONFIG)
+            && !matches!(replay.evaluate(argument, 0), Some(Data::Dictionary(id))
+                if replay.factories(id).is_some_and(|factories| !factories.is_empty()))
+        {
+            return false;
+        }
+        if let Some(receiver) = receiver {
+            self.walk(scope, receiver, at);
+        }
+        true
+    }
+
+    fn logging_member(
+        &mut self,
+        scope: ScopeId,
+        receiver: &Expression,
+        member: &str,
+        at: Location,
+    ) -> bool {
+        matches!(
+            &receiver.kind,
+            ExpressionKind::Name(_) | ExpressionKind::Member(_, _)
+        ) && matches!(self.probe_identity(scope, receiver, at), Value::Provider(name)
+                if matches!((name.as_str(), member), ("logging.config", "dictConfig")
+                    | ("os", "PathLike") | ("os.PathLike", "__subclasshook__")))
+    }
+
+    fn logging_wrapper(&mut self, scope: ScopeId, function: &Expression, at: Location) -> bool {
+        let Value::Callable(invocation) = self.probe_identity(scope, function, at) else {
+            return false;
+        };
+        let symbol = &self.symbols[invocation.target];
+        symbol.scope == scope
+            && matches!(symbol.binding, Binding::Definition(definition, _)
+            if plain_function(definition) && definition.body.iter().any(|statement|
+                matches!(&statement.kind, StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Call { function, .. }, .. })
+                    if matches!(&function.kind, ExpressionKind::Member(_, member)
+                        if member == "dictConfig"))))
+    }
+
     pub(super) fn collect_logging_configs(&mut self) {
         let mut modeled = BTreeSet::new();
+        let mut method_scopes = BTreeSet::new();
         for file in 0..self.files.len() {
             if self.failed_terminal_modules.contains(&file)
                 || self.scopes[file].open_wildcard
-                || !self.scopes[file].body.iter().any(|statement| {
-                    matches!(&statement.kind, StatementKind::Import(import)
-                        if matches!(import.module.as_str(), "logging" | "logging.config"))
-                })
+                || !self.scopes[file].body.iter().any(imports_logging)
             {
                 continue;
             }
@@ -488,14 +742,19 @@ impl<'a> Graph<'a> {
                 || replay.call.is_some()
                 || replay.statement(self, file, last).is_none()
                 || !replay.accounts_for_helpers(self, file)
+                || !replay.accounts_for_methods(self, file)
             {
                 continue;
             }
             let Some((at, factories)) = replay.call else {
                 continue;
             };
+            for &(scope, _, target) in &replay.calls {
+                self.edge(scope, target, "direct_call", "certain");
+                self.direct.insert(target);
+            }
             for factory in &factories {
-                match self.record_logging_factory(file, at, factory) {
+                match self.record_logging_factory(file, last.at, factory) {
                     Dispatch::Continues => {}
                     Dispatch::Rejected => break,
                     Dispatch::Unknown => {
@@ -510,9 +769,19 @@ impl<'a> Graph<'a> {
                 }
             }
             modeled.extend(replay.mutations);
-            modeled.insert((file, position(at)));
+            method_scopes.extend(replay.method_scopes);
         }
+        self.receiver_calls
+            .retain(|call| !method_scopes.contains(&call.scope));
         self.scope_issues.retain(|(scope, issue)| {
+            if method_scopes.contains(scope)
+                && matches!(
+                    issue.kind,
+                    "unresolved_call" | "unresolved_attribute_write" | "unresolved_subscript"
+                )
+            {
+                return false;
+            }
             !matches!(issue.kind, "unresolved_call" | "unresolved_attribute_write")
                 || !issue
                     .line
@@ -529,6 +798,9 @@ impl<'a> Graph<'a> {
             && !self.modules.contains_key("logging")
             && !self.modules.contains_key("logging.config")
         {
+            return import.level == 0;
+        }
+        if module == "os" && !self.modules.contains_key("os") {
             return import.level == 0;
         }
         if !self.modules.contains_key(module.as_str()) {

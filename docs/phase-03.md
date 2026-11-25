@@ -306,8 +306,10 @@ selected by a literal argument. Calling a generator view creates the
 generator and leaves its body dormant. Unresolved URL
 registrations in active URL modules produce coverage diagnostics.
 An initializer with a proven invalid URL call cannot finish constructing
-its URL table. Opaque options and selected imports of a failed URL module
-leave coverage incomplete.
+its URL table. The preview follows a final literal list's direct `clear()`
+and indexed `URLPattern.callback` edits in a closed initializer. Opaque options,
+escaped table edits, and selected imports of a failed URL module leave coverage
+incomplete.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
@@ -317,6 +319,11 @@ subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
+The selected command follows its effective lifecycle after module initialization.
+Proven construction or argument setup failures leave later stages dormant.
+Custom dispatch that may delegate through an unresolved path produces a coverage
+diagnostic. An isolated command module does not establish an installed app.
+[Django management implementation](https://github.com/django/django/tree/stable/5.2.x/django/core/management)
 
 Django `RunPython` operations preserve possible declaration use of resolved
 forward and reverse callbacks. Parameter evidence covers the two positional
@@ -339,7 +346,12 @@ unresolved mutations retain their coverage diagnostics.
 The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
 module initialization. It follows literal formatter and filter declarations,
 ordered dictionary edits, aliases, and eligible one-argument mutation helpers.
-An opaque configuration or consumer leaves coverage incomplete.
+For source-owned instances used only by that initializer, it follows
+constructor defaults, field edits, and reached method calls. Type guards over
+known values account for reached `os.PathLike.register(dict)` calls and
+short-circuiting. A proven unbound name in the initializer can prevent later
+configuration from running. An opaque configuration or consumer leaves
+coverage incomplete.
 
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
@@ -365,6 +377,8 @@ entries that select local callbacks. A local getter can supply a literal
 display or readonly list. `@admin.display` and `@admin.action` attach
 metadata to a callback. A loaded registration with opaque options or an
 unresolved condition produces a coverage diagnostic.
+An empty `admin.py` inside a package is treated as a convention in projects
+that import genuine Django. The filename alone does not retain definitions.
 [Django admin discovery and options](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/#discovery-of-admin-files)
 
 A reached Django autoreloader call retains the callback bound at the call

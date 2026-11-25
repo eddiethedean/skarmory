@@ -3157,6 +3157,7 @@ impl<'a> Graph<'a> {
                 ExpressionKind::Await(_)
                     | ExpressionKind::FormattedString(_)
                     | ExpressionKind::KeywordMappingCall { .. }
+                    | ExpressionKind::RepeatedKeywordCall { .. }
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
@@ -3387,6 +3388,11 @@ impl<'a> Graph<'a> {
                 }
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
+                }
+                Value::DjangoViewFactory(_)
+                    if self.django_view_has_missing_option(scope, before, arguments, keywords) =>
+                {
+                    Value::DjangoInvalidRegistration
                 }
                 Value::Callable(invocation) if self.is_class(invocation.target) => {
                     if self.phase03
@@ -4029,7 +4035,14 @@ impl<'a> Graph<'a> {
                     Value::Scalar
                 }
             }
-            ExpressionKind::Await(_) | ExpressionKind::KeywordMappingCall { .. } => Value::Unknown,
+            ExpressionKind::RepeatedKeywordCall { function, .. }
+                if self.phase03 && django_urls::is_django_url_factory(&recurse(self, function)) =>
+            {
+                Value::DjangoInvalidRegistration
+            }
+            ExpressionKind::Await(_)
+            | ExpressionKind::KeywordMappingCall { .. }
+            | ExpressionKind::RepeatedKeywordCall { .. } => Value::Unknown,
         }
     }
 
@@ -4198,6 +4211,7 @@ impl<'a> Graph<'a> {
             .iter()
             .chain(&reach.resolved_deferred_receiver_calls)
             .map(|&(index, _)| index)
+            .chain(reach.resolved_django_reloader_parameters.iter().copied())
             .collect();
         for (index, call) in self.receiver_calls.iter().enumerate() {
             if reach.scopes.contains(&call.scope) && !resolved.contains(&index) {
@@ -4706,6 +4720,21 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::RepeatedKeywordCall {
+                function,
+                arguments,
+            } => {
+                self.walk_expression(scope, function, before, true);
+                for argument in arguments {
+                    self.walk(scope, argument, before);
+                }
+                self.scope_issue(
+                    scope,
+                    expr.at,
+                    "unsupported_construct",
+                    "keyword expansion with a duplicate argument is outside the bounded call model",
+                );
+            }
             ExpressionKind::KeywordMappingCall { function, mapping } => {
                 self.walk_expression(scope, function, before, true);
                 self.walk(scope, mapping, before);
@@ -5541,6 +5570,25 @@ impl<'a> Graph<'a> {
                     _ => {
                         if self.phase03
                             && !self.probing_identity
+                            && self.branch_depth == 0
+                            && let ExpressionKind::Member(base, member) = &function.kind
+                            && member == "run_with_reloader"
+                            && let Some(parameter) = self.parameter_binding(scope, base, before)
+                            && self.scopes[scope].parent.is_some_and(|parent| {
+                                self.scopes[parent].owner.is_none_or(|owner| !self.is_class(owner))
+                            })
+                        {
+                            self.receiver_calls.push(ReceiverCall {
+                                scope,
+                                parameter,
+                                member: member.clone(),
+                                at: expr.at,
+                                bounded_comparison: false,
+                            });
+                            return;
+                        }
+                        if self.phase03
+                            && !self.probing_identity
                             && arguments.is_empty()
                             && keywords.is_empty()
                             && let ExpressionKind::Member(base, name) = &function.kind
@@ -6346,7 +6394,9 @@ impl<'a> Graph<'a> {
                     self.annotation(scope, reference, before, evaluated);
                 }
             }
-            ExpressionKind::Call { .. } | ExpressionKind::KeywordMappingCall { .. }
+            ExpressionKind::Call { .. }
+            | ExpressionKind::KeywordMappingCall { .. }
+            | ExpressionKind::RepeatedKeywordCall { .. }
                 if evaluated =>
             {
                 self.walk(scope, expr, before);
@@ -8794,6 +8844,7 @@ impl<'a> Graph<'a> {
                     "type_reference"
                         | "generator_creation"
                         | "flask_factory_failed_call"
+                        | "flask_initializer_failed_call"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
                         | aiohttp::DECLARATION
@@ -8879,6 +8930,7 @@ impl<'a> Graph<'a> {
                 self.activate_fastapi(reach, &mut pending);
                 self.activate_flask_parameter_hooks(reach, &mut pending);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
+                self.resolve_django_reloader_parameter_receivers(reach, &mut pending, possible);
             }
             for &(owner, target, kind) in &self.framework_lifecycle {
                 if reach.symbols.contains(&owner) && !reach.has_evidence(target, kind) {
@@ -9414,11 +9466,14 @@ impl<'a> Graph<'a> {
                 reason,
             });
         }
+        let django_admin_packages = self.django_admin_stub_packages();
         for file in self.files.iter().filter(|file| file.facts.empty) {
-            if !matches!(
-                file.path.rsplit('/').next(),
-                Some("__init__.py" | "__main__.py" | "main.py")
-            ) {
+            let name = file.path.rsplit('/').next();
+            let admin_stub = name == Some("admin.py")
+                && Path::new(&file.path)
+                    .parent()
+                    .is_some_and(|parent| django_admin_packages.contains(parent));
+            if !admin_stub && !matches!(name, Some("__init__.py" | "__main__.py" | "main.py")) {
                 findings.push(Finding {
                     category: Category::File,
                     identity_name: String::new(),
@@ -9466,6 +9521,7 @@ struct Reachability {
     django_signal_modules: BTreeSet<usize>,
     deferred_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
+    resolved_django_reloader_parameters: BTreeSet<usize>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
@@ -9632,6 +9688,13 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::KeywordMappingCall { function, mapping } => {
                 expressions.extend([function.as_ref(), mapping.as_ref()]);
+            }
+            ExpressionKind::RepeatedKeywordCall {
+                function,
+                arguments,
+            } => {
+                expressions.push(function);
+                expressions.extend(arguments);
             }
             ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
@@ -10319,6 +10382,41 @@ mod tests {
     }
 
     #[test]
+    fn django_admin_stub_exemption_requires_a_package_and_a_genuine_import() {
+        let build = |source| {
+            [
+                module("settings.py", "settings", source),
+                module("shop/__init__.py", "shop", ""),
+                module(
+                    "shop/admin.py",
+                    "shop.admin",
+                    "# Register your models here.\n",
+                ),
+                module("shop/placeholder.py", "shop.placeholder", "# Empty.\n"),
+                module("standalone/admin.py", "standalone.admin", "# Empty.\n"),
+            ]
+        };
+        let context = analyze_phase03(&build("from django.apps import AppConfig\n"), &[]);
+        assert_eq!(
+            names(&context, Category::File),
+            ["shop/placeholder.py", "standalone/admin.py"]
+        );
+        let unrelated = analyze_phase03(&build("from elsewhere import AppConfig\n"), &[]);
+        assert_eq!(
+            names(&unrelated, Category::File),
+            [
+                "shop/admin.py",
+                "shop/placeholder.py",
+                "standalone/admin.py"
+            ]
+        );
+        let mut shadowed = Vec::from(build("from django.apps import AppConfig\n"));
+        shadowed.push(module("src/django/__init__.py", "src.django", ""));
+        let shadowed = analyze_phase03(&shadowed, &[]);
+        assert!(names(&shadowed, Category::File).contains(&"shop/admin.py"));
+    }
+
+    #[test]
     fn django_settings_replays_literal_backend_list_edits_and_global_reads() {
         let cases = [
             (
@@ -10477,6 +10575,141 @@ configure()
     }
 
     #[test]
+    fn dict_config_follows_reached_instance_settings_and_ordered_guard_paths() {
+        let prefix = r#"import logging.config
+import os
+from os import PathLike as Path
+CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}
+class Server:
+    def __init__(self, config=CONFIG):
+        self.config = config
+    def apply(self):
+        if isinstance(self.config, Path):
+            self.config.clear()
+        if isinstance(self.config, dict):
+            logging.config.dictConfig(self.config)
+server = Server()
+"#;
+        for (change, selected) in [
+            ("", true),
+            ("alias = server\nalias.config = {}\n", false),
+            ("os.PathLike.register(dict)\n", false),
+            ("path_type = os.PathLike\npath_type.register(dict)\n", false),
+            ("register = os.PathLike.register\nregister(dict)\n", false),
+        ] {
+            let source = format!("{prefix}{change}server.apply()\n");
+            let result = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module("formatters.py", "formatters", "class Selected: pass\n"),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{change}: {:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|edge| {
+                    edge.kind == "logging_factory" && edge.full_name == "formatters.Selected"
+                }),
+                selected,
+                "{change}",
+            );
+        }
+    }
+
+    #[test]
+    fn dict_config_instance_replay_keeps_coverage_for_untracked_external_dispatch() {
+        let source = r#"import logging.config
+CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}
+class Server:
+    def __init__(self, config=CONFIG):
+        self.config = config
+    def apply(self):
+        logging.config.dictConfig(self.config)
+server = Server()
+server.apply()
+"#;
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module(
+                    "consumer.py",
+                    "consumer",
+                    "from app import server\nserver.config = replacement\nserver.apply()\n",
+                ),
+                module("formatters.py", "formatters", "class Selected: pass\n"),
+            ],
+            &[],
+        );
+        assert!(!result.issues.is_empty());
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|edge| edge.kind == "logging_factory")
+        );
+    }
+
+    #[test]
+    fn dict_config_stops_at_proven_unbound_initializer_operands() {
+        const PREFIX: &str = "import logging.config\nimport os\n\
+            CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}\n";
+        for failure in [
+            "logging.config.dictConfig = replacement",
+            "alias = logging.config\nsetattr(alias, 'dictConfig', replacement)",
+            "unknown(CONFIG)",
+            "def apply(logging): logging.config.dictConfig(CONFIG)\napply(replacement)",
+            "alias = os\nalias.PathLike = replacement",
+            "os.PathLike.__subclasshook__ = replacement",
+            "setattr(os.PathLike, '__subclasshook__', replacement)",
+            "unknown(os.PathLike)",
+        ] {
+            let source = format!("{PREFIX}{failure}\nlogging.config.dictConfig(CONFIG)\n");
+            let result = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module("formatters.py", "formatters", "class Selected: pass\n"),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{failure}: {:?}", result.issues);
+            assert_eq!(names(&result, Category::Class), ["Selected"], "{failure}");
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|edge| edge.kind == "logging_factory"),
+                "{failure}"
+            );
+        }
+        let source = format!(
+            "{PREFIX}import external\nexternal.replace_logging()\nunknown(CONFIG)\nlogging.config.dictConfig(CONFIG)\n"
+        );
+        let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call" && issue.line == Some(6)),
+            "{:?}",
+            result.issues
+        );
+        let source = format!("{PREFIX}unknown(CONFIG)\nlogging.config.dictConfig(CONFIG)\n");
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", &source),
+                module("consumer.py", "consumer", "from app import CONFIG\n"),
+            ],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| { issue.kind == "unresolved_import" && issue.path == "consumer.py" })
+        );
+    }
+
+    #[test]
     fn dict_config_resolves_factory_at_the_reached_stdlib_consumer() {
         let source = "from logging.config import dictConfig as apply\n\
                       apply({'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}})\n";
@@ -10561,6 +10794,7 @@ configure()
     #[test]
     fn dict_config_with_opaque_mutation_keeps_coverage_incomplete() {
         let source = "import logging.config\n\
+                      from external_mutator import configure\n\
                       CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}\n\
                       configure(CONFIG)\n\
                       logging.config.dictConfig(CONFIG)\n";
@@ -12552,6 +12786,7 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     fn phase03_django_url_table_stops_at_a_proven_invalid_registration() {
         for invalid in [
             "path('broken/', view, route='duplicate/')",
+            "path('broken/', view, name='first', **{'name': 'duplicate'})",
             "path('broken/', view, view=view)",
             "path('broken/', view, unexpected=True)",
             "path('broken/', view, None, None, None)",
@@ -12594,6 +12829,62 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                     .any(|edge| { edge.full_name == target && edge.kind == "django_registration" })
             );
         }
+    }
+
+    #[test]
+    fn phase03_django_url_stops_before_an_unbound_view_option() {
+        let urls = "from django.urls import path\nfrom django.views import View\n\
+                    class Page(View):\n    def setup(self, request): return 1\n\
+                    urlpatterns = [path('page/', Page.as_view(model=Missing))]\n";
+        let report = analyze_phase03(&django_url_test_files(urls, ""), &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(!report.evidence.iter().any(|edge| {
+            (edge.full_name == "urls.Page" && edge.kind == "django_registration")
+                || (edge.full_name == "urls.Page.setup" && edge.kind == "framework_lifecycle")
+        }));
+        for option in ["external()", "ValueError"] {
+            let opaque = urls.replace("Missing", option);
+            let report = analyze_phase03(&django_url_test_files(&opaque, ""), &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call")
+            );
+        }
+    }
+
+    #[test]
+    fn django_url_table_applies_closed_initializer_edits_before_dispatch() {
+        for (edit, selected) in [
+            ("urlpatterns.clear()", None),
+            ("urlpatterns[0].callback = lambda request: None", None),
+            ("urlpatterns[0].callback = before", Some("views.before")),
+        ] {
+            let urls = format!(
+                "from django.urls import path\nfrom views import view, before\n\
+                 urlpatterns = [path('plain/', view)]\n{edit}\n"
+            );
+            let report = analyze_phase03(&django_url_test_files(&urls, ""), &[]);
+            assert!(report.issues.is_empty(), "{edit}: {:?}", report.issues);
+            let routes: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|edge| edge.kind == "django_registration")
+                .map(|edge| edge.full_name.as_str())
+                .collect();
+            assert_eq!(routes, selected.into_iter().collect::<Vec<_>>());
+        }
+        let urls = "from django.urls import path\nfrom views import view\n\
+                    urlpatterns = [path('plain/', view)]\n\
+                    alias = urlpatterns\nurlpatterns.clear()\nunknown(alias)\n";
+        let report = analyze_phase03(&django_url_test_files(urls, ""), &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
     }
 
     #[test]
@@ -12796,6 +13087,108 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                 .collect();
             assert_eq!(found, expected.iter().copied().collect(), "{argv}");
         }
+    }
+
+    #[test]
+    fn phase03_django_command_dispatch_follows_effective_lifecycle() {
+        let base = "from django.core.management.base import BaseCommand\nclass Parent(BaseCommand):\n    def handle(self, *args, **options):\n        return None\n";
+        let module_name = "demo.management.commands.audit";
+        for (source, expected) in [
+            ("class Command(Parent):\n    pass\n", vec!["Parent.handle"]),
+            (
+                "class Command(Parent):\n    def __init__(self):\n        raise RuntimeError()\n",
+                vec!["Command.__init__"],
+            ),
+            (
+                "class Command(Parent):\n    def __init__(self, required):\n        return None\n",
+                vec![],
+            ),
+            (
+                "class Command(Parent):\n    def add_arguments(self, parser):\n        raise RuntimeError()\n",
+                vec!["Command.add_arguments"],
+            ),
+            (
+                "class Command(Parent):\n    def run_from_argv(self, argv):\n        pass\n",
+                vec!["Command.run_from_argv"],
+            ),
+            (
+                "class Command(Parent):\n    def execute(self, *args, **options):\n        pass\n",
+                vec!["Command.execute"],
+            ),
+            (
+                "class Command(Parent):\n    pass\ndef replacement(self, *args, **options):\n    return None\nCommand.handle = replacement\n",
+                vec!["replacement"],
+            ),
+            (
+                "class Command(Parent):\n    def handle(self, *args, **options):\n        return None\ndel Command.handle\n",
+                vec!["Parent.handle"],
+            ),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        module_name,
+                        &format!("{base}{source}"),
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{source}: {:?}", result.issues);
+            let dispatches: Vec<_> = result
+                .evidence
+                .iter()
+                .filter(|entry| entry.kind == "django_command")
+                .map(|entry| {
+                    entry
+                        .full_name
+                        .strip_prefix(module_name)
+                        .unwrap()
+                        .trim_start_matches('.')
+                })
+                .filter(|name| *name != "Command")
+                .collect();
+            assert_eq!(dispatches, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn phase03_deleted_django_autoreload_member_stops_before_arguments_and_following_code() {
+        let first = "from django.utils import autoreload\ndef callback():\n    return 1\ndef argument():\n    return callback\ndelattr(autoreload, 'run_with_reloader')\n";
+        for failing in [
+            "reloader = autoreload.run_with_reloader\nreloader(callback)",
+            "autoreload.run_with_reloader(argument())",
+        ] {
+            let source = format!("{first}{failing}\ncallback()\n");
+            let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+            assert!(result.issues.is_empty(), "{failing}: {:?}", result.issues);
+            assert_eq!(names(&result, Category::Function), ["argument", "callback"]);
+        }
+    }
+
+    #[test]
+    fn phase03_shadowed_django_reloader_stops_at_missing_builtin_attribute() {
+        let result = analyze_phase03(
+            &[
+                module("django/__init__.py", "django", ""),
+                module("django/utils.py", "django.utils", "autoreload = object()\n"),
+                module(
+                    "app.py",
+                    "app",
+                    "from django.utils import autoreload\ndef callback():\n    return 1\n\nautoreload.run_with_reloader(callback())\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["callback"]);
     }
 
     #[test]

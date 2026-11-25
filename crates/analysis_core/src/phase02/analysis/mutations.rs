@@ -170,11 +170,15 @@ impl Graph<'_> {
         keywords: &[(String, Expression)],
     ) {
         let mut escaped = BTreeSet::new();
+        let mut visited = BTreeSet::new();
         for expression in arguments
             .iter()
             .chain(keywords.iter().map(|(_, value)| value))
         {
-            flask_escape_keys(self.probe_identity(file, expression, at), &mut escaped);
+            let value = self.probe_identity(file, expression, at);
+            let read = std::mem::take(&mut self.read);
+            self.flask_escape_keys(value, (file, at), &mut escaped, &mut visited, 0);
+            self.read = read;
         }
         for receiver in escaped {
             self.mutations
@@ -186,6 +190,68 @@ impl Graph<'_> {
                     at,
                     value: MemberWriteValue::Ambiguous,
                 });
+        }
+    }
+
+    fn flask_escape_keys(
+        &mut self,
+        value: Value,
+        access: (ScopeId, Location),
+        escaped: &mut BTreeSet<ReceiverKey>,
+        visited: &mut BTreeSet<SymbolId>,
+        depth: usize,
+    ) {
+        match value {
+            Value::Object(site, ObjectKind::FlaskLoginManager)
+            | Value::Method(site, ObjectKind::FlaskLoginManager, _) => {
+                escaped.insert(ReceiverKey::FlaskLoginManager(site));
+            }
+            Value::Object(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
+            | Value::Method(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint, _) => {
+                escaped.insert(ReceiverKey::FlaskApplication(site));
+            }
+            Value::Provider(name) => {
+                escaped.extend(flask::provider_kind(&name).map(ReceiverKey::FlaskBase));
+            }
+            Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
+                for value in values {
+                    self.flask_escape_keys(value, access, escaped, visited, depth);
+                }
+            }
+            Value::Callable(Invocation {
+                target,
+                receiver: Receiver::Ordinary,
+                verified: false,
+            }) if depth < MAX_BINDING_CHAIN && visited.insert(target) => {
+                let file = self.symbols[target].scope;
+                if file != self.scopes[file].file {
+                    return;
+                }
+                let Binding::Definition(definition, _) = self.symbols[target].binding else {
+                    return;
+                };
+                if definition.kind == DefinitionKind::Class {
+                    return;
+                }
+                // A module function resolves its free names when invoked by the
+                // opaque caller. Function defaults are evaluated at declaration.
+                let (caller, at) = access;
+                let before = if caller == file { at } else { END };
+                let postponed = self.files[file].facts.postponed_annotations;
+                for name in namespace_free_names(definition, postponed) {
+                    let expression = Expression {
+                        kind: ExpressionKind::Name(name.into()),
+                        at: before,
+                    };
+                    let value = self.probe_identity(file, &expression, before);
+                    self.flask_escape_keys(value, access, escaped, visited, depth + 1);
+                }
+                for default in &definition.defaults {
+                    let value = self.probe_identity(file, default, definition.name.at);
+                    self.flask_escape_keys(value, access, escaped, visited, depth + 1);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -292,7 +358,21 @@ impl Graph<'_> {
                             ))
                         || role == FrameworkClassRole::DjangoAppConfig && member == "ready"
                         || role == FrameworkClassRole::DjangoCommand
-                            && matches!(member, "__init__" | "add_arguments" | "handle")
+                            && (matches!(
+                                member,
+                                "__new__"
+                                    | "__init__"
+                                    | "__getattribute__"
+                                    | "run_from_argv"
+                                    | "create_parser"
+                                    | "add_arguments"
+                                    | "execute"
+                                    | "handle"
+                            ) || self
+                                .class_lineage(*class)
+                                .0
+                                .into_iter()
+                                .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoSignal && member == "connect"
                 })
             }
@@ -307,6 +387,8 @@ impl Graph<'_> {
                                 .is_some_and(|role| {
                                     role.is_unittest()
                                         || role == FrameworkClassRole::DjangoAppConfig
+                                        || role == FrameworkClassRole::DjangoCommand
+                                            && member == "Command"
                                 })
                         });
                 }
@@ -658,29 +740,6 @@ impl Graph<'_> {
                     .find(|write| Some(write.file) == original && write.file != reader)
             })
             .map(|write| write.value.clone())
-    }
-}
-
-// These values expose either the object itself or a bound method's receiver.
-fn flask_escape_keys(value: Value, escaped: &mut BTreeSet<ReceiverKey>) {
-    match value {
-        Value::Object(site, ObjectKind::FlaskLoginManager)
-        | Value::Method(site, ObjectKind::FlaskLoginManager, _) => {
-            escaped.insert(ReceiverKey::FlaskLoginManager(site));
-        }
-        Value::Object(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
-        | Value::Method(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint, _) => {
-            escaped.insert(ReceiverKey::FlaskApplication(site));
-        }
-        Value::Provider(name) => {
-            escaped.extend(flask::provider_kind(&name).map(ReceiverKey::FlaskBase));
-        }
-        Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
-            for value in values {
-                flask_escape_keys(value, escaped);
-            }
-        }
-        _ => {}
     }
 }
 
