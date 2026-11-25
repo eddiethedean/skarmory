@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use clap::{Args, CommandFactory, Parser, ValueEnum};
-use skarmory_core::phase02::{self, workflow};
+use skarmory_core::phase02::{self, cleanup, workflow};
 use skarmory_core::{CacheStats, ScanOptions, ScanPolicy, Timings};
 
 #[derive(Clone, ValueEnum)]
@@ -37,7 +37,9 @@ enum Policy {
 #[derive(Parser)]
 #[command(name = "skarmory", version = skarmory_core::VERSION)]
 #[command(about = "Analyze source code for dead code.")]
-#[command(after_help = "JSON goes to stdout by default. Incomplete analysis exits with 2.")]
+#[command(
+    after_help = "JSON goes to stdout by default. Incomplete analysis exits with 2.\nUse 'skarmory cleanup --help' to review Python cleanup tasks."
+)]
 struct Cli {
     /// Source file or project directory. JavaScript and TypeScript file reachability requires a package directory.
     #[arg(value_name = "PATH")]
@@ -233,8 +235,89 @@ struct SkylosArgs {
     sarif: Option<PathBuf>,
 }
 
+#[derive(Parser)]
+#[command(
+    name = "skarmory cleanup",
+    about = "Review and apply bounded Python dead-code edits."
+)]
+struct CleanupCli {
+    /// Project directory.
+    path: PathBuf,
+
+    /// Preview the live edit for this task ID or unique prefix.
+    #[arg(long)]
+    task: Option<String>,
+
+    /// Apply the selected edit and rescan the project.
+    #[arg(long, requires = "task")]
+    apply: bool,
+
+    /// Require the edit and its inputs to match a previously displayed proof.
+    #[arg(long, requires = "apply")]
+    proof: Option<String>,
+
+    /// Explicitly run this command after applying the edit, without a shell.
+    #[arg(long, requires = "apply")]
+    test_cmd: Option<String>,
+
+    /// Replace discovered Skylos settings with this TOML file.
+    #[arg(long)]
+    config_file: Option<PathBuf>,
+
+    /// Maximum number of workers for file processing.
+    #[arg(long, default_value_t = 1)]
+    workers: usize,
+
+    /// Reuse validated file-local facts.
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
+
+    /// Write the machine-readable cleanup report to stdout.
+    #[arg(long = "format", value_parser = ["json"])]
+    _format: Option<String>,
+}
+
+fn run_cleanup(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
+    let cli = match CleanupCli::try_parse_from(arguments) {
+        Ok(cli) => cli,
+        Err(error) => {
+            return match error.print() {
+                Ok(()) if error.exit_code() == 0 => ExitCode::SUCCESS,
+                Ok(()) | Err(_) => ExitCode::from(2),
+            };
+        }
+    };
+    let settings = cleanup::Settings {
+        task: cli.task,
+        apply: cli.apply,
+        proof: cli.proof,
+        test_command: cli.test_cmd,
+        config_file: cli.config_file,
+        workers: cli.workers,
+        cache_dir: cli.cache_dir,
+    };
+    let outcome = match cleanup::run(&cli.path, &settings) {
+        Ok(outcome) => outcome,
+        Err(error) => return fail(error),
+    };
+    let mut stdout = io::stdout().lock();
+    match serde_json::to_writer(&mut stdout, &outcome.report)
+        .and_then(|()| writeln!(&mut stdout).map_err(serde_json::Error::io))
+        .and_then(|()| stdout.flush().map_err(serde_json::Error::io))
+    {
+        Ok(()) => ExitCode::from(outcome.exit_code),
+        Err(error) => fail(error),
+    }
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args_os().collect();
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == "cleanup")
+    {
+        return run_cleanup(arguments.into_iter().skip(1));
+    }
     if arguments.len() == 1 {
         return match Cli::command().print_help() {
             Ok(()) => ExitCode::SUCCESS,

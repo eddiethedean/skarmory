@@ -16,6 +16,7 @@ use crate::preview_source::{self, Exclusion, FileEntry};
 use crate::{Coverage, Issue};
 
 mod analysis;
+pub mod cleanup;
 pub(crate) mod config;
 mod dependencies;
 mod javascript;
@@ -721,7 +722,17 @@ fn scan_with_context(
     path: &Path,
     options: &Options,
     policy: Option<&config::Policy>,
+    diff_sources: Option<&mut BTreeMap<String, String>>,
+) -> Result<Report, ConfigError> {
+    scan_selected(path, options, policy, diff_sources, None)
+}
+
+fn scan_selected(
+    path: &Path,
+    options: &Options,
+    policy: Option<&config::Policy>,
     mut diff_sources: Option<&mut BTreeMap<String, String>>,
+    mut cleanup_inputs: Option<&mut cleanup::Inputs>,
 ) -> Result<Report, ConfigError> {
     validate_category(options.category.as_deref())?;
     let config = config::load_for_scan(path, options, policy)?;
@@ -761,7 +772,7 @@ fn scan_with_context(
         &roots,
         FileEntry::None,
         Some(&config.selection),
-        phase03 && include_dead_code,
+        phase03 && include_dead_code && cleanup_inputs.is_none(),
     );
     let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
         BTreeMap::new()
@@ -978,6 +989,36 @@ fn scan_with_context(
         analysis.runtime_evidence_issues.sort();
         analysis.runtime_evidence_issues.dedup();
     }
+    if let Some(inputs) = cleanup_inputs.as_deref_mut() {
+        for config in std::iter::once(&config).chain(&local_configs) {
+            inputs.policy.extend(
+                config
+                    .input_digests()
+                    .map(|(path, hash)| (path.clone(), *hash)),
+            );
+        }
+        if let Some(settings) = &django_settings {
+            inputs.policy.insert(
+                "DJANGO_SETTINGS_MODULE".into(),
+                blake3::hash(settings.as_encoded_bytes()),
+            );
+        }
+        let metadata = package_entrypoints
+            .iter()
+            .flat_map(|snapshot| snapshot.input_stamps());
+        let grep = verification
+            .iter()
+            .flat_map(|snapshot| snapshot.input_stamps());
+        for (path, stamp) in metadata.chain(grep) {
+            let label = preview_source::display(path);
+            match preview_source::read_snapshot(path, &label, Some(stamp)) {
+                Ok((bytes, _)) => {
+                    inputs.policy.insert(label, blake3::hash(&bytes));
+                }
+                Err(issue) => issues.push(issue),
+            }
+        }
+    }
     issues.append(&mut analysis.issues);
     if let Some(verification) = verification {
         issues.extend(verification.finish(&project, Some(&config.selection)));
@@ -986,6 +1027,7 @@ fn scan_with_context(
         issues.append(&mut metadata.issues);
         issues.extend(metadata.verify());
     }
+    let mut cleanup_dependency_sources = BTreeMap::new();
     let mut dependency_result = enable_quality.then(|| {
         dependencies::scan(
             path,
@@ -994,9 +1036,23 @@ fn scan_with_context(
             &config.selection,
             dependency_sources_complete,
             config.ignores_rule(dependencies::RULE),
-            diff_sources.as_deref_mut(),
+            diff_sources.as_deref_mut().or(cleanup_inputs
+                .is_some()
+                .then_some(&mut cleanup_dependency_sources)),
         )
     });
+    if let Some(inputs) = cleanup_inputs.as_deref_mut() {
+        inputs.policy.extend(
+            cleanup_dependency_sources
+                .into_iter()
+                .map(|(file, source)| {
+                    (
+                        preview_source::display(&path.join(file)),
+                        blake3::hash(source.as_bytes()),
+                    )
+                }),
+        );
+    }
     let snapshot_issues = project.verify(stamps);
     if !snapshot_issues.is_empty()
         && dependency_result.is_some()
@@ -1140,6 +1196,8 @@ fn scan_with_context(
 
     if let Some(diff_sources) = diff_sources {
         diff_sources.extend(sources);
+    } else if let Some(inputs) = cleanup_inputs {
+        inputs.sources = sources;
     }
     let dead_code_evidence = phase03.then(|| {
         workflow::EvidenceSummary::new(

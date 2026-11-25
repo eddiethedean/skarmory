@@ -535,6 +535,48 @@ See the [pinned workflow assertion mapping](phase-03-workflow-reference.md)
 for the native report and policy entry points and remaining release scope.
 [#49](https://github.com/eddiethedean/skarmory/issues/49) · [#41](https://github.com/eddiethedean/skarmory/issues/41)
 
+### Python cleanup preview
+
+Run the native cleanup command from a source build:
+
+```sh
+skarmory cleanup . --format json
+skarmory cleanup . --task TASK_ID --format json
+skarmory cleanup . --task TASK_ID --apply --proof PREVIEW_PROOF --format json
+```
+
+The queue uses a complete static Python scan. It presents unused functions
+and imports for review. A preview includes a unified diff and a proof covering
+the edit, source bytes, and inputs to the analysis. A bare module-level
+function must have no decorators, defaults, annotations, or type parameters.
+An ordinary import must use an allowlisted standard-library module. Cleanup
+checks for local providers that could shadow it or its modeled transitive
+imports during initialization. Definitions and imports outside this contract
+stay in the queue for manual review.
+
+Apply requires an explicit task and a fresh preflight scan. Supply the
+preview proof to bind the request to that preview. Guarded writes currently
+require Unix. The optional `--test-cmd` runs an explicitly supplied command
+without a shell. The CLI rescans with the same settings after applying an
+edit. A deletion-only patch can be verified when tests ran and the rescan
+confirms the original statement is gone and no new risk findings appeared.
+Replacements remain unverified without changed-line execution evidence. A
+failed command, a returned statement, or a newly introduced risk finding
+triggers rollback when the edited file still has the exact bytes Skarmory
+wrote and the proof dependencies agree. After a failed check, an unrelated
+source save can invalidate the rescan while still allowing the target alone
+to be restored. Pytest JUnit reports use a separate 64 MiB read limit.
+Skarmory checks the file again
+after comparing the scans. A late removal or rewrite leaves the rescan
+result intact and makes the overall execution incomplete. When project
+configuration enables dependency analysis, its inputs are included in the
+proof and its medium-severity unused dependency findings remain review work.
+
+Exit 0 indicates a queue, preview, or applied edit with a completed rescan.
+Exit 1 indicates failed validation. Exit 2 indicates an invalid request,
+an unavailable action, or incomplete validation. See the
+[pinned Python assertion mapping](phase-03-cleanup-reference.md).
+
 ## Rust crate candidates
 
 These versions record the research baseline. Select and lock dependencies after

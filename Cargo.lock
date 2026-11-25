@@ -1595,6 +1595,7 @@ dependencies = [
  "pep508_rs",
  "rayon",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "shlex",
