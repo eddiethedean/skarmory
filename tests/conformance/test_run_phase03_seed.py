@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from run_phase03_seed import (
     CORPUS_SOURCE,
+    ROOT,
     AssertionTrace,
     benchmark_assertions,
     check_candidate_wheel,
@@ -164,6 +165,7 @@ class CorpusReceiptTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0)
 
                 with (
+                    patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]),
                     patch("run_phase03_seed.port_cases", return_value=(
                         {"reference_revision": revision}, "digest", variant, {case_id: case},
                     )),
