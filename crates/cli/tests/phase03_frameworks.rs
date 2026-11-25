@@ -905,6 +905,49 @@ app.register_blueprint(blueprint)
 }
 
 #[test]
+fn flask_factory_calls_preserve_independent_app_identity_through_alias_writes() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("provider.py"),
+        "from flask import Flask as Application\n\
+         def create_app():\n    app = Application(__name__)\n    return app\n\
+         def create_direct():\n    return Application(__name__)\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from provider import create_app, create_direct
+
+first = create_app()
+second = create_app()
+direct = create_direct()
+
+@first.shell_context_processor
+def existing(): return {}
+
+alias = first
+alias.shell_context_processor = lambda callback: callback
+
+@first.shell_context_processor
+def detached(): return {}
+
+@second.shell_context_processor
+def independent(): return {}
+
+@direct.shell_context_processor
+def direct_hook(): return {}
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["web.detached"]);
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+}
+
+#[test]
 fn fastapi_startup_keeps_callbacks_with_proven_identity_decorators() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

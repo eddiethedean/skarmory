@@ -3218,6 +3218,13 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::Callable(invocation) if self.phase03 => {
+                    if arguments.is_empty()
+                        && keywords.is_empty()
+                        && let Some(object) =
+                            self.flask_factory_app(invocation, scope, expression.at, depth + 1)
+                    {
+                        return Value::Object(object, ObjectKind::FlaskApp);
+                    }
                     self.fastapi_conditional_app_result(invocation, arguments, keywords, depth + 1)
                 }
                 Value::ConstantFunction => Value::Scalar,
@@ -4591,6 +4598,13 @@ impl<'a> Graph<'a> {
                             && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && self.modeled_framework_write(scope, before) => {}
                     Value::Callable(invocation) => {
+                        if self.phase03
+                            && arguments.is_empty()
+                            && keywords.is_empty()
+                            && let Some(object) = self.flask_factory_app(invocation, scope, expr.at, 0)
+                        {
+                            self.scopes[scope].activated_apps.push(object);
+                        }
                         self.call_invocation(
                             invocation,
                             CallArguments {
