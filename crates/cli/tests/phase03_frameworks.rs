@@ -1018,9 +1018,15 @@ app = FastAPI(on_startup=[startup])
 #[test]
 fn fastapi_environment_guard_keeps_possible_handler_evidence() {
     let project = tempfile::tempdir().unwrap();
-    fs::write(
-        project.path().join("web.py"),
-        r#"import os
+    for guard in [
+        "os.getenv('USE_HANDLER')",
+        "os.environ.get('USE_HANDLER')",
+        "os.environ.get('USE_HANDLER', None)",
+    ] {
+        fs::write(
+            project.path().join("web.py"),
+            format!(
+                r#"import os
 from fastapi import FastAPI
 
 def handle_error(request, exc): return helper()
@@ -1028,21 +1034,23 @@ def helper(): return 1
 def retired(): return 2
 
 app = FastAPI()
-if os.getenv('USE_HANDLER'):
+if {guard}:
     app.add_exception_handler(Exception, handle_error)
-"#,
-    )
-    .unwrap();
-    let report = scan(project.path());
-    assert_eq!(findings(&report, "unused_functions"), ["web.retired"]);
-    assert!(findings(&report, "unused_parameters").is_empty());
-    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
-    assert!(symbols.iter().any(|row| {
-        row["qualified_name"] == "web.handle_error"
-            && row["evidence"].as_array().unwrap().iter().any(|edge| {
-                edge["kind"] == "fastapi_exception_handler" && edge["certainty"] == "possible"
-            })
-    }));
+"#
+            ),
+        )
+        .unwrap();
+        let report = scan(project.path());
+        assert_eq!(findings(&report, "unused_functions"), ["web.retired"]);
+        assert!(findings(&report, "unused_parameters").is_empty());
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(symbols.iter().any(|row| {
+            row["qualified_name"] == "web.handle_error"
+                && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "fastapi_exception_handler" && edge["certainty"] == "possible"
+                })
+        }));
+    }
 }
 
 #[test]
@@ -2833,6 +2841,106 @@ router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
         assert_eq!(stats["hits"], hits);
         assert_eq!(cached, report);
     }
+}
+
+#[test]
+fn fastapi_resolves_regular_packages_from_the_importing_service() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (directory, route) in [
+        ("app", "root_endpoint"),
+        ("services/one/app", "first_endpoint"),
+        ("services/two/src/app", "second_endpoint"),
+    ] {
+        let package = root.join(directory);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("__init__.py"), "").unwrap();
+        fs::write(
+            package.join("routes.py"),
+            format!(
+                "from fastapi import APIRouter\nrouter = APIRouter()\n@router.get('/')\ndef {route}(): return 1\n"
+            ),
+        )
+        .unwrap();
+    }
+    fs::write(
+        root.join("services/one/app/main.py"),
+        "from fastapi import FastAPI\nimport app.routes\napp_server = FastAPI()\napp_server.include_router(app.routes.router)\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("services/two/src/app/main.py"),
+        "from fastapi import FastAPI\nfrom app.routes import router\napp = FastAPI()\n",
+    )
+    .unwrap();
+
+    let check = |report: &Value, expected: &[&str]| {
+        assert_eq!(findings(report, "unused_functions"), expected, "{report}");
+    };
+    let before = scan(root);
+    check(
+        &before,
+        &[
+            "app.routes.root_endpoint",
+            "services.two.src.app.routes.second_endpoint",
+        ],
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        assert_eq!(cached["unused_functions"], before["unused_functions"]);
+        assert_eq!(cached["dead_code_evidence"], before["dead_code_evidence"]);
+        assert_eq!(cached["coverage"], before["coverage"]);
+        assert_eq!(
+            cached["dead_code_abstentions"],
+            before["dead_code_abstentions"]
+        );
+    }
+
+    fs::write(
+        root.join("services/one/app/main.py"),
+        "from fastapi import FastAPI\nfrom app import routes\napp = FastAPI()\napp.include_router(routes.router)\n",
+    )
+    .unwrap();
+    let edited = scan(root);
+    check(
+        &edited,
+        &[
+            "app.routes.root_endpoint",
+            "services.two.src.app.routes.second_endpoint",
+        ],
+    );
+    let cached = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(cached["unused_functions"], edited["unused_functions"]);
+    assert_eq!(cached["dead_code_evidence"], edited["dead_code_evidence"]);
+    assert_eq!(cached["coverage"], edited["coverage"]);
+    assert_eq!(
+        cached["dead_code_abstentions"],
+        edited["dead_code_abstentions"]
+    );
+
+    fs::remove_file(root.join("services/one/app/routes.py")).unwrap();
+    let missing = scan_with_exit(root, None, None, 2);
+    assert_eq!(missing["coverage"]["status"], "incomplete", "{missing}");
+    assert!(
+        missing["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["kind"] == "unresolved_import" && error["file"] == "services/one/app/main.py"
+            })
+    );
+    assert!(
+        missing["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["qualified_name"] != "app.routes.root_endpoint")
+    );
+    let cached = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(cached["coverage"], missing["coverage"]);
+    assert_eq!(cached["dead_code_evidence"], missing["dead_code_evidence"]);
 }
 
 #[test]

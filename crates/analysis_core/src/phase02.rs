@@ -905,13 +905,23 @@ fn scan_selected(
                         }
                         sources.insert(file.label.clone(), source);
                         match facts {
-                            FileFacts::Python(facts) => files.push(AnalyzedFile {
-                                path: file.label.clone(),
-                                module: file.name.clone(),
-                                is_package: Path::new(&file.label).file_name()
-                                    == Some(OsStr::new("__init__.py")),
-                                facts,
-                            }),
+                            FileFacts::Python(facts) => {
+                                let is_package = Path::new(&file.label).file_name()
+                                    == Some(OsStr::new("__init__.py"));
+                                // The loose-file identity includes the initializer's
+                                // stem when a package sits beneath a project folder.
+                                let module = if phase03 && is_package && file.loose_name {
+                                    file.name.strip_suffix(".__init__").unwrap_or(&file.name)
+                                } else {
+                                    &file.name
+                                };
+                                files.push(AnalyzedFile {
+                                    path: file.label.clone(),
+                                    module: module.to_owned(),
+                                    is_package,
+                                    facts,
+                                });
+                            }
                             FileFacts::JavaScript(module) => {
                                 js_modules.insert(file.label.clone(), module);
                             }

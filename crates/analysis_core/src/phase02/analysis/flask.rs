@@ -146,7 +146,7 @@ impl Graph<'_> {
                 StatementKind::Import(import)
                     if assigned
                         && import.member.as_deref() == Some(child_name)
-                        && self.relative_module(parent, import).as_deref() == Some(package) =>
+                        && self.import_module(parent, import).as_deref() == Some(package) =>
                 {
                     return Some(statement.at);
                 }
@@ -348,7 +348,7 @@ impl Graph<'_> {
             let mut expressions = Vec::new();
             match &statement.kind {
                 StatementKind::Import(import) => {
-                    let Some(module) = self.relative_module(self.scopes[scope].file, import) else {
+                    let Some(module) = self.import_module(self.scopes[scope].file, import) else {
                         return false;
                     };
                     if !matches!(module.as_str(), "flask" | "flask.globals")

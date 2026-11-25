@@ -237,6 +237,11 @@ actual provider methods. A registered blueprint exported by a package can
 supply callbacks through a child import when initialization order is proved.
 [Flask registration APIs](https://flask.palletsprojects.com/en/stable/api/)
 
+A regular package in a nested service resolves absolute imports against its
+own source root. Services can use the same package name while retaining
+only the callbacks they register. A missing local submodule keeps coverage
+incomplete when the registration depends on it.
+
 FastAPI supports imperative endpoint registration and literal `Depends` or
 `Security` dependencies in defaults, `Annotated` parameters and imported type
 aliases, and route and router registration options. App-wide dependencies apply
