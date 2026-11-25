@@ -259,6 +259,8 @@ enum FrameworkClassRole {
     DjangoCommand,
     DjangoView,
     DjangoModel,
+    DjangoManager,
+    DjangoQuerySet,
     DjangoForm,
     DjangoModelForm,
     DjangoFormField,
@@ -2619,7 +2621,10 @@ impl<'a> Graph<'a> {
                 if name == "__code__"
                     && !invocation.verified
                     && self.has_command_namespace(self.scopes[access.0].file)
-                    && self.bounded_framework_function(invocation.target) =>
+                    && matches!(self.symbols[invocation.target].binding,
+                        Binding::Definition(definition, _)
+                            if definition.kind == DefinitionKind::Function
+                                && !definition.is_generator && definition.decorators.is_empty()) =>
             {
                 match self.django_command_code_write(invocation.target, access) {
                     Some(mutations::MemberWriteValue::Replacement(code)) => code,
@@ -2997,6 +3002,14 @@ impl<'a> Graph<'a> {
                         (Some(role), "assertEqual" | "assertNotEqual") if role.is_unittest() => {
                             Some(Value::UnittestComparison)
                         }
+                        (
+                            Some(
+                                FrameworkClassRole::DjangoCommand
+                                | FrameworkClassRole::DjangoManager
+                                | FrameworkClassRole::DjangoQuerySet,
+                            ),
+                            "__new__",
+                        ) => None,
                         (_, "__init_subclass__")
                         | (
                             Some(
@@ -6010,6 +6023,14 @@ impl<'a> Graph<'a> {
                 self.with_explicit_receiver(invocation, positional, keywords, |graph, value| {
                     graph.identity(scope, value, before, 0)
                 });
+            if !invocation.verified
+                && let Some(class) = invocation.receiver.supplied()
+                && self.is_django_command_class(class)
+            {
+                for parameter in self.django_command_parameters(invocation.target) {
+                    self.edge(scope, parameter, "django_command_parameter", "possible");
+                }
+            }
             self.invoke(scope, invocation, "direct_call", certainty, at);
         }
         if self.is_class(id) {
@@ -6018,7 +6039,9 @@ impl<'a> Graph<'a> {
             } else {
                 ("constructor", certainty)
             };
-            self.constructor(scope, id, kind, certainty, at);
+            if !self.phase03 || !self.django_default_constructor(id, call, certainty) {
+                self.constructor(scope, id, kind, certainty, at);
+            }
             if self.phase03 {
                 self.check_django_form_initializer(id, call);
             }
@@ -9589,6 +9612,7 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_converter_regex"
                     | "django_migration_parameter"
+                    | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
@@ -10602,6 +10626,12 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         | "django.views.generic.edit.DeleteView" => Some(FrameworkClassRole::DjangoView),
         "django.db.models.Model" | "django.db.models.base.Model" => {
             Some(FrameworkClassRole::DjangoModel)
+        }
+        "django.db.models.Manager" | "django.db.models.manager.Manager" => {
+            Some(FrameworkClassRole::DjangoManager)
+        }
+        "django.db.models.QuerySet" | "django.db.models.query.QuerySet" => {
+            Some(FrameworkClassRole::DjangoQuerySet)
         }
         "django.forms.Form" | "django.forms.forms.Form" => Some(FrameworkClassRole::DjangoForm),
         "django.forms.ModelForm" | "django.forms.models.ModelForm" => {
@@ -13968,6 +13998,64 @@ class Command(BaseCommand):\n    def {hook}(self, name): return unknown()\n    d
                     .iter()
                     .any(|entry| entry.kind == "django_command"
                         && entry.full_name.ends_with(".Command.handle"))
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_orm_default_construction_only_reaches_actual_initializer_hooks() {
+        let result = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                "from django.db.models import Manager, QuerySet\n\
+class WorkManager(Manager):\n    def get_queryset(self): return None\n    def _set_creation_counter(self): return None\n\
+class WorkSet(QuerySet):\n    def delete(self): return None\n\
+WorkManager()\nWorkSet()\n",
+            )],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.kind == "django_manager_initializer"
+                && entry.full_name == "app.WorkManager._set_creation_counter"
+        }));
+        assert_eq!(
+            names(&result, Category::Function),
+            ["delete", "get_queryset"]
+        );
+    }
+
+    #[test]
+    fn phase03_django_command_parameter_role_requires_a_genuine_receiver() {
+        for (base, retained) in [
+            (
+                "from django.core.management.base import BaseCommand\n",
+                true,
+            ),
+            ("class BaseCommand: pass\n", false),
+        ] {
+            let source = format!(
+                "{base}class Worker(BaseCommand):\n    def handle(self, unused): return 1\nWorker().handle(2)\n"
+            );
+            let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+            assert!(result.issues.is_empty(), "{base}: {:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|entry| {
+                    entry.kind == "django_command_parameter"
+                        && entry.full_name == "app.Worker.handle.unused"
+                }),
+                retained
+            );
+            assert_eq!(
+                names(&result, Category::Parameter).contains(&"unused"),
+                !retained
+            );
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "django_command")
             );
         }
     }

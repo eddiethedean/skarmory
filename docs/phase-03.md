@@ -331,6 +331,10 @@ replacement. Reading code metadata does not execute the method.
 Proven construction or argument setup failures leave later stages dormant.
 Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.
+An explicit call on a resolved `BaseCommand` instance can identify `handle`
+parameters as part of its callback contract. Bounded zero-argument Manager
+and QuerySet construction follows actual initializer hooks. ORM operations
+need separate call or activation evidence.
 [Django management implementation](https://github.com/django/django/tree/stable/5.2.x/django/core/management)
 
 Django `RunPython` operations preserve possible declaration use of resolved

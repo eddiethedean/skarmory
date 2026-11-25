@@ -229,6 +229,8 @@ impl Graph<'_> {
                     false,
                 ),
                 FrameworkClassRole::DjangoModel
+                | FrameworkClassRole::DjangoManager
+                | FrameworkClassRole::DjangoQuerySet
                 | FrameworkClassRole::DjangoForm
                 | FrameworkClassRole::DjangoModelForm
                 | FrameworkClassRole::DjangoFormField
@@ -1481,7 +1483,7 @@ impl Graph<'_> {
         result
     }
 
-    pub(super) fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
+    fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
         let symbol = &self.symbols[target];
         let Binding::Definition(definition, _) = symbol.binding else {
             return false;
@@ -2500,6 +2502,15 @@ impl Graph<'_> {
                 } else {
                     self.record_django_hook(launcher, object, class, invocation, kind);
                 }
+                if name == "handle" {
+                    for parameter in self.django_command_parameters(invocation.target) {
+                        self.scopes[launcher].routes.push((
+                            object,
+                            parameter,
+                            "django_command_parameter",
+                        ));
+                    }
+                }
                 let body = body_without_docstring(definition);
                 let stop = body
                     .iter()
@@ -2565,6 +2576,105 @@ impl Graph<'_> {
             && self.has_command_namespace(self.scopes[self.symbols[class].scope].file)
             && self.framework_class_role(class, &mut BTreeSet::new(), 0)
                 == Some(FrameworkClassRole::DjangoCommand)
+    }
+
+    pub(super) fn django_default_constructor(
+        &mut self,
+        class: SymbolId,
+        call: CallArguments<'_>,
+        certainty: &'static str,
+    ) -> bool {
+        let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
+            return false;
+        };
+        let slots: &[&str] = match role {
+            FrameworkClassRole::DjangoCommand => {
+                &["stdout", "stderr", "style", "requires_system_checks"]
+            }
+            FrameworkClassRole::DjangoManager => &[
+                "_constructor_args",
+                "creation_counter",
+                "model",
+                "name",
+                "_db",
+                "_hints",
+            ],
+            FrameworkClassRole::DjangoQuerySet => &[
+                "model",
+                "_db",
+                "_hints",
+                "_query",
+                "_result_cache",
+                "_sticky_filter",
+                "_for_write",
+                "_prefetch_related_lookups",
+                "_prefetch_done",
+                "_known_related_objects",
+                "_iterable_class",
+                "_fields",
+                "_defer_next_filter",
+                "_deferred_filter",
+            ],
+            _ => return false,
+        };
+        if ["__new__", "__init__"]
+            .into_iter()
+            .any(|name| self.django_class_value(class, name, call.scope).is_some())
+        {
+            return false;
+        }
+        let default = call.positional.is_empty()
+            && call.keywords.is_empty()
+            && slots
+                .iter()
+                .copied()
+                .chain(["__getattribute__", "__getattr__", "__setattr__"])
+                .all(|name| self.django_class_value(class, name, call.scope).is_none());
+        if default {
+            if role != FrameworkClassRole::DjangoManager {
+                return true;
+            }
+            match self.django_class_value(class, "_set_creation_counter", call.scope) {
+                None => return true,
+                Some(Value::Callable(invocation))
+                    if self.bounded_framework_function(invocation.target)
+                        && matches!(self.symbols[invocation.target].binding,
+                            Binding::Definition(definition, _)
+                                if definition.required_positional_parameter_count <= 1
+                                    && (definition.has_positional_parameter || definition.has_variadic_positional_parameter)
+                                    && definition.required_keyword_only_parameters.is_empty()) =>
+                {
+                    self.invoke(
+                        call.scope,
+                        invocation.bind_receiver(Receiver::Bound(class)),
+                        "django_manager_initializer",
+                        certainty,
+                        call.at,
+                    );
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        self.scope_issue(call.scope, call.at, "unresolved_constructor", "Django initializer arguments or attribute dispatch are outside the bounded default constructor model");
+        true
+    }
+
+    pub(super) fn django_command_parameters(&self, target: SymbolId) -> Vec<SymbolId> {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, scope) = symbol.binding else {
+            return Vec::new();
+        };
+        if symbol.name.text != "handle"
+            || !definition.has_positional_parameter
+            || definition.kind != DefinitionKind::Function
+        {
+            return Vec::new();
+        }
+        definition.parameters[1..]
+            .iter()
+            .map(|parameter| self.by_location[&(scope, parameter.at.line, parameter.at.column)])
+            .collect()
     }
 
     pub(super) fn unresolved_django_command_lookup(
