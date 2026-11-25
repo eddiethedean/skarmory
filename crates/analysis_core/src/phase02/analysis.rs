@@ -48,6 +48,7 @@ mod metaclasses;
 mod mutations;
 mod pydantic;
 mod sanic;
+mod source_provider_calls;
 mod starlette;
 mod terminal;
 mod wagtail;
@@ -77,6 +78,7 @@ enum Value {
     Coroutine(Invocation),
     ScheduledTask,
     Module(usize),
+    InitializedStdlibOs,
     CommandNamespace(ScopeId),
     CommandNamespaceGet(ScopeId),
     FrameworkCode(SymbolId),
@@ -393,6 +395,8 @@ struct DirectArguments {
     implicit_receiver: bool,
     values: BTreeMap<String, Value>,
     forwarded: BTreeMap<String, SymbolId>,
+    fresh_provider: Option<SymbolId>,
+    verified: bool,
     conditional: bool,
     arguments_bound: bool,
 }
@@ -617,6 +621,8 @@ pub(super) fn analyze_with_verification(
         receiver_calls: Vec::new(),
         fresh_field_calls: BTreeMap::new(),
         fresh_field_invocations: Vec::new(),
+        source_provider_calls: BTreeMap::new(),
+        source_provider_invalidated: None,
         resolved_receiver_calls: BTreeSet::new(),
         receiver_call_issues: BTreeSet::new(),
         issues: Vec::new(),
@@ -666,6 +672,7 @@ pub(super) fn analyze_with_verification(
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
         django_middleware_sites: Vec::new(),
+        logging_os_initializers: BTreeMap::new(),
         logging_record_calls: Vec::new(),
         logging_formatter_methods: BTreeSet::new(),
         django_view_arguments: BTreeMap::new(),
@@ -706,6 +713,9 @@ pub(super) fn analyze_with_verification(
     }
     for (file, source) in files.iter().enumerate() {
         graph.index(file, &source.facts.body);
+    }
+    if phase03 {
+        graph.index_logging_os_initializers();
     }
     for symbol in &graph.symbols {
         if graph.scopes[symbol.scope]
@@ -831,6 +841,8 @@ struct Graph<'a> {
     receiver_calls: Vec<ReceiverCall>,
     fresh_field_calls: BTreeMap<SymbolId, Location>,
     fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
+    source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
+    source_provider_invalidated: Option<BTreeSet<SymbolId>>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
     receiver_call_issues: BTreeSet<usize>,
     issues: Vec<Issue>,
@@ -878,6 +890,7 @@ struct Graph<'a> {
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
     django_middleware_sites: Vec<django_middleware::MiddlewareSite>,
+    logging_os_initializers: BTreeMap<ScopeId, logging_config::OsInitializer>,
     logging_record_calls: Vec<ParameterCall>,
     logging_formatter_methods: BTreeSet<SymbolId>,
     django_view_arguments: django_views::ViewRouteArguments,
@@ -1627,6 +1640,9 @@ impl<'a> Graph<'a> {
             // execution, even though their bindings belong to the hook.
             self.scopes[scope].evaluated_imports.push(id);
         }
+        if self.logging_import_uses_initialized_os(source_scope, import) {
+            return None;
+        }
         let Some(module) = module else {
             self.import_issue(
                 scope,
@@ -2164,6 +2180,9 @@ impl<'a> Graph<'a> {
                 Value::Unknown
             }
             Binding::Import(import) => {
+                if self.logging_import_uses_initialized_os(scope, import) {
+                    return Value::InitializedStdlibOs;
+                }
                 let Some(module) = self.import_module(file, import) else {
                     return Value::Unknown;
                 };
@@ -2773,6 +2792,9 @@ impl<'a> Graph<'a> {
                 ModuleMemberAccess::Attribute,
                 depth,
             ),
+            Value::InitializedStdlibOs if name == "PathLike" => {
+                Value::Provider("os.PathLike".into())
+            }
             Value::Provider(module) => self.module_member_at(
                 &module,
                 name,
@@ -3255,7 +3277,8 @@ impl<'a> Graph<'a> {
         value
     }
 
-    fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
+    fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, subclass: &Definition) {
+        let single_base = subclass.bases.len() == 1;
         let hook = match base {
             Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
                 self.class_member_at(id, "__init_subclass__", 0, Some((scope, at)))
@@ -3267,6 +3290,7 @@ impl<'a> Graph<'a> {
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
                             || self.wagtail_declaration_base(&name)
+                            || self.wagtail_plain_snippet_base(&name, subclass)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -4545,6 +4569,17 @@ impl<'a> Graph<'a> {
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
             Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
+            Value::Provider(provider)
+                if self.phase03 && wagtail::is_snippet_base_provider(&provider) =>
+            {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_attribute_write",
+                    "Wagtail snippet base escapes to an unmodeled consumer",
+                );
+                return;
+            }
             Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
                 for value in values {
                     self.expose(scope, value, kind, at);
@@ -4744,6 +4779,14 @@ impl<'a> Graph<'a> {
         test: &Expression,
         before: Location,
     ) -> Option<bool> {
+        if self.logging_guard_uses_initialized_os(scope, test)
+            && let ExpressionKind::Call { arguments, .. } = &test.kind
+        {
+            for argument in arguments {
+                self.walk(scope, argument, before);
+            }
+            return Some(false);
+        }
         match &test.kind {
             ExpressionKind::Not(operand) => self
                 .walk_if_test(scope, operand, before)
@@ -5948,6 +5991,14 @@ impl<'a> Graph<'a> {
                             && let Some(receiver) = arguments.first()
                         {
                             self.record_unmodeled_class_write(scope, receiver, before);
+                            if self.wagtail_snippet_provider_write(scope, receiver, before) {
+                                self.scope_issue(
+                                    scope,
+                                    expr.at,
+                                    "unresolved_attribute_write",
+                                    "Wagtail snippet base mutations are outside the bounded model",
+                                );
+                            }
                         }
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -6025,7 +6076,10 @@ impl<'a> Graph<'a> {
                         {
                             return;
                         }
-                        if self.phase03 && self.defer_fresh_field_call(scope, expr) {
+                        if self.phase03
+                            && (self.defer_fresh_field_call(scope, expr)
+                                || self.defer_source_provider_call(scope, expr))
+                        {
                             return;
                         }
                         if self.phase03 && arguments.is_empty() && keywords.is_empty()
@@ -6389,6 +6443,9 @@ impl<'a> Graph<'a> {
                     }
                 }
             }
+            let fresh_provider = (self.phase03 && arguments_bound && !invocation.verified)
+                .then(|| self.fresh_provider_argument(definition, call, &values))
+                .flatten();
             self.direct_arguments
                 .entry(callee)
                 .or_default()
@@ -6399,6 +6456,8 @@ impl<'a> Graph<'a> {
                         || matches!(invocation.receiver, Receiver::Bound(_)),
                     values,
                     forwarded,
+                    fresh_provider,
+                    verified: invocation.verified,
                     conditional,
                     arguments_bound,
                 });
@@ -6538,6 +6597,8 @@ impl<'a> Graph<'a> {
                     implicit_receiver: false,
                     values,
                     forwarded: BTreeMap::new(),
+                    fresh_provider: None,
+                    verified: false,
                     conditional: true,
                     arguments_bound: false,
                 });
@@ -6965,7 +7026,7 @@ impl<'a> Graph<'a> {
                             self.edge(scope, id, "base_class", "certain");
                         }
                         if !literal_string_enum {
-                            self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                            self.subclass_hook(scope, value, base.at, definition);
                         }
                     }
                     if definition.kind == DefinitionKind::Class {
@@ -9714,6 +9775,7 @@ impl<'a> Graph<'a> {
                 self.activate_fastapi(reach, &mut pending);
                 self.activate_flask_parameter_hooks(reach, &mut pending);
                 self.activate_static_parameter_calls(reach, &mut pending);
+                self.activate_source_provider_calls(reach, &mut pending, possible);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
                 self.resolve_django_reloader_parameter_receivers(reach, &mut pending, possible);
             }
@@ -9959,6 +10021,7 @@ impl<'a> Graph<'a> {
         }
         self.report_unbound_receiver_calls(&reach);
         self.report_fresh_field_calls(&reach);
+        self.report_source_provider_calls(&reach);
         self.issues
             .extend(
                 self.fastapi_dependency_issues
@@ -10349,6 +10412,7 @@ struct Reachability {
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     resolved_django_reloader_parameters: BTreeSet<usize>,
     resolved_static_parameter_calls: BTreeSet<usize>,
+    resolved_source_provider_calls: BTreeSet<SymbolId>,
     closed_class_call_sites: BTreeSet<(ScopeId, [usize; 2], &'static str)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_websocket_query_bindings: BTreeMap<SymbolId, bool>,
@@ -11718,10 +11782,17 @@ configure()
             )],
             &[],
         );
-        // The framework's snippet base is outside the bounded class model.
-        assert!(report.issues.iter().any(|issue| {
-            issue.path == "home/views.py" && issue.kind == "unresolved_subclass_hook"
-        }));
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for member in ["list_display", "sort_order_field", "unrelated_option"] {
+            assert!(
+                report
+                    .findings
+                    .iter()
+                    .any(|row| { row.full_name == format!("home.views.PersonViewSet.{member}") }),
+                "{member}: {:?}",
+                report.findings
+            );
+        }
         assert!(
             !report
                 .evidence
@@ -11731,6 +11802,81 @@ configure()
             "{:?}",
             report.evidence
         );
+    }
+
+    #[test]
+    fn wagtail_snippet_subclass_hook_preserves_unbounded_inputs() {
+        for (source, expected_issue) in [
+            (
+                "from vendor import SnippetViewSet\nclass Child(SnippetViewSet): pass\n",
+                "unresolved_subclass_hook",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "class Mixin: pass\n",
+                    "class Child(SnippetViewSet, Mixin): pass\n",
+                ),
+                "unresolved_subclass_hook",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "SnippetViewSet.__init_subclass__ = lambda cls: None\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "def replacement(cls): pass\n",
+                    "def patch(parent):\n",
+                    "    setattr(parent, '__init_subclass__', classmethod(replacement))\n",
+                    "patch(SnippetViewSet)\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "def replacement(cls): pass\n",
+                    "def patch(parent=SnippetViewSet):\n",
+                    "    setattr(parent, '__init_subclass__', classmethod(replacement))\n",
+                    "patch()\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "setattr(SnippetViewSet, '__init_subclass__', lambda cls: None)\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "from wagtail.snippets.models import register_snippet\n",
+                    "class Child(SnippetViewSet): pass\n",
+                    "register_snippet(Child)\n",
+                ),
+                "unresolved_call",
+            ),
+        ] {
+            let report = analyze_phase03(&[module("views.py", "views", source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == expected_issue),
+                "{source}: {:?}",
+                report.issues
+            );
+        }
     }
 
     #[test]

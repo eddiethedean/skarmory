@@ -1802,6 +1802,8 @@ impl Graph<'_> {
                 implicit_receiver: false,
                 values,
                 forwarded: BTreeMap::new(),
+                fresh_provider: None,
+                verified: false,
                 conditional: certainty != "certain" || self.branch_depth != 0,
                 arguments_bound,
             });

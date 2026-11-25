@@ -9,6 +9,9 @@ use instances::{Instance, Method};
 pub(super) const DICT_CONFIG: &str = "logging.config.dictConfig";
 const MAX_ITEMS: usize = 256;
 const MAX_REPLAY_DEPTH: usize = 16;
+// CPython 3.11 logging and logging.config import dependencies, including
+// platform alternatives and the conventional startup hooks.
+const LOGGING_IMPORT_NAMES: &str = "+    _abc _codecs _collections _collections_abc _compat_pickle _functools _heapq _io _operator +    _pickle _queue _signal _socket _sre _stat _string _struct _thread _warnings _weakref +    _weakrefset _winapi abc array atexit builtins codecs collections contextlib copy copyreg +    encodings enum errno functools genericpath heapq io itertools keyword linecache logging +    math msvcrt nt ntpath operator pickle posix posixpath queue re reprlib select selectors +    sitecustomize socket socketserver stat string struct sys textwrap threading time token +    tokenize traceback types usercustomize warnings weakref winreg";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum LoggingBase {
@@ -81,6 +84,11 @@ struct Factory {
     // receive the configuration's keyword arguments.
     default_formatter: bool,
     has_options: bool,
+}
+
+pub(super) struct OsInitializer {
+    import: Location,
+    guard: Location,
 }
 
 impl<'a> Replay<'a> {
@@ -605,7 +613,177 @@ fn imports_logging(statement: &Statement) -> bool {
         if import.level == 0 && matches!(import.module.as_str(), "logging" | "logging.config"))
 }
 
+fn literal_string_statement(statement: &Statement) -> bool {
+    matches!(
+        statement.kind,
+        StatementKind::Evaluate(Expression {
+            kind: ExpressionKind::Text(_),
+            ..
+        })
+    )
+}
+
+fn positional_operands(expression: &Expression) -> Option<(&Expression, &[Expression])> {
+    let ExpressionKind::Call {
+        function,
+        arguments,
+        keywords,
+    } = &expression.kind
+    else {
+        return None;
+    };
+    keywords.is_empty().then_some((function, arguments))
+}
+
 impl<'a> Graph<'a> {
+    pub(super) fn index_logging_os_initializers(&mut self) {
+        if !self.terminal_proofs
+            || self.modules.contains_key("logging")
+            || self.modules.contains_key("logging.config")
+        {
+            return;
+        }
+        let Some(&os_file) = self.modules.get("os") else {
+            return;
+        };
+        let Some(project) = self.discovery else {
+            return;
+        };
+        if !project.issues.is_empty()
+            || project.files.len() != self.files.len()
+            || self.files[os_file].is_package
+            || self.local(os_file, "path", END).is_some()
+            || self.local(os_file, "__getattr__", END).is_some()
+            || !project.root_flat_module_unambiguous(&self.files[os_file].path, "os")
+        {
+            return;
+        }
+        // CPython's real logging initializer needs os.path. It cannot use
+        // the inert project shadow and still reach the following import.
+        // Keep this proof to closed, top-level logging initializers. Another
+        // project initializer may otherwise affect the import cache first.
+        let mut active = (0..self.files.len()).filter(|&file| {
+            !self.scopes[file].body.iter().all(|statement| {
+                matches!(&statement.kind,
+                    StatementKind::Define(definition) if terminal::plain_class(definition)
+                ) || literal_string_statement(statement)
+            })
+        });
+        let (Some(scope), None) = (active.next(), active.next()) else {
+            return;
+        };
+        let app = &self.files[scope];
+        if scope != os_file
+            && !self.scopes[scope].open_wildcard
+            && project.root_flat_module_unambiguous(&app.path, &app.module)
+            && LOGGING_IMPORT_NAMES.split_ascii_whitespace().all(|name| {
+                name != app.module && project.root_flat_module_unambiguous(&app.path, name)
+            })
+            && let Some(initializer) = self.closed_logging_os_initializer(scope)
+        {
+            self.logging_os_initializers.insert(scope, initializer);
+        }
+    }
+
+    fn closed_logging_os_initializer(&self, scope: ScopeId) -> Option<OsInitializer> {
+        let body = self.scopes[scope].body;
+        let first = body
+            .iter()
+            .position(|statement| !literal_string_statement(statement))?;
+        let [logging_import, os_import, config, guarded, apply] = &body[first..] else {
+            return None;
+        };
+        let (
+            StatementKind::Import(logging),
+            StatementKind::Import(os),
+            StatementKind::Assign {
+                names,
+                value: Some(value),
+                annotation: None,
+            },
+            StatementKind::If {
+                test, otherwise, ..
+            },
+            StatementKind::Evaluate(call),
+        ) = (
+            &logging_import.kind,
+            &os_import.kind,
+            &config.kind,
+            &guarded.kind,
+            &apply.kind,
+        )
+        else {
+            return None;
+        };
+        let [config] = names.as_slice() else {
+            return None;
+        };
+        if [logging, os]
+            .iter()
+            .any(|import| import.level != 0 || import.member.is_some())
+            || logging.module != "logging.config"
+            || !logging.exposes_top_level
+            || logging.local.text != "logging"
+            || self.import_module(scope, logging).as_deref() != Some("logging.config")
+            || self.visible_import_module(scope, logging, "logging.config") != "logging"
+            || os.module != "os"
+            || self.import_module(scope, os).as_deref() != Some("os")
+            || matches!(os.local.text.as_str(), "isinstance" | "logging")
+            || matches!(config.text.as_str(), "isinstance" | "logging")
+            || config.text == os.local.text
+            || !otherwise.is_empty()
+            || !matches!(
+                Replay::default().evaluate(value, 0),
+                Some(Data::Dictionary(_))
+            )
+        {
+            return None;
+        }
+        let (function, arguments) = positional_operands(test)?;
+        if !matches!(&function.kind, ExpressionKind::Name(name) if name == "isinstance")
+            || !matches!(
+                arguments,
+                [
+                    Expression { kind: ExpressionKind::Name(value), .. },
+                    Expression { kind: ExpressionKind::Member(receiver, member), .. },
+                ] if value == &config.text && member == "PathLike"
+                    && matches!(&receiver.kind, ExpressionKind::Name(name) if name == &os.local.text)
+            )
+        {
+            return None;
+        }
+        let (function, arguments) = positional_operands(call)?;
+        (matches!(arguments, [Expression { kind: ExpressionKind::Name(name), .. }] if name == &config.text)
+            && matches!(&function.kind, ExpressionKind::Member(receiver, member)
+                if member == "dictConfig"
+                    && matches!(&receiver.kind, ExpressionKind::Member(base, name) if name == "config"
+                        && matches!(&base.kind, ExpressionKind::Name(name) if name == "logging"))))
+        .then_some(OsInitializer {
+            import: os.local.at,
+            guard: test.at,
+        })
+    }
+
+    pub(super) fn logging_import_uses_initialized_os(
+        &self,
+        scope: ScopeId,
+        import: &Import,
+    ) -> bool {
+        self.logging_os_initializers
+            .get(&scope)
+            .is_some_and(|proof| position(proof.import) == position(import.local.at))
+    }
+
+    pub(super) fn logging_guard_uses_initialized_os(
+        &self,
+        scope: ScopeId,
+        test: &Expression,
+    ) -> bool {
+        self.logging_os_initializers
+            .get(&scope)
+            .is_some_and(|proof| position(proof.guard) == position(test.at))
+    }
+
     pub(super) fn defer_log_record_message(
         &mut self,
         scope: ScopeId,
@@ -966,6 +1144,9 @@ impl<'a> Graph<'a> {
     }
 
     fn logging_safe_import(&self, scope: ScopeId, import: &Import) -> bool {
+        if self.logging_import_uses_initialized_os(scope, import) {
+            return true;
+        }
         let Some(module) = self.import_module(self.scopes[scope].file, import) else {
             return false;
         };

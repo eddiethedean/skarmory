@@ -137,16 +137,7 @@ impl Graph<'_> {
         }
         // The body walker also records callable escapes. Check them after
         // every module has been visited so proof does not depend on file order.
-        let escaped: BTreeSet<_> = self
-            .scopes
-            .iter()
-            .flat_map(|scope| {
-                scope.edges.iter().filter_map(|edge| {
-                    matches!(edge.kind, "passed_callable" | "returned_callable")
-                        .then_some(edge.target)
-                })
-            })
-            .collect();
+        let escaped = self.escaped_field_callbacks();
         let replaced = self.field_callback_replacements();
         for proof in std::mem::take(&mut self.fresh_field_invocations) {
             self.direct.insert(proof.method.target);
@@ -176,6 +167,18 @@ impl Graph<'_> {
                 proof.at,
             );
         }
+    }
+
+    pub(super) fn escaped_field_callbacks(&self) -> BTreeSet<SymbolId> {
+        self.scopes
+            .iter()
+            .flat_map(|scope| {
+                scope.edges.iter().filter_map(|edge| {
+                    matches!(edge.kind, "passed_callable" | "returned_callable")
+                        .then_some(edge.target)
+                })
+            })
+            .collect()
     }
 
     pub(super) fn field_callback_replacements(&mut self) -> BTreeSet<SymbolId> {
@@ -440,7 +443,7 @@ impl Graph<'_> {
         field
     }
 
-    fn literal_factory_instance(
+    pub(super) fn literal_factory_instance(
         &mut self,
         scope: ScopeId,
         expression: &Expression,
@@ -551,9 +554,18 @@ impl Graph<'_> {
             return None;
         };
         let class = constructor.target;
-        let access = Some((scope, before));
         (!constructor.verified
-            && self.plain_provider_class(class, scope, 0)
+            && self.plain_default_provider(class, (scope, before), &BTreeSet::new()))
+        .then_some((class, factory.target))
+    }
+
+    pub(super) fn plain_default_provider(
+        &mut self,
+        class: SymbolId,
+        access: (ScopeId, Location),
+        invalidated: &BTreeSet<SymbolId>,
+    ) -> bool {
+        self.plain_provider_class(class, access.0, invalidated, 0)
             && [
                 "__new__",
                 "__init__",
@@ -562,11 +574,16 @@ impl Graph<'_> {
                 "__getattr__",
             ]
             .iter()
-            .all(|name| self.class_member_at(class, name, 0, access).is_none()))
-        .then_some((class, factory.target))
+            .all(|name| self.class_member_at(class, name, 0, Some(access)).is_none())
     }
 
-    fn plain_provider_class(&mut self, class: SymbolId, caller: ScopeId, depth: usize) -> bool {
+    fn plain_provider_class(
+        &mut self,
+        class: SymbolId,
+        caller: ScopeId,
+        invalidated: &BTreeSet<SymbolId>,
+        depth: usize,
+    ) -> bool {
         let symbol = &self.symbols[class];
         let Binding::Definition(definition, _) = symbol.binding else {
             return false;
@@ -575,6 +592,8 @@ impl Graph<'_> {
             || definition.kind != DefinitionKind::Class
             || definition.has_class_keywords()
             || !definition.decorators.is_empty()
+            || invalidated.contains(&class)
+            || self.has_unmodeled_class_write(class)
             || !self.class_discovery_writes(class, caller).is_empty()
         {
             return false;
@@ -584,7 +603,7 @@ impl Graph<'_> {
             [base] => match self.probe_identity(symbol.scope, base, definition.name.at) {
                 Value::Provider(name) => name == "builtins.object",
                 Value::Callable(parent) if !parent.verified => {
-                    self.plain_provider_class(parent.target, caller, depth + 1)
+                    self.plain_provider_class(parent.target, caller, invalidated, depth + 1)
                 }
                 _ => false,
             },
@@ -593,7 +612,7 @@ impl Graph<'_> {
     }
 }
 
-fn plain_method(definition: &Definition, parameters: usize) -> bool {
+pub(super) fn plain_method(definition: &Definition, parameters: usize) -> bool {
     definition.kind == DefinitionKind::Function
         && !definition.is_generator
         && definition.decorators.is_empty()

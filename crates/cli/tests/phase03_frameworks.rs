@@ -78,6 +78,79 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
     names
 }
 
+#[test]
+fn reached_stdlib_logging_binds_os_before_a_local_pathlike_stub() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let cache = tempfile::tempdir().unwrap();
+    let configure = r#"CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Active'}}}
+if isinstance(CONFIG, os.PathLike):
+    unknown(CONFIG)
+logging.config.dictConfig(CONFIG)
+"#;
+    fs::write(root.join("os.py"), "class PathLike: pass\n").unwrap();
+    fs::write(
+        root.join("formatters.py"),
+        "class Active: pass\nclass Retired: pass\n",
+    )
+    .unwrap();
+    let joined = format!("import logging.config\nimport os\n{configure}");
+    fs::write(&app, &joined).unwrap();
+
+    let factory = |report: &Value| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["qualified_name"] == "formatters.Active"
+                    && entry["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "logging_factory")
+            })
+    };
+    let report = scan(root);
+    assert!(factory(&report), "{report}");
+    let unused = findings(&report, "unused_classes");
+    assert!(unused.contains(&"formatters.Retired"), "{report}");
+    assert!(unused.contains(&"os.PathLike"), "{report}");
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &app,
+        format!("import os\nimport logging.config\n{configure}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(!factory(&report), "{report}");
+
+    fs::write(&app, joined).unwrap();
+    let socket = root.join("socket.py");
+    fs::write(&socket, "").unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(!factory(&report), "{report}");
+    fs::remove_file(socket).unwrap();
+
+    fs::create_dir(root.join("logging")).unwrap();
+    fs::write(root.join("logging/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("logging/config.py"),
+        "def dictConfig(config): return config\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(!factory(&report), "{report}");
+    let report = scan_with_excludes(root, None, None, &["logging"], 2);
+    assert!(!factory(&report), "{report}");
+}
+
 fn unreachable_functions(report: &Value) -> Vec<&str> {
     let mut names = findings(report, "unused_functions");
     names.extend(
@@ -9299,5 +9372,171 @@ fn django_url_callbacks_enter_async_views_before_validating_the_response() {
             }),
             "{report}"
         );
+    }
+}
+
+#[test]
+fn source_provider_dispatch_uses_the_fresh_argument_instead_of_its_annotation() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"class Provider:
+    def schedule_dates(self, season): raise NotImplementedError
+    def scoreboard(self, day): raise NotImplementedError
+
+class ConcreteProvider(Provider):
+    def schedule_dates(self, season): return [f"{season}-01-01"]
+    def scoreboard(self, day): return {"day": day, "games": []}
+
+def fetch_day(provider: Provider, day: str):
+    return provider.scoreboard(day)
+
+RESULT = fetch_day(ConcreteProvider(), "2026-10-23")
+"#;
+    let providers = root.join("providers.py");
+    fs::write(&providers, source).unwrap();
+
+    let report = scan(root);
+    assert_provider_call(&report, "providers.ConcreteProvider.scoreboard", "certain");
+    let unused = unreachable_functions(&report);
+    assert!(unused.contains(&"providers.ConcreteProvider.schedule_dates"));
+    assert!(unused.contains(&"providers.Provider.scoreboard"));
+    assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+
+    fs::write(
+        &providers,
+        format!("{source}UNKNOWN = fetch_day(object(), '2026-10-24')\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_call(&report, "providers.ConcreteProvider.scoreboard", "certain");
+    assert_provider_dispatch_unresolved(&report, "providers.py", 10);
+    assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+
+    fs::write(
+        providers,
+        format!(
+            "{source}def replacement(self, day): return {{}}\n\
+             ConcreteProvider.scoreboard.__code__ = replacement.__code__\n"
+        ),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "providers.py", 10);
+    assert!(!provider_call(
+        &report,
+        "providers.ConcreteProvider.scoreboard",
+        "certain"
+    ));
+}
+
+#[test]
+fn source_provider_dispatch_follows_a_literal_through_a_local_factory() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        r#"class Provider:
+    def scoreboard(self, day): raise NotImplementedError
+
+class NcaaProvider(Provider):
+    def schedule_dates(self, season): return [f"{season}-01-01"]
+    def scoreboard(self, day): return {"day": day, "games": []}
+
+class NjcaaProvider(Provider):
+    def schedule_dates(self, season): return [f"{season}-02-01"]
+    def scoreboard(self, day): return {"day": day, "games": []}
+
+def get_provider(slug):
+    if slug == "ncaa":
+        return NcaaProvider()
+    return NjcaaProvider()
+"#,
+    )
+    .unwrap();
+    let pipeline = root.join("pipeline.py");
+    let wrapper = r#"from providers import get_provider
+
+def import_month(slug, season):
+    client = get_provider(slug)
+    return client.schedule_dates(season)
+"#;
+
+    for (input, selected, dormant) in [
+        ("'ncaa'", "NcaaProvider", "NjcaaProvider"),
+        ("'njcaa'", "NjcaaProvider", "NcaaProvider"),
+    ] {
+        fs::write(
+            &pipeline,
+            format!("{wrapper}\nRESULT = import_month({input}, 2026)\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_provider_call(
+            &report,
+            &format!("providers.{selected}.schedule_dates"),
+            "certain",
+        );
+        let unused = unreachable_functions(&report);
+        assert!(unused.contains(&format!("providers.{dormant}.schedule_dates").as_str()));
+        assert!(unused.contains(&format!("providers.{selected}.scoreboard").as_str()));
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    fs::write(
+        pipeline,
+        format!("{wrapper}\nRESULT = import_month(object(), 2026)\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "pipeline.py", 5);
+    for name in [
+        "providers.NcaaProvider.schedule_dates",
+        "providers.NjcaaProvider.schedule_dates",
+    ] {
+        assert!(!provider_call(&report, name, "certain"), "{report}");
+        assert!(!provider_call(&report, name, "possible"), "{report}");
+    }
+    assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+}
+
+fn assert_provider_dispatch_unresolved(report: &Value, path: &str, line: u64) {
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_call" && issue["file"] == path && issue["line"] == line
+            }),
+        "{report}"
+    );
+}
+
+fn assert_provider_call(report: &Value, symbol: &str, certainty: &str) {
+    assert!(provider_call(report, symbol, certainty), "{report}");
+}
+
+fn provider_call(report: &Value, symbol: &str, certainty: &str) -> bool {
+    report["dead_code_evidence"]["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| {
+            row["qualified_name"] == symbol
+                && row["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "direct_call" && edge["certainty"] == certainty)
+        })
+}
+
+fn assert_provider_cache_equivalence(root: &Path, cache: &Path, report: &Value, code: i32) {
+    for _ in 0..2 {
+        let mut cached = scan_with_exit(root, None, Some(cache), code);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(&cached, report);
     }
 }
