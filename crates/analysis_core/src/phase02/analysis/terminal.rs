@@ -20,6 +20,7 @@ impl Graph<'_> {
             || self.terminal_fastapi_shadowed_import(scope, statement)
             || self.terminal_django_url_assignment(scope, statement)
             || self.terminal_django_url_initializer(scope, statement)
+            || self.terminal_django_url_callback_import(scope, statement)
             || self.terminal_unbound_flask_initializer(scope, statement)
             || self.terminal_flask_factory_initializer(scope, statement)
             || self.terminal_flask_global_initializer(scope, statement)

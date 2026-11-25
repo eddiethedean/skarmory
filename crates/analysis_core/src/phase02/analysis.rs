@@ -14230,7 +14230,11 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     fn django_failed_view_initializer_cannot_register_a_callback() {
         let urls = "from django.urls import path\nfrom rejected import view\nurlpatterns = [path('', view)]\n";
         let mut files = django_url_test_files(urls, "");
-        files.push(module("rejected.py", "rejected", "def view(request): return helper()\ndef helper(): return 1\nraise RuntimeError('not ready')\n"));
+        files.push(module(
+            "rejected.py",
+            "rejected",
+            "def view(request): return helper()\ndef helper(): return 1\nraise external_cause()\n",
+        ));
         let report = analyze_phase03(&files, &[]);
         assert!(
             report
@@ -14245,6 +14249,44 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                 .iter()
                 .any(|edge| edge.kind == "direct_call" && edge.full_name == "rejected.helper")
         );
+    }
+
+    #[test]
+    fn django_proven_failed_callback_import_aborts_url_initialization() {
+        let urls = "from django.urls import path\nfrom views import view\nfrom unrelated import after\nurlpatterns = [path('', view), path('after/', after)]\n";
+        let mut files = django_url_test_files(urls, "");
+        files[3] = module(
+            "views.py",
+            "views",
+            "import prefix_effect\ndef view(request): return 1\nraise RuntimeError('cannot load')\n",
+        );
+        let effect = "from django.db.models.signals import post_save\ndef received(sender, **kwargs): pass\npost_save.connect(received)\n";
+        files.extend([
+            module("prefix_effect.py", "prefix_effect", effect),
+            module(
+                "unrelated.py",
+                "unrelated",
+                &format!("{effect}def after(request): return 2\n"),
+            ),
+        ]);
+        for _ in 0..2 {
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(
+                !report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_registration")
+            );
+            let receivers: BTreeSet<_> = report
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_signal" && row.certainty == "certain")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(receivers, ["prefix_effect.received"].into());
+            files.swap(1, 3);
+        }
     }
 
     #[test]

@@ -524,6 +524,86 @@ impl Graph<'_> {
                     && self.closed_named_url_patterns(file, value, table.at))
     }
 
+    pub(super) fn terminal_django_url_callback_import(
+        &mut self,
+        file: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Import(import) = &statement.kind else {
+            return false;
+        };
+        let Some(member) = &import.member else {
+            return false;
+        };
+        let Some(module) = self.import_module(file, import) else {
+            return false;
+        };
+        let Some(&provider) = self.modules.get(module.as_str()) else {
+            return false;
+        };
+        if provider == file
+            || module.contains('.')
+            || self.files[provider].is_package
+            || !self.django_raising_view_module(provider, member)
+        {
+            return false;
+        }
+        let Some((table, imports)) = self.scopes[file].body.split_last() else {
+            return false;
+        };
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } = &table.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Sequence { items, .. } = &value.kind else {
+            return false;
+        };
+        if !matches!(names.as_slice(), [name] if name.text == "urlpatterns")
+            || !imports.iter().all(|row| matches!(row.kind, StatementKind::Import(_)))
+            || !self.closed_named_url_patterns(file, value, table.at)
+            || !items.iter().any(|item| matches!(&item.kind,
+                ExpressionKind::Call { arguments, .. }
+                    if matches!(arguments.as_slice(), [_, Expression { kind: ExpressionKind::Name(name), .. }]
+                        if name == &import.local.text)))
+        {
+            return false;
+        }
+        // The import runs the provider's prefix, but never binds its callback
+        // or reaches any later imports and registrations in the URLConf.
+        self.scopes[file]
+            .activated_apps
+            .push(django_loaded_module(provider));
+        true
+    }
+
+    fn django_raising_view_module(&self, file: ScopeId, member: &str) -> bool {
+        let Some((terminal, prefix)) = self.scopes[file].body.split_last() else {
+            return false;
+        };
+        if !matches!(&terminal.kind,
+            StatementKind::Raise(Some(Expression {
+                kind: ExpressionKind::Call { function, arguments, keywords }, ..
+            })) if matches!(&function.kind, ExpressionKind::Name(name) if name == "RuntimeError")
+                && matches!(arguments.as_slice(), [] | [Expression { kind: ExpressionKind::Text(_), .. }])
+                && keywords.is_empty()
+                && matches!(self.lexical_binding(file, "RuntimeError", terminal.at, true), LexicalBinding::Missing))
+        {
+            return false;
+        }
+        prefix.iter().all(|statement| match &statement.kind {
+            StatementKind::Import(_) => true,
+            StatementKind::Define(definition) => plain_code_function(definition),
+            _ => false,
+        }) && prefix.iter().any(|statement| {
+            matches!(&statement.kind,
+            StatementKind::Define(definition) if definition.name.text == member)
+        })
+    }
+
     pub(super) fn django_closed_url_table_missing(&mut self, file: ScopeId) -> bool {
         if !self.terminal_proofs
             || self.scopes[file].open_wildcard
