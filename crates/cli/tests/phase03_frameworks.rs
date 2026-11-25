@@ -6217,6 +6217,36 @@ def context(request): return {}
     );
 
     fs::write(
+        package.join("settings.py"),
+        format!(
+            "{settings}from . import backends\ndef replacement(self, user_id): return None\nsetattr(backends.Right.get_user, '__code__', replacement.__code__)\n"
+        ),
+    )
+    .unwrap();
+    let changed_body = scan_with_exit(root, None, None, 2);
+    assert!(
+        changed_body["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["message"] == "configured Django callback body was replaced" })
+    );
+    let symbols = changed_body["dead_code_evidence"]["symbols"]
+        .as_array()
+        .unwrap();
+    assert!(
+        !symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Right.get_user")
+    );
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Right.aget_user")
+    );
+    fs::write(package.join("settings.py"), &settings).unwrap();
+
+    fs::write(
         package.join("config.py"),
         concat!(
             "BACKENDS = ['service.backends.Configured']\n",

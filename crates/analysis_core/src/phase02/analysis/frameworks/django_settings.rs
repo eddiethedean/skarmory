@@ -70,6 +70,7 @@ impl Protocol {
 #[derive(Default)]
 struct SettingsWrites {
     classes: BTreeMap<SymbolId, BTreeSet<String>>,
+    callback_bodies: BTreeMap<SymbolId, (ScopeId, Location)>,
     modules: BTreeSet<ScopeId>,
 }
 
@@ -92,6 +93,7 @@ impl Graph<'_> {
         }
 
         let mut roots = Vec::new();
+        let mut replaced_bodies = BTreeSet::new();
         for settings in selected {
             // An unresolved side effect can change the effective settings.
             let Some(writes) = self.django_settings_initializer_writes(settings) else {
@@ -122,9 +124,24 @@ impl Graph<'_> {
                 let mut paths = Vec::new();
                 collect_settings_paths(name, &value, &mut paths);
                 for (path, protocol) in paths {
-                    self.django_settings_protocol(settings, path, protocol, &writes, &mut roots);
+                    self.django_settings_protocol(
+                        settings,
+                        path,
+                        protocol,
+                        &writes,
+                        &mut roots,
+                        &mut replaced_bodies,
+                    );
                 }
             }
+        }
+        for (scope, line, column) in replaced_bodies {
+            self.scope_issue(
+                scope,
+                Location { line, column },
+                "unresolved_registration",
+                "configured Django callback body was replaced",
+            );
         }
         roots
     }
@@ -218,6 +235,11 @@ impl Graph<'_> {
                         .or_default()
                         .insert(name.to_owned());
                 }
+                Value::Callable(invocation) if name == "__code__" => {
+                    writes
+                        .callback_bodies
+                        .insert(invocation.target, (scope, at));
+                }
                 Value::Module(module) => {
                     writes.modules.insert(module);
                 }
@@ -269,6 +291,7 @@ impl Graph<'_> {
         protocol: Protocol,
         settings_writes: &SettingsWrites,
         roots: &mut Vec<Edge>,
+        replaced_bodies: &mut BTreeSet<(ScopeId, usize, usize)>,
     ) {
         let Some((module, name)) = path.rsplit_once('.') else {
             return;
@@ -303,6 +326,7 @@ impl Graph<'_> {
                 && !self.is_coroutine(class)
                 && !self.is_generator(class)
                 && self.bounded_method_descriptor(class) == Some(ConverterDescriptor::Instance)
+                && !modified_callback_body(class, &writes, replaced_bodies)
             {
                 self.read.extend(target.bindings);
                 roots.push(possible_edge(class, protocol.evidence()));
@@ -345,6 +369,9 @@ impl Graph<'_> {
             let Some(target) = self.probe_callable_binding(method) else {
                 continue;
             };
+            if modified_callback_body(target.target, &writes, replaced_bodies) {
+                continue;
+            }
             if self.is_coroutine(target.target)
                 && !(matches!(protocol, Protocol::Auth)
                     && name.starts_with('a')
@@ -411,6 +438,22 @@ impl Graph<'_> {
         }
         Some(None)
     }
+}
+
+fn modified_callback_body(
+    target: SymbolId,
+    writes: &[&SettingsWrites],
+    bodies: &mut BTreeSet<(ScopeId, usize, usize)>,
+) -> bool {
+    let mut modified = false;
+    for &(scope, at) in writes
+        .iter()
+        .filter_map(|writes| writes.callback_bodies.get(&target))
+    {
+        bodies.insert((scope, at.line, at.column));
+        modified = true;
+    }
+    modified
 }
 
 fn possible_edge(target: SymbolId, kind: &'static str) -> Edge {
