@@ -1607,6 +1607,49 @@ fn flask_opaque_hook_can_change_a_receiver_referenced_by_an_escaped_function() {
 }
 
 #[test]
+fn flask_failed_patch_leaves_an_independent_shell_context_callback_registered() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let setup = "from flask import Flask\napp = Flask(__name__)\n";
+    fs::write(
+        root.join("providers.py"),
+        format!("{setup}Flask.shell_context_processor = replacement\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("consumer.py"),
+        "from providers import app\n@app.shell_context_processor\ndef deferred(): return {}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("active.py"),
+        format!("{setup}@app.shell_context_processor\ndef shell(): return {{}}\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{report}");
+    assert_eq!(errors[0]["file"], "consumer.py", "{report}");
+    assert_eq!(errors[0]["kind"], "unresolved_import", "{report}");
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "active.shell"
+                && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "flask_registration" && edge["certainty"] == "certain"
+                })),
+        "{report}"
+    );
+    assert!(
+        !symbols
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "consumer.deferred"),
+        "{report}"
+    );
+}
+
+#[test]
 fn flask_failed_class_patches_leave_independent_receivers_unchanged() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

@@ -1238,7 +1238,7 @@ impl Graph<'_> {
                     && body_without_docstring(definition).is_empty()))
                 && !definition.name.text.starts_with("__")
                 && (definition.decorators.is_empty()
-                    || self.closed_login_callback_declaration(file, definition, statement.at))
+                    || self.closed_flask_callback_declaration(file, definition, statement.at))
                 && definition.annotations.is_empty()
                 && definition.defaults.iter().all(|value| safe_flask_literal(&value.kind)),
             StatementKind::Evaluate(Expression { kind: ExpressionKind::Text(_), .. }) => true,
@@ -1288,7 +1288,7 @@ impl Graph<'_> {
         })
     }
 
-    fn closed_login_callback_declaration(
+    fn closed_flask_callback_declaration(
         &mut self,
         scope: ScopeId,
         definition: &Definition,
@@ -1297,13 +1297,15 @@ impl Graph<'_> {
         let [decorator] = definition.decorators.as_slice() else {
             return false;
         };
-        // The real Flask-Login descriptor only stores the function. Its body
-        // does not execute while the module installs the callback.
+        // These resolved Flask descriptors only store the callback.
+        // Its body does not execute during module initialization.
         definition.kind != DefinitionKind::Class
             && matches!(&decorator.kind, ExpressionKind::Member(..))
             && matches!(
                 self.probe_identity(scope, decorator, before),
-                Value::Method(_, ObjectKind::FlaskLoginManager, name) if flask_login_callback(&name)
+                Value::Method(_, kind, name)
+                    if kind == ObjectKind::FlaskLoginManager && flask_login_callback(&name)
+                        || flask_callback_method(kind, &name)
             )
     }
 
