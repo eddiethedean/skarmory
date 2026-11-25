@@ -3548,6 +3548,57 @@ False and post_save.connect(inactive)
 }
 
 #[test]
+fn django_signals_keep_coverage_for_proven_object_base_factories() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let src = r#"from django.dispatch import receiver
+from django.db.models.signals import post_save
+from external import dynamic_base
+
+def base_factory():
+    return object
+
+class Other(base_factory()):
+    pass
+
+instance = Other()
+
+@receiver(post_save)
+def registered(sender, instance, **kwargs):
+    return helper()
+
+def helper():
+    return 1
+"#;
+    django_signal_project(root, src);
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.registered", "certain")]
+    );
+    assert!(!findings(&report, "unused_functions").contains(&"inventory.signals.helper"));
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["coverage", "dead_code_evidence", "unused_functions"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+
+    fs::write(
+        root.join("inventory/signals.py"),
+        src.replace("    return object", "    return dynamic_base"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.registered", "certain")]
+    );
+}
+
+#[test]
 fn django_receiver_decorator_factory_can_be_a_local_identity() {
     let project = tempfile::tempdir().unwrap();
     django_signal_project(

@@ -2708,7 +2708,7 @@ impl<'a> Graph<'a> {
         }
         let inherited = match definition.bases.as_slice() {
             [] => None,
-            [base] => match self.identity(symbol.scope, base, definition.name.at, depth + 1) {
+            [base] => match self.class_base(symbol.scope, base, definition.name.at, depth + 1) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
@@ -2773,6 +2773,48 @@ impl<'a> Graph<'a> {
         } else {
             inherited
         }
+    }
+
+    fn class_base(
+        &mut self,
+        scope: ScopeId,
+        base: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Value {
+        let value = self.identity(scope, base, before, depth);
+        if !self.phase03 || !matches!(value, Value::Unknown) || depth >= MAX_BINDING_CHAIN {
+            return value;
+        }
+        if let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &base.kind
+            && arguments.is_empty()
+            && keywords.is_empty()
+            && let Value::Callable(invocation) = self.probe_identity(scope, function, before)
+            && !invocation.verified
+            && matches!(invocation.receiver, Receiver::Ordinary)
+            && let Binding::Definition(definition, body) = self.symbols[invocation.target].binding
+            && definition.kind == DefinitionKind::Function
+            && !definition.is_generator
+            && definition.decorators.is_empty()
+            && definition.parameters.is_empty()
+            && let [
+                Statement {
+                    kind: StatementKind::Return(Some(result)),
+                    at,
+                },
+            ] = definition.body.as_slice()
+            && matches!(self.probe_identity(body, result, *at),
+                Value::Provider(provider) if provider == "builtins.object")
+        {
+            // The factory body still executes normally. Only the base value
+            // is recovered from its sole statically resolved return.
+            return Value::Provider("builtins.object".into());
+        }
+        value
     }
 
     fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
@@ -5830,7 +5872,7 @@ impl<'a> Graph<'a> {
                     let mut valid_bases = true;
                     for base in &definition.bases {
                         self.walk(scope, base, at);
-                        let value = self.identity(scope, base, at, 0);
+                        let value = self.class_base(scope, base, at, 0);
                         valid_bases &= !matches!(value, Value::MissingFrameworkMember);
                         if let Value::Callable(Invocation { target: id, .. }) = value {
                             self.edge(scope, id, "base_class", "certain");
@@ -6599,7 +6641,7 @@ impl<'a> Graph<'a> {
                 [base] => base,
                 _ => break,
             };
-            match self.identity(symbol.scope, base, definition.name.at, 0) {
+            match self.class_base(symbol.scope, base, definition.name.at, 0) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     current = parent
                 }
