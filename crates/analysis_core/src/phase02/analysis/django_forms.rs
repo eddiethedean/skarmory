@@ -180,7 +180,8 @@ impl Graph<'_> {
         else {
             return false;
         };
-        if !matches!(queryset.kind, ExpressionKind::None)
+        if call.positional.len() > 1
+            || !matches!(queryset.kind, ExpressionKind::None)
             || required.is_some_and(|value| !matches!(value.kind, ExpressionKind::Bool(_)))
             || !self.bounded_django_relationship_field(class, call.scope)
         {

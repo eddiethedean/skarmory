@@ -410,6 +410,51 @@ fn drf_declarations_keep_only_proven_framework_protocol_members() {
 }
 
 #[test]
+fn drf_method_fields_use_declared_serializer_fields_and_inherited_getters() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("api.py"),
+        "from rest_framework import serializers
+class Base(serializers.Serializer):
+    title = serializers.SerializerMethodField(method_name='render_title')
+    invalid = serializers.SerializerMethodField()
+class Mixin:
+    extra = serializers.SerializerMethodField()
+    def get_total(self, obj): return unreachable_effect(obj)
+    def render_title(self, obj): return obj
+    def get_extra(self, obj): return obj
+    def get_invalid(self, obj, required): return obj
+    def get_orphan(self, obj): return obj
+class Report(Mixin, Base):
+    total = serializers.SerializerMethodField()
+",
+    )
+    .unwrap();
+    let report = scan(root);
+    let reported = findings(&report, "unused_functions");
+    assert_eq!(
+        reported,
+        [
+            "api.Mixin.get_extra",
+            "api.Mixin.get_invalid",
+            "api.Mixin.get_orphan"
+        ],
+        "{report}"
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for name in ["api.Mixin.get_total", "api.Mixin.render_title"] {
+        assert!(
+            symbols.iter().any(|symbol| symbol["qualified_name"] == name
+                && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "drf_protocol_declaration" && edge["certainty"] == "possible"
+                })),
+            "{name}\n{report}"
+        );
+    }
+}
+
+#[test]
 fn phase03_named_conditions_bind_before_testing_and_keep_phase02_coverage() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

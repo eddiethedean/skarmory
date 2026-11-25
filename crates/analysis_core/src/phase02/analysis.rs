@@ -5779,6 +5779,11 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "FastMCP server arguments are outside the bounded model");
                         }
                     }
+                    Value::Provider(name) if self.phase03 && drf::is_method_field(&name) => {
+                        if drf::method_field_name(arguments, keywords).is_none() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF method field requires an omitted or literal callback name");
+                        }
+                    }
                     Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
                         if self.drf_field_writable(scope, before, arguments, keywords).is_none() {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF serializer field arguments are outside the bounded model");

@@ -1995,7 +1995,10 @@ impl Graph<'_> {
         let scope = symbol.scope;
         let at = definition.name.at;
         let [base] = definition.bases.as_slice() else {
-            return None;
+            let (_, serializer) = self.drf_mixin_base(class)?;
+            return self
+                .framework_class_role(serializer, seen, depth + 1)
+                .filter(|role| *role == FrameworkClassRole::DrfSerializer);
         };
         match self.probe_identity(scope, base, at) {
             Value::Provider(provider) => framework_class_provider(&provider),
@@ -3969,7 +3972,20 @@ impl Graph<'_> {
                                 })),
                             ..
                         }]
-                    );
+                    )
+                    || name == "setup"
+                        && matches!(
+                            body,
+                            [Statement {
+                                kind: StatementKind::Return(Some(Expression {
+                                    kind: ExpressionKind::Scalar(_)
+                                        | ExpressionKind::Bool(_)
+                                        | ExpressionKind::Text(_),
+                                    ..
+                                })),
+                                ..
+                            }]
+                        );
                 if no_effects {
                     if name == "__init__" {
                         continue;
