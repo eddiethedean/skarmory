@@ -328,6 +328,11 @@ backend list supports literal augmentation, repetition, and item edits in
 the selected settings module. Source importers of a mutated list and
 unresolved mutations retain their coverage diagnostics.
 
+The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
+module initialization. It follows literal formatter and filter declarations,
+ordered dictionary edits, aliases, and eligible one-argument mutation helpers.
+An opaque configuration or consumer leaves coverage incomplete.
+
 A supported Django form validation call retains possible `clean` and
 `clean_<field>` callbacks from its effective field table. The preview
 follows supported inherited fields, `None` masks, and literal ModelForm

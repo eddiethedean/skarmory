@@ -31,6 +31,7 @@ mod field_dispatch;
 mod flask;
 mod frameworks;
 mod gunicorn;
+mod logging_config;
 mod mutations;
 mod pydantic;
 mod sanic;
@@ -663,6 +664,7 @@ pub(super) fn analyze_with_verification(
     }
     if phase03 {
         graph.resolve_fresh_field_invocations();
+        graph.collect_logging_configs();
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
@@ -9881,7 +9883,7 @@ fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
 }
 
 fn is_deferred_possible_edge(kind: &str) -> bool {
-    is_atexit_edge(kind) || kind == django_forms::VALIDATION_HOOK
+    is_atexit_edge(kind) || matches!(kind, django_forms::VALIDATION_HOOK | "logging_factory")
 }
 
 fn is_atexit_edge(kind: &str) -> bool {
@@ -10417,6 +10419,145 @@ configure()
                     .any(|issue| issue.kind == "unresolved_call")
             );
         }
+    }
+
+    #[test]
+    fn dict_config_resolves_factory_at_the_reached_stdlib_consumer() {
+        let source = "from logging.config import dictConfig as apply\n\
+                      apply({'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}})\n";
+        let candidate = module("app.py", "app", source);
+        let factories = module(
+            "formatters.py",
+            "formatters",
+            "class Selected:\n    def format(self, rec): return render(rec)\n\
+             def render(rec): return str(rec)\n\
+             class Retired: pass\n",
+        );
+        let result = analyze_phase03(&[candidate, factories], &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Class), ["Retired"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "formatters.Selected"
+                && entry.kind == "logging_factory"
+                && entry.certainty == "possible"
+        }));
+        assert_eq!(names(&result, Category::Function), ["format", "render"]);
+    }
+
+    #[test]
+    fn dict_config_stops_before_later_factories_after_proven_binding_failure() {
+        let source = "import logging.config as config\n\
+                      apply = config.dictConfig\n\
+                      config.dictConfig = lambda configuration: None\n\
+                      apply({'version': 1, 'formatters': {'z': {'class': 'formatters.Invalid'}, 'a': {'()': 'formatters.Later'}}})\n";
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module(
+                    "formatters.py",
+                    "formatters",
+                    "class Invalid: pass\nclass Later: pass\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Class), ["Later"]);
+    }
+
+    #[test]
+    fn dict_config_observes_projected_alias_mutation_and_local_clears() {
+        for (edit, selected) in [
+            (
+                "wrapped = {'selected': CONFIG['formatters']['main']}\nwrapped['selected']['()'] = 'formatters.Other'\n",
+                Some("Other"),
+            ),
+            (
+                "def mutate(config):\n    config.clear()\nmutate(CONFIG)\n",
+                None,
+            ),
+            ("alias = CONFIG\nalias.clear()\n", None),
+        ] {
+            let source = format!(
+                "import logging.config\nCONFIG = {{'version': 1, 'formatters': {{'main': {{'()': 'formatters.Original'}}}}}}\n\
+                {edit}logging.config.dictConfig(CONFIG)\n"
+            );
+            let result = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module(
+                        "formatters.py",
+                        "formatters",
+                        "class Original: pass\nclass Other: pass\n",
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{edit}: {:?}", result.issues);
+            let expected = if selected.is_some() {
+                vec!["Original"]
+            } else {
+                vec!["Original", "Other"]
+            };
+            assert_eq!(names(&result, Category::Class), expected);
+        }
+    }
+
+    #[test]
+    fn dict_config_with_opaque_mutation_keeps_coverage_incomplete() {
+        let source = "import logging.config\n\
+                      CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}\n\
+                      configure(CONFIG)\n\
+                      logging.config.dictConfig(CONFIG)\n";
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module("formatters.py", "formatters", "class Selected: pass\n"),
+            ],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|entry| entry.kind == "logging_factory")
+        );
+    }
+
+    #[test]
+    fn dict_config_does_not_read_a_shadowed_package_member_as_a_submodule() {
+        let source = "import logging.config\n\
+                      logging.config.dictConfig({'version': 1, 'formatters': {'main': {'()': 'pkg.formatters.Selected'}}})\n";
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module("pkg/__init__.py", "pkg", "formatters = object()\n"),
+                module(
+                    "pkg/formatters.py",
+                    "pkg.formatters",
+                    "class Selected: pass\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|entry| entry.kind == "logging_factory")
+        );
     }
 
     #[test]

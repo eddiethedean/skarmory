@@ -331,6 +331,10 @@ impl Graph<'_> {
                     || is_django_signal_constructor(&qualified)
                     || is_django_runpython(&qualified)
                     || django_template_paths::is_pathlib_member(module, member)
+                    || matches!(
+                        qualified.as_str(),
+                        logging_config::DICT_CONFIG | "logging.config.dictConfigClass"
+                    )
                     || qualified == "django.utils.autoreload.run_with_reloader"
                     || member == "connect" && is_django_signal(module)
             }
@@ -683,6 +687,8 @@ fn provider_module(name: &str) -> bool {
     matches!(
         name,
         "unittest"
+            | "logging"
+            | "logging.config"
             | "unittest.case"
             | "unittest.async_case"
             | "django"
