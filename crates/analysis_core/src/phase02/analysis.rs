@@ -16,6 +16,7 @@ use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
+mod celery;
 mod fastapi;
 mod flask;
 mod frameworks;
@@ -61,6 +62,8 @@ enum Value {
     FastapiFieldMarker,
     FastapiMiddleware(Option<SymbolId>),
     PydanticDump(SymbolId),
+    CeleryConfig(Object),
+    CeleryBackend(Object),
     Executor,
     Submit,
     Process(Box<Value>),
@@ -477,6 +480,7 @@ pub(super) fn analyze_with_verification(
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
+        celery_backends: celery::Backends::default(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
         flask_hooks: Vec::new(),
@@ -543,6 +547,7 @@ pub(super) fn analyze_with_verification(
         graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
+        graph.collect_celery_backends();
     }
     graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
@@ -636,6 +641,7 @@ struct Graph<'a> {
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
+    celery_backends: celery::Backends,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
     flask_hooks: Vec<flask::ParameterHook>,
@@ -2431,6 +2437,15 @@ impl<'a> Graph<'a> {
             }
             Value::Object(object, ObjectKind::FlaskLoginManager) => {
                 self.flask_login_member(object, name, access)
+            }
+            Value::Object(object, ObjectKind::CeleryApp) if name == "conf" => {
+                Value::CeleryConfig(object)
+            }
+            Value::Object(object, ObjectKind::CeleryApp) if name == "backend" => {
+                Value::CeleryBackend(object)
+            }
+            Value::CeleryConfig(object) if name == "update" => {
+                Value::Method(object, ObjectKind::CeleryApp, "conf.update".into())
             }
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
@@ -4385,6 +4400,22 @@ impl<'a> Graph<'a> {
                             .map_or(Value::Unknown, |task| self.identity(scope, task, before, 0));
                         self.register_celery_task(scope, parent, value, expr.at);
                     }
+                    Value::Method(object, ObjectKind::CeleryApp, method)
+                        if self.phase03
+                            && matches!(method.as_str(), "conf.update" | "config_from_object") =>
+                    {
+                        self.record_celery_backend_config(
+                            object,
+                            &method,
+                            CallArguments {
+                                scope,
+                                before,
+                                at: expr.at,
+                                positional: arguments,
+                                keywords,
+                            },
+                        );
+                    }
                     Value::Method(parent, kind, method)
                         if self.phase03 && is_imperative_registration(kind, &method) =>
                     {
@@ -4749,6 +4780,18 @@ impl<'a> Graph<'a> {
                             )
                         {
                             self.scopes[scope].activated_apps.push(object);
+                            if matches!(kind, ObjectKind::CeleryApp) {
+                                self.record_celery_backend_creation(
+                                    object,
+                                    CallArguments {
+                                        scope,
+                                        before,
+                                        at: expr.at,
+                                        positional: arguments,
+                                        keywords,
+                                    },
+                                );
+                            }
                         }
                     }
                     _ => {
@@ -4807,6 +4850,9 @@ impl<'a> Graph<'a> {
                 } else {
                     self.member(base, name, (scope, before), 1)
                 };
+                if let Value::CeleryBackend(object) = value {
+                    self.record_celery_backend_read(object, scope, expr.at);
+                }
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
@@ -5509,7 +5555,9 @@ impl<'a> Graph<'a> {
                     let flask_write = matches!(&statement.kind,
                         StatementKind::WriteAttribute { member, value: Some(_), .. }
                         if self.modeled_flask_context_write(scope, receiver, member, at));
-                    if !flask_write && !self.modeled_framework_write(scope, at) {
+                    let celery_write = self.phase03
+                        && self.record_celery_backend_write(scope, at, &statement.kind);
+                    if !flask_write && !celery_write && !self.modeled_framework_write(scope, at) {
                         self.scope_issue(
                             scope,
                             at,

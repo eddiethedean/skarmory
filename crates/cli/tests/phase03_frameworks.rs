@@ -999,6 +999,83 @@ print(Item, Owner, Ordinary, Linked)
 }
 
 #[test]
+fn celery_backends_follow_effective_settings_and_the_first_load() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        "class Selected: pass\nclass Replacement: pass\nclass Dormant: pass\nclass Substitute: pass\nAlias = Selected\nSelected = Substitute\n",
+    )
+    .unwrap();
+    let app = root.join("jobs.py");
+    let first = r#"from celery import Celery
+
+app = Celery('jobs', backend='providers:Alias')
+config = app.conf
+config.update({'task_serializer': 'json'})
+app.backend
+config['result_backend'] = 'providers:Replacement'
+
+other = Celery('other')
+other.conf.result_backend = 'providers:Dormant'
+del other.conf['result_backend']
+"#;
+    fs::write(&app, first).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["providers.Dormant", "providers.Replacement"],
+        "{report}"
+    );
+    let assert_backend = |report: &Value, expected: &str| {
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["qualified_name"] == expected
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "celery_backend" && edge["certainty"] == "certain"
+                    })),
+            "{report}"
+        );
+    };
+    assert_backend(&report, "providers.Selected");
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        app,
+        first.replace("app.backend\n", "False and app.backend\n"),
+    )
+    .unwrap();
+    let changed = scan(root);
+    assert_eq!(
+        findings(&changed, "unused_classes"),
+        ["providers.Dormant"],
+        "{changed}"
+    );
+    assert_backend(&changed, "providers.Replacement");
+    assert!(
+        changed["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["qualified_name"] == "providers.Selected")
+            .flat_map(|row| row["evidence"].as_array().unwrap())
+            .all(|edge| edge["kind"] != "celery_backend"),
+        "{changed}"
+    );
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, changed);
+}
+
+#[test]
 fn celery_task_class_needs_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
