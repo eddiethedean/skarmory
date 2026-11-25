@@ -597,11 +597,12 @@ impl Graph<'_> {
     pub(super) fn record_django_form_validation(
         &mut self,
         class: SymbolId,
+        function: &Expression,
         call: CallArguments<'_>,
     ) {
         if call.positional.is_empty()
             && call.keywords.is_empty()
-            && self.django_form_validation(class, call).is_some()
+            && self.django_form_validation(class, function, call).is_some()
         {
             return;
         }
@@ -613,7 +614,61 @@ impl Graph<'_> {
         );
     }
 
-    fn django_form_validation(&mut self, class: SymbolId, call: CallArguments<'_>) -> Option<()> {
+    pub(super) fn django_plain_form_tables(
+        &mut self,
+        class: SymbolId,
+        access: (ScopeId, Location),
+    ) -> bool {
+        self.django_table_lineage(class, &[FrameworkClassRole::DjangoForm])
+            .is_some_and(|lineage| {
+                lineage.mros[&class].iter().all(|&owner| {
+                    let body = self.django_class_body(owner);
+                    ["base_fields", "declared_fields"].into_iter().all(|name| {
+                        self.local(body, name, END).is_none()
+                            && self.class_member_write(owner, name, access).is_none()
+                    })
+                })
+            })
+    }
+
+    fn django_form_construction(
+        &mut self,
+        class: SymbolId,
+        expression: &Expression,
+        access: (ScopeId, Location),
+        depth: usize,
+    ) -> Option<(ScopeId, Location)> {
+        if depth >= MAX_BINDING_CHAIN {
+            return None;
+        }
+        match &expression.kind {
+            ExpressionKind::Call { function, .. }
+                if matches!(self.probe_identity(access.0, function, access.1),
+                        Value::Callable(invocation) if invocation.target == class) =>
+            {
+                Some(access)
+            }
+            ExpressionKind::Name(name) => {
+                let binding = self.lexical(access.0, name, access.1)?;
+                let symbol = &self.symbols[binding];
+                let Binding::Variable(Some(value), before) = symbol.binding else {
+                    return None;
+                };
+                if symbol.scope != access.0 || self.binding_depends_on_branch(binding, access.1) {
+                    return None;
+                }
+                self.django_form_construction(class, value, (access.0, before), depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    fn django_form_validation(
+        &mut self,
+        class: SymbolId,
+        function: &Expression,
+        call: CallArguments<'_>,
+    ) -> Option<()> {
         let lineage = self.django_table_lineage(
             class,
             &[
@@ -648,6 +703,21 @@ impl Graph<'_> {
         if lineage.role == Some(FrameworkClassRole::DjangoModelForm) {
             let generated = self.django_model_form_fields(class, &fields)?;
             fields.extend(generated);
+        }
+        if mro[1..]
+            .iter()
+            .any(|&owner| self.has_django_form_table_edits(owner))
+        {
+            // Each class gets a new table. Propagating ancestor edits needs
+            // class-creation order as well as the instance's snapshot site.
+            return None;
+        }
+        if self.has_django_form_table_edits(class) {
+            let ExpressionKind::Member(receiver, _) = &function.kind else {
+                return None;
+            };
+            let construction = self.django_form_construction(class, receiver, access, 0)?;
+            fields.extend(self.django_form_table_fields_at(class, construction)?);
         }
         let hooks = std::iter::once("clean".to_owned())
             .chain(fields.into_iter().map(|field| format!("clean_{field}")));

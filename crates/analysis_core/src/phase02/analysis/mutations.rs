@@ -32,6 +32,9 @@ struct Write {
 pub(super) struct Mutations {
     members: BTreeMap<ReceiverKey, BTreeMap<String, Vec<Write>>>,
     modules: BTreeMap<String, Vec<Write>>,
+    command_namespaces: BTreeSet<ScopeId>,
+    command_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
+    form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     flask_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
@@ -42,8 +45,75 @@ impl Graph<'_> {
             matches!(symbol.binding, Binding::Import(import) if import.level == 0
                 && matches!(import.module.split('.').next(), Some("flask" | "flask_login")))
         });
+        self.index_command_namespaces();
         for file in 0..self.files.len() {
             self.index_module_mutations(file, self.scopes[file].body, false, track_flask_escapes);
+        }
+    }
+
+    fn index_command_namespaces(&mut self) {
+        let reads = std::mem::take(&mut self.read);
+        for target in 0..self.symbols.len() {
+            if self.is_class(target)
+                && self.framework_class_role(target, &mut BTreeSet::new(), 0)
+                    == Some(FrameworkClassRole::DjangoCommand)
+            {
+                self.mutations
+                    .command_namespaces
+                    .insert(self.scopes[self.symbols[target].scope].file);
+            }
+        }
+        for file in 0..self.files.len() {
+            if let Some(command) = self.local(file, "Command", END)
+                && let Some(binding) = self.probe_callable_binding(command)
+                && self.is_class(binding.target)
+                && self.framework_class_role(binding.target, &mut BTreeSet::new(), 0)
+                    == Some(FrameworkClassRole::DjangoCommand)
+            {
+                self.mutations.command_namespaces.insert(file);
+            }
+        }
+        self.read = reads;
+    }
+
+    pub(super) fn has_command_namespace(&self, scope: ScopeId) -> bool {
+        self.mutations.command_namespaces.contains(&scope)
+    }
+
+    pub(super) fn is_current_command_module(
+        &self,
+        scope: ScopeId,
+        mapping: &Value,
+        key: &Expression,
+        before: Location,
+    ) -> bool {
+        self.has_command_namespace(scope)
+            && matches!(mapping, Value::Provider(provider) if provider == "sys.modules")
+            && matches!(&key.kind, ExpressionKind::Name(name) if name == "__name__")
+            && matches!(
+                self.lexical_binding(scope, "__name__", before, true),
+                LexicalBinding::Missing
+            )
+    }
+
+    pub(super) fn command_global_value(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        write: MemberWriteValue,
+    ) -> Value {
+        match write {
+            MemberWriteValue::Replacement(value) => value,
+            MemberWriteValue::Deleted => Value::MissingFrameworkMember,
+            MemberWriteValue::Ambiguous => {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_attribute_write",
+                    "Django command module lookup depends on an unresolved namespace write",
+                );
+                Value::Unknown
+            }
         }
     }
 
@@ -63,6 +133,26 @@ impl Graph<'_> {
                     value,
                 } => {
                     self.index_member_write(file, at, receiver, member, value.as_ref(), conditional)
+                }
+                StatementKind::WriteModuleEntry {
+                    mapping,
+                    module: name,
+                    value: Some(value),
+                } if self.has_command_namespace(file)
+                    && matches!(self.probe_identity(file, mapping, at), Value::CommandNamespace(owner) if owner == file) =>
+                {
+                    self.index_command_global(file, at, name, value, conditional);
+                }
+                StatementKind::WriteModuleEntry {
+                    mapping:
+                        Expression {
+                            kind: ExpressionKind::Member(class, table),
+                            ..
+                        },
+                    module: field,
+                    value: Some(value),
+                } if matches!(table.as_str(), "base_fields" | "declared_fields") => {
+                    self.index_django_form_table_field(file, at, class, field, value, conditional);
                 }
                 StatementKind::WriteModuleEntry {
                     mapping,
@@ -266,6 +356,13 @@ impl Graph<'_> {
         conditional: bool,
     ) {
         let receiver = self.probe_identity(file, receiver, at);
+        if matches!(receiver, Value::Module(owner) if owner == file)
+            && self.has_command_namespace(file)
+            && let Some(value) = value
+            && self.index_command_global(file, at, member, value, conditional)
+        {
+            return;
+        }
         let Some(receiver) = self.mutation_receiver(&receiver) else {
             return;
         };
@@ -330,6 +427,118 @@ impl Graph<'_> {
             .push(Write { file, at, value });
     }
 
+    fn index_command_global(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        name: &str,
+        value: &Expression,
+        conditional: bool,
+    ) -> bool {
+        let Some(binding) = self.local(file, name, at) else {
+            return false;
+        };
+        if self.probe_callable_binding(binding).is_none() || name.starts_with("__") {
+            return false;
+        }
+        let replacement = self.probe_identity(file, value, at);
+        let value = if conditional || replacement.contains_unknown() {
+            MemberWriteValue::Ambiguous
+        } else {
+            self.mutations.modeled.insert((file, position(at)));
+            MemberWriteValue::Replacement(replacement)
+        };
+        self.mutations
+            .command_globals
+            .entry(file)
+            .or_default()
+            .entry(name.into())
+            .or_default()
+            .push(Write { file, at, value });
+        true
+    }
+
+    fn index_django_form_table_field(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        class: &Expression,
+        field: &str,
+        value: &Expression,
+        conditional: bool,
+    ) {
+        let Value::Callable(invocation) = self.probe_identity(file, class, at) else {
+            return;
+        };
+        let class = invocation.target;
+        if !self.is_class(class) || !self.django_plain_form_tables(class, (file, at)) {
+            return;
+        }
+        let replacement = self.probe_identity(file, value, at);
+        let value = if conditional
+            || !matches!(replacement, Value::DjangoField(django_forms::Field::Form))
+        {
+            MemberWriteValue::Ambiguous
+        } else {
+            self.mutations.modeled.insert((file, position(at)));
+            MemberWriteValue::Replacement(replacement)
+        };
+        self.mutations
+            .form_table_fields
+            .entry(class)
+            .or_default()
+            .entry(field.into())
+            .or_default()
+            .push(Write { file, at, value });
+    }
+
+    pub(super) fn has_django_form_table_edits(&self, class: SymbolId) -> bool {
+        self.mutations.form_table_fields.contains_key(&class)
+    }
+
+    pub(super) fn django_form_table_fields_at(
+        &self,
+        class: SymbolId,
+        access: (ScopeId, Location),
+    ) -> Option<Vec<String>> {
+        let original = self.scopes[self.symbols[class].scope].file;
+        let mut fields = Vec::new();
+        if let Some(table) = self.mutations.form_table_fields.get(&class) {
+            for (name, writes) in table {
+                match self.write_value(writes, Some(original), access) {
+                    Some(MemberWriteValue::Replacement(_)) => fields.push(name.clone()),
+                    None => {}
+                    _ => return None,
+                }
+            }
+        }
+        Some(fields)
+    }
+
+    pub(super) fn command_global_write(
+        &self,
+        file: ScopeId,
+        name: &str,
+        before: Location,
+        access: (ScopeId, Location),
+    ) -> Option<MemberWriteValue> {
+        let writes = self.mutations.command_globals.get(&file)?.get(name)?;
+        let before = if access.0 == file && position(access.1) < position(before) {
+            access.1
+        } else {
+            before
+        };
+        let end = writes.partition_point(|write| position(write.at) < position(before));
+        let binding = self.local(file, name, before)?;
+        let start = writes
+            .partition_point(|write| position(write.at) < position(self.symbols[binding].name.at));
+        let writes = writes.get(start..end)?;
+        if !writes.is_empty() && self.binding_depends_on_branch(binding, before) {
+            return Some(MemberWriteValue::Ambiguous);
+        }
+        self.write_value(writes, Some(file), access)
+    }
+
     fn modeled_mutation_member(&mut self, receiver: &ReceiverKey, member: &str) -> bool {
         match receiver {
             ReceiverKey::Class(class) => {
@@ -375,6 +584,10 @@ impl Graph<'_> {
                                 .into_iter()
                                 .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoSignal && member == "connect"
+                        || matches!(
+                            role,
+                            FrameworkClassRole::DjangoForm | FrameworkClassRole::DjangoModelForm
+                        ) && matches!(member, "base_fields" | "declared_fields")
                 })
             }
             ReceiverKey::Module(module) => {

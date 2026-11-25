@@ -1314,6 +1314,144 @@ fn flask_opaque_hook_can_change_a_receiver_referenced_by_an_escaped_function() {
 }
 
 #[test]
+fn flask_failed_provider_import_cannot_supply_a_callback() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let importer = root.join("app.py");
+    let providers = root.join("providers.py");
+    let cache = tempfile::tempdir().unwrap();
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    let callback =
+        "from providers import login\n@login.user_loader\ndef callback(user_id): return user_id\n";
+    fs::write(&importer, callback).unwrap();
+
+    for failure in [
+        "login.__dict__['user_loader'] = replacement\n",
+        "LoginManager.user_loader.__code__ = replacement.__code__\n",
+        "from unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
+        "from unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
+        "globals().update({'login': replacement})\n",
+        "def replace():\n    global login\n    login = replacement\nreplace()\n",
+    ] {
+        fs::write(&providers, format!("{setup}{failure}")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(
+            !report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| {
+                    symbol["qualified_name"] == "app.callback"
+                        && symbol["evidence"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|edge| edge["kind"] == "flask_login_registration")
+                }),
+            "{failure}\n{report}"
+        );
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| { error["file"] == "app.py" && error["kind"] == "unresolved_import" }),
+            "{failure}\n{report}"
+        );
+        let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(
+        &providers,
+        format!("{setup}from extension import replacement\nlogin.__dict__['user_loader'] = replacement\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        !report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["file"] == "app.py" && error["kind"] == "unresolved_import" }),
+        "{report}"
+    );
+
+    fs::write(&providers, setup).unwrap();
+    let report = scan(root);
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.callback"
+                    && symbol["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "flask_login_registration")
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn flask_factory_stops_at_the_failed_blueprint_export() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir_all(root.join("app/views")).unwrap();
+    fs::write(
+        root.join("app/__init__.py"),
+        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    from app.views import blueprint\n    app.register_blueprint(blueprint)\n    return app\n",
+    )
+    .unwrap();
+    let views = root.join("app/views/__init__.py");
+    let setup = "from flask import Blueprint\nblueprint = Blueprint('main', __name__)\n";
+    fs::write(
+        root.join("app/views/routes.py"),
+        "from app.views import blueprint\n@blueprint.before_app_request\ndef prepare(): return helper()\ndef helper(): return 1\ndef retired(): return 2\n",
+    )
+    .unwrap();
+    fs::write(
+        &views,
+        format!("{setup}blueprint = replacement\nfrom app.views import routes\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    let errors = report["analysis_errors"].as_array().unwrap();
+    assert!(
+        errors.iter().any(|error| {
+            error["file"] == "app/views/routes.py" && error["kind"] == "unresolved_import"
+        }),
+        "{report}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|error| error["kind"] == "unresolved_import"),
+        "{report}"
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| { symbol["qualified_name"] == "app.views.routes.prepare" }),
+        "{report}"
+    );
+
+    fs::write(&views, format!("{setup}from app.views import routes\n")).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.views.routes.retired"],
+        "{report}"
+    );
+}
+
+#[test]
 fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

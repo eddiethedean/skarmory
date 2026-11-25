@@ -310,6 +310,12 @@ its URL table. The preview follows a final literal list's direct `clear()`
 and indexed `URLPattern.callback` edits in a closed initializer. Opaque options,
 escaped table edits, and selected imports of a failed URL module leave coverage
 incomplete.
+In a closed URL initializer, an unbound final call stops before Django can
+serve the constructed table. A selected module that builds a private table
+without exporting `urlpatterns` contributes no callbacks when the namespace is
+closed. A source-owned function whose code is replaced by a compatible no-op
+contributes no original body when its only external consumer is the closed URL
+table.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
@@ -320,6 +326,9 @@ subclasses named `Command` in the installed apps' public
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
 The selected command follows its effective lifecycle after module initialization.
+Ordered writes through the command module's own globals dictionary or module
+object can replace the export before Django reads it. Later ordinary assignments
+can replace it again.
 Proven construction or argument setup failures leave later stages dormant.
 Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.
@@ -338,10 +347,13 @@ A unique conventional settings package with literal application and secret-key
 settings can describe an externally selected configuration. Storage and logging
 entries use their effective dictionary keys. Bounded literal list and
 dictionary edits follow initializer order, including directly called local
-helpers, reassignments, and finite conditional branches. The authentication
-backend list supports literal augmentation, repetition, and item edits in
-the selected settings module. Source importers of a mutated list and
-unresolved mutations retain their coverage diagnostics.
+helpers, reassignments, and named imports in finite conditional branches.
+The authentication backend list supports literal augmentation, repetition,
+and item edits in the selected settings module. Proven invalid list operations
+can stop initialization before Django consumes the setting. A closed source
+decorator can replace a backend class with another initialized class or
+discard a hook without executing its body. Source importers of a mutated list
+and unresolved mutations retain their coverage diagnostics.
 
 The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
 module initialization. It follows literal formatter and filter declarations,
@@ -365,7 +377,9 @@ markup in a selected template produces a coverage diagnostic.
 A supported Django form validation call retains possible `clean` and
 `clean_<field>` callbacks from its effective field table. The preview
 follows supported inherited fields, `None` masks, and literal ModelForm
-field selections. Dynamic field tables or validation dispatch produce
+field selections. Plain `Form` instances use literal edits to `base_fields`
+or `declared_fields` made before the instance copies its field table.
+Dynamic field tables or validation dispatch produce
 coverage diagnostics.
 
 Django admin discovery follows installed apps when `django.contrib.admin` or

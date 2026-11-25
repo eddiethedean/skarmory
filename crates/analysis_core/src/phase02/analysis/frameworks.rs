@@ -1886,7 +1886,7 @@ impl Graph<'_> {
                         .filter(|(parent, _)| *parent == object)
                         .map(|(_, child)| *child),
                 );
-            } else {
+            } else if !self.django_closed_url_table_missing(file) {
                 self.django_registration_issue(
                     object,
                     Location { line: 1, column: 1 },
@@ -2331,7 +2331,10 @@ impl Graph<'_> {
                 continue;
             }
             let module = &self.files[file].module;
-            let command = match self.module_member_write(module, "Command", (file, END)) {
+            let command = match self
+                .command_global_write(file, "Command", END, (file, END))
+                .or_else(|| self.module_member_write(module, "Command", (file, END)))
+            {
                 Some(mutations::MemberWriteValue::Replacement(Value::Callable(invocation)))
                     if self.is_class(invocation.target)
                         && self.framework_class_role(
@@ -3206,6 +3209,8 @@ impl Graph<'_> {
                 }
             }
             Value::DjangoPattern(callback) => match *callback {
+                Value::Callable(invocation)
+                    if self.django_constant_callback_code(file, invocation.target) => {}
                 Value::Callable(invocation) if !self.is_class(invocation.target) => {
                     let kind = if self.is_generator(invocation.target) {
                         // Django receives the generator as the view result.
