@@ -120,3 +120,25 @@ def test_grouped_methods_expand_for_django_view_assertions():
     assert projected["unused_functions"] == [method]
     assert projected["dead_code_evidence"]["symbols"][0]["classification"] == "likely_dead"
     assert framework_report(report)["unused_functions"] == report["unused_functions"] == []
+
+
+def test_admin_stub_projection_uses_the_fixture_root(tmp_path):
+    findings = [{"file": "shop/placeholder.py", "rule_id": "SKY-E002"}]
+    report = {
+        "definitions": {},
+        "analysis_summary": {},
+        "dead_code_evidence": {"symbols": []},
+        "unused_functions": [],
+        "unused_classes": [],
+        "unused_variables": [],
+        "unused_parameters": [],
+        "unused_files": findings,
+    }
+    projected = framework_report(
+        report, source="test/test_django_admin_stubs.py", project=tmp_path,
+    )
+    assert projected["unused_files"] == [
+        {"file": str(tmp_path / "shop/placeholder.py"), "rule_id": "SKY-E002"},
+    ]
+    assert framework_report(report)["unused_files"] == findings
+    assert report["unused_files"] == findings

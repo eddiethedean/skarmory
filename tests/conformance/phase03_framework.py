@@ -49,7 +49,7 @@ _METHOD_FINDING_SOURCES = {
 }
 
 
-def framework_report(report, *, source=None):
+def framework_report(report, *, source=None, project=None):
     """Match evidence to definitions by qualified name, file, and line."""
 
     def key(entry, name):
@@ -65,6 +65,17 @@ def framework_report(report, *, source=None):
             and row.get("dead_code_classification") == "likely_dead"
         ]
         report = {**report, "unused_functions": [*report["unused_functions"], *methods]}
+
+    if source is not None and PurePath(source).name == "test_django_admin_stubs.py":
+        if project is None:
+            raise ValueError("the admin stub fixture requires its scan root")
+        report = {
+            **report,
+            "unused_files": [
+                {**row, "file": str(PurePath(project) / row["file"])}
+                for row in report["unused_files"]
+            ],
+        }
 
     events = {
         key(symbol, "qualified_name"): symbol["evidence"]
