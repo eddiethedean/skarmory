@@ -378,7 +378,7 @@ impl Graph<'_> {
         body
     }
 
-    fn django_literal_none(&self, id: SymbolId, depth: usize) -> Option<bool> {
+    pub(super) fn django_literal_none(&self, id: SymbolId, depth: usize) -> Option<bool> {
         if depth >= MAX_BINDING_CHAIN || self.binding_depends_on_branch(id, END) {
             return None;
         }

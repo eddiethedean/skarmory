@@ -5985,6 +5985,7 @@ impl<'a> Graph<'a> {
             };
             match self.probe_identity(call.scope, expression, call.before) {
                 Value::None if index == 1 => {}
+                Value::Scalar if index == 1 && self.django_migration_none(call, expression) => {}
                 Value::Provider(provider)
                     if provider
                         .strip_suffix(".noop")
@@ -6028,6 +6029,16 @@ impl<'a> Graph<'a> {
                     "possible",
                 );
             }
+        }
+    }
+
+    fn django_migration_none(&self, call: CallArguments<'_>, expression: &Expression) -> bool {
+        match &expression.kind {
+            ExpressionKind::None => true,
+            ExpressionKind::Name(name) => self
+                .lexical(call.scope, name, call.before)
+                .is_some_and(|id| self.django_literal_none(id, 0) == Some(true)),
+            _ => false,
         }
     }
 
@@ -10226,6 +10237,34 @@ class Migration(migrations.Migration):
                 "shop.migrations.0001_data.backwards.first",
                 "shop.migrations.0001_data.backwards.rest",
             ])
+        );
+    }
+
+    #[test]
+    fn django_runpython_accepts_an_explicit_absent_reverse_callback() {
+        for reverse in ["None", "absent"] {
+            let source = format!(
+                "from django.db.migrations import RunPython\n\
+                 def forward(apps, editor, extra=None): pass\n\
+                 absent = None\n\
+                 operation = RunPython(forward, reverse_code={reverse})\n"
+            );
+            let files = [module("migration.py", "migration", &source)];
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert_eq!(names(&report, Category::Parameter), ["extra"]);
+        }
+        let source = "from django.db.migrations import RunPython\n\
+                      def forward(apps, editor): pass\n\
+                      absent = 0\n\
+                      operation = RunPython(forward, reverse_code=absent)\n";
+        let files = [module("migration.py", "migration", source)];
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
         );
     }
 
