@@ -278,7 +278,10 @@ fn opaque_imported_decorator_retains_possible_use_through_an_identity_facade() {
     assert!(
         evidence
             .iter()
-            .any(|symbol| symbol["qualified_name"] == "app.helper"),
+            .any(|symbol| symbol["qualified_name"] == "app.helper"
+                && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "direct_call" && edge["certainty"] == "possible"
+                })),
         "{report}"
     );
     assert!(

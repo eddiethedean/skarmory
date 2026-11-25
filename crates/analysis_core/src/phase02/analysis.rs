@@ -10589,6 +10589,7 @@ fn is_deferred_possible_edge(kind: &str) -> bool {
                 | "logging_factory"
                 | celery_routes::ROUTER
                 | celery_routes::ROUTER_PARAMETER
+                | "opaque_decorator_argument"
         )
 }
 
