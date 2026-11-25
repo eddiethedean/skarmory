@@ -318,6 +318,9 @@ subclasses named `Command` in the installed apps' public
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
 The selected command follows its effective lifecycle after module initialization.
+Ordered writes through the command module's own globals dictionary or module
+object can replace the export before Django reads it. Later ordinary assignments
+can replace it again.
 Proven construction or argument setup failures leave later stages dormant.
 Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.

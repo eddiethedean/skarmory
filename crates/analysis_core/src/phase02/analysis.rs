@@ -65,6 +65,8 @@ enum Value {
     Coroutine(Invocation),
     ScheduledTask,
     Module(usize),
+    CommandNamespace(ScopeId),
+    CommandNamespaceGet(ScopeId),
     Provider(String),
     Object(Object, ObjectKind),
     Method(Object, ObjectKind, String),
@@ -2142,6 +2144,11 @@ impl<'a> Graph<'a> {
             ModuleMemberAccess::Export { at, .. } => (access.0, at),
             _ => access,
         };
+        if let Some(&file) = self.modules.get(module)
+            && let Some(write) = self.command_global_write(file, member, before, access)
+        {
+            return self.command_global_value(scope, at, write);
+        }
         if matches!(mode, ModuleMemberAccess::FromImport)
             && let Some(replacement) = self.imported_module_write(module, access)
         {
@@ -2596,6 +2603,7 @@ impl<'a> Graph<'a> {
             Value::ReceiverParameter(parameter) => {
                 Value::ReceiverMethod(parameter, name.to_owned())
             }
+            Value::CommandNamespace(file) if name == "get" => Value::CommandNamespaceGet(file),
             Value::Module(file) => self.module_member_at(
                 &self.files[file].module,
                 name,
@@ -3263,6 +3271,16 @@ impl<'a> Graph<'a> {
                         }
                         END
                     };
+                    if binding_scope == self.scopes[binding_scope].file
+                        && let Some(write) = self.command_global_write(
+                            binding_scope,
+                            name,
+                            binding_before,
+                            (scope, before),
+                        )
+                    {
+                        return self.command_global_value(scope, expression.at, write);
+                    }
                     let value = self.binding(id, binding_before, depth + 1);
                     if matches!(value, Value::DeletedModuleBinding) {
                         self.scope_issue(
@@ -3494,6 +3512,31 @@ impl<'a> Graph<'a> {
                     if name == "builtins.object" && arguments.is_empty() && keywords.is_empty() =>
                 {
                     Value::Scalar
+                }
+                Value::Provider(name)
+                    if name == "builtins.globals"
+                        && self.has_command_namespace(scope)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::CommandNamespace(scope)
+                }
+                Value::Provider(name)
+                    if name == "builtins.vars"
+                        && self.has_command_namespace(scope)
+                        && matches!(arguments.as_slice(), [module] if matches!(recurse(self, module), Value::Module(file) if file == scope))
+                        && keywords.is_empty() =>
+                {
+                    Value::CommandNamespace(scope)
+                }
+                Value::CommandNamespaceGet(file)
+                    if matches!(arguments.as_slice(), [key] if matches!(&key.kind, ExpressionKind::Text(key) if key == "__name__"))
+                        && keywords.is_empty() =>
+                {
+                    self.local(file, "__name__", before)
+                        .map_or(Value::Scalar, |binding| {
+                            self.binding(binding, before, depth + 1)
+                        })
                 }
                 Value::Provider(name)
                     if matches!(name.as_str(), "builtins.locals" | "builtins.vars")
@@ -3918,6 +3961,9 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Subscript { value, index } => {
                 let value = recurse(self, value);
+                if self.is_current_command_module(scope, &value, index, before) {
+                    return Value::Module(scope);
+                }
                 if self.phase03
                     && is_typing_annotated(&value)
                     && let ExpressionKind::Sequence {
@@ -4644,7 +4690,8 @@ impl<'a> Graph<'a> {
     }
 
     fn is_namespace_builtin(&self, name: &str) -> bool {
-        matches!(name, "locals" | "vars") || self.phase03 && matches!(name, "eval" | "exec")
+        matches!(name, "locals" | "vars")
+            || self.phase03 && matches!(name, "globals" | "eval" | "exec")
     }
 
     fn local_namespace_bindings(&self, scope: ScopeId, before: Location) -> Vec<SymbolId> {
@@ -4955,6 +5002,11 @@ impl<'a> Graph<'a> {
                             bounded_comparison,
                         });
                     }
+                    Value::Provider(name)
+                        if matches!(name.as_str(), "builtins.globals" | "builtins.vars")
+                            && matches!(self.identity(scope, expr, before, 0), Value::CommandNamespace(_)) => {}
+                    Value::CommandNamespaceGet(_)
+                        if !matches!(self.identity(scope, expr, before, 0), Value::Unknown) => {}
                     Value::Provider(name)
                         if matches!(name.as_str(), "builtins.locals" | "builtins.vars") =>
                     {
@@ -5740,6 +5792,9 @@ impl<'a> Graph<'a> {
                 self.walk(scope, value, before);
                 self.walk(scope, index, before);
                 let mapping = self.identity(scope, value, before, 0);
+                if self.is_current_command_module(scope, &mapping, index, before) {
+                    return;
+                }
                 let key = self.identity(scope, index, before, 0);
                 if !(self.phase03 && is_typing_annotated(&mapping))
                     && (!Self::has_literal_mapping_keys(&mapping)
@@ -13188,6 +13243,63 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                 .filter(|name| *name != "Command")
                 .collect();
             assert_eq!(dispatches, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn phase03_django_loader_reads_the_effective_command_module_namespace() {
+        let body = "from django.core.management.base import BaseCommand\n\
+class Command(BaseCommand):\n    def handle(self, *args, **options):\n        return 1\n\
+class Replacement(BaseCommand):\n    def handle(self, *args, **options):\n        return 2\n";
+        for (write, selected) in [
+            ("globals()['Command'] = Replacement\n", "Replacement"),
+            (
+                "ns = globals()\nns['Command'] = Replacement\n",
+                "Replacement",
+            ),
+            (
+                "import sys\nsys.modules[__name__].Command = Replacement\n",
+                "Replacement",
+            ),
+            (
+                "import sys\nns = vars(sys.modules[__name__])\nns['Command'] = Replacement\n",
+                "Replacement",
+            ),
+            (
+                "saved = Command\nglobals()['Command'] = Replacement\nCommand = saved\n",
+                "Command",
+            ),
+            ("name = globals().get('__name__')\n", "Command"),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        &format!("{body}{write}"),
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{write}: {:?}", result.issues);
+            let callbacks: Vec<_> = result
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_command" && row.full_name.ends_with(".handle"))
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(
+                callbacks,
+                [format!("demo.management.commands.audit.{selected}.handle")],
+                "{write}"
+            );
         }
     }
 

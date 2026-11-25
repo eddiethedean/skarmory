@@ -2331,7 +2331,10 @@ impl Graph<'_> {
                 continue;
             }
             let module = &self.files[file].module;
-            let command = match self.module_member_write(module, "Command", (file, END)) {
+            let command = match self
+                .command_global_write(file, "Command", END, (file, END))
+                .or_else(|| self.module_member_write(module, "Command", (file, END)))
+            {
                 Some(mutations::MemberWriteValue::Replacement(Value::Callable(invocation)))
                     if self.is_class(invocation.target)
                         && self.framework_class_role(
