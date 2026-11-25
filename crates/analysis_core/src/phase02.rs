@@ -315,17 +315,26 @@ impl Categories {
         }
     }
 
-    fn group_unused_class_methods(&mut self, suppressed: &mut Vec<Diagnostic>) {
-        let class_locations: BTreeSet<_> = self
+    fn group_unused_class_methods(&mut self, suppressed: &mut Vec<Diagnostic>) -> usize {
+        let class_locations: BTreeMap<_, _> = self
             .unused_classes
             .iter()
-            .map(|class| (class.file.as_str(), [class.line, class.column]))
+            .map(|class| {
+                (
+                    (class.file.as_str(), [class.line, class.column]),
+                    class.change_status,
+                )
+            })
             .collect();
+        let before = suppressed.len();
         for mut method in std::mem::take(&mut self.unused_functions) {
-            if method
-                .method_owner
-                .is_some_and(|owner| class_locations.contains(&(method.file.as_str(), owner)))
-            {
+            if method.method_owner.is_some_and(|owner| {
+                class_locations
+                    .get(&(method.file.as_str(), owner))
+                    .is_some_and(|status| {
+                        method.change_status.is_none() || *status == method.change_status
+                    })
+            }) {
                 method.reason = "covered by the unused class finding".into();
                 method.dead_code_disposition = "suppressed";
                 method.dead_code_classification = Some("likely_dead");
@@ -334,6 +343,7 @@ impl Categories {
                 self.unused_functions.push(method);
             }
         }
+        suppressed.len() - before
     }
 
     fn retain(&mut self, mut keep: impl FnMut(&mut Diagnostic) -> bool) {
@@ -531,6 +541,15 @@ pub struct Report {
 }
 
 impl Report {
+    fn group_unused_class_methods(&mut self) {
+        if let Some(evidence) = &mut self.analysis_summary.dead_code_evidence {
+            let grouped = self
+                .categories
+                .group_unused_class_methods(&mut self.suppressed);
+            evidence.group_reports(grouped);
+        }
+    }
+
     pub fn is_complete(&self) -> bool {
         self.coverage.status == "complete"
     }
@@ -756,7 +775,9 @@ enum FileFacts {
 }
 
 pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
-    scan_with_context(path, options, None, None)
+    let mut report = scan_with_context(path, options, None, None)?;
+    report.group_unused_class_methods();
+    Ok(report)
 }
 
 fn scan_with_context(
@@ -1307,10 +1328,6 @@ fn scan_selected(
                 ));
             }
         }
-    }
-
-    if phase03 {
-        categories.group_unused_class_methods(&mut suppressed);
     }
 
     if let Some(diff_sources) = diff_sources {
