@@ -33,6 +33,18 @@ source file, and line. The default subset excludes private Skylos visitor and
 call-count probes. The release gate tracks full-suite scope and required
 variants separately.
 
+Replay the pinned framework corpus with its original scorer. The candidate
+adapter supplies the installed SDK report and translates class-relative method
+names using matching source occurrences.
+
+```sh
+"$reference_python" tests/conformance/phase03_framework_corpus.py "$skylos_checkout"
+"$reference_python" tests/conformance/phase03_framework_corpus.py "$skylos_checkout" \
+  --sdk-python "$installed_sdk_python"
+```
+
+The corpus runner exits unsuccessfully on any failed or unscored case.
+
 ## Two separate questions
 
 **Compatibility:** does Skarmory reproduce the declared observable behavior of
