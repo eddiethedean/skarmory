@@ -40,7 +40,7 @@ class UnittestReportTests(unittest.TestCase):
         self.assertEqual(original["definitions"], definitions)
 
 
-def test_grouped_methods_expand_for_django_view_assertions():
+def test_grouped_methods_expand_for_django_method_assertions():
     method = {
         "type": "function",
         "full_name": "app.Client.schedule",
@@ -61,7 +61,11 @@ def test_grouped_methods_expand_for_django_view_assertions():
         "unused_parameters": [],
         "suppressed": [method, {**method, "full_name": "app.filtered", "reason": "whitelist"}],
     }
-    for source in ("test_django_function_view_roots.py", "test_django_converter_precision.py"):
+    for source in (
+        "test_django_function_view_roots.py",
+        "test_django_converter_precision.py",
+        "test_django_quiet_dead_code.py",
+    ):
         projected = framework_report(report, source=f"test/{source}")
         assert projected["unused_functions"] == [method]
         assert projected["dead_code_evidence"]["symbols"][0]["classification"] == "likely_dead"
