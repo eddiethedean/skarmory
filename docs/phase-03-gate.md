@@ -4,8 +4,9 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 249 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 120 have artifact-backed port mappings.
+inventory assigns 946 cases to Phase 0.3 and defers six to later language
+milestones. Of the required cases, 742 have port mappings. The reported release
+decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
 
@@ -67,6 +68,12 @@ the same candidate checkout. The [seed adapter](../tests/conformance/run_phase03
 records separate SDK, CLI, and engine receipts. It runs the original upstream
 assertions with their markers in the frozen Skylos environment. Candidate
 pytest runs select `skylos-0.3` and disable upstream expected-failure markers.
+
+The SDK shard runs the original framework corpus scorer against the selected
+fixtures and records each original assertion, fixture hash, and outcome.
+The separate Django converter probes for Skylos's private parser and index
+hooks are implementation tests. Their exact call-count checks are outside
+the native report assertions.
 
 The SDK shard also executes the pinned basic dead-code benchmark with
 the original scorer and staged fixtures. Both score reports are included in

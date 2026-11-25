@@ -4986,3 +4986,42 @@ fn django_setting_class_declaration_does_not_activate_replaced_protocol_callback
             .any(|symbol| symbol["qualified_name"] == "service.backend.Filter.filter")
     );
 }
+
+#[test]
+fn phase03_preserves_an_importable_package_named_src() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("src/routes.py"),
+        concat!(
+            "from fastapi import APIRouter\n",
+            "router = APIRouter()\n",
+            "@router.get('/')\n",
+            "def home(): return 1\n",
+            "def dormant(): return 2\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/main.py"),
+        concat!(
+            "from fastapi import FastAPI\n",
+            "from src import routes\n",
+            "app = FastAPI()\n",
+            "app.include_router(routes.router)\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["src.routes.dormant"]
+    );
+    let cached = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(report["coverage"], cached["coverage"]);
+    assert_eq!(report["unused_functions"], cached["unused_functions"]);
+    assert_eq!(report["dead_code_evidence"], cached["dead_code_evidence"]);
+}
