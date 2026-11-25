@@ -502,6 +502,7 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
         django_configured_settings: None,
@@ -672,6 +673,7 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
     django_configured_settings: Option<usize>,
@@ -1818,6 +1820,9 @@ impl<'a> Graph<'a> {
     }
 
     fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
+        if self.rejected_django_callbacks.contains(&id) {
+            return Value::Unknown;
+        }
         let symbol = &self.symbols[id];
         let scope = symbol.scope;
         let file = self.scopes[scope].file;
@@ -5850,6 +5855,17 @@ impl<'a> Graph<'a> {
                     else {
                         unreachable!()
                     };
+                    if self.phase03
+                        && definition.kind != DefinitionKind::Class
+                        && definition.defaults.is_empty()
+                        && definition.annotations.is_empty()
+                        && let [decorator] = definition.decorators.as_slice()
+                        && self.django_receiver_rejects_definition(scope, decorator, at)
+                    {
+                        self.walk(scope, decorator, at);
+                        self.rejected_django_callbacks.insert(target);
+                        return true;
+                    }
                     for (index, annotation) in definition.annotations.iter().enumerate() {
                         self.annotation(scope, annotation, at, true);
                         if self.phase03
@@ -8108,6 +8124,7 @@ impl<'a> Graph<'a> {
             while let Some(edge) = pending.pop_front() {
                 if !verification && is_verification_edge(edge.kind)
                     || !possible && is_atexit_edge(edge.kind)
+                    || self.rejected_django_callbacks.contains(&edge.target)
                 {
                     continue;
                 }

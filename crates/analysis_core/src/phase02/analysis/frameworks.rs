@@ -2317,6 +2317,45 @@ impl Graph<'_> {
         self.django_signal_sources(&value, (scope, before))
     }
 
+    pub(super) fn django_receiver_rejects_definition(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &decorator.kind
+        else {
+            return false;
+        };
+        let [signal] = arguments.as_slice() else {
+            return false;
+        };
+        if !matches!(self.probe_identity(scope, function, before),
+            Value::Provider(provider) if is_django_receiver(&provider))
+            || keywords.iter().any(|(name, _)| name.is_empty())
+        {
+            return false;
+        }
+        // A duplicate signal fails at the receiver call itself. Other
+        // arguments are forwarded to connect, which only has a known signature
+        // when the actual signal member resolves to Django's implementation.
+        if keywords.iter().any(|(name, _)| name == "signal") {
+            return true;
+        }
+        if !keywords
+            .iter()
+            .any(|(name, _)| !matches!(name.as_str(), "sender" | "weak" | "dispatch_uid" | "apps"))
+        {
+            return false;
+        }
+        let value = self.probe_identity(scope, signal, before);
+        self.django_signal_source(&value, (scope, before)) == DjangoReceiver::Certain
+    }
+
     fn django_signal_sources(
         &mut self,
         value: &Value,

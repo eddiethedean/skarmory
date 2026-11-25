@@ -3908,7 +3908,7 @@ deferred_install()
 }
 
 #[test]
-fn django_reports_opaque_or_malformed_signal_registrations_only_when_loaded() {
+fn django_preserves_opaque_signal_diagnostics_when_loaded() {
     let project = tempfile::tempdir().unwrap();
     django_signal_project(
         project.path(),
@@ -3928,10 +3928,10 @@ def malformed(sender, **kwargs):
 
     let report = scan_with_exit(project.path(), None, None, 2);
     let issues = report["analysis_errors"].as_array().unwrap();
-    assert_eq!(issues.len(), 2, "{report}");
-    assert!(issues.iter().all(|issue| {
-        issue["file"] == "inventory/signals.py" && issue["kind"] == "unresolved_registration"
-    }));
+    assert_eq!(issues.len(), 1, "{report}");
+    assert_eq!(issues[0]["file"], "inventory/signals.py");
+    assert_eq!(issues[0]["kind"], "unresolved_registration");
+    assert_eq!(issues[0]["line"], 5);
     assert_eq!(
         django_signal_evidence(&report),
         [("inventory.signals.opaque", "possible")],
@@ -3942,6 +3942,29 @@ def malformed(sender, **kwargs):
     let unused = findings(&inactive, "unused_functions");
     for name in ["inventory.signals.opaque", "inventory.signals.malformed"] {
         assert!(unused.contains(&name), "{unused:?}");
+    }
+}
+
+#[test]
+fn django_known_receiver_rejection_stops_following_registration() {
+    for keyword in ["signal=post_save", "invalid=True"] {
+        let project = tempfile::tempdir().unwrap();
+        django_signal_project(
+            project.path(),
+            &format!(
+                "from django.db.models.signals import post_save\nfrom django.dispatch import receiver\n\n@receiver(post_save)\ndef before(sender, **kwargs):\n    return 1\n\n@receiver(post_save, {keyword})\ndef rejected(sender, **kwargs):\n    return 2\n\n@receiver(post_save)\ndef after(sender, **kwargs):\n    return 3\n"
+            ),
+        );
+        let report = scan(project.path());
+        assert_eq!(
+            django_signal_evidence(&report),
+            [("inventory.signals.before", "certain")],
+            "{keyword}: {report}"
+        );
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["inventory.signals.after", "inventory.signals.rejected"]
+        );
     }
 }
 
