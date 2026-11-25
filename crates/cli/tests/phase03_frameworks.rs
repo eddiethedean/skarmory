@@ -451,6 +451,30 @@ def unused_middleware(request, call_next): return 4
 }
 
 #[test]
+fn fastapi_lookalike_method_returning_identity_lambda_cannot_register() {
+    let project = tempfile::tempdir().unwrap();
+    for setup in [
+        "from fastapi import FastAPI\napp = Fake()\n",
+        "from fastapi import FastAPI\nFastAPI = Fake\napp = FastAPI()\n",
+        "from fastapi import FastAPI\napp = FastAPI()\napp = Fake()\n",
+    ] {
+        let source = format!(
+            "class Fake:\n    def get(self, path):\n        return lambda fn: fn\n\
+             {setup}\
+             @app.get('/')\n\
+             def endpoint(): return helper()\n\
+             def helper(): return 1\n"
+        );
+        fs::write(project.path().join("web.py"), source).unwrap();
+        let report = scan(project.path());
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["web.endpoint", "web.helper"]
+        );
+    }
+}
+
+#[test]
 fn fastapi_mounted_asgi_callback_does_not_activate_api_dependencies() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

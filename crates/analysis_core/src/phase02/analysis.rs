@@ -3405,6 +3405,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::Bool(value) => Value::Bool(*value),
             ExpressionKind::Scalar | ExpressionKind::None => Value::Scalar,
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
+            ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
             ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
@@ -5013,7 +5014,9 @@ impl<'a> Graph<'a> {
                 let value = self.identity(scope, expr, before, 0);
                 self.record_class_reference(scope, &value);
             }
-            ExpressionKind::ConstantLambda | ExpressionKind::IdentityDecoratorLambda
+            ExpressionKind::ConstantLambda
+            | ExpressionKind::IdentityLambda
+            | ExpressionKind::IdentityDecoratorLambda
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -6105,26 +6108,41 @@ impl<'a> Graph<'a> {
                 {
                     return false;
                 } else if self.phase03
-                    && matches!(invocation.receiver, Receiver::Ordinary)
                     && definition.kind == DefinitionKind::Function
                     && definition.decorators.is_empty()
                     && definition.simple_positional_parameters
-                    && definition.parameters.len() == args.len()
+                    && definition.parameters.len()
+                        == args.len()
+                            + usize::from(matches!(invocation.receiver, Receiver::Bound(_)))
                     && keywords.is_empty()
                     && matches!(decorator.kind, ExpressionKind::Call { .. })
-                    && let Some(identity) = identity_decorator_factory(definition)
-                    && let Some(identity) = self.local(body, &identity.name.text, END)
                 {
-                    self.edge(scope, identity, "decorator", "certain");
-                    return true;
-                } else {
-                    self.scope_issue(
-                        scope,
-                        decorator.at,
-                        "unresolved_decorator",
-                        "local decorator may replace or invoke the decorated definition",
-                    );
+                    if matches!(
+                        body_without_docstring(definition),
+                        [Statement {
+                            kind: StatementKind::Return(Some(Expression {
+                                kind: ExpressionKind::IdentityLambda,
+                                ..
+                            })),
+                            ..
+                        }]
+                    ) {
+                        return true;
+                    }
+                    if matches!(invocation.receiver, Receiver::Ordinary)
+                        && let Some(identity) = identity_decorator_factory(definition)
+                        && let Some(identity) = self.local(body, &identity.name.text, END)
+                    {
+                        self.edge(scope, identity, "decorator", "certain");
+                        return true;
+                    }
                 }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_decorator",
+                    "local decorator may replace or invoke the decorated definition",
+                );
             }
             Value::IdentityDecoratorFactory
                 if self.phase03 && args.len() == 1 && keywords.is_empty() =>
@@ -8536,6 +8554,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::Scalar
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
+            | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda => {}
         }
     }

@@ -183,6 +183,7 @@ pub enum ExpressionKind {
     None,
     Scalar,
     ConstantLambda,
+    IdentityLambda,
     IdentityDecoratorLambda,
     Sequence(Vec<Expression>),
     Dictionary(Vec<Expression>),
@@ -889,6 +890,12 @@ impl Lowering<'_> {
                             matches!(inner.body.as_ref(), Expr::Name(name) if name.id.as_str() == parameter))) =>
             {
                 ExpressionKind::IdentityDecoratorLambda
+            }
+            Expr::Lambda(node)
+                if lambda_parameter(node).is_some_and(|parameter|
+                    matches!(node.body.as_ref(), Expr::Name(name) if name.id.as_str() == parameter)) =>
+            {
+                ExpressionKind::IdentityLambda
             }
             Expr::Lambda(node)
                 if matches!(node.body.as_ref(), Expr::NoneLiteral(_))
