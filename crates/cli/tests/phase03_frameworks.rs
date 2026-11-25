@@ -6618,6 +6618,40 @@ fn django_url_callback_dispatches_only_the_fresh_instances_selected_provider() {
             .any(|error| { error["kind"] == "unresolved_call" && error["file"] == "pipeline.py" }),
         "{report}"
     );
+
+    fs::write(
+        root.join("views.py"),
+        "from pipeline import select\ndef view(request): return select()\n",
+    )
+    .unwrap();
+    let providers = root.join("providers.py");
+    let mut source = fs::read_to_string(&providers).unwrap();
+    source.push_str("def replacement(self, value): return 0\nsetattr(First.run, '__code__', replacement.__code__)\n");
+    fs::write(&providers, source).unwrap();
+    let edited = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        edited["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_call" && error["file"] == "pipeline.py" }),
+        "{edited}"
+    );
+    assert!(
+        !edited["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "providers.First.run"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["certainty"] == "certain")
+            }),
+        "{edited}"
+    );
 }
 
 #[test]

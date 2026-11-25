@@ -100,13 +100,17 @@ impl Graph<'_> {
                 })
             })
             .collect();
+        let mut replaced = BTreeSet::new();
+        for scope in 0..self.scopes.len() {
+            self.collect_field_callback_replacements(scope, self.scopes[scope].body, &mut replaced);
+        }
         for proof in std::mem::take(&mut self.fresh_field_invocations) {
             self.direct.insert(proof.method.target);
             if proof
                 .dependencies
                 .iter()
                 .chain([&proof.method.target, &proof.provider_method.target])
-                .any(|dependency| escaped.contains(dependency))
+                .any(|dependency| escaped.contains(dependency) || replaced.contains(dependency))
             {
                 self.invoke(
                     proof.caller,
@@ -127,6 +131,65 @@ impl Graph<'_> {
                 "certain",
                 proof.at,
             );
+        }
+    }
+
+    fn collect_field_callback_replacements(
+        &mut self,
+        scope: ScopeId,
+        body: &[Statement],
+        replaced: &mut BTreeSet<SymbolId>,
+    ) {
+        for statement in body {
+            let at = statement.at;
+            let receiver = match &statement.kind {
+                StatementKind::WriteAttribute {
+                    receiver, member, ..
+                } if member == "__code__" => receiver,
+                StatementKind::Evaluate(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }) if keywords.is_empty() => {
+                    let [receiver, name, _] = arguments.as_slice() else {
+                        continue;
+                    };
+                    if !matches!(&name.kind, ExpressionKind::Text(name) if name == "__code__")
+                        || !matches!(self.probe_identity(scope, function, at),
+                            Value::Provider(name) if name == "builtins.setattr")
+                    {
+                        continue;
+                    }
+                    receiver
+                }
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } => {
+                    let known = self.indexed_bool(scope, test, at, 0);
+                    if known != Some(false) {
+                        self.collect_field_callback_replacements(scope, body, replaced);
+                    }
+                    if known != Some(true) {
+                        self.collect_field_callback_replacements(scope, otherwise, replaced);
+                    }
+                    continue;
+                }
+                StatementKind::With { body, .. } => {
+                    self.collect_field_callback_replacements(scope, body, replaced);
+                    continue;
+                }
+                StatementKind::Return(_) | StatementKind::Raise(_) => break,
+                _ => continue,
+            };
+            if let Value::Callable(callback) = self.probe_identity(scope, receiver, at) {
+                replaced.insert(callback.target);
+            }
         }
     }
 
