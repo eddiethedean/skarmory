@@ -6619,3 +6619,52 @@ fn django_url_callback_dispatches_only_the_fresh_instances_selected_provider() {
         "{report}"
     );
 }
+
+#[test]
+fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (file, source) in [
+        (
+            "manage.py",
+            "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+        ),
+        (
+            "settings.py",
+            "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+        ),
+        (
+            "urls.py",
+            "from django.urls import path\nfrom views import stream, ordinary\nurlpatterns = [path('stream/', stream), path('async/', ordinary)]\n",
+        ),
+        (
+            "views.py",
+            "async def ordinary(request): return async_helper()\ndef stream(request): yield generator_helper()\ndef async_helper(): return 1\ndef generator_helper(): return 2\n",
+        ),
+    ] {
+        fs::write(root.join(file), source).unwrap();
+    }
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["views.generator_helper"],
+        "{report}"
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, kind) in [
+        ("views.ordinary", "django_registration"),
+        ("views.stream", "generator_creation"),
+    ] {
+        assert!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == name
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == kind)
+            }),
+            "{report}"
+        );
+    }
+}

@@ -284,7 +284,10 @@ bounded `urlpatterns`. This models registration if the configuration is used.
 Ambiguous configurations do not establish activation. Discovery resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
-class-based views reach their effective `setup()` hook. Unresolved URL
+class-based views reach their effective `setup()` hook. Function views can
+reach a source-owned provider method when a fresh object receives a provider
+selected by a literal argument. Calling a generator view creates the
+generator and leaves its body dormant. Unresolved URL
 registrations in active URL modules produce coverage diagnostics.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected

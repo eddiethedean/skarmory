@@ -2906,11 +2906,16 @@ impl Graph<'_> {
             }
             Value::DjangoPattern(callback) => match *callback {
                 Value::Callable(invocation) if !self.is_class(invocation.target) => {
-                    self.scopes[file].routes.push((
-                        parent,
-                        invocation.target,
-                        "django_registration",
-                    ));
+                    let kind = if self.is_generator(invocation.target) {
+                        // Django receives the generator as the view result.
+                        // Calling the registered function does not consume it.
+                        "generator_creation"
+                    } else {
+                        "django_registration"
+                    };
+                    self.scopes[file]
+                        .routes
+                        .push((parent, invocation.target, kind));
                 }
                 Value::DjangoView(class) => {
                     self.scopes[file]
