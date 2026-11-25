@@ -496,12 +496,18 @@ The expanded replay still includes unqualified cases in Django command and
 signal discovery, FastAPI and Flask registration, and Celery backend selection.
 Use the pinned case ledger to assess each contract before claiming parity.
 
+Public Click command overrides and source-owned Celery task libraries can
+contribute protocol declaration evidence. The declaration does not execute
+the command or task body. A selected Celery app still needs a reached task
+registration for execution evidence. The pinned reporting policy records
+unreferenced module helper names of the form `format_*` or `*_name` as
+abstentions, with their source locations and symbol names.
+
 The pinned `django-urlpatterns` and `django-signal-receiver` corpus fixtures
 omit startup and a qualifying settings/URLconf pair, leaving coverage incomplete.
 The standalone `django-class-based-view`, `django-management-command`, and
 `django-appconfig-ready` fixtures expect retention without a selected
-registration or launcher. The `celery-task-class` fixture declares a task
-without registering it. The pinned `starlette-add-route` fixture supplies an
+registration or launcher. The pinned `starlette-add-route` fixture supplies an
 `endpoint` keyword to Starlette 1.3.1's `add_route`, which takes `route`.
 The installed framework raises before registering the handler. The `python-unittest-lifecycle` fixture expects hooks
 to be retained without a discovered test method and an unrelated helper to be

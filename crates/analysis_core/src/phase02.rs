@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use skarmory_python::Location;
 use skarmory_python::phase02::{ModuleFacts, extract};
 
 use crate::fact_cache::{CacheStats, FactCache};
@@ -133,6 +134,8 @@ struct Finding {
     rule_id: &'static str,
     reason: &'static str,
 }
+
+const WEAK_HELPER_FUNCTION: &str = "weak_helper_function";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Evidence {
@@ -1253,6 +1256,19 @@ fn scan_selected(
                     "whitelisted",
                     source,
                 ));
+                continue;
+            }
+            if finding.reason == WEAK_HELPER_FUNCTION {
+                // The pinned reference treats these unreferenced helper names
+                // as abstentions. Keep them separate from usage and coverage.
+                analysis.uncertainties.push(
+                    Issue::new(WEAK_HELPER_FUNCTION, &finding.file, "weak helper function")
+                        .at(Location {
+                            line: finding.line,
+                            column: finding.column,
+                        })
+                        .with_symbol(finding.name, finding.full_name),
+                );
                 continue;
             }
             // Skylos applies the confidence threshold to bindings and keeps file findings.

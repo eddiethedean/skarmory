@@ -46,6 +46,14 @@ struct Issue {
     line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     column: Option<usize>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    symbol: Option<Box<IssueSymbol>>,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct IssueSymbol {
+    name: String,
+    full_name: String,
 }
 
 impl Issue {
@@ -56,12 +64,18 @@ impl Issue {
             message: message.to_string(),
             line: None,
             column: None,
+            symbol: None,
         }
     }
 
     fn at(mut self, location: Location) -> Self {
         self.line = Some(location.line);
         self.column = Some(location.column);
+        self
+    }
+
+    fn with_symbol(mut self, name: String, full_name: String) -> Self {
+        self.symbol = Some(Box::new(IssueSymbol { name, full_name }));
         self
     }
 }

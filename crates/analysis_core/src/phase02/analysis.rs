@@ -15,7 +15,9 @@ use skarmory_python::phase02::{
 };
 
 use super::config::{Entrypoint, FastapiRouterMode};
-use super::{Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding};
+use super::{
+    Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding, WEAK_HELPER_FUNCTION,
+};
 use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
@@ -270,6 +272,7 @@ enum FrameworkClassRole {
     DjangoFormField,
     DjangoSignal,
     DjangoAdmin,
+    ClickCommand,
     DrfSerializer,
     DrfViewSet,
     CeleryTask,
@@ -9276,6 +9279,8 @@ impl<'a> Graph<'a> {
                         | drf::PROTOCOL_DECLARATION
                         | drf::FIELD_DECLARATION
                         | mcp_tools::DECORATOR_APPLICATION
+                        | "click_command_declaration"
+                        | "celery_task_declaration"
                 ) {
                     continue;
                 }
@@ -9803,7 +9808,15 @@ impl<'a> Graph<'a> {
                         } else {
                             90
                         },
-                        "no_call_path_from_root",
+                        if self.phase03
+                            && scope.owner.is_none()
+                            && !self.direct.contains(&id)
+                            && (name.starts_with("format_") || name.ends_with("_name"))
+                        {
+                            WEAK_HELPER_FUNCTION
+                        } else {
+                            "no_call_path_from_root"
+                        },
                     )
                 }
                 Binding::Import(_) if !self.read.contains(&id) => {
@@ -10788,6 +10801,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
+        "click.Command" | "click.core.Command" => Some(FrameworkClassRole::ClickCommand),
         "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
             Some(FrameworkClassRole::DrfSerializer)
         }

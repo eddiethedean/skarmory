@@ -315,6 +315,7 @@ impl Graph<'_> {
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask
                 | FrameworkClassRole::MarshmallowSchema
+                | FrameworkClassRole::ClickCommand
                 | FrameworkClassRole::DrfSerializer
                 | FrameworkClassRole::DrfViewSet => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
@@ -358,6 +359,26 @@ impl Graph<'_> {
             ) {
                 self.collect_drf_declaration(class, class_scope, role);
             }
+            match role {
+                FrameworkClassRole::ClickCommand => self.collect_dispatch_declaration(
+                    class,
+                    class_scope,
+                    "invoke",
+                    2,
+                    "click_command_declaration",
+                ),
+                // A task library can expose a protocol implementation for an
+                // external app. A selected app has its own registration path.
+                FrameworkClassRole::CeleryTask if !self.celery_routes.has_application() => self
+                    .collect_dispatch_declaration(
+                        class,
+                        class_scope,
+                        "run",
+                        1,
+                        "celery_task_declaration",
+                    ),
+                _ => {}
+            }
             for name in lifecycle {
                 if let Some(target) = self.local(class_scope, name, END)
                     && matches!(self.symbols[target].binding, Binding::Definition(_, _))
@@ -378,6 +399,51 @@ impl Graph<'_> {
         }
 
         self.collect_test_frameworks();
+    }
+
+    pub(super) fn public_protocol_module_scope(&self, class: SymbolId) -> Option<ScopeId> {
+        let symbol = &self.symbols[class];
+        let scope = symbol.scope;
+        let name = &symbol.name.text;
+        (scope == self.scopes[scope].file
+            && !name.starts_with('_')
+            && self.local(scope, name, END) == Some(class)
+            && !self.binding_depends_on_branch(class, END)
+            && matches!(symbol.binding, Binding::Definition(definition, _) if definition.decorators.is_empty()))
+        .then_some(scope)
+    }
+
+    fn collect_dispatch_declaration(
+        &mut self,
+        class: SymbolId,
+        body: ScopeId,
+        method: &str,
+        parameters: usize,
+        declaration: &'static str,
+    ) {
+        let Some(scope) = self.public_protocol_module_scope(class) else {
+            return;
+        };
+        let target = match self.class_discovery_write(class, method, scope) {
+            None => self.local(body, method, END),
+            Some(mutations::MemberWriteValue::Replacement(Value::Callable(invocation)))
+                if !invocation.verified && matches!(invocation.receiver, Receiver::Ordinary) =>
+            {
+                Some(invocation.target)
+            }
+            Some(_) => None,
+        };
+        if let Some(target) = target
+            && !self.binding_depends_on_branch(target, END)
+            && matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Function
+                && !definition.is_generator
+                && definition.decorators.is_empty()
+                && definition.positional_parameter_count >= parameters)
+        {
+            self.edge(scope, class, declaration, "possible");
+            self.edge(scope, target, declaration, "possible");
+        }
     }
 
     fn collect_marshmallow_registration(&mut self, class: SymbolId, class_scope: ScopeId) {

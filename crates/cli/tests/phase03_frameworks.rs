@@ -334,6 +334,60 @@ fn drf_declarations_keep_only_proven_framework_protocol_members() {
 }
 
 #[test]
+fn click_command_declarations_and_reference_safe_helpers_have_distinct_dispositions() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("commands.py"),
+        "from click import Command as Base\nclass Report(Base):\n    def invoke(self, context): return opaque_handler(context)\n    def retired(self): return None\nclass Command: pass\nclass Draft(Command):\n    def invoke(self, context): return None\ndef format_arguments(): return []\ndef compose_name(): return ''\ndef dormant_name(): return ''\ndef unused(): return dormant_name()\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["commands.Draft"],
+        "{report}"
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "commands.Report.retired",
+            "commands.dormant_name",
+            "commands.unused"
+        ],
+        "{report}"
+    );
+    assert_eq!(
+        report["dead_code_abstentions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["full_name"].as_str().unwrap(),
+                    entry["message"].as_str().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            ("commands.format_arguments", "weak helper function"),
+            ("commands.compose_name", "weak helper function")
+        ],
+        "{report}"
+    );
+    let evidence = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        evidence
+            .iter()
+            .any(|entry| entry["qualified_name"] == "commands.Report.invoke"
+                && entry["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "click_command_declaration" && edge["certainty"] == "possible"
+                })),
+        "{report}"
+    );
+}
+
+#[test]
 fn starlette_routes_require_a_supported_call_and_application() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -4076,6 +4130,62 @@ fn celery_backend_reads_follow_comprehension_execution() {
 }
 
 #[test]
+fn public_celery_task_declarations_keep_execution_separate() {
+    let project = tempfile::tempdir().unwrap();
+    let evidence = |report: &Value, name: &str, kind: &str, certainty: &str| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == name
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["kind"] == kind && entry["certainty"] == certainty)
+            })
+    };
+    let jobs = project.path().join("jobs.py");
+    let source = "from celery import Task\nclass PublicTask(Task):\n    def run(self): return helper()\ndef helper(): return 1\n";
+    fs::write(&jobs, source).unwrap();
+    let library = scan(project.path());
+    assert!(
+        evidence(
+            &library,
+            "jobs.PublicTask.run",
+            "celery_task_declaration",
+            "possible"
+        ),
+        "{library}"
+    );
+    assert_eq!(findings(&library, "unused_functions"), ["jobs.helper"]);
+    assert!(!evidence(
+        &library,
+        "jobs.PublicTask.run",
+        "celery_task",
+        "certain"
+    ));
+
+    fs::write(
+        &jobs,
+        format!("from celery import Celery\napp = Celery('worker')\n{source}"),
+    )
+    .unwrap();
+    let configured = scan(project.path());
+    assert_eq!(
+        unreachable_functions(&configured),
+        ["jobs.PublicTask.run", "jobs.helper"]
+    );
+    assert!(!evidence(
+        &configured,
+        "jobs.PublicTask.run",
+        "celery_task_declaration",
+        "possible"
+    ));
+}
+
+#[test]
 fn celery_task_class_needs_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -4346,6 +4456,54 @@ router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
         assert_eq!(stats["hits"], hits);
         assert_eq!(cached, report);
     }
+}
+
+#[test]
+fn flat_django_shadow_does_not_whitelist_empty_admin_stubs() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    fs::write(root.join("shop/__init__.py"), "").unwrap();
+    fs::write(root.join("shop/admin.py"), "# Register models here.\n").unwrap();
+    fs::write(
+        root.join("shop/placeholder.py"),
+        "# An ordinary empty file.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("settings.py"),
+        "from django.apps import AppConfig\n",
+    )
+    .unwrap();
+    let empty_files = |report: &Value| {
+        report["unused_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["file"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let genuine = scan(root);
+    assert_eq!(empty_files(&genuine), ["shop/placeholder.py"]);
+
+    fs::write(root.join("django.py"), "value = 1\n").unwrap();
+    let shadowed = scan(root);
+    assert_eq!(
+        empty_files(&shadowed),
+        ["shop/admin.py", "shop/placeholder.py"]
+    );
+    fs::write(root.join("consumer.py"), "import settings\n").unwrap();
+    let attempted = scan_with_exit(root, None, None, 2);
+    assert!(
+        attempted["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_import" && issue["path"] == "consumer.py"
+            }),
+        "{attempted}"
+    );
 }
 
 #[test]

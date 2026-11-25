@@ -23,6 +23,15 @@ struct RouteEvent {
 #[derive(Default)]
 pub(super) struct Routes(BTreeMap<Object, Vec<RouteEvent>>);
 
+impl Routes {
+    pub(super) fn has_application(&self) -> bool {
+        self.0
+            .values()
+            .flatten()
+            .any(|event| matches!(event.operation, RouteOperation::Create(_)))
+    }
+}
+
 impl Graph<'_> {
     pub(super) fn celery_route_setting(
         &mut self,
