@@ -10,6 +10,7 @@ enum ReceiverKey {
     FlaskLoginManager(Object),
     TyperApp(Object),
     FlaskApplication(Object),
+    FlaskBase(ObjectKind),
     Fastapi(Object),
     FastapiBase,
 }
@@ -149,7 +150,9 @@ impl Graph<'_> {
         let deletes_inherited_method = value.is_none()
             && matches!(
                 receiver,
-                ReceiverKey::Fastapi(_) | ReceiverKey::FlaskApplication(_)
+                ReceiverKey::Fastapi(_)
+                    | ReceiverKey::FlaskApplication(_)
+                    | ReceiverKey::FlaskLoginManager(_)
             )
             && !matches!(
                 self.member_write(&receiver, member, (file, at)),
@@ -157,8 +160,10 @@ impl Graph<'_> {
             );
         let value = if conditional
             || deletes_inherited_method
-            || matches!(receiver, ReceiverKey::FastapiBase)
-        {
+            || matches!(
+                receiver,
+                ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_)
+            ) {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
             let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
@@ -276,6 +281,16 @@ impl Graph<'_> {
                             is_route(kind, member, true) || is_imperative_registration(kind, member)
                         })
             }
+            ReceiverKey::FlaskBase(kind) => {
+                is_route(*kind, member, true)
+                    || is_imperative_registration(*kind, member)
+                    || matches!(
+                        member,
+                        "__new__" | "__init__" | "__getattr__" | "__getattribute__"
+                    )
+                    || matches!(kind, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
+                        && member == "register_blueprint"
+            }
             ReceiverKey::Fastapi(_) => {
                 is_route(ObjectKind::App, member, true)
                     || is_imperative_registration(ObjectKind::App, member)
@@ -302,6 +317,9 @@ impl Graph<'_> {
             Value::Module(file) => Some(ReceiverKey::Module(self.files[*file].module.clone())),
             Value::Provider(provider) if fastapi::is_app_constructor(provider) => {
                 Some(ReceiverKey::FastapiBase)
+            }
+            Value::Provider(provider) if flask::provider_kind(provider).is_some() => {
+                flask::provider_kind(provider).map(ReceiverKey::FlaskBase)
             }
             Value::Provider(module) if provider_module(module) || is_django_signal(module) => {
                 Some(ReceiverKey::Module(module.clone()))
@@ -401,14 +419,36 @@ impl Graph<'_> {
         } else {
             ReceiverKey::FlaskApplication(site)
         };
-        if self.member_write(&receiver, "__class__", access).is_some() {
+        let class = ReceiverKey::FlaskBase(kind);
+        if self.member_write(&receiver, "__class__", access).is_some()
+            || ["__getattr__", "__getattribute__"]
+                .iter()
+                .any(|member| self.member_write(&class, member, access).is_some())
+        {
             return Value::Unknown;
         }
         match self.member_write(&receiver, name, access) {
             Some(MemberWriteValue::Replacement(value)) => value,
             Some(MemberWriteValue::Ambiguous) => Value::Unknown,
-            Some(MemberWriteValue::Deleted) | None => Value::Method(site, kind, name.into()),
+            Some(MemberWriteValue::Deleted) | None => {
+                if self.member_write(&class, name, access).is_some() {
+                    Value::Unknown
+                } else {
+                    Value::Method(site, kind, name.into())
+                }
+            }
         }
+    }
+
+    pub(super) fn flask_constructor_changed(
+        &self,
+        kind: ObjectKind,
+        access: (ScopeId, Location),
+    ) -> bool {
+        let class = ReceiverKey::FlaskBase(kind);
+        ["__new__", "__init__"]
+            .iter()
+            .any(|member| self.member_write(&class, member, access).is_some())
     }
 
     pub(super) fn signal_member_write(
@@ -459,7 +499,7 @@ impl Graph<'_> {
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
-            ReceiverKey::FastapiBase => None,
+            ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_) => None,
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
             | ReceiverKey::FlaskApplication(site)

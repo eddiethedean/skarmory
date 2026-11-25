@@ -965,6 +965,70 @@ fn flask_login_empty_provider_lookalike_has_no_registration_method() {
 }
 
 #[test]
+fn flask_class_writes_do_not_supply_stale_framework_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        r#"from flask import Flask
+from flask_login import LoginManager as Manager
+
+app = Flask(__name__)
+login = Manager()
+
+@app.shell_context_processor
+def app_before(): return {}
+
+@login.user_loader
+def login_before(user_id): return user_id
+
+def passthrough(self, callback): return callback
+setattr(Manager, 'user_loader', passthrough)
+
+@login.user_loader
+def login_after(user_id): return user_id
+
+@login.request_loader
+def independent(request): return request
+
+def replace_allocation(cls, import_name): return object()
+Flask.__new__ = replace_allocation
+replaced = Flask(__name__)
+
+@replaced.shell_context_processor
+def app_after(): return {}
+"#,
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    let evidence = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let framework = |symbol: &str| {
+        evidence.iter().any(|row| {
+            row["qualified_name"] == symbol
+                && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                    matches!(
+                        edge["kind"].as_str().unwrap(),
+                        "flask_registration" | "flask_login_registration"
+                    )
+                })
+        })
+    };
+    for name in ["app.app_before", "app.login_before", "app.independent"] {
+        assert!(framework(name), "{report}");
+    }
+    for name in ["app.app_after", "app.login_after"] {
+        assert!(!framework(name), "{report}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+}
+
+#[test]
 fn flask_constructor_rebinding_does_not_change_the_earlier_import_capture() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

@@ -211,7 +211,7 @@ impl Receiver {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum ObjectKind {
     App,
     Router,
@@ -3578,14 +3578,7 @@ impl<'a> Graph<'a> {
                     if self.phase03
                         && matches!(name.as_str(), "flask.Flask" | "flask.app.Flask") =>
                 {
-                    Value::Object(
-                        (
-                            self.scopes[scope].file,
-                            expression.at.line,
-                            expression.at.column,
-                        ),
-                        ObjectKind::FlaskApp,
-                    )
+                    self.flask_instance(scope, expression.at, before, ObjectKind::FlaskApp)
                 }
                 Value::Provider(name)
                     if self.phase03
@@ -3594,14 +3587,7 @@ impl<'a> Graph<'a> {
                             "flask.Blueprint" | "flask.blueprints.Blueprint"
                         ) =>
                 {
-                    Value::Object(
-                        (
-                            self.scopes[scope].file,
-                            expression.at.line,
-                            expression.at.column,
-                        ),
-                        ObjectKind::FlaskBlueprint,
-                    )
+                    self.flask_instance(scope, expression.at, before, ObjectKind::FlaskBlueprint)
                 }
                 Value::Provider(name)
                     if self.phase03
@@ -3613,14 +3599,7 @@ impl<'a> Graph<'a> {
                         )
                         .is_some() =>
                 {
-                    Value::Object(
-                        (
-                            self.scopes[scope].file,
-                            expression.at.line,
-                            expression.at.column,
-                        ),
-                        ObjectKind::FlaskLoginManager,
-                    )
+                    self.flask_instance(scope, expression.at, before, ObjectKind::FlaskLoginManager)
                 }
                 Value::Provider(name)
                     if self.phase03
