@@ -141,6 +141,120 @@ fn gunicorn_config_retains_effective_declarations_with_possible_evidence() {
 }
 
 #[test]
+fn fastmcp_registration_follows_applied_wrappers_without_running_dormant_bodies() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let providers = root.join("providers.py");
+    let handlers = root.join("handlers.py");
+    let source = r#"from functools import wraps
+from mcp.server.fastmcp import FastMCP
+
+server = FastMCP("demo")
+
+def expose(fn):
+    @server.tool(name=fn.__name__)
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        return str(fn(*args, **kwargs))
+    return wrapper
+
+def register_as(label):
+    def decorate(fn):
+        return server.tool(name=label)(fn)
+    return decorate
+
+def deferred(fn):
+    def wrapper(*args, **kwargs):
+        return server.tool(name="late")(fn)(*args, **kwargs)
+    return wrapper
+"#;
+    fs::write(&providers, source).unwrap();
+    let client = r#"from providers import expose, register_as, deferred, server
+
+@expose
+def live(value): return helper(value)
+
+@register_as("configured")
+def alternate(): return 1
+
+@server.tool(name="direct")
+def direct(): return 2
+
+@server.tool(name="direct")
+def duplicate(): return 9
+
+@deferred
+def inactive(): return 3
+
+def helper(value): return value
+def retired(): return 4
+"#;
+    fs::write(&handlers, client).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(
+        [
+            "handlers.duplicate",
+            "handlers.inactive",
+            "handlers.retired"
+        ]
+        .iter()
+        .all(|name| unused.contains(name)),
+        "{report}"
+    );
+    let evidence = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for target in ["handlers.live", "handlers.alternate", "handlers.direct"] {
+        assert!(
+            evidence
+                .iter()
+                .any(|symbol| symbol["qualified_name"] == target
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "mcp_tool_registration" && edge["certainty"] == "possible"
+                    })),
+            "{target}\n{report}"
+        );
+    }
+    assert!(!unused.contains(&"handlers.helper"), "{report}");
+    let cache = tempfile::tempdir().unwrap();
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(&handlers, format!("{client}\ninactive()\n")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_call" && error["file"] == "handlers.py" }),
+        "{report}"
+    );
+
+    fs::write(&handlers, client).unwrap();
+    fs::write(
+        &providers,
+        format!("{source}\nfrom extension import customize\ncustomize(server)\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "mcp_tool_registration")
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn drf_declarations_keep_only_proven_framework_protocol_members() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

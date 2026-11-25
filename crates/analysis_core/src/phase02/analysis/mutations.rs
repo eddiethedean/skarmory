@@ -13,6 +13,8 @@ enum ReceiverKey {
     FlaskBase(ObjectKind),
     Fastapi(Object),
     FastapiBase,
+    McpServer(Object),
+    McpServerBase,
 }
 
 #[derive(Clone)]
@@ -36,19 +38,24 @@ pub(super) struct Mutations {
     command_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
     command_code: BTreeMap<SymbolId, Vec<Write>>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
-    flask_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
+    framework_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
 
 impl Graph<'_> {
     pub(super) fn index_framework_mutations(&mut self) {
-        let track_flask_escapes = self.symbols.iter().any(|symbol| {
+        let track_framework_escapes = self.symbols.iter().any(|symbol| {
             matches!(symbol.binding, Binding::Import(import) if import.level == 0
-                && matches!(import.module.split('.').next(), Some("flask" | "flask_login")))
+                && matches!(import.module.split('.').next(), Some("flask" | "flask_login" | "mcp")))
         });
         self.index_command_namespaces();
         for file in 0..self.files.len() {
-            self.index_module_mutations(file, self.scopes[file].body, false, track_flask_escapes);
+            self.index_module_mutations(
+                file,
+                self.scopes[file].body,
+                false,
+                track_framework_escapes,
+            );
         }
     }
 
@@ -123,7 +130,7 @@ impl Graph<'_> {
         file: ScopeId,
         body: &[Statement],
         conditional: bool,
-        track_flask_escapes: bool,
+        track_framework_escapes: bool,
     ) {
         for statement in body {
             let at = statement.at;
@@ -216,13 +223,13 @@ impl Graph<'_> {
                             rest.first(),
                             conditional,
                         );
-                    } else if track_flask_escapes {
+                    } else if track_framework_escapes {
                         match self.probe_identity(file, function, at) {
                             Value::Unknown => {
-                                self.index_flask_escape(file, at, arguments, keywords)
+                                self.index_framework_escape(file, at, arguments, keywords)
                             }
                             Value::Provider(provider) if !is_known_call(&provider, true) => {
-                                self.index_flask_escape(file, at, arguments, keywords);
+                                self.index_framework_escape(file, at, arguments, keywords);
                             }
                             _ => {}
                         }
@@ -233,18 +240,21 @@ impl Graph<'_> {
                     body,
                     otherwise,
                 } => match self.indexed_bool(file, test, at, 0) {
-                    Some(true) => {
-                        self.index_module_mutations(file, body, conditional, track_flask_escapes)
-                    }
+                    Some(true) => self.index_module_mutations(
+                        file,
+                        body,
+                        conditional,
+                        track_framework_escapes,
+                    ),
                     Some(false) => self.index_module_mutations(
                         file,
                         otherwise,
                         conditional,
-                        track_flask_escapes,
+                        track_framework_escapes,
                     ),
                     None => {
-                        self.index_module_mutations(file, body, true, track_flask_escapes);
-                        self.index_module_mutations(file, otherwise, true, track_flask_escapes);
+                        self.index_module_mutations(file, body, true, track_framework_escapes);
+                        self.index_module_mutations(file, otherwise, true, track_framework_escapes);
                     }
                 },
                 StatementKind::Return(_) | StatementKind::Raise(_) => break,
@@ -253,7 +263,7 @@ impl Graph<'_> {
         }
     }
 
-    fn index_flask_escape(
+    fn index_framework_escape(
         &mut self,
         file: ScopeId,
         at: Location,
@@ -268,12 +278,12 @@ impl Graph<'_> {
         {
             let value = self.probe_identity(file, expression, at);
             let read = std::mem::take(&mut self.read);
-            self.flask_escape_keys(value, (file, at), &mut escaped, &mut visited, 0);
+            self.framework_escape_keys(value, (file, at), &mut escaped, &mut visited, 0);
             self.read = read;
         }
         for receiver in escaped {
             self.mutations
-                .flask_escapes
+                .framework_escapes
                 .entry(receiver)
                 .or_default()
                 .push(Write {
@@ -284,7 +294,7 @@ impl Graph<'_> {
         }
     }
 
-    fn flask_escape_keys(
+    fn framework_escape_keys(
         &mut self,
         value: Value,
         access: (ScopeId, Location),
@@ -301,12 +311,18 @@ impl Graph<'_> {
             | Value::Method(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint, _) => {
                 escaped.insert(ReceiverKey::FlaskApplication(site));
             }
+            Value::McpServer(site) => {
+                escaped.insert(ReceiverKey::McpServer(site));
+            }
+            Value::Provider(name) if mcp_tools::is_server_provider(&name) => {
+                escaped.insert(ReceiverKey::McpServerBase);
+            }
             Value::Provider(name) => {
                 escaped.extend(flask::provider_kind(&name).map(ReceiverKey::FlaskBase));
             }
             Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
                 for value in values {
-                    self.flask_escape_keys(value, access, escaped, visited, depth);
+                    self.framework_escape_keys(value, access, escaped, visited, depth);
                 }
             }
             Value::Callable(Invocation {
@@ -336,11 +352,11 @@ impl Graph<'_> {
                         at: before,
                     };
                     let value = self.probe_identity(file, &expression, before);
-                    self.flask_escape_keys(value, access, escaped, visited, depth + 1);
+                    self.framework_escape_keys(value, access, escaped, visited, depth + 1);
                 }
                 for default in &definition.defaults {
                     let value = self.probe_identity(file, default, definition.name.at);
-                    self.flask_escape_keys(value, access, escaped, visited, depth + 1);
+                    self.framework_escape_keys(value, access, escaped, visited, depth + 1);
                 }
             }
             _ => {}
@@ -393,7 +409,7 @@ impl Graph<'_> {
             || deletes_inherited_method
             || matches!(
                 receiver,
-                ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_)
+                ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_) | ReceiverKey::McpServerBase
             ) {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
@@ -748,6 +764,7 @@ impl Graph<'_> {
                         | "flask.blueprints.Blueprint"
                         | "celery.Celery"
                 ) || is_flask_login_constructor(&qualified)
+                    || mcp_tools::is_server_provider(&qualified)
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
                     || is_django_signal_constructor(&qualified)
@@ -764,6 +781,13 @@ impl Graph<'_> {
                     || member == "connect" && is_django_signal(module)
             }
             ReceiverKey::Signal(_) => member == "connect",
+            ReceiverKey::McpServer(_) => {
+                matches!(member, "tool" | "add_tool" | "_tool_manager" | "__class__")
+            }
+            ReceiverKey::McpServerBase => matches!(
+                member,
+                "tool" | "add_tool" | "__new__" | "__init__" | "__getattr__" | "__getattribute__"
+            ),
             ReceiverKey::TyperApp(_) => matches!(member, "callback" | "__class__"),
             ReceiverKey::FlaskLoginManager(_) => {
                 flask_login_callback(member)
@@ -816,6 +840,10 @@ impl Graph<'_> {
             Value::Module(file) => Some(ReceiverKey::Module(self.files[*file].module.clone())),
             Value::Provider(provider) if fastapi::is_app_constructor(provider) => {
                 Some(ReceiverKey::FastapiBase)
+            }
+            Value::McpServer(site) => Some(ReceiverKey::McpServer(*site)),
+            Value::Provider(provider) if mcp_tools::is_server_provider(provider) => {
+                Some(ReceiverKey::McpServerBase)
             }
             Value::Provider(provider) if flask::provider_kind(provider).is_some() => {
                 flask::provider_kind(provider).map(ReceiverKey::FlaskBase)
@@ -919,8 +947,8 @@ impl Graph<'_> {
             ReceiverKey::FlaskApplication(site)
         };
         let class = ReceiverKey::FlaskBase(kind);
-        if self.flask_has_escaped(&receiver, Some(site.0), access)
-            || self.flask_has_escaped(&class, None, access)
+        if self.framework_receiver_has_escaped(&receiver, Some(site.0), access)
+            || self.framework_receiver_has_escaped(&class, None, access)
             || self.member_write(&receiver, "__class__", access).is_some()
             || ["__getattr__", "__getattribute__"]
                 .iter()
@@ -957,22 +985,42 @@ impl Graph<'_> {
         access: (ScopeId, Location),
     ) -> bool {
         let class = ReceiverKey::FlaskBase(kind);
-        self.flask_has_escaped(&class, None, access)
+        self.framework_receiver_has_escaped(&class, None, access)
             || ["__new__", "__init__"]
                 .iter()
                 .any(|member| self.member_write(&class, member, access).is_some())
     }
 
-    fn flask_has_escaped(
+    fn framework_receiver_has_escaped(
         &self,
         receiver: &ReceiverKey,
         origin: Option<ScopeId>,
         access: (ScopeId, Location),
     ) -> bool {
         self.mutations
-            .flask_escapes
+            .framework_escapes
             .get(receiver)
             .is_some_and(|writes| self.write_value(writes, origin, access).is_some())
+    }
+
+    pub(super) fn mcp_tool_available(&self, site: Object, access: (ScopeId, Location)) -> bool {
+        let receiver = ReceiverKey::McpServer(site);
+        let base = ReceiverKey::McpServerBase;
+        !self.framework_receiver_has_escaped(&receiver, Some(site.0), access)
+            && !self.framework_receiver_has_escaped(&base, None, access)
+            && ["tool", "add_tool", "_tool_manager", "__class__"]
+                .iter()
+                .all(|member| self.member_write(&receiver, member, access).is_none())
+            && [
+                "tool",
+                "add_tool",
+                "__new__",
+                "__init__",
+                "__getattr__",
+                "__getattribute__",
+            ]
+            .iter()
+            .all(|member| self.member_write(&base, member, access).is_none())
     }
 
     pub(super) fn signal_member_write(
@@ -1023,11 +1071,14 @@ impl Graph<'_> {
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
-            ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_) => None,
+            ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_) | ReceiverKey::McpServerBase => {
+                None
+            }
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
             | ReceiverKey::FlaskApplication(site)
             | ReceiverKey::Fastapi(site)
+            | ReceiverKey::McpServer(site)
             | ReceiverKey::TyperApp(site) => Some(site.0),
         };
         self.write_value(
@@ -1111,6 +1162,8 @@ fn provider_module(name: &str) -> bool {
             | "flask.blueprints"
             | "flask_login"
             | "flask_login.login_manager"
+            | "mcp.server.fastmcp"
+            | "mcp.server.fastmcp.server"
             | "celery"
             | "typer"
             | "typer.main"

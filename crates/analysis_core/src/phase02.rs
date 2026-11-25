@@ -800,7 +800,7 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v34/ruff-0.0.12/py311/utf8-universal",
+            "phase02-module-v35/ruff-0.0.12/py311/utf8-universal",
             path,
             &roots,
         )

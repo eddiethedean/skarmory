@@ -37,6 +37,7 @@ mod flask;
 mod frameworks;
 mod gunicorn;
 mod logging_config;
+mod mcp_tools;
 mod mutations;
 mod pydantic;
 mod sanic;
@@ -92,6 +93,7 @@ enum Value {
     FastapiInheritedMethod,
     FastapiMiddleware(Option<SymbolId>),
     PydanticDump(SymbolId),
+    McpServer(Object),
     PluggyHookMarker,
     CeleryConfig(Object),
     CeleryBackend(Object),
@@ -633,6 +635,7 @@ pub(super) fn analyze_with_verification(
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
+        mcp_registrations: BTreeMap::new(),
         celery_backends: celery::Backends::default(),
         celery_routes: celery_routes::Routes::default(),
         fastapi_dependency_issues: Vec::new(),
@@ -720,6 +723,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_gunicorn_config();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
+        graph.collect_mcp_registrations();
         graph.collect_celery_backends();
         graph.collect_celery_routes();
     }
@@ -830,6 +834,7 @@ struct Graph<'a> {
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
+    mcp_registrations: BTreeMap<(Object, String), Vec<mcp_tools::Registration>>,
     celery_backends: celery::Backends,
     celery_routes: celery_routes::Routes,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
@@ -2019,6 +2024,18 @@ impl<'a> Graph<'a> {
         let file = self.scopes[scope].file;
         match symbol.binding {
             Binding::Definition(definition, _) => {
+                if self.phase03
+                    && let [decorator] = definition.decorators.as_slice()
+                    && self.bounded_decorator_replaces_function(
+                        scope,
+                        decorator,
+                        id,
+                        definition.name.at,
+                        depth + 1,
+                    )
+                {
+                    return Value::Unknown;
+                }
                 if self.phase03
                     && let [decorator] = definition.decorators.as_slice()
                     && !matches!(decorator.kind, ExpressionKind::Call { .. })
@@ -3471,6 +3488,11 @@ impl<'a> Graph<'a> {
                 arguments,
                 keywords,
             } => match self.call_target_identity(scope, function, before, depth + 1) {
+                Value::Provider(provider)
+                    if self.phase03 && mcp_tools::is_server_provider(&provider) =>
+                {
+                    self.mcp_server(scope, expression.at, arguments, keywords)
+                }
                 Value::Provider(name)
                     if self.empty_flask_context_pop(&name, arguments, keywords) =>
                 {
@@ -4173,7 +4195,8 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Await(_)
             | ExpressionKind::KeywordMappingCall { .. }
-            | ExpressionKind::RepeatedKeywordCall { .. } => Value::Unknown,
+            | ExpressionKind::RepeatedKeywordCall { .. }
+            | ExpressionKind::ForwardingCall { .. } => Value::Unknown,
         }
     }
 
@@ -4885,6 +4908,30 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::ForwardingCall {
+                function,
+                positional,
+                keywords,
+            } => {
+                self.walk_expression(scope, function, before, true);
+                self.walk(scope, positional, before);
+                self.walk(scope, keywords, before);
+                if self.phase03 {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unresolved_call",
+                        "variadic forwarding is outside the bounded callable model",
+                    );
+                } else {
+                    self.issue(
+                        self.scopes[scope].file,
+                        expr.at,
+                        "unsupported_construct",
+                        "expression is outside the compatibility subset",
+                    );
+                }
+            }
             ExpressionKind::RepeatedKeywordCall {
                 function,
                 arguments,
@@ -5696,6 +5743,11 @@ impl<'a> Graph<'a> {
                     Value::Provider(name) if self.phase03 && aiohttp::is_route_table(&name) => {
                         if !arguments.is_empty() || !keywords.is_empty() {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && mcp_tools::is_server_provider(&name) => {
+                        if !matches!(self.mcp_server(scope, expr.at, arguments, keywords), Value::McpServer(_)) {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "FastMCP server arguments are outside the bounded model");
                         }
                     }
                     Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
@@ -7142,6 +7194,9 @@ impl<'a> Graph<'a> {
             self.walk(scope, value, before);
         }
         if self.phase03 && self.record_fastapi_parameter_route(scope, decorator, target, before) {
+            return false;
+        }
+        if self.phase03 && self.apply_bounded_tool_decorator(scope, decorator, target, before) {
             return false;
         }
         match self.call_target_identity(scope, function, before, 0) {
@@ -9210,6 +9265,7 @@ impl<'a> Graph<'a> {
                         | "django_migration_callback_declaration"
                         | drf::PROTOCOL_DECLARATION
                         | drf::FIELD_DECLARATION
+                        | mcp_tools::DECORATOR_APPLICATION
                 ) {
                     continue;
                 }
@@ -10074,6 +10130,13 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.push(function);
                 expressions.extend(arguments);
                 expressions.extend(keywords.iter().map(|(_, value)| value));
+            }
+            ExpressionKind::ForwardingCall {
+                function,
+                positional,
+                keywords,
+            } => {
+                expressions.extend([function.as_ref(), positional.as_ref(), keywords.as_ref()]);
             }
             ExpressionKind::KeywordMappingCall {
                 function,

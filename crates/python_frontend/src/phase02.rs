@@ -266,6 +266,11 @@ pub enum ExpressionKind {
         arguments: Vec<Expression>,
         keywords: Vec<(String, Expression)>,
     },
+    ForwardingCall {
+        function: Box<Expression>,
+        positional: Box<Expression>,
+        keywords: Box<Expression>,
+    },
     KeywordMappingCall {
         function: Box<Expression>,
         arguments: Vec<Expression>,
@@ -1150,6 +1155,19 @@ impl Lowering<'_> {
             ),
             Expr::Attribute(node) => {
                 ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
+            }
+            Expr::Call(node)
+                if let [Expr::Starred(positional)] = node.arguments.args.as_ref()
+                    && matches!(positional.value.as_ref(), Expr::Name(_))
+                    && let [keywords] = node.arguments.keywords.as_slice()
+                    && keywords.arg.is_none()
+                    && matches!(&keywords.value, Expr::Name(_)) =>
+            {
+                ExpressionKind::ForwardingCall {
+                    function: Box::new(lower(&node.func)?),
+                    positional: Box::new(lower(&positional.value)?),
+                    keywords: Box::new(lower(&keywords.value)?),
+                }
             }
             Expr::Call(node)
                 if matches!(node.arguments.keywords.as_slice(), [keyword] if keyword.arg.is_none()) =>
