@@ -15842,7 +15842,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_import). Issue #43."
+blocker = "The scan finds both empty files. From the repository root Python can import external django.apps; prepending src selects the inert local django package. The fixture selects neither import path (#43)"
 
 [[cases]]
 id = "test/test_django_admin_stubs.py::test_admin_stub_requires_django_package_context[standalone-admin-file]"
