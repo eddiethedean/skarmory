@@ -9417,6 +9417,8 @@ impl<'a> Graph<'a> {
                         | drf::FIELD_DECLARATION
                         | wagtail::FIELD_DECLARATION
                         | wagtail::BLOCK_METADATA
+                        | wagtail::MODEL_OPTION
+                        | wagtail::CALLBACK_PARAMETER
                         | mcp_tools::DECORATOR_APPLICATION
                         | "click_command_declaration"
                         | "celery_task_declaration"
@@ -9882,6 +9884,8 @@ impl<'a> Graph<'a> {
                     | drf::FIELD_DECLARATION
                     | wagtail::FIELD_DECLARATION
                     | wagtail::BLOCK_METADATA
+                    | wagtail::MODEL_OPTION
+                    | wagtail::CALLBACK_PARAMETER
             ) {
                 self.read.insert(id);
             }
@@ -11321,6 +11325,60 @@ configure()
                 .evidence
                 .iter()
                 .any(|row| row.kind.starts_with("wagtail_"))
+        );
+    }
+
+    #[test]
+    fn wagtail_models_retain_only_proven_fields_and_callbacks() {
+        let source = "from django.db import models\nfrom modelcluster.fields import ParentalKey\nfrom wagtail.models import Page, Orderable, Task\nfrom wagtail.fields import RichTextField\nfrom wagtail.admin.panels import FieldPanel\nclass Home(Page):\n    lead = RichTextField(blank=True)\n    hero = models.ForeignKey('wagtailimages.Image', on_delete=models.SET_NULL, null=True)\n    content_panels = Page.content_panels + [FieldPanel('lead')]\n    subpage_types = ['home.Home']\n    max_count = 2\n    def get_preview_template(self, request, mode): return 'page.html'\n    def paginate(self, request, *args): return request\n    class Meta:\n        verbose_name = 'Home'\nclass MenuItem(Orderable):\n    owner = ParentalKey('home.Home', related_name='menu')\nclass Review(Task):\n    task_state_class = None\n    def user_can_access_editor(self, obj, user): return False\nclass CustomPreview(Page):\n    def serve_preview(self, request, mode): return None\n    def get_preview_template(self, request, mode): return 'unused.html'\nclass AbstractPage(Page):\n    class Meta:\n        abstract = True\n";
+        let report = analyze_phase03(&[module("home/models.py", "home.models", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for (kind, ending) in [
+            ("wagtail_field_declaration", ".Home.lead"),
+            ("wagtail_field_declaration", ".Home.hero"),
+            ("wagtail_field_declaration", ".MenuItem.owner"),
+            ("wagtail_model_declaration", ".MenuItem"),
+            ("wagtail_model_declaration", ".Review"),
+            ("wagtail_model_option", ".Home.content_panels"),
+            ("wagtail_model_option", ".Home.subpage_types"),
+            ("wagtail_model_option", ".Home.max_count"),
+            ("wagtail_model_option", ".Meta.verbose_name"),
+            ("wagtail_model_option", ".Review.task_state_class"),
+            (
+                "wagtail_callback_parameter",
+                ".Home.get_preview_template.request",
+            ),
+            (
+                "wagtail_callback_parameter",
+                ".Home.get_preview_template.mode",
+            ),
+            (
+                "wagtail_callback_parameter",
+                ".Review.user_can_access_editor.obj",
+            ),
+        ] {
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == kind && row.full_name.ends_with(ending)),
+                "{ending}: {:?}",
+                report.evidence
+            );
+        }
+        assert!(!report.evidence.iter().any(|row| {
+            row.kind.starts_with("wagtail_")
+                && (row.full_name.contains(".paginate")
+                    || row.full_name.ends_with(".AbstractPage")
+                    || row
+                        .full_name
+                        .contains(".CustomPreview.get_preview_template"))
+        }));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|row| row.full_name.ends_with(".paginate.args"))
         );
     }
 

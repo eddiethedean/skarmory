@@ -4,6 +4,8 @@ use super::*;
 
 pub(super) const FIELD_DECLARATION: &str = "wagtail_field_declaration";
 pub(super) const BLOCK_METADATA: &str = "wagtail_block_metadata";
+pub(super) const MODEL_OPTION: &str = "wagtail_model_option";
+pub(super) const CALLBACK_PARAMETER: &str = "wagtail_callback_parameter";
 const SETTING_REGISTRATION: &str = "wagtail_setting_registration";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -11,6 +13,15 @@ enum Declaration {
     Setting,
     StructBlock,
     StreamBlock,
+    Page,
+    Orderable,
+    Task,
+}
+
+impl Declaration {
+    fn is_block(self) -> bool {
+        matches!(self, Self::StructBlock | Self::StreamBlock)
+    }
 }
 
 fn declaration(provider: &str) -> Option<Declaration> {
@@ -23,6 +34,9 @@ fn declaration(provider: &str) -> Option<Declaration> {
         "wagtail.blocks.StreamBlock" | "wagtail.blocks.stream_block.StreamBlock" => {
             Some(Declaration::StreamBlock)
         }
+        "wagtail.models.Page" | "wagtail.models.pages.Page" => Some(Declaration::Page),
+        "wagtail.models.Orderable" => Some(Declaration::Orderable),
+        "wagtail.models.Task" | "wagtail.models.workflows.Task" => Some(Declaration::Task),
         _ => None,
     }
 }
@@ -86,7 +100,7 @@ impl Graph<'_> {
                 ]
                 .iter()
                 .any(|member| self.scopes[body].names.contains_key(member))
-                && self.bounded_wagtail_settings_meta(body)
+                && self.bounded_wagtail_model_meta(body)
                 && matches!(self.symbols[class].binding, Binding::Definition(definition, _)
                         if definition.decorators.len() == 1)
         });
@@ -104,7 +118,7 @@ impl Graph<'_> {
         }
     }
 
-    fn bounded_wagtail_settings_meta(&self, body: ScopeId) -> bool {
+    fn bounded_wagtail_model_meta(&self, body: ScopeId) -> bool {
         self.local(body, "Meta", END).is_none_or(|meta| {
             matches!(self.symbols[meta].binding, Binding::Definition(definition, options)
                 if definition.kind == DefinitionKind::Class
@@ -135,7 +149,10 @@ impl Graph<'_> {
                 self.edge(body, binding, FIELD_DECLARATION, "certain");
             }
         }
-        if role == Declaration::Setting {
+        if !role.is_block() {
+            if role != Declaration::Setting && self.bounded_wagtail_model_meta(body) {
+                self.collect_wagtail_model(class, body, role);
+            }
             return;
         }
         let Some(meta) = self.local(body, "Meta", END) else {
@@ -164,12 +181,142 @@ impl Graph<'_> {
         }
     }
 
+    fn collect_wagtail_model(&mut self, class: SymbolId, body: ScopeId, role: Declaration) {
+        let scope = self.symbols[class].scope;
+        let Binding::Definition(definition, _) = self.symbols[class].binding else {
+            return;
+        };
+        if !definition.decorators.is_empty()
+            || self.local(scope, &definition.name.text, END) != Some(class)
+            || self.binding_depends_on_branch(class, END)
+            || self.scopes[body].names.contains_key("_meta")
+        {
+            return;
+        }
+        // Django's model metaclass records concrete models when the class is created.
+        self.edge(body, class, "wagtail_model_declaration", "possible");
+        if let Some(meta) = self.local(body, "Meta", END)
+            && let Binding::Definition(_, options) = self.symbols[meta].binding
+        {
+            self.edge(body, meta, MODEL_OPTION, "certain");
+            for name in ["verbose_name", "verbose_name_plural"] {
+                if let Some(member) = self.local(options, name, END)
+                    && !self.binding_depends_on_branch(member, END)
+                    && matches!(self.symbols[member].binding, Binding::Variable(Some(value), _)
+                        if matches!(value.kind, ExpressionKind::Text(_)))
+                {
+                    self.edge(body, member, MODEL_OPTION, "certain");
+                }
+            }
+        }
+        for name in match role {
+            Declaration::Page => &[
+                "content_panels",
+                "max_count",
+                "max_count_per_parent",
+                "parent_page_types",
+                "subpage_types",
+            ][..],
+            Declaration::Task => &["task_state_class"],
+            _ => &[],
+        } {
+            let Some(member) = self.local(body, name, END) else {
+                continue;
+            };
+            if let Binding::Variable(Some(value), _) = self.symbols[member].binding
+                && !self.binding_depends_on_branch(member, END)
+                && self.wagtail_model_option(body, name, value, self.symbols[member].name.at)
+            {
+                self.edge(body, member, MODEL_OPTION, "possible");
+            }
+        }
+        match role {
+            Declaration::Page
+                if self.local(body, "serve_preview", END).is_none()
+                    && self
+                        .class_discovery_write(class, "serve_preview", scope)
+                        .is_none() =>
+            {
+                self.collect_wagtail_callback(class, body, "get_preview_template");
+            }
+            Declaration::Task => {
+                self.collect_wagtail_callback(class, body, "user_can_access_editor")
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_wagtail_callback(&mut self, class: SymbolId, body: ScopeId, name: &str) {
+        let Some(method) = self.local(body, name, END) else {
+            return;
+        };
+        let Binding::Definition(definition, method_scope) = self.symbols[method].binding else {
+            return;
+        };
+        if definition.kind != DefinitionKind::Function
+            || definition.is_generator
+            || !definition.simple_positional_parameters
+            || !definition.decorators.is_empty()
+            || definition.parameters.len() != 3
+            || self.binding_depends_on_branch(method, END)
+            || self
+                .class_discovery_write(class, name, self.symbols[class].scope)
+                .is_some()
+        {
+            return;
+        }
+        self.edge(body, method, "wagtail_model_callback", "possible");
+        for parameter in &definition.parameters[1..] {
+            let binding = self.by_location[&(method_scope, parameter.at.line, parameter.at.column)];
+            self.edge(body, binding, CALLBACK_PARAMETER, "possible");
+        }
+    }
+
+    fn wagtail_model_option(
+        &mut self,
+        scope: ScopeId,
+        name: &str,
+        value: &Expression,
+        before: Location,
+    ) -> bool {
+        match (name, &value.kind) {
+            ("max_count" | "max_count_per_parent", ExpressionKind::Scalar(Some(value))) => *value >= 0,
+            ("max_count" | "max_count_per_parent" | "task_state_class", ExpressionKind::None) => true,
+            ("parent_page_types" | "subpage_types", ExpressionKind::Sequence { items, .. }) =>
+                items.iter().all(|entry| matches!(entry.kind, ExpressionKind::Text(_))),
+            ("content_panels", ExpressionKind::Addition(operands)) => {
+                let [base, panels] = operands.as_slice() else {
+                    return false;
+                };
+                matches!(self.probe_identity(scope, base, before), Value::Provider(provider)
+                    if matches!(provider.as_str(), "wagtail.models.Page.content_panels" | "wagtail.models.pages.Page.content_panels"))
+                    && self.wagtail_model_option(scope, name, panels, before)
+            }
+            ("content_panels", ExpressionKind::Sequence { items, list: true }) =>
+                items.iter().all(|entry| {
+                    let ExpressionKind::Call { function, arguments, keywords } = &entry.kind else {
+                        return false;
+                    };
+                    keywords.is_empty()
+                        && matches!(arguments.as_slice(), [field] if matches!(field.kind, ExpressionKind::Text(_)))
+                        && matches!(self.probe_identity(scope, function, before),
+                            Value::Provider(provider) if field_panel(&provider))
+                }),
+            _ => false,
+        }
+    }
+
     pub(super) fn wagtail_field_constructor(
         &mut self,
         call: CallArguments<'_>,
         provider: &str,
     ) -> bool {
-        if !provider.starts_with("wagtail.blocks.") && !provider.starts_with("django.db.models.") {
+        if !provider.starts_with("wagtail.blocks.")
+            && !provider.starts_with("django.db.models.")
+            && !provider.starts_with("wagtail.fields.")
+            && provider != "modelcluster.fields.ParentalKey"
+            && !field_panel(provider)
+        {
             return false;
         }
         let Some(class) = self.scopes[call.scope].owner else {
@@ -178,6 +325,10 @@ impl Graph<'_> {
         let Some((role, _)) = self.wagtail_declaration(class) else {
             return false;
         };
+        if role == Declaration::Page && field_panel(provider) {
+            return call.keywords.is_empty()
+                && matches!(call.positional, [field] if matches!(field.kind, ExpressionKind::Text(_)));
+        }
         self.wagtail_field_arguments(provider, call, role, 0)
     }
 
@@ -226,13 +377,46 @@ impl Graph<'_> {
     ) -> bool {
         match (role, provider, call.positional, call.keywords) {
             (
-                Declaration::Setting,
+                Declaration::Setting
+                | Declaration::Page
+                | Declaration::Task
+                | Declaration::Orderable,
                 "django.db.models.CharField" | "django.db.models.fields.CharField",
                 [],
                 [(name, length)],
             ) => {
                 name == "max_length"
                     && matches!(length.kind, ExpressionKind::Scalar(Some(value)) if value > 0)
+            }
+            (Declaration::Page, "wagtail.fields.RichTextField", [], [(name, blank)]) => {
+                name == "blank" && matches!(blank.kind, ExpressionKind::Bool(_))
+            }
+            (
+                Declaration::Page,
+                "django.db.models.ForeignKey" | "django.db.models.fields.related.ForeignKey",
+                [related],
+                _,
+            ) => {
+                matches!(related.kind, ExpressionKind::Text(_))
+                    && matches!(
+                        registration_arguments(&[], call.keywords, ["null", "on_delete"]),
+                        Some([Some(null), Some(delete)])
+                        if matches!(null.kind, ExpressionKind::Bool(true))
+                            && matches!(self.probe_identity(call.scope, delete, call.before),
+                                Value::Provider(provider) if matches!(provider.as_str(),
+                                    "django.db.models.SET_NULL" | "django.db.models.deletion.SET_NULL"))
+                    )
+            }
+            (
+                Declaration::Orderable,
+                "modelcluster.fields.ParentalKey",
+                [related],
+                [(name, reverse)],
+            ) => {
+                !self.modules.contains_key("modelcluster")
+                    && matches!(related.kind, ExpressionKind::Text(_))
+                    && name == "related_name"
+                    && matches!(&reverse.kind, ExpressionKind::Text(value) if !value.is_empty() && !value.ends_with('+'))
             }
             (
                 Declaration::StructBlock | Declaration::StreamBlock,
@@ -249,4 +433,11 @@ impl Graph<'_> {
             _ => false,
         }
     }
+}
+
+fn field_panel(provider: &str) -> bool {
+    matches!(
+        provider,
+        "wagtail.admin.panels.FieldPanel" | "wagtail.admin.panels.field_panel.FieldPanel"
+    )
 }

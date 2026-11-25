@@ -420,8 +420,9 @@ leaves coverage incomplete.
 Wagtail settings registration supports direct subclasses of the standard site or
 generic settings base and a literal registration icon. The analyzer also
 recognizes bounded Wagtail StructBlock and StreamBlock field declarations and
-literal block metadata. Registry evidence represents declarations, with admin
-request dispatch analyzed separately.
+literal block metadata. Direct concrete Page, Orderable, and Task models
+retain bounded model fields and options. Documented page preview and task
+permission callbacks can receive possible-use and parameter evidence.
 
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
