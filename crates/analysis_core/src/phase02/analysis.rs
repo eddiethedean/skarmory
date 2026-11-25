@@ -696,8 +696,10 @@ impl<'a> Graph<'a> {
             .entry(&name.text)
             .or_default()
             .push(id);
-        self.by_location
-            .insert((scope, name.at.line, name.at.column), id);
+        if !matches!(self.symbols[id].binding, Binding::Import(import) if import.wildcard_member) {
+            self.by_location
+                .insert((scope, name.at.line, name.at.column), id);
+        }
         id
     }
 
@@ -720,6 +722,13 @@ impl<'a> Graph<'a> {
                 }
                 StatementKind::Import(import) => {
                     self.bind(scope, &import.local, Binding::Import(import));
+                }
+                StatementKind::ProviderWildcardImport(imports)
+                    if self.supported_provider_wildcard(scope, statement.at, imports) =>
+                {
+                    for import in imports {
+                        self.bind(scope, &import.local, Binding::Import(import));
+                    }
                 }
                 StatementKind::Assign { names, value, .. } => {
                     for name in names {
@@ -900,6 +909,37 @@ impl<'a> Graph<'a> {
                 let at = self.symbols[id].name.at;
                 (at.line, at.column) < (before.line, before.column)
             })
+    }
+
+    fn supported_provider_wildcard(
+        &self,
+        scope: ScopeId,
+        at: Location,
+        imports: &[Import],
+    ) -> bool {
+        let row = &self.scopes[scope];
+        self.phase03
+            && row.parent.is_none()
+            && imports
+                .first()
+                .is_some_and(|import| !self.modules.contains_key(import.module.as_str()))
+            && row
+                .body
+                .iter()
+                .take_while(|statement| position(statement.at) < position(at))
+                .all(|statement| {
+                    matches!(
+                        &statement.kind,
+                        StatementKind::Evaluate(Expression {
+                            kind: ExpressionKind::Text(_),
+                            ..
+                        })
+                    )
+                })
+            && row
+                .body
+                .iter()
+                .any(|statement| position(statement.at) == position(at))
     }
 
     fn lexical(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
@@ -1714,7 +1754,18 @@ impl<'a> Graph<'a> {
         let scope = symbol.scope;
         let file = self.scopes[scope].file;
         match symbol.binding {
-            Binding::Definition(_, _) => Value::Callable(Invocation::ordinary(id)),
+            Binding::Definition(definition, _) => {
+                if self.phase03
+                    && self.supports_replacement_decorator(id)
+                    && let [decorator] = definition.decorators.as_slice()
+                    && let Value::Callable(decorator_fn) =
+                        self.identity(scope, decorator, definition.name.at, depth + 1)
+                    && let Some(replacement) = self.local_replacement_decorator(decorator_fn)
+                {
+                    return Value::Callable(Invocation::ordinary(replacement));
+                }
+                Value::Callable(Invocation::ordinary(id))
+            }
             Binding::Variable(Some(value), before) => {
                 self.identity(scope, value, before, depth + 1)
             }
@@ -5535,6 +5586,16 @@ impl<'a> Graph<'a> {
                         self.execute_lazy_branch(scope, &branch);
                     }
                 }
+                StatementKind::ProviderWildcardImport(imports) => {
+                    if !self.supported_provider_wildcard(scope, at, imports) {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "star imports cannot resolve finite bindings at this location",
+                        );
+                    }
+                }
             }
         }
         false
@@ -5832,6 +5893,11 @@ impl<'a> Graph<'a> {
                 if is_identity_decorator(definition) {
                     return self.local_identity_decorator(Value::Callable(invocation), decorator);
                 } else if self.phase03
+                    && self.supports_replacement_decorator(target)
+                    && self.local_replacement_decorator(invocation).is_some()
+                {
+                    return false;
+                } else if self.phase03
                     && matches!(invocation.receiver, Receiver::Ordinary)
                     && definition.kind == DefinitionKind::Function
                     && definition.decorators.is_empty()
@@ -5899,6 +5965,53 @@ impl<'a> Graph<'a> {
             && definition.has_positional_parameter
             && definition.decorators.is_empty()
             && is_identity_decorator(definition)
+    }
+
+    fn supports_replacement_decorator(&self, target: SymbolId) -> bool {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        matches!(
+            definition.kind,
+            DefinitionKind::Function | DefinitionKind::Coroutine
+        ) && self.scopes[symbol.scope].owner.is_none()
+            && matches!(definition.decorators.as_slice(), [decorator]
+                if !matches!(decorator.kind, ExpressionKind::Call { .. }))
+    }
+
+    fn local_replacement_decorator(&self, invocation: Invocation) -> Option<SymbolId> {
+        let Binding::Definition(definition, body) = self.symbols[invocation.target].binding else {
+            return None;
+        };
+        if !matches!(invocation.receiver, Receiver::Ordinary)
+            || definition.kind != DefinitionKind::Function
+            || !definition.decorators.is_empty()
+            || !definition.simple_positional_parameters
+            || definition.parameters.len() != 1
+        {
+            return None;
+        }
+        let replacement = returned_nested_function(definition)?;
+        // A literal return cannot capture the decorated callback or call its body.
+        if !matches!(
+            body_without_docstring(replacement),
+            [Statement {
+                kind: StatementKind::Return(
+                    None | Some(Expression {
+                        kind: ExpressionKind::None
+                            | ExpressionKind::Bool(_)
+                            | ExpressionKind::Text(_)
+                            | ExpressionKind::Scalar,
+                        ..
+                    })
+                ),
+                ..
+            }]
+        ) {
+            return None;
+        }
+        self.local(body, &replacement.name.text, END)
     }
 
     fn empty_flask_lookalike(
@@ -7847,6 +7960,9 @@ impl<'a> Graph<'a> {
         for (id, symbol) in self.symbols.iter().enumerate() {
             let scope = &self.scopes[symbol.scope];
             let name = &symbol.name.text;
+            if matches!(symbol.binding, Binding::Import(import) if import.wildcard_member) {
+                continue;
+            }
             if self.phase03 {
                 let kind = match symbol.binding {
                     Binding::Definition(def, _) if def.kind == DefinitionKind::Class => "class",
@@ -8106,6 +8222,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             StatementKind::Import(import) => {
                 assigned.insert(import.local.text.as_str());
             }
+            StatementKind::ProviderWildcardImport(imports) => {
+                assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
+            }
             StatementKind::Assign {
                 names,
                 value,
@@ -8221,6 +8340,9 @@ fn suite_binds_name(body: &[Statement], name: &str) -> bool {
     body.iter().any(|statement| match &statement.kind {
         StatementKind::Define(definition) => definition.name.text == name,
         StatementKind::Import(import) => import.local.text == name,
+        StatementKind::ProviderWildcardImport(imports) => {
+            imports.iter().any(|import| import.local.text == name)
+        }
         StatementKind::Assign { names, .. } => names.iter().any(|target| target.text == name),
         StatementKind::LiteralRouteLoop { path, .. } => path.text == name,
         StatementKind::If {
@@ -8327,6 +8449,10 @@ fn is_identity_decorator(definition: &Definition) -> bool {
 }
 
 fn identity_decorator_factory(definition: &Definition) -> Option<&Definition> {
+    returned_nested_function(definition).filter(|decorator| is_identity_decorator(decorator))
+}
+
+fn returned_nested_function(definition: &Definition) -> Option<&Definition> {
     let [
         Statement {
             kind: StatementKind::Define(decorator),
@@ -8349,8 +8475,7 @@ fn identity_decorator_factory(definition: &Definition) -> Option<&Definition> {
         && decorator.decorators.is_empty()
         && decorator.simple_positional_parameters
         && decorator.annotations.is_empty()
-        && decorator.defaults.is_empty()
-        && is_identity_decorator(decorator))
+        && decorator.defaults.is_empty())
     .then_some(decorator)
 }
 

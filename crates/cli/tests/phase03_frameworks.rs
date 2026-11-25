@@ -244,6 +244,91 @@ app = FastAPI(on_startup=[startup])
 }
 
 #[test]
+fn fastapi_dependency_uses_the_effective_replacement_binding() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import Depends, FastAPI
+
+def replace(callback):
+    def replacement(): return 1
+    return replacement
+
+def original_helper(): return 1
+
+@replace
+def dependency(): return original_helper()
+
+app = FastAPI()
+@app.get('/')
+def endpoint(value=Depends(dependency)): return 1
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dependency", "web.original_helper"]
+    );
+    assert!(!findings(&report, "unused_parameters").contains(&"web.endpoint.value"));
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|row| {
+        row["qualified_name"] == "web.replace.replacement"
+            && row["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "fastapi_dependency" && edge["certainty"] == "certain")
+    }));
+}
+
+#[test]
+fn fastapi_wildcard_imports_require_known_external_provider_identity() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    for (provider, source) in [
+        (
+            "fastapi",
+            "from fastapi import *\n\
+             app = FastAPI()\n\
+             def dependency(): return 1\n\
+             @app.get('/')\n\
+             def endpoint(value=Depends(dependency)): return 1\n",
+        ),
+        (
+            "typing",
+            "from typing import *\n\
+             from fastapi import Depends, FastAPI\n\
+             app = FastAPI()\n\
+             def dependency(): return 1\n\
+             @app.get('/')\n\
+             def endpoint(value: Annotated[int, Depends(dependency)]): return 1\n",
+        ),
+    ] {
+        fs::write(project.path().join("web.py"), source).unwrap();
+        let report = scan(project.path());
+        assert!(findings(&report, "unused_imports").is_empty());
+        assert!(!findings(&report, "unused_functions").contains(&"web.dependency"));
+        assert!(!findings(&report, "unused_parameters").contains(&"web.endpoint.value"));
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+
+        let lookalike = project.path().join(format!("{provider}.py"));
+        fs::write(&lookalike, "def private(): return 1\n").unwrap();
+        let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| { error["kind"] == "unsupported_construct" && error["line"] == 1 })
+        );
+        fs::remove_file(lookalike).unwrap();
+    }
+}
+
+#[test]
 fn fastapi_literal_route_loops_retain_only_reached_registrations() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
