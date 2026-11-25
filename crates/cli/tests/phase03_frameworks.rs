@@ -130,6 +130,85 @@ fn gunicorn_config_retains_effective_declarations_with_possible_evidence() {
 }
 
 #[test]
+fn drf_declarations_keep_only_proven_framework_protocol_members() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let web = root.join("api.py");
+    fs::write(
+        &web,
+        "from rest_framework import serializers as fields\nfrom rest_framework.viewsets import ViewSet as Views\n\nclass Users(Views):\n    def list(self, request): return external_service(request)\n    def internal(self): return None\n\nclass Account(fields.Serializer):\n    contact = fields.EmailField()\n    internal_id = fields.IntegerField(read_only=True)\n    def validate_contact(self, value): return opaque_validation(value)\n    def validate_internal_id(self, value): return value\n    def validate_missing(self, value): return value\n\nclass ViewSet: pass\nclass Fake(ViewSet):\n    def list(self, request): return None\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["api.Fake"],
+        "{report}"
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "api.Account.validate_internal_id",
+            "api.Account.validate_missing",
+            "api.Users.internal"
+        ],
+        "{report}"
+    );
+    assert!(findings(&report, "unused_variables").is_empty(), "{report}");
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for name in [
+        "api.Users",
+        "api.Users.list",
+        "api.Account",
+        "api.Account.validate_contact",
+    ] {
+        assert!(
+            symbols.iter().any(|symbol| symbol["qualified_name"] == name
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|evidence| {
+                        evidence["kind"] == "drf_protocol_declaration"
+                            && evidence["certainty"] == "possible"
+                    })),
+            "{name}\n{report}"
+        );
+    }
+    let cache = tempfile::tempdir().unwrap();
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(
+        &web,
+        "from rest_framework.viewsets import ViewSet\nclass Users(ViewSet):\n    def list(self, request): return None\ndef replacement(self, request): return request\nUsers.list = replacement\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["api.Users.list"],
+        "{report}"
+    );
+
+    fs::write(
+        &web,
+        "from rest_framework import serializers\nfrom extension import options\nclass Account(serializers.Serializer):\n    email = serializers.EmailField(read_only=options.read_only)\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_constructor" }),
+        "{report}"
+    );
+}
+
+#[test]
 fn starlette_routes_require_a_supported_call_and_application() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

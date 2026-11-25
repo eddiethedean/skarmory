@@ -49,6 +49,8 @@ pub(super) struct DjangoConverter {
     pub(super) string_calls: Vec<ParameterCall>,
     wrappers: Vec<DjangoParameterRegistration>,
     noop_wrappers: Vec<(ScopeId, Location)>,
+    pub(super) declarations: BTreeMap<ScopeId, BTreeMap<[usize; 2], String>>,
+    pub(super) bounded_url_modules: BTreeSet<ScopeId>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -227,14 +229,17 @@ impl Graph<'_> {
                     false,
                 ),
                 FrameworkClassRole::DjangoModel
+                | FrameworkClassRole::DjangoManager
+                | FrameworkClassRole::DjangoQuerySet
                 | FrameworkClassRole::DjangoForm
                 | FrameworkClassRole::DjangoModelForm
                 | FrameworkClassRole::DjangoFormField
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
-                FrameworkClassRole::CeleryTask | FrameworkClassRole::MarshmallowSchema => {
-                    (None, &[][..], false)
-                }
+                FrameworkClassRole::CeleryTask
+                | FrameworkClassRole::MarshmallowSchema
+                | FrameworkClassRole::DrfSerializer
+                | FrameworkClassRole::DrfViewSet => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
                     &["__declare_first__", "__declare_last__"][..],
@@ -269,6 +274,12 @@ impl Graph<'_> {
             }
             if role == FrameworkClassRole::MarshmallowSchema {
                 self.collect_marshmallow_registration(class, class_scope);
+            }
+            if matches!(
+                role,
+                FrameworkClassRole::DrfSerializer | FrameworkClassRole::DrfViewSet
+            ) {
+                self.collect_drf_declaration(class, class_scope, role);
             }
             for name in lifecycle {
                 if let Some(target) = self.local(class_scope, name, END)
@@ -887,7 +898,7 @@ impl Graph<'_> {
             positional,
             keywords,
         } = call;
-        if let Some([Some(target), Some(_)]) =
+        if let Some([Some(target), Some(name)]) =
             registration_arguments(positional, keywords, ["converter", "type_name"])
         {
             let conditional = self.branch_depth != 0
@@ -896,7 +907,19 @@ impl Graph<'_> {
                     .is_some_and(|owner| self.conditional.contains_key(&owner));
             let value = self.identity_with_dormant_declarations(scope, target, before, 0);
             if let Some(class) = self.django_converter_class(&value) {
-                self.register_django_converter(scope, class, at, conditional);
+                let has_regex = self.register_django_converter(scope, class, at, conditional);
+                if has_regex
+                    && !conditional
+                    && scope == self.scopes[scope].file
+                    && let Some(name) = self.django_converter_name(scope, name, before, 0)
+                    && skarmory_python::simple_name(&name)
+                {
+                    self.django_converter
+                        .declarations
+                        .entry(scope)
+                        .or_default()
+                        .insert(position(at), name);
+                }
                 return;
             }
             if let Some(wrapper) =
@@ -1134,7 +1157,7 @@ impl Graph<'_> {
         class: SymbolId,
         at: Location,
         conditional: bool,
-    ) {
+    ) -> bool {
         let kind = "django_path_converter";
         let certainty = if conditional { "possible" } else { "certain" };
         self.edge(scope, class, kind, certainty);
@@ -1145,7 +1168,7 @@ impl Graph<'_> {
                 "unresolved_registration",
                 "Django converter class hierarchy could not be resolved",
             );
-            return;
+            return false;
         };
         match self.converter_member(&mro, "regex") {
             Some(ConverterMember::Source(target))
@@ -1158,7 +1181,7 @@ impl Graph<'_> {
             Some(ConverterMember::Builtin) => {}
             // Registration can store the instance without compiling a URL
             // pattern. A class without regex cannot supply its callbacks.
-            None => return,
+            None => return false,
             Some(ConverterMember::Source(_)) => {
                 self.scope_issue(
                     scope,
@@ -1166,7 +1189,7 @@ impl Graph<'_> {
                     "unresolved_registration",
                     "Django converter regex could not be resolved",
                 );
-                return;
+                return false;
             }
         }
         for name in ["to_python", "to_url"] {
@@ -1214,6 +1237,26 @@ impl Graph<'_> {
                 ),
             }
         }
+        !mro.iter().any(|entry| {
+            let ConverterBase::Source(owner) = *entry else {
+                return false;
+            };
+            let Binding::Definition(_, body) = self.symbols[owner].binding else {
+                return true;
+            };
+            [
+                "__new__",
+                "__init__",
+                "__getattribute__",
+                "__getattr__",
+                "regex",
+            ]
+            .iter()
+            .any(|name| {
+                (*name != "regex" && self.local(body, name, END).is_some())
+                    || self.class_member_write(owner, name, (scope, at)).is_some()
+            })
+        })
     }
 
     fn converter_member(&self, mro: &[ConverterBase], name: &str) -> Option<ConverterMember> {
@@ -2027,7 +2070,8 @@ impl Graph<'_> {
         let no_startup = self.django_startup_scopes.is_disjoint(&reach.scopes);
         if no_startup {
             for file in 0..self.files.len() {
-                if let Some(patterns) = self.local(file, "urlpatterns", END)
+                if !self.django_converter.bounded_url_modules.contains(&file)
+                    && let Some(patterns) = self.local(file, "urlpatterns", END)
                     && has_django_pattern(&self.binding_value(patterns, 0))
                 {
                     self.issue(
@@ -2217,6 +2261,9 @@ impl Graph<'_> {
                 {
                     continue;
                 }
+                if self.unresolved_django_command_lookup(class, (call.scope, call.at)) {
+                    continue;
+                }
                 if let Some(Value::Callable(invocation)) = self.class_member(class, &call.member, 0)
                     && !self.receiver_conflicts(invocation.bind_receiver(Receiver::Bound(class)))
                 {
@@ -2402,9 +2449,36 @@ impl Graph<'_> {
             ("execute", None),
             ("handle", None),
         ] {
+            if name == "__getattribute__"
+                && self
+                    .django_class_value(class, "__getattr__", module)
+                    .is_some()
+            {
+                self.django_registration_issue(
+                    object,
+                    at,
+                    "Django command fallback attribute lookup is unresolved",
+                );
+                break;
+            }
             let Some(value) = self.django_class_value(class, name, module) else {
                 continue;
             };
+            if let Value::Callable(invocation) = value
+                && let Some(write) =
+                    self.django_command_code_write(invocation.target, (module, END))
+            {
+                if !matches!(write, mutations::MemberWriteValue::Replacement(_)) {
+                    self.django_registration_issue(
+                        object,
+                        at,
+                        "Django command handle code depends on an unresolved write",
+                    );
+                }
+                // The bounded replacement is an inert return, so the
+                // original function's body is never entered here.
+                break;
+            }
             let unknown_dispatch = matches!(
                 name,
                 "__new__" | "__getattribute__" | "run_from_argv" | "create_parser" | "execute"
@@ -2427,6 +2501,15 @@ impl Graph<'_> {
                         .push((object, invocation.target, kind));
                 } else {
                     self.record_django_hook(launcher, object, class, invocation, kind);
+                }
+                if name == "handle" {
+                    for parameter in self.django_command_parameters(invocation.target) {
+                        self.scopes[launcher].routes.push((
+                            object,
+                            parameter,
+                            "django_command_parameter",
+                        ));
+                    }
                 }
                 let body = body_without_docstring(definition);
                 let stop = body
@@ -2484,6 +2567,135 @@ impl Graph<'_> {
                 }
                 break;
             }
+        }
+    }
+
+    pub(super) fn is_django_command_class(&mut self, class: SymbolId) -> bool {
+        self.phase03
+            && self.is_class(class)
+            && self.has_command_namespace(self.scopes[self.symbols[class].scope].file)
+            && self.framework_class_role(class, &mut BTreeSet::new(), 0)
+                == Some(FrameworkClassRole::DjangoCommand)
+    }
+
+    pub(super) fn django_default_constructor(
+        &mut self,
+        class: SymbolId,
+        call: CallArguments<'_>,
+        certainty: &'static str,
+    ) -> bool {
+        let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
+            return false;
+        };
+        let slots: &[&str] = match role {
+            FrameworkClassRole::DjangoCommand => {
+                &["stdout", "stderr", "style", "requires_system_checks"]
+            }
+            FrameworkClassRole::DjangoManager => &[
+                "_constructor_args",
+                "creation_counter",
+                "model",
+                "name",
+                "_db",
+                "_hints",
+            ],
+            FrameworkClassRole::DjangoQuerySet => &[
+                "model",
+                "_db",
+                "_hints",
+                "_query",
+                "_result_cache",
+                "_sticky_filter",
+                "_for_write",
+                "_prefetch_related_lookups",
+                "_prefetch_done",
+                "_known_related_objects",
+                "_iterable_class",
+                "_fields",
+                "_defer_next_filter",
+                "_deferred_filter",
+            ],
+            _ => return false,
+        };
+        if ["__new__", "__init__"]
+            .into_iter()
+            .any(|name| self.django_class_value(class, name, call.scope).is_some())
+        {
+            return false;
+        }
+        let default = call.positional.is_empty()
+            && call.keywords.is_empty()
+            && slots
+                .iter()
+                .copied()
+                .chain(["__getattribute__", "__getattr__", "__setattr__"])
+                .all(|name| self.django_class_value(class, name, call.scope).is_none());
+        if default {
+            if role != FrameworkClassRole::DjangoManager {
+                return true;
+            }
+            match self.django_class_value(class, "_set_creation_counter", call.scope) {
+                None => return true,
+                Some(Value::Callable(invocation))
+                    if self.bounded_framework_function(invocation.target)
+                        && matches!(self.symbols[invocation.target].binding,
+                            Binding::Definition(definition, _)
+                                if definition.required_positional_parameter_count <= 1
+                                    && (definition.has_positional_parameter || definition.has_variadic_positional_parameter)
+                                    && definition.required_keyword_only_parameters.is_empty()) =>
+                {
+                    self.invoke(
+                        call.scope,
+                        invocation.bind_receiver(Receiver::Bound(class)),
+                        "django_manager_initializer",
+                        certainty,
+                        call.at,
+                    );
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        self.scope_issue(call.scope, call.at, "unresolved_constructor", "Django initializer arguments or attribute dispatch are outside the bounded default constructor model");
+        true
+    }
+
+    pub(super) fn django_command_parameters(&self, target: SymbolId) -> Vec<SymbolId> {
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, scope) = symbol.binding else {
+            return Vec::new();
+        };
+        if symbol.name.text != "handle"
+            || !definition.has_positional_parameter
+            || definition.kind != DefinitionKind::Function
+        {
+            return Vec::new();
+        }
+        definition.parameters[1..]
+            .iter()
+            .map(|parameter| self.by_location[&(scope, parameter.at.line, parameter.at.column)])
+            .collect()
+    }
+
+    pub(super) fn unresolved_django_command_lookup(
+        &mut self,
+        class: SymbolId,
+        (scope, at): (ScopeId, Location),
+    ) -> bool {
+        if self.is_django_command_class(class)
+            && ["__getattribute__", "__getattr__"]
+                .into_iter()
+                .any(|name| self.django_class_value(class, name, scope).is_some())
+        {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_descriptor",
+                "Django command instance attribute lookup depends on a custom hook",
+            );
+            true
+        } else {
+            false
         }
     }
 

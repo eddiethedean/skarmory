@@ -8,6 +8,150 @@ pub(super) fn is_django_url_factory(value: &Value) -> bool {
 }
 
 impl Graph<'_> {
+    pub(super) fn django_converter_name(
+        &self,
+        file: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Option<String> {
+        if depth >= MAX_BINDING_CHAIN {
+            return None;
+        }
+        if let ExpressionKind::Name(name) = &expression.kind {
+            let binding = self.local(file, name, before)?;
+            if self.binding_depends_on_branch(binding, before) {
+                return None;
+            }
+            let Binding::Variable(Some(value), at) = self.symbols[binding].binding else {
+                return None;
+            };
+            return self.django_converter_name(file, value, at, depth + 1);
+        }
+        literal_converter_text(expression)
+    }
+
+    pub(super) fn standalone_django_converter_roots(&mut self, reach: &Reachability) -> Vec<Edge> {
+        if !self.terminal_proofs || !self.django_startup_scopes.is_disjoint(&reach.scopes) {
+            return Vec::new();
+        }
+        let files: Vec<_> = self.django_converter.declarations.keys().copied().collect();
+        let mut roots = Vec::new();
+        for file in files {
+            if let Some(callbacks) = self.standalone_converter_callbacks(file) {
+                self.django_converter.bounded_url_modules.insert(file);
+                roots.extend(callbacks.into_iter().map(|target| Edge {
+                    target,
+                    kind: "django_registration",
+                    certainty: "possible",
+                }));
+            }
+        }
+        roots
+    }
+
+    fn standalone_converter_callbacks(&mut self, file: ScopeId) -> Option<Vec<SymbolId>> {
+        if self.failed_terminal_modules.contains(&file)
+            || self.scopes[file].open_wildcard
+            || self
+                .scopes
+                .iter()
+                .any(|scope| scope.file != file && scope.imports.contains(&file))
+        {
+            return None;
+        }
+        let (table, prefix) = self.scopes[file].body.split_last()?;
+        let StatementKind::Assign {
+            names,
+            value:
+                Some(Expression {
+                    kind: ExpressionKind::Sequence { items, .. },
+                    ..
+                }),
+            annotation: None,
+        } = &table.kind
+        else {
+            return None;
+        };
+        if !matches!(names.as_slice(), [name] if name.text == "urlpatterns") || items.is_empty() {
+            return None;
+        }
+
+        let declarations = &self.django_converter.declarations[&file];
+        let mut names = BTreeSet::new();
+        for statement in prefix {
+            match &statement.kind {
+                StatementKind::Import(_) => {}
+                StatementKind::Define(definition) if plain_code_function(definition) => {}
+                StatementKind::Assign {
+                    names,
+                    value: Some(value),
+                    annotation: None,
+                } if matches!(names.as_slice(), [name] if !name.text.starts_with("__"))
+                    && literal_converter_text(value).is_some() => {}
+                StatementKind::Evaluate(expression)
+                    if matches!(expression.kind, ExpressionKind::Text(_)) => {}
+                StatementKind::Evaluate(expression) => {
+                    let name = declarations.get(&position(expression.at))?;
+                    if !names.insert(name.clone()) {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
+        items
+            .iter()
+            .map(|item| {
+                let ExpressionKind::Call {
+                    function,
+                    arguments,
+                    keywords,
+                } = &item.kind
+                else {
+                    return None;
+                };
+                let [
+                    Expression {
+                        kind: ExpressionKind::Text(route),
+                        ..
+                    },
+                    view,
+                ] = arguments.as_slice()
+                else {
+                    return None;
+                };
+                if !keywords.is_empty()
+                    || !matches!(view.kind, ExpressionKind::Name(_))
+                    || !matches!(self.probe_identity(file, function, table.at),
+                    Value::Provider(provider) if provider == "django.urls.path")
+                {
+                    return None;
+                }
+                let captures = bounded_converter_captures(route, &names)?;
+                let Value::Callable(invocation) = self.probe_identity(file, view, table.at) else {
+                    return None;
+                };
+                let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+                else {
+                    return None;
+                };
+                if invocation.verified
+                    || !matches!(invocation.receiver, Receiver::Ordinary)
+                    || invocation.implicit_descriptor_receiver
+                    || !plain_code_function(definition)
+                    || definition.parameters.len() != captures.len() + 1
+                    || !definition.parameters[1..]
+                        .iter()
+                        .all(|parameter| captures.contains(parameter.text.as_str()))
+                {
+                    return None;
+                }
+                Some(invocation.target)
+            })
+            .collect()
+    }
+
     pub(super) fn django_view_has_missing_option(
         &self,
         scope: ScopeId,
@@ -557,6 +701,41 @@ fn plain_code_function(definition: &Definition) -> bool {
         && definition.defaults.is_empty()
         && definition.annotations.is_empty()
         && definition.simple_positional_parameters
+}
+
+fn bounded_converter_captures<'a>(
+    mut route: &'a str,
+    names: &BTreeSet<String>,
+) -> Option<BTreeSet<&'a str>> {
+    let mut captures = BTreeSet::new();
+    while let Some((prefix, angle)) = route.split_once('<') {
+        let (capture, rest) = angle.split_once('>')?;
+        let (converter, parameter) = capture.split_once(':')?;
+        if prefix.contains('>')
+            || !names.contains(converter)
+            || !skarmory_python::simple_name(parameter)
+            || !captures.insert(parameter)
+        {
+            return None;
+        }
+        route = rest;
+    }
+    (!captures.is_empty() && !route.contains('>')).then_some(captures)
+}
+
+fn literal_converter_text(expression: &Expression) -> Option<String> {
+    match &expression.kind {
+        ExpressionKind::Text(text) => Some(text.clone()),
+        ExpressionKind::Addition(values) => {
+            let [left, right] = values.as_slice() else {
+                return None;
+            };
+            let mut text = literal_converter_text(left)?;
+            text.push_str(&literal_converter_text(right)?);
+            Some(text)
+        }
+        _ => None,
+    }
 }
 
 enum DjangoUrlEdit<'a> {

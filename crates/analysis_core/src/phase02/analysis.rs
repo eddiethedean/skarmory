@@ -25,9 +25,11 @@ mod celery_routes;
 mod comprehension;
 mod django_forms;
 mod django_globals;
+mod django_migrations;
 mod django_template_paths;
 mod django_templates;
 mod django_urls;
+mod drf;
 mod fastapi;
 mod field_dispatch;
 mod flask;
@@ -67,6 +69,7 @@ enum Value {
     Module(usize),
     CommandNamespace(ScopeId),
     CommandNamespaceGet(ScopeId),
+    FrameworkCode(SymbolId),
     Provider(String),
     Object(Object, ObjectKind),
     Method(Object, ObjectKind, String),
@@ -256,11 +259,15 @@ enum FrameworkClassRole {
     DjangoCommand,
     DjangoView,
     DjangoModel,
+    DjangoManager,
+    DjangoQuerySet,
     DjangoForm,
     DjangoModelForm,
     DjangoFormField,
     DjangoSignal,
     DjangoAdmin,
+    DrfSerializer,
+    DrfViewSet,
     CeleryTask,
     SqlAlchemyModel,
     SqlModel,
@@ -2607,6 +2614,32 @@ impl<'a> Graph<'a> {
                 Value::ReceiverMethod(parameter, name.to_owned())
             }
             Value::CommandNamespace(file) if name == "get" => Value::CommandNamespaceGet(file),
+            Value::FrameworkCode(target) if name == "co_name" => {
+                Value::Text(self.symbols[target].name.text.clone())
+            }
+            Value::Callable(invocation)
+                if name == "__code__"
+                    && !invocation.verified
+                    && self.has_command_namespace(self.scopes[access.0].file)
+                    && matches!(self.symbols[invocation.target].binding,
+                        Binding::Definition(definition, _)
+                            if definition.kind == DefinitionKind::Function
+                                && !definition.is_generator && definition.decorators.is_empty()) =>
+            {
+                match self.django_command_code_write(invocation.target, access) {
+                    Some(mutations::MemberWriteValue::Replacement(code)) => code,
+                    Some(_) => {
+                        self.scope_issue(
+                            access.0,
+                            access.1,
+                            "unresolved_attribute_write",
+                            "Django command code object may depend on an unresolved write",
+                        );
+                        Value::Unknown
+                    }
+                    None => Value::FrameworkCode(invocation.target),
+                }
+            }
             Value::Module(file) => self.module_member_at(
                 &self.files[file].module,
                 name,
@@ -2627,6 +2660,11 @@ impl<'a> Graph<'a> {
             Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
                 if self.is_class(class) =>
             {
+                if matches!(base, Value::Instance(_))
+                    && self.unresolved_django_command_lookup(class, access)
+                {
+                    return Value::Unknown;
+                }
                 let member = self
                     .class_member_at(class, name, depth, Some(access))
                     .unwrap_or(Value::Unknown);
@@ -2964,6 +3002,14 @@ impl<'a> Graph<'a> {
                         (Some(role), "assertEqual" | "assertNotEqual") if role.is_unittest() => {
                             Some(Value::UnittestComparison)
                         }
+                        (
+                            Some(
+                                FrameworkClassRole::DjangoCommand
+                                | FrameworkClassRole::DjangoManager
+                                | FrameworkClassRole::DjangoQuerySet,
+                            ),
+                            "__new__",
+                        ) => None,
                         (_, "__init_subclass__")
                         | (
                             Some(
@@ -4141,6 +4187,9 @@ impl<'a> Graph<'a> {
         certainty: &'static str,
         at: Location,
     ) {
+        if self.skip_changed_command_body(scope, invocation.target, at, kind) {
+            return;
+        }
         let atexit = is_atexit_edge(kind);
         let (kind, certainty) = match (invocation.verified, kind) {
             (true, "direct_call") => ("grep_dynamic_call", "possible"),
@@ -4180,6 +4229,32 @@ impl<'a> Graph<'a> {
                 deferred_atexit_receiver,
             });
         }
+    }
+
+    fn skip_changed_command_body(
+        &mut self,
+        scope: ScopeId,
+        target: SymbolId,
+        at: Location,
+        kind: &str,
+    ) -> bool {
+        if !self.django_command_has_code_write(target) {
+            return false;
+        }
+        if kind == "direct_call" {
+            match self.django_command_code_write(target, (scope, at)) {
+                Some(mutations::MemberWriteValue::Replacement(_)) => return true,
+                None => return false,
+                _ => {}
+            }
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_call",
+            "Django command code can change before this invocation",
+        );
+        true
     }
 
     fn receiver_conflicts(&self, invocation: Invocation) -> bool {
@@ -4247,6 +4322,9 @@ impl<'a> Graph<'a> {
                 };
                 for class in receivers {
                     if !self.resolved_receiver_calls.insert((index, class)) {
+                        continue;
+                    }
+                    if self.unresolved_django_command_lookup(class, (call.scope, call.at)) {
                         continue;
                     }
                     match self.class_member_at(class, &call.member, 0, Some((call.scope, call.at)))
@@ -5609,6 +5687,11 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
                         }
                     }
+                    Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
+                        if self.drf_field_writable(scope, before, arguments, keywords).is_none() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF serializer field arguments are outside the bounded model");
+                        }
+                    }
                     Value::Provider(name)
                         if self.phase03 && name == "pathlib.Path"
                             && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
@@ -5742,6 +5825,9 @@ impl<'a> Graph<'a> {
                 }
                 self.read_pydantic_computed_field(scope, &value, expr.at);
                 self.record_class_reference(scope, &value);
+                if let Value::FrameworkCode(code) = value {
+                    self.edge(scope, code, "code_reference", "certain");
+                }
             }
             ExpressionKind::Not(base) => self.walk(scope, base, before),
             ExpressionKind::Compare {
@@ -5922,6 +6008,9 @@ impl<'a> Graph<'a> {
             keywords,
         } = call;
         let id = invocation.target;
+        if self.skip_changed_command_body(scope, id, at, "direct_call") {
+            return;
+        }
         if self.is_generator(id) {
             self.edge(scope, id, "generator_creation", certainty);
             self.scope_issue(
@@ -5943,6 +6032,14 @@ impl<'a> Graph<'a> {
                 self.with_explicit_receiver(invocation, positional, keywords, |graph, value| {
                     graph.identity(scope, value, before, 0)
                 });
+            if !invocation.verified
+                && let Some(class) = invocation.receiver.supplied()
+                && self.is_django_command_class(class)
+            {
+                for parameter in self.django_command_parameters(invocation.target) {
+                    self.edge(scope, parameter, "django_command_parameter", "possible");
+                }
+            }
             self.invoke(scope, invocation, "direct_call", certainty, at);
         }
         if self.is_class(id) {
@@ -5951,7 +6048,9 @@ impl<'a> Graph<'a> {
             } else {
                 ("constructor", certainty)
             };
-            self.constructor(scope, id, kind, certainty, at);
+            if !self.phase03 || !self.django_default_constructor(id, call, certainty) {
+                self.constructor(scope, id, kind, certainty, at);
+            }
             if self.phase03 {
                 self.check_django_form_initializer(id, call);
             }
@@ -6522,7 +6621,9 @@ impl<'a> Graph<'a> {
                     if matches!(
                         definition.name.text.as_str(),
                         "__getattribute__" | "__getattr__"
-                    ) && self.scopes[scope].owner.is_some_and(|id| self.is_class(id))
+                    ) && let Some(owner) = self.scopes[scope].owner
+                        && self.is_class(owner)
+                        && !self.is_django_command_class(owner)
                     {
                         self.scope_issue(
                             scope,
@@ -6753,6 +6854,27 @@ impl<'a> Graph<'a> {
                             at,
                             "unsupported_construct",
                             "forwarded super initializer is outside the bounded Django form model",
+                        );
+                    }
+                }
+                StatementKind::WriteCeleryConfigEntry {
+                    mapping,
+                    key,
+                    value,
+                } => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, mapping, at);
+                    self.walk(scope, key, at);
+                    if !self.phase03
+                        || !self.record_celery_config_key(scope, at, mapping, key, value)
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "a computed configuration key requires a resolved Celery settings object",
                         );
                     }
                 }
@@ -7406,9 +7528,20 @@ impl<'a> Graph<'a> {
                         && decorated.bases.is_empty()
                         && decorated.table_keyword.is_none()
                         && body_without_docstring(decorated).iter().all(|item| {
-                            matches!(&item.kind, StatementKind::Define(method)
-                            if method.kind != DefinitionKind::Class && method.decorators.is_empty()
-                                && method.defaults.is_empty() && method.annotations.is_empty())
+                            match &item.kind {
+                                StatementKind::Define(method) => method.kind != DefinitionKind::Class
+                                    && method.decorators.is_empty()
+                                    && method.defaults.is_empty() && method.annotations.is_empty(),
+                                StatementKind::Assign {
+                                    names,
+                                    value: Some(value),
+                                    annotation: None,
+                                } => matches!(names.as_slice(), [name] if !name.text.starts_with("__"))
+                                    && matches!(value.kind, ExpressionKind::Text(_)
+                                        | ExpressionKind::Bool(_) | ExpressionKind::None
+                                        | ExpressionKind::Scalar(_)),
+                                _ => false,
+                            }
                         }) =>
                 {
                     // The new class cannot invoke a hook or change the module
@@ -7425,7 +7558,11 @@ impl<'a> Graph<'a> {
                 _ => {}
             }
         }
-        if decorated.kind == DefinitionKind::Class || self.scopes[symbol.scope].owner.is_some() {
+        if decorated.kind == DefinitionKind::Class
+            || self.scopes[symbol.scope]
+                .owner
+                .is_some_and(|owner| !self.is_class(owner))
+        {
             return None;
         }
         self.local_replacement_decorator(invocation)
@@ -7461,23 +7598,27 @@ impl<'a> Graph<'a> {
             return Some(Value::NullaryConstantFunction);
         }
         let replacement = returned_nested_function(definition)?;
-        // A literal return cannot capture the decorated callback or call its body.
-        if !matches!(
-            body_without_docstring(replacement),
-            [Statement {
-                kind: StatementKind::Return(
-                    None | Some(Expression {
-                        kind: ExpressionKind::None
-                            | ExpressionKind::Bool(_)
-                            | ExpressionKind::Text(_)
-                            | ExpressionKind::Scalar(_),
-                        ..
-                    })
-                ),
+        // Returning a literal or a parameter cannot capture the decorated
+        // callback or call its body.
+        let [
+            Statement {
+                kind: StatementKind::Return(value),
                 ..
-            }]
-        ) {
+            },
+        ] = body_without_docstring(replacement)
+        else {
             return None;
+        };
+        if let Some(value) = value {
+            match &value.kind {
+                ExpressionKind::None
+                | ExpressionKind::Bool(_)
+                | ExpressionKind::Text(_)
+                | ExpressionKind::Scalar(_) => {}
+                ExpressionKind::Name(name)
+                    if replacement.parameters.iter().any(|arg| arg.text == *name) => {}
+                _ => return None,
+            }
         }
         self.local(body, &replacement.name.text, END)
             .map(|replacement| Value::Callable(Invocation::ordinary(replacement)))
@@ -9019,6 +9160,7 @@ impl<'a> Graph<'a> {
                 if matches!(
                     edge.kind,
                     "type_reference"
+                        | "code_reference"
                         | "generator_creation"
                         | "flask_factory_failed_call"
                         | "flask_initializer_failed_call"
@@ -9031,6 +9173,8 @@ impl<'a> Graph<'a> {
                         | "marshmallow_hook_declaration"
                         | "celery_backend_default"
                         | "django_migration_callback_declaration"
+                        | drf::PROTOCOL_DECLARATION
+                        | drf::FIELD_DECLARATION
                 ) {
                     continue;
                 }
@@ -9328,6 +9472,7 @@ impl<'a> Graph<'a> {
         }
         if self.phase03 && converged {
             let mut protocols = self.django_settings_protocol_roots(&reach);
+            protocols.extend(self.standalone_django_converter_roots(&reach));
             if let Some(templates) = templates {
                 protocols.extend(self.django_template_roots(&reach, templates));
             }
@@ -9476,9 +9621,11 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_converter_regex"
                     | "django_migration_parameter"
+                    | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
+                    | drf::FIELD_DECLARATION
             ) {
                 self.read.insert(id);
             }
@@ -9815,6 +9962,14 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 ..
             } => {
                 expressions.push(receiver);
+                expressions.extend(value);
+            }
+            StatementKind::WriteCeleryConfigEntry {
+                mapping,
+                key,
+                value,
+            } => {
+                expressions.extend([mapping, key]);
                 expressions.extend(value);
             }
             StatementKind::If {
@@ -10481,6 +10636,12 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.db.models.Model" | "django.db.models.base.Model" => {
             Some(FrameworkClassRole::DjangoModel)
         }
+        "django.db.models.Manager" | "django.db.models.manager.Manager" => {
+            Some(FrameworkClassRole::DjangoManager)
+        }
+        "django.db.models.QuerySet" | "django.db.models.query.QuerySet" => {
+            Some(FrameworkClassRole::DjangoQuerySet)
+        }
         "django.forms.Form" | "django.forms.forms.Form" => Some(FrameworkClassRole::DjangoForm),
         "django.forms.ModelForm" | "django.forms.models.ModelForm" => {
             Some(FrameworkClassRole::DjangoModelForm)
@@ -10492,6 +10653,13 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
+        "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
+            Some(FrameworkClassRole::DrfSerializer)
+        }
+        "rest_framework.viewsets.ViewSet"
+        | "rest_framework.viewsets.GenericViewSet"
+        | "rest_framework.viewsets.ModelViewSet"
+        | "rest_framework.viewsets.ReadOnlyModelViewSet" => Some(FrameworkClassRole::DrfViewSet),
         "celery.Task" | "celery.app.task.Task" => Some(FrameworkClassRole::CeleryTask),
         "sqlalchemy.orm.DeclarativeBase"
         | "sqlalchemy.orm.decl_api.DeclarativeBase"
@@ -11311,6 +11479,51 @@ server.apply()
     }
 
     #[test]
+    fn celery_configuration_subscript_keys_follow_evaluation_order() {
+        let prefix = "from celery import Celery\napp = Celery('demo')\napp.conf.task_routes = ('routers.old',)\n";
+        for (tail, roots, complete) in [
+            ("app.conf[unset] = replacement\n", vec![], true),
+            (
+                "key = 'task_routes'\napp.conf[key] = ('routers.new',)\n",
+                vec!["routers.new"],
+                true,
+            ),
+            (
+                "from provider import route_key\napp.conf[route_key] = ('routers.new',)\n",
+                vec!["routers.old", "routers.new"],
+                false,
+            ),
+        ] {
+            let source = format!("{prefix}{tail}");
+            let report = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module(
+                        "routers.py",
+                        "routers",
+                        "def old(*args, **kwargs): pass\ndef new(*args, **kwargs): pass\n",
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                report.issues.is_empty(),
+                complete,
+                "{tail}: {:?}",
+                report.issues
+            );
+            let routed: Vec<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == celery_routes::ROUTER).then_some(row.full_name.as_str())
+                })
+                .collect();
+            assert_eq!(routed, roots, "{tail}");
+        }
+    }
+
+    #[test]
     fn celery_early_submission_resolves_module_names_before_later_rebinding() {
         let files = [module(
             "app.py",
@@ -11434,6 +11647,42 @@ class Migration(migrations.Migration):
                 .issues
                 .iter()
                 .any(|issue| issue.kind == "unresolved_registration")
+        );
+    }
+
+    #[test]
+    fn django_runpython_rejects_proven_inert_source_lookalikes_at_startup() {
+        for statements in [
+            "class RunPython: pass\noperation = RunPython(forwards)\n",
+            "from django.db import migrations\nclass Holder:\n    migrations = object()\n    operation = migrations.RunPython(forwards)\n",
+            "from django.db import migrations\nforwards = replacement\noperation = migrations.RunPython(forwards)\n",
+        ] {
+            let source = format!("def forwards(apps, editor): pass\n{statements}");
+            let report = analyze_phase03(&[module("migration.py", "migration", &source)], &[]);
+            assert!(
+                report.issues.is_empty(),
+                "{statements}: {:?}",
+                report.issues
+            );
+            assert_eq!(names(&report, Category::Parameter), ["apps", "editor"]);
+            assert!(
+                !report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_migration_parameter")
+            );
+        }
+
+        let source = "from django.db import migrations\n\
+                      from provider import operations as migrations\n\
+                      def forwards(apps, editor): pass\n\
+                      operation = migrations.RunPython(forwards)\n";
+        let report = analyze_phase03(&[module("migration.py", "migration", source)], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
         );
     }
 
@@ -13696,6 +13945,190 @@ class Replacement(BaseCommand):\n    def handle(self, *args, **options):\n      
     }
 
     #[test]
+    fn phase03_django_command_code_aliases_observe_ordered_replacement() {
+        let source = "from django.core.management.base import BaseCommand\n\
+def original(): return 1\n\
+class Command(BaseCommand):\n    def handle(self, *args, **options):\n        return original()\n\
+def replacement(self, *args, **options): return None\n\
+selected = Command.handle\n";
+        for (actions, dispatched, direct) in [
+            ("metadata = selected.__code__.co_name\n", true, true),
+            (
+                "Command.handle.__code__ = replacement.__code__\n",
+                false,
+                false,
+            ),
+            (
+                "selected.__code__ = replacement.__code__\nselected(None)\n",
+                false,
+                false,
+            ),
+            (
+                "selected(None)\nselected.__code__ = replacement.__code__\nselected(None)\n",
+                false,
+                true,
+            ),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    module(
+                        "demo/management/commands/audit.py",
+                        "demo.management.commands.audit",
+                        &format!("{source}{actions}"),
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{actions}: {:?}", result.issues);
+            assert_eq!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "django_command"
+                        && entry.full_name.ends_with(".Command.handle")),
+                dispatched,
+                "{actions}"
+            );
+            assert_eq!(
+                result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "direct_call"
+                        && entry.full_name.ends_with(".original")),
+                direct,
+                "{actions}"
+            );
+        }
+        let opaque = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                &format!("{source}selected.__code__ = unknown\nselected(None)\n"),
+            )],
+            &[],
+        );
+        assert!(
+            opaque
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+        assert!(
+            !opaque
+                .evidence
+                .iter()
+                .any(|entry| entry.kind == "direct_call" && entry.full_name.ends_with(".original"))
+        );
+    }
+
+    #[test]
+    fn phase03_django_command_lookup_hooks_require_a_reached_dispatch() {
+        for hook in ["__getattribute__", "__getattr__"] {
+            let module_name = "demo.management.commands.audit";
+            let source = format!(
+                "from django.core.management.base import BaseCommand\n\
+class Command(BaseCommand):\n    def {hook}(self, name): return unknown()\n    def handle(self, *args, **options): return 1\n"
+            );
+            let command = || module("demo/management/commands/audit.py", module_name, &source);
+            let dormant = analyze_phase03(&[command()], &[]);
+            assert!(dormant.issues.is_empty(), "{hook}: {:?}", dormant.issues);
+            let active = analyze_phase03(
+                &[
+                    module("settings.py", "settings", "INSTALLED_APPS = ['demo']\n"),
+                    module("demo/__init__.py", "demo", ""),
+                    module(
+                        "manage.py",
+                        "manage",
+                        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+                    ),
+                    command(),
+                ],
+                &[],
+            );
+            assert!(
+                active
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration"),
+                "{hook}: {:?}",
+                active.issues
+            );
+            assert!(
+                !active
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "django_command"
+                        && entry.full_name.ends_with(".Command.handle"))
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_orm_default_construction_only_reaches_actual_initializer_hooks() {
+        let result = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                "from django.db.models import Manager, QuerySet\n\
+class WorkManager(Manager):\n    def get_queryset(self): return None\n    def _set_creation_counter(self): return None\n\
+class WorkSet(QuerySet):\n    def delete(self): return None\n\
+WorkManager()\nWorkSet()\n",
+            )],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.kind == "django_manager_initializer"
+                && entry.full_name == "app.WorkManager._set_creation_counter"
+        }));
+        assert_eq!(
+            names(&result, Category::Function),
+            ["delete", "get_queryset"]
+        );
+    }
+
+    #[test]
+    fn phase03_django_command_parameter_role_requires_a_genuine_receiver() {
+        for (base, retained) in [
+            (
+                "from django.core.management.base import BaseCommand\n",
+                true,
+            ),
+            ("class BaseCommand: pass\n", false),
+        ] {
+            let source = format!(
+                "{base}class Worker(BaseCommand):\n    def handle(self, unused): return 1\nWorker().handle(2)\n"
+            );
+            let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+            assert!(result.issues.is_empty(), "{base}: {:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|entry| {
+                    entry.kind == "django_command_parameter"
+                        && entry.full_name == "app.Worker.handle.unused"
+                }),
+                retained
+            );
+            assert_eq!(
+                names(&result, Category::Parameter).contains(&"unused"),
+                !retained
+            );
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|entry| entry.kind == "django_command")
+            );
+        }
+    }
+
+    #[test]
     fn phase03_django_form_table_edits_follow_instance_construction() {
         let form = "from django import forms\n\
 class Contact(forms.Form):\n    def clean_phone(self):\n        return 'ok'\n";
@@ -13897,6 +14330,123 @@ class Command:
                 .iter()
                 .any(|issue| issue.kind == "unresolved_registration")
         );
+    }
+
+    #[test]
+    fn django_standalone_converter_routes_keep_bounded_possible_callbacks() {
+        let source = "from django.http import HttpResponse\n\
+                      from django.urls import path, register_converter\n\
+                      from converters import Slug\n\
+                      name = 'cu' + 'stom'\n\
+                      register_converter(Slug, type_name=name)\n\
+                      def view(request, value): return HttpResponse(value)\n\
+                      urlpatterns = [path('<custom:value>/', view)]\n";
+        let build = |urls: &str| {
+            vec![
+                module("urls.py", "urls", urls),
+                module(
+                    "converters.py",
+                    "converters",
+                    "class Slug:\n    regex = '[a-z]+'\n    def to_python(self, value): return value\n\
+                     \x20   def to_url(self, value): return value\n",
+                ),
+            ]
+        };
+        let report = analyze_phase03(&build(source), &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(report.evidence.iter().any(|edge| {
+            edge.full_name == "urls.view"
+                && edge.kind == "django_registration"
+                && edge.certainty == "possible"
+        }));
+        assert!(!report.evidence.iter().any(|edge| {
+            edge.full_name == "urls.view"
+                && edge.kind == "django_registration"
+                && edge.certainty == "certain"
+        }));
+
+        for unproved in [
+            source.replace("<custom:value>", "<unknown:value>"),
+            format!("{source}from plugin import mutate\nmutate(urlpatterns)\n"),
+        ] {
+            let report = analyze_phase03(&build(&unproved), &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registration")
+            );
+        }
+
+        let mut files = build(source);
+        files.extend([
+            module("settings.py", "settings", "ROOT_URLCONF = 'other'\nINSTALLED_APPS = []\n"),
+            module("other.py", "other", "urlpatterns = []\n"),
+            module(
+                "manage.py",
+                "manage",
+                "import os\nfrom django.core.management import execute_from_command_line\n\
+                 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+            ),
+        ]);
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            !report.evidence.iter().any(|edge| {
+                edge.full_name == "urls.view" && edge.kind == "django_registration"
+            })
+        );
+    }
+
+    #[test]
+    fn django_converter_uses_effective_class_method_and_provider_bindings() {
+        let converter = "class Converter:\n    regex = '[a-z]+'\n\
+                         \x20   def to_python(self, value): return value\n\
+                         \x20   def to_url(self, value): return value\n";
+        let urls = "from django.urls import register_converter\n\
+                    from converters import Converter\nregister_converter(Converter, 'custom')\n";
+        let class = format!(
+            "class Replacement:\n    regex = '.*'\n    def to_python(self, value): return value\n\
+             def redirect(cls): return Replacement\n@redirect\n{converter}"
+        );
+        let method = format!(
+            "def redirect(callback):\n    def replacement(self, value): return value\n\
+             \x20   return replacement\n{}",
+            converter.replace("    def to_python", "    @redirect\n    def to_python")
+        );
+        let shadowed = "import django.urls\nfrom converters import Converter\n\
+            class Registry:\n    def register_converter(self, cls, name): return None\n\
+            django.urls = Registry()\ndjango.urls.register_converter(Converter, 'custom')\n";
+        for (source, urls, replacement) in [
+            (
+                class.as_str(),
+                urls,
+                Some("converters.Replacement.to_python"),
+            ),
+            (
+                method.as_str(),
+                urls,
+                Some("converters.redirect.replacement"),
+            ),
+            (converter, shadowed, None),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("converters.py", "converters", source),
+                    module("urls.py", "urls", urls),
+                ],
+                &[],
+            );
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(!report.evidence.iter().any(|edge| {
+                edge.kind == "django_path_converter"
+                    && edge.full_name == "converters.Converter.to_python"
+            }));
+            if let Some(replacement) = replacement {
+                assert!(report.evidence.iter().any(|edge| {
+                    edge.kind == "django_path_converter" && edge.full_name == replacement
+                }));
+            }
+        }
     }
 
     #[test]

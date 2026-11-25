@@ -316,6 +316,10 @@ without exporting `urlpatterns` contributes no callbacks when the namespace is
 closed. A source-owned function whose code is replaced by a compatible no-op
 contributes no original body when its only external consumer is the closed URL
 table.
+Closed literal URL tables can form a finite set of possible callbacks when their
+named converters are registered by the same initializer. The proof checks the
+route captures and callback signature. Unknown converter names, table escapes,
+and unresolved registrations retain coverage diagnostics.
 
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
@@ -329,15 +333,24 @@ The selected command follows its effective lifecycle after module initialization
 Ordered writes through the command module's own globals dictionary or module
 object can replace the export before Django reads it. Later ordinary assignments
 can replace it again.
+Loading a command honors an ordered replacement of its resolved `handle` code
+with a signature-compatible inert body. Captured aliases observe the same
+replacement. Reading code metadata does not execute the method.
 Proven construction or argument setup failures leave later stages dormant.
 Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.
+An explicit call on a resolved `BaseCommand` instance can identify `handle`
+parameters as part of its callback contract. Bounded zero-argument Manager
+and QuerySet construction follows actual initializer hooks. ORM operations
+need separate call or activation evidence.
 [Django management implementation](https://github.com/django/django/tree/stable/5.2.x/django/core/management)
 
 Django `RunPython` operations preserve possible declaration use of resolved
 forward and reverse callbacks. Parameter evidence covers the two positional
 arguments Django supplies. Constructing the operation does not execute the
-callback. [Django migration operations](https://docs.djangoproject.com/en/5.2/ref/migration-operations/#runpython)
+callback. The analysis stops before registration when a closed initializer
+fails while replacing the callback or evaluating a source-owned, invalid
+consumer. [Django migration operations](https://docs.djangoproject.com/en/5.2/ref/migration-operations/#runpython)
 
 The analyzer resolves local classes and functions named by effective authentication,
 storage, logging, and Django template settings. Bounded backend methods and
@@ -425,8 +438,9 @@ configuration tracks the effective provider per app and honors the first
 reached backend read. Bounded task routing follows per-app `task_routes`
 settings from constructors and updates. Callable entries and resolved import
 paths retain possible-use evidence and the supported router argument slots.
-Literal routing map keys are task selectors. Opaque changes can leave routing
-coverage incomplete.
+Literal routing map keys are task selectors. A configuration subscript write
+uses the key resolved at that statement. An opaque key leaves both the earlier
+and proposed settings possible and coverage incomplete.
 [Celery task routing](https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-routes)
 
 The profile models SQLAlchemy listeners

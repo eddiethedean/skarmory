@@ -130,6 +130,11 @@ pub enum StatementKind {
         module: String,
         value: Option<Expression>,
     },
+    WriteCeleryConfigEntry {
+        mapping: Expression,
+        key: Expression,
+        value: Option<Expression>,
+    },
     ForwardSuperInit {
         super_name: Expression,
         positional: Expression,
@@ -597,6 +602,14 @@ impl Lowering<'_> {
                     });
                 }
                 let Expr::StringLiteral(module) = node.slice.as_ref() else {
+                    if matches!(node.value.as_ref(), Expr::Attribute(member) if member.attr.as_str() == "conf")
+                    {
+                        return Ok(StatementKind::WriteCeleryConfigEntry {
+                            mapping: self.expression(&node.value, depth)?,
+                            key: self.expression(&node.slice, depth)?,
+                            value,
+                        });
+                    }
                     return Err(self.0.unsupported(target, "mutation key must be literal"));
                 };
                 Ok(StatementKind::WriteModuleEntry {
