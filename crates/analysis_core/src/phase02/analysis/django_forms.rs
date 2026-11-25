@@ -205,6 +205,9 @@ impl Graph<'_> {
                 )
                 .is_none()
             || self.class_member(class, "__init__", 0).is_some()
+                && self
+                    .django_dynamic_form_initializer(class, (call.scope, call.before))
+                    .is_none()
         {
             return;
         }
@@ -631,6 +634,130 @@ impl Graph<'_> {
             })
     }
 
+    pub(super) fn modeled_django_form_super_init(&mut self, scope: ScopeId) -> bool {
+        self.django_form_initializer_owner(scope)
+            .is_some_and(|class| {
+                self.django_dynamic_form_initializer(class, (scope, END))
+                    .is_some()
+            })
+    }
+
+    pub(super) fn modeled_django_instance_field_write(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        matches!(&statement.kind, StatementKind::WriteModuleEntry {
+            mapping: Expression { kind: ExpressionKind::Member(_, name), .. },
+            value: Some(_), ..
+        } if name == "fields")
+            && self.modeled_django_form_super_init(scope)
+    }
+
+    fn django_form_initializer_owner(&self, scope: ScopeId) -> Option<SymbolId> {
+        let target = self.scopes[scope].owner?;
+        let symbol = &self.symbols[target];
+        let owner = self.scopes[symbol.scope].owner?;
+        (symbol.name.text == "__init__"
+            && self.is_class(owner)
+            && self.local(symbol.scope, "__init__", END) == Some(target))
+        .then_some(owner)
+    }
+
+    fn django_dynamic_form_initializer(
+        &mut self,
+        class: SymbolId,
+        access: (ScopeId, Location),
+    ) -> Option<BTreeSet<String>> {
+        let lineage = self.django_table_lineage(
+            class,
+            &[
+                FrameworkClassRole::DjangoForm,
+                FrameworkClassRole::DjangoModelForm,
+            ],
+        )?;
+        for &owner in &lineage.mros[&class] {
+            let body = self.django_class_body(owner);
+            if [
+                "__new__",
+                "__setattr__",
+                "__getattribute__",
+                "__getattr__",
+                "fields",
+            ]
+            .iter()
+            .any(|name| {
+                self.local(body, name, END).is_some()
+                    || self.class_member_write(owner, name, access).is_some()
+            }) || self.class_member_write(owner, "__init__", access).is_some()
+                || owner != class && self.local(body, "__init__", END).is_some()
+            {
+                return None;
+            }
+        }
+        let binding = self.local(self.django_class_body(class), "__init__", END)?;
+        if self.binding_depends_on_branch(binding, END) {
+            return None;
+        }
+        let Binding::Definition(definition, scope) = self.symbols[binding].binding else {
+            return None;
+        };
+        let [receiver, args, kwargs] = definition.parameters.as_slice() else {
+            return None;
+        };
+        if definition.kind != DefinitionKind::Function
+            || definition.is_generator
+            || !definition.decorators.is_empty()
+            || !definition.defaults.is_empty()
+            || definition.positional_parameter_count != 1
+            || !definition.has_variadic_positional_parameter
+            || !definition.has_variadic_keyword_parameter
+        {
+            return None;
+        }
+        let (forward, writes) = body_without_docstring(definition).split_first()?;
+        let StatementKind::ForwardSuperInit {
+            super_name,
+            positional,
+            keywords,
+        } = &forward.kind
+        else {
+            return None;
+        };
+        if !matches!(&super_name.kind, ExpressionKind::Name(name) if name == "super")
+            || !matches!(
+                self.lexical_binding(scope, "super", forward.at, true),
+                LexicalBinding::Missing
+            )
+            || !matches!(&positional.kind, ExpressionKind::Name(name) if name == &args.text)
+            || !matches!(&keywords.kind, ExpressionKind::Name(name) if name == &kwargs.text)
+        {
+            return None;
+        }
+        let mut fields = BTreeSet::new();
+        for statement in writes {
+            let StatementKind::WriteModuleEntry {
+                mapping,
+                module,
+                value: Some(value),
+            } = &statement.kind
+            else {
+                return None;
+            };
+            if !matches!(&mapping.kind, ExpressionKind::Member(base, name)
+                if name == "fields" && matches!(&base.kind, ExpressionKind::Name(name) if name == &receiver.text))
+                || !matches!(
+                    self.probe_identity(scope, value, statement.at),
+                    Value::DjangoField(Field::Form)
+                )
+            {
+                return None;
+            }
+            fields.insert(module.clone());
+        }
+        Some(fields)
+    }
+
     fn django_form_construction(
         &mut self,
         class: SymbolId,
@@ -678,8 +805,9 @@ impl Graph<'_> {
         )?;
         let access = (call.scope, call.before);
         let mro = &lineage.mros[&class];
-        if mro.iter().any(|&class| {
-            let body = self.django_class_body(class);
+        let dynamic_fields = self.django_dynamic_form_initializer(class, access);
+        if mro.iter().any(|&owner| {
+            let body = self.django_class_body(owner);
             [
                 "__init__",
                 "__new__",
@@ -693,8 +821,9 @@ impl Graph<'_> {
             ]
             .iter()
             .any(|name| {
-                self.local(body, name, END).is_some()
-                    || self.class_member_write(class, name, access).is_some()
+                !(*name == "__init__" && owner == class && dynamic_fields.is_some())
+                    && (self.local(body, name, END).is_some()
+                        || self.class_member_write(owner, name, access).is_some())
             })
         }) {
             return None;
@@ -719,6 +848,7 @@ impl Graph<'_> {
             let construction = self.django_form_construction(class, receiver, access, 0)?;
             fields.extend(self.django_form_table_fields_at(class, construction)?);
         }
+        fields.extend(dynamic_fields.into_iter().flatten());
         let hooks = std::iter::once("clean".to_owned())
             .chain(fields.into_iter().map(|field| format!("clean_{field}")));
         for name in hooks {
