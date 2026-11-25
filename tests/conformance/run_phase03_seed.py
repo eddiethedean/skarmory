@@ -150,13 +150,14 @@ def port_cases(args):
 class AssertionTrace:
     """Record source lines only as they finish without raising an exception."""
 
-    def __init__(self, source):
-        self.source = str(source.resolve())
+    def __init__(self, root, sources):
+        self.sources = {str((root / source).resolve()): source for source in sources}
         self.pending = {}
         self.completed = set()
 
     def __call__(self, frame, event, _arg):
-        if frame.f_code.co_filename != self.source:
+        source = self.sources.get(frame.f_code.co_filename)
+        if source is None:
             return None
         if event == "exception":
             self.pending.pop(frame, None)
@@ -164,8 +165,31 @@ class AssertionTrace:
             if frame in self.pending:
                 self.completed.add(self.pending.pop(frame))
             if event == "line":
-                self.pending[frame] = frame.f_lineno
+                self.pending[frame] = f"{source}:{frame.f_lineno}"
         return self
+
+
+def case_assertion_sources(upstream, cases):
+    sources_by_case = {}
+    assertions_by_source = {}
+    for key, case in cases.items():
+        sources = {case["source"]}
+        for assertion in case["assertions"]:
+            source, _, _ = assertion.rpartition(":")
+            if source not in assertions_by_source:
+                path = (upstream / source).resolve()
+                if not source or not path.is_relative_to(upstream):
+                    raise ValueError(f"{key}: invalid assertion source {source!r}")
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                assertions_by_source[source] = {
+                    f"{source}:{node.lineno}"
+                    for node in ast.walk(tree) if isinstance(node, ast.Assert)
+                }
+            if assertion not in assertions_by_source[source]:
+                raise ValueError(f"{key}: inventory points outside original assertions")
+            sources.add(source)
+        sources_by_case[key] = sources
+    return sources_by_case
 
 
 def benchmark_assertions(summary, assertions):
@@ -334,14 +358,7 @@ def pytest_worker(args):
 
     if FAST_AVAILABLE:
         raise RuntimeError("reference case requires the Python backend")
-    for source in {case["source"] for case in cases.values()}:
-        tree = ast.parse((args.upstream / source).read_text(encoding="utf-8"))
-        source_assertions = {
-            f"{source}:{node.lineno}" for node in ast.walk(tree) if isinstance(node, ast.Assert)
-        }
-        for case in cases.values():
-            if case["source"] == source and not set(case["assertions"]) <= source_assertions:
-                raise ValueError(f"{case['id']}: inventory points outside original assertions")
+    assertion_sources = case_assertion_sources(args.upstream, cases)
 
     class Capture:
         def __init__(self):
@@ -361,7 +378,7 @@ def pytest_worker(args):
         def pytest_runtest_call(self, item):
             key = item.nodeid
             case = cases[key]
-            trace = AssertionTrace(args.upstream / case["source"])
+            trace = AssertionTrace(args.upstream, assertion_sources[key])
             old_trace = sys.gettrace()
 
             def analyze(path, **options):
@@ -452,7 +469,7 @@ def pytest_worker(args):
                     sys.settrace(old_trace)
                     if cli is not None and cli.proved:
                         self.scans.add(key)
-                    self.lines[key] = {f"{case['source']}:{line}" for line in trace.completed}
+                    self.lines[key] = trace.completed
 
         def pytest_runtest_makereport(self, item, call):
             if (
@@ -463,8 +480,10 @@ def pytest_worker(args):
             ):
                 case = cases[item.nodeid]
                 failure = call.excinfo.traceback[-1]
-                if failure.path.resolve() == (args.upstream / case["source"]).resolve():
-                    assertion = f"{case['source']}:{failure.lineno + 1}"
+                path = failure.path.resolve()
+                if path.is_relative_to(args.upstream):
+                    source = path.relative_to(args.upstream).as_posix()
+                    assertion = f"{source}:{failure.lineno + 1}"
                     if assertion in case["assertions"]:
                         self.failed_assertions[item.nodeid] = assertion
 
@@ -671,7 +690,8 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--mode", choices=("reference", "candidate"), help=argparse.SUPPRESS)
     args = parser.parse_args()
-    for name in ("upstream", "inventory", "sdk_python", "output", "artifact"):
+    args.upstream = args.upstream.resolve()
+    for name in ("inventory", "sdk_python", "output", "artifact"):
         path = getattr(args, name)
         if path is not None:
             # Preserve the venv interpreter symlink and its sys.prefix.
