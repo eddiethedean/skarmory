@@ -304,6 +304,7 @@ pub enum ExpressionKind {
     IdentityLambda,
     IdentityDecoratorLambda,
     DeferredLambda(Box<Expression>),
+    DeferredBoolLambda,
     EmptyListComprehension,
     Sequence {
         items: Vec<Expression>,
@@ -1366,6 +1367,12 @@ impl Lowering<'_> {
             }
             Expr::Lambda(node) if node.parameters.as_ref().is_none_or(|parameters| parameters.is_empty()) => {
                 ExpressionKind::DeferredLambda(Box::new(lower(&node.body)?))
+            }
+            Expr::Lambda(node)
+                if lambda_parameter(node).is_some()
+                    && matches!(node.body.as_ref(), Expr::BooleanLiteral(_)) =>
+            {
+                ExpressionKind::DeferredBoolLambda
             }
             Expr::NoneLiteral(_) => ExpressionKind::None,
             Expr::ListComp(node)

@@ -4168,7 +4168,9 @@ impl<'a> Graph<'a> {
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
-            ExpressionKind::DeferredLambda(_) => Value::DeferredLambda,
+            ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda => {
+                Value::DeferredLambda
+            }
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Divide(operands) if self.phase03 => {
                 let [left, right] = operands.as_slice() else {
@@ -5195,7 +5197,10 @@ impl<'a> Graph<'a> {
                             Value::ComprehensionResult
                         };
                         self.report_unmodeled_deferred_value(scope, expr.at, &value);
-                    } else if matches!(expr.kind, ExpressionKind::DeferredLambda(_)) {
+                    } else if matches!(
+                        expr.kind,
+                        ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda
+                    ) {
                         self.report_unmodeled_deferred_value(
                             scope,
                             expr.at,
@@ -6288,6 +6293,7 @@ impl<'a> Graph<'a> {
             | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda
             | ExpressionKind::DeferredLambda(_)
+            | ExpressionKind::DeferredBoolLambda
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -10668,6 +10674,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
+            | ExpressionKind::DeferredBoolLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}
@@ -11411,6 +11418,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn django_settings_extracts_a_deferred_literal_callback() {
+        let source = concat!(
+            "DEBUG_TOOLBAR_CONFIG = {'SHOW_TOOLBAR_CALLBACK': lambda request: True}\n",
+            "def optional_helper(): return 1\n",
+        );
+        let report = analyze_phase03(&[module("settings.py", "settings", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(names(&report, Category::Function).contains(&"optional_helper"));
+
+        let called = concat!(
+            "def make_request(): return None\n",
+            "(lambda request: True)(make_request())\n",
+        );
+        let report = analyze_phase03(&[module("consumer.py", "consumer", called)], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_lambda_execution" && issue.line == Some(2)),
+            "{:?}",
+            report.issues
+        );
     }
 
     #[test]
