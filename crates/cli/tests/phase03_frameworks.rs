@@ -6051,6 +6051,112 @@ Pair('example', 2)
 }
 
 #[test]
+fn direct_class_parameters_open_only_their_proven_static_calls() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let wrapper = root.join("wrapper.py");
+    let caller = root.join("app.py");
+    let wrapper_code = "def install(converter, label):\n    _ = label\n    _ = converter.regex\n    converter.convert('sample')\n";
+    let caller_code = r#"from wrapper import install
+
+def dependency(value):
+    return value
+
+class Active:
+    regex = '[a-z]+'
+
+    @staticmethod
+    def convert(value):
+        return dependency(value)
+
+class Inactive:
+    regex = '[a-z]+'
+
+    @staticmethod
+    def convert(value):
+        return value
+
+def dormant():
+    install(Inactive, 'retired')
+
+install(Active, 'current')
+"#;
+    fs::write(&wrapper, wrapper_code).unwrap();
+    fs::write(&caller, caller_code).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        unreachable_functions(&report),
+        ["app.Inactive.convert", "app.dormant"]
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let expect_unresolved_wrapper = |report: &Value| {
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unresolved_call" && issue["path"] == "wrapper.py"
+                }),
+            "{report}"
+        );
+    };
+    fs::write(
+        &caller,
+        format!("{caller_code}\nfrom external import opaque\ninstall(opaque, 'unknown')\n"),
+    )
+    .unwrap();
+    expect_unresolved_wrapper(&scan_with_exit(root, None, Some(cache.path()), 2));
+
+    fs::write(
+        &caller,
+        caller_code.replace("install(Active,", "Active.convert = print\ninstall(Active,"),
+    )
+    .unwrap();
+    let patched = scan_with_exit(root, None, Some(cache.path()), 2);
+    expect_unresolved_wrapper(&patched);
+    assert!(
+        !patched["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.Active.convert"
+                    && symbol["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "direct_call")
+            }),
+        "{patched}"
+    );
+
+    fs::write(&caller, caller_code.replace("install(Active,", "def patch(target):\n    setattr(target, 'convert', print)\n\npatch(Active)\ninstall(Active,")).unwrap();
+    expect_unresolved_wrapper(&scan_with_exit(root, None, Some(cache.path()), 2));
+
+    fs::write(&caller, caller_code).unwrap();
+    for changed in [
+        wrapper_code.replace(
+            "    converter.convert('sample')",
+            "    result = converter.convert('sample')\n    result()",
+        ),
+        wrapper_code.replace(
+            "    converter.convert('sample')",
+            "    setattr(converter, 'convert', print)\n    converter.convert('sample')",
+        ),
+    ] {
+        fs::write(&wrapper, changed).unwrap();
+        expect_unresolved_wrapper(&scan_with_exit(root, None, Some(cache.path()), 2));
+    }
+}
+
+#[test]
 fn django_converter_wrappers_resolve_reached_arguments_only() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

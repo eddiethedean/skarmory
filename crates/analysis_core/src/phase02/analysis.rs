@@ -25,6 +25,7 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 mod aiohttp;
 mod celery;
 mod celery_routes;
+mod class_parameter_calls;
 mod comprehension;
 mod django_forms;
 mod django_globals;
@@ -627,6 +628,8 @@ pub(super) fn analyze_with_verification(
         direct_arguments: BTreeMap::new(),
         executor_arguments: BTreeMap::new(),
         parameter_calls: Vec::new(),
+        static_parameter_calls: Vec::new(),
+        class_argument_consumers: BTreeMap::new(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
         has_hash_hooks: false,
@@ -834,6 +837,8 @@ struct Graph<'a> {
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     executor_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     parameter_calls: Vec<ParameterCall>,
+    static_parameter_calls: Vec<class_parameter_calls::StaticParameterCall>,
+    class_argument_consumers: BTreeMap<SymbolId, BTreeSet<(ScopeId, SymbolId)>>,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
     has_hash_hooks: bool,
@@ -5909,6 +5914,11 @@ impl<'a> Graph<'a> {
                         && arguments.len() == 1 && keywords.is_empty()
                         && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
+                        if self.phase03 && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
+                            && let Some(receiver) = arguments.first()
+                        {
+                            self.record_unmodeled_class_write(scope, receiver, before);
+                        }
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
                             && let Some((&read, _)) = row.namespace_reads.last_key_value()
@@ -5991,6 +6001,16 @@ impl<'a> Graph<'a> {
                         if self.phase03 && arguments.is_empty() && keywords.is_empty()
                             && self.defer_log_record_message(scope, function, before, expr.at)
                         {
+                            return;
+                        }
+                        if self.phase03 && self.defer_static_parameter_call(function, expr, CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        }) {
+                            self.scope_issue(scope, expr.at, "unresolved_call", "call target is outside the bounded model");
                             return;
                         }
                         let parameter = self.parameter_binding(scope, function, before);
@@ -6280,6 +6300,9 @@ impl<'a> Graph<'a> {
             .chain(keywords.iter().map(|(_, value)| value))
         {
             let value = self.identity(scope, argument, before, 0);
+            if self.phase03 {
+                self.record_class_argument_consumer(scope, id, &value);
+            }
             self.expose(scope, value, "passed_callable", argument.at);
         }
     }
@@ -7096,6 +7119,11 @@ impl<'a> Graph<'a> {
                         && !form_field_write
                         && !self.modeled_framework_write(scope, at)
                     {
+                        if self.phase03
+                            && matches!(&statement.kind, StatementKind::WriteAttribute { .. })
+                        {
+                            self.record_unmodeled_class_write(scope, receiver, at);
+                        }
                         self.scope_issue(
                             scope,
                             at,
@@ -9638,6 +9666,7 @@ impl<'a> Graph<'a> {
                 self.activate_django_autoreload_wrappers(reach, &mut pending, possible);
                 self.activate_fastapi(reach, &mut pending);
                 self.activate_flask_parameter_hooks(reach, &mut pending);
+                self.activate_static_parameter_calls(reach, &mut pending);
                 self.resolve_deferred_receiver_calls(reach, &mut pending);
                 self.resolve_django_reloader_parameter_receivers(reach, &mut pending, possible);
             }
@@ -9910,6 +9939,7 @@ impl<'a> Graph<'a> {
                     reach.active_objects.contains(&object).then_some(issue)
                 }),
         );
+        self.remove_resolved_static_parameter_diagnostics(&reach);
         let Reachability {
             scopes: reachable_scopes,
             symbols: reachable_symbols,
@@ -10270,6 +10300,7 @@ struct Reachability {
     deferred_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     resolved_django_reloader_parameters: BTreeSet<usize>,
+    resolved_static_parameter_calls: BTreeSet<usize>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
