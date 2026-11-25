@@ -49,11 +49,16 @@ enum ConverterDescriptor {
     Class,
 }
 
-enum ConverterRegex {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ConverterBase {
+    Source(SymbolId),
+    String,
+    Object,
+}
+
+enum ConverterMember {
     Source(SymbolId),
     Builtin,
-    Absent,
-    Opaque,
 }
 
 #[derive(Clone, Copy)]
@@ -769,15 +774,28 @@ impl Graph<'_> {
         let kind = "django_path_converter";
         let certainty = if conditional { "possible" } else { "certain" };
         self.edge(scope, class, kind, certainty);
-        match self.converter_regex(class) {
-            ConverterRegex::Source(target) => {
+        let Some(mro) = self.converter_mro(class, &mut BTreeMap::new(), 0) else {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_registration",
+                "Django converter class hierarchy could not be resolved",
+            );
+            return;
+        };
+        match self.converter_member(&mro, "regex") {
+            Some(ConverterMember::Source(target))
+                if !self.binding_depends_on_branch(target, END)
+                    && matches!(self.binding_value(target, 0), Value::Text(_)) =>
+            {
+                // Probing a dormant registration must not mark the field as read.
                 self.edge(scope, target, "django_converter_regex", certainty);
             }
-            ConverterRegex::Builtin => {}
+            Some(ConverterMember::Builtin) => {}
             // Registration can store the instance without compiling a URL
             // pattern. A class without regex cannot supply its callbacks.
-            ConverterRegex::Absent => return,
-            ConverterRegex::Opaque => {
+            None => return,
+            Some(ConverterMember::Source(_)) => {
                 self.scope_issue(
                     scope,
                     at,
@@ -788,8 +806,12 @@ impl Graph<'_> {
             }
         }
         for name in ["to_python", "to_url"] {
-            match self.class_member_at(class, name, 0, Some((scope, at))) {
-                Some(Value::Callable(invocation))
+            let Some(ConverterMember::Source(binding)) = self.converter_member(&mro, name) else {
+                // The built-in protocol does not introduce a source callback.
+                continue;
+            };
+            match self.binding(binding, END, 0) {
+                Value::Callable(invocation)
                     if let Some(descriptor) = self.converter_descriptor(invocation.target) =>
                 {
                     let descriptor_arguments =
@@ -819,11 +841,7 @@ impl Graph<'_> {
                     };
                     self.invoke(scope, invocation, kind, certainty, at);
                 }
-                Some(Value::ConstantFunction) | None => {}
-                Some(Value::Provider(provider))
-                    if provider.rsplit_once('.').is_some_and(|(base, method)| {
-                        is_django_string_converter(base) && method == name
-                    }) => {}
+                Value::ConstantFunction => {}
                 _ => self.scope_issue(
                     scope,
                     at,
@@ -834,35 +852,98 @@ impl Graph<'_> {
         }
     }
 
-    fn converter_regex(&mut self, class: SymbolId) -> ConverterRegex {
-        let (lineage, resolved) = self.class_lineage(class);
-        if let Some(target) = lineage
-            .iter()
-            .find_map(|&body| self.local(body, "regex", END))
+    fn converter_member(&self, mro: &[ConverterBase], name: &str) -> Option<ConverterMember> {
+        for entry in mro {
+            match *entry {
+                ConverterBase::Source(class) => {
+                    let Binding::Definition(_, body) = self.symbols[class].binding else {
+                        unreachable!()
+                    };
+                    if let Some(binding) = self.local(body, name, END) {
+                        return Some(ConverterMember::Source(binding));
+                    }
+                }
+                ConverterBase::String => return Some(ConverterMember::Builtin),
+                ConverterBase::Object => {}
+            }
+        }
+        None
+    }
+
+    fn converter_mro(
+        &mut self,
+        class: SymbolId,
+        memo: &mut BTreeMap<SymbolId, Vec<ConverterBase>>,
+        depth: usize,
+    ) -> Option<Vec<ConverterBase>> {
+        if let Some(lineage) = memo.get(&class) {
+            return Some(lineage.clone());
+        }
+        let symbol = &self.symbols[class];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return None;
+        };
+        let scope = symbol.scope;
+        if depth >= MAX_BINDING_CHAIN
+            || definition.bases.len() >= MAX_BINDING_CHAIN
+            || !definition.decorators.iter().all(|decorator| {
+                let value = self.probe_identity(scope, decorator, definition.name.at);
+                self.local_identity_decorator(value, decorator)
+            })
         {
-            // Probing a detached registration must not mark its field as read.
-            return if !self.binding_depends_on_branch(target, END)
-                && matches!(self.binding_value(target, 0), Value::Text(_))
-            {
-                ConverterRegex::Source(target)
-            } else {
-                ConverterRegex::Opaque
-            };
+            return None;
         }
-        if resolved {
-            return ConverterRegex::Absent;
+        let mut lineage = vec![ConverterBase::Source(class)];
+        if definition.bases.is_empty() {
+            lineage.push(ConverterBase::Object);
+        } else {
+            let mut bases = VecDeque::new();
+            let mut orders = Vec::new();
+            for base in &definition.bases {
+                let order = match self.probe_identity(scope, base, definition.name.at) {
+                    Value::Callable(invocation) if self.is_class(invocation.target) => {
+                        self.converter_mro(invocation.target, memo, depth + 1)?
+                    }
+                    Value::Provider(provider) if provider == "builtins.object" => {
+                        vec![ConverterBase::Object]
+                    }
+                    Value::Provider(provider) if is_django_string_converter(&provider) => {
+                        vec![ConverterBase::String, ConverterBase::Object]
+                    }
+                    _ => return None,
+                };
+                let direct = order[0];
+                if bases.contains(&direct) {
+                    return None;
+                }
+                bases.push_back(direct);
+                orders.push(VecDeque::from(order));
+            }
+            orders.push(bases);
+            // Python's C3 merge selects the first head that does not follow
+            // another class in any remaining base order.
+            while orders.iter().any(|order| !order.is_empty()) {
+                if lineage.len() >= MAX_BINDING_CHAIN {
+                    return None;
+                }
+                let next = orders
+                    .iter()
+                    .filter_map(|order| order.front().copied())
+                    .find(|head| {
+                        orders
+                            .iter()
+                            .all(|order| !order.iter().skip(1).any(|entry| entry == head))
+                    })?;
+                lineage.push(next);
+                for order in &mut orders {
+                    if order.front() == Some(&next) {
+                        order.pop_front();
+                    }
+                }
+            }
         }
-        if let Some(owner) = lineage.last().and_then(|&body| self.scopes[body].owner)
-            && let Binding::Definition(definition, _) = self.symbols[owner].binding
-            && let [base] = definition.bases.as_slice()
-            && matches!(
-                self.probe_identity(self.symbols[owner].scope, base, definition.name.at),
-                Value::Provider(provider) if is_django_string_converter(&provider)
-            )
-        {
-            return ConverterRegex::Builtin;
-        }
-        ConverterRegex::Opaque
+        memo.insert(class, lineage.clone());
+        Some(lineage)
     }
 
     fn converter_descriptor(&mut self, target: SymbolId) -> Option<ConverterDescriptor> {

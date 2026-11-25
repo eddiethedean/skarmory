@@ -2459,6 +2459,46 @@ install(Active)
 }
 
 #[test]
+fn django_converter_chooses_methods_in_c3_order() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("converters.py"),
+        r#"from django.urls import register_converter
+
+class Base:
+    regex = '[a-z]+'
+    def to_python(self, value):
+        return old(value)
+    def to_url(self, value):
+        return value
+
+class Left(Base):
+    pass
+
+class Right(Base):
+    def to_python(self, value):
+        return value.lower()
+
+class Diamond(Left, Right):
+    pass
+
+def old(value):
+    return value
+
+register_converter(Diamond, 'diamond')
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["converters.Base.to_python", "converters.old"]
+    );
+    assert!(!findings(&report, "unused_variables").contains(&"converters.Base.regex"));
+}
+
+#[test]
 fn django_converter_protocol_requires_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
