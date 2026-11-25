@@ -6930,6 +6930,7 @@ impl<'a> Graph<'a> {
         };
         if !is_route(ObjectKind::FlaskApp, name, true)
             && !is_route(ObjectKind::FlaskBlueprint, name, true)
+            && !flask_login_callback(name)
         {
             return false;
         }

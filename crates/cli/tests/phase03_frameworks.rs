@@ -948,6 +948,50 @@ def direct_hook(): return {}
 }
 
 #[test]
+fn flask_login_empty_provider_lookalike_has_no_registration_method() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("provider.py"),
+        "class LoginManager: pass\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        "from provider import login\n@login.user_loader\ndef handler(user_id): return 1\n",
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["app.handler"]);
+}
+
+#[test]
+fn flask_constructor_rebinding_does_not_change_the_earlier_import_capture() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        r#"import flask as framework
+from flask import Flask as Original
+
+class Replacement: pass
+framework.Flask = Replacement
+from flask import Flask as Updated
+
+app = Original(__name__)
+replaced = Updated()
+
+@app.shell_context_processor
+def live(): return {}
+
+@replaced.shell_context_processor
+def detached(): return {}
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["app.detached"]);
+}
+
+#[test]
 fn fastapi_startup_keeps_callbacks_with_proven_identity_decorators() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

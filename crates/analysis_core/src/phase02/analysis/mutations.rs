@@ -245,6 +245,13 @@ impl Graph<'_> {
                 }
                 let qualified = format!("{module}.{member}");
                 framework_class_provider(&qualified).is_some_and(FrameworkClassRole::is_unittest)
+                    || matches!(
+                        qualified.as_str(),
+                        "flask.Flask"
+                            | "flask.app.Flask"
+                            | "flask.Blueprint"
+                            | "flask.blueprints.Blueprint"
+                    )
                     || is_flask_login_constructor(&qualified)
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
@@ -502,6 +509,9 @@ fn provider_module(name: &str) -> bool {
             | "django.dispatch"
             | "django.dispatch.dispatcher"
             | "django.db.models.signals"
+            | "flask"
+            | "flask.app"
+            | "flask.blueprints"
             | "flask_login"
             | "flask_login.login_manager"
             | "typer"
