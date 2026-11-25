@@ -34,6 +34,26 @@ each original variant.
 | Wagtail snippet settings | The view-set class supplies neither a model nor a `register_snippet` call. The analyzer records the related model and block declarations separately. |
 | unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. Those declarations remain dormant in the analyzer. |
 
+### Runtime-derived test expectations
+
+The release workflow tests nine discrepancies directly through the installed
+SDK on the frozen corpus fixture bytes. These checks expect dormant Django
+and unittest declarations where the fixture supplies no invocation. For
+invalid Starlette and Gin calls and unresolved Django startup, they check
+that the relevant coverage diagnostic remains visible. Separate native
+controls exercise successful registration and startup.
+
+Run these checks with a pinned Skylos checkout and an installed SDK.
+
+```sh
+phase03-skylos/.venv/bin/python tests/conformance/phase03_framework_corpus.py \
+  phase03-skylos --runtime-controls --sdk-python "$sdk_python"
+```
+
+The workflow saves `runtime-controls.json` beside the original receipts.
+Each result identifies the fixture and observed coverage. The pinned parity
+decision continues to use its original assertions and prerequisites.
+
 [Django async views](https://docs.djangoproject.com/en/5.2/topics/async/#async-views) ·
 [Django command dispatch](https://github.com/django/django/blob/stable/5.2.x/django/core/management/base.py) ·
 [Django app population](https://github.com/django/django/blob/stable/5.2.x/django/apps/registry.py) ·

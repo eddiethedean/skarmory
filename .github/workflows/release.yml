@@ -365,6 +365,12 @@ jobs:
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/sdk.receipt.json
+      - name: Check reviewed framework runtime controls
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        run: |
+          phase03-skylos/.venv/bin/python tests/conformance/phase03_framework_corpus.py \
+            phase03-skylos --runtime-controls --sdk-python "$RUNNER_TEMP/phase03-sdk/bin/python" \
+            > phase03-evidence/runtime-controls.json
       - name: Run the pinned FastAPI router variant
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         shell: bash
