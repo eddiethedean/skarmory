@@ -1119,6 +1119,7 @@ def detached(): return {}
 fn fastapi_deployment_factory_preserves_possible_routes() {
     let project = tempfile::tempdir().unwrap();
     let path = project.path().join("app.py");
+    let cache = tempfile::tempdir().unwrap();
     let source = r#"from fastapi import FastAPI
 
 def helper(): return 1
@@ -1139,6 +1140,9 @@ def create_app():
             ["app.retired"],
             "{report}"
         );
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
         let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
         assert!(
             symbols.iter().any(|symbol| {
