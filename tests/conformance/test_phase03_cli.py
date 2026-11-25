@@ -1,4 +1,5 @@
 import json
+import shlex
 import subprocess
 import sys
 import unittest
@@ -8,7 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from phase03_cli import INVALID_IMPACT, RecursiveCaseCli, WorkflowCaseCli
+from phase03_cli import CLEANUP_SOURCE, INVALID_IMPACT, CleanupCaseCli, RecursiveCaseCli, WorkflowCaseCli
+from phase03_cleanup_execution import EXECUTION_SOURCE, CleanupExecutionCli
 
 
 class RecursiveCaseCliTests(unittest.TestCase):
@@ -131,6 +133,110 @@ class WorkflowCaseCliTests(unittest.TestCase):
             cli.run()
         self.assertEqual(raised.exception.code, 2)
         self.assertTrue(cli.proved)
+
+
+class CleanupCaseCliTests(unittest.TestCase):
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.fixture = Path(temporary.name).resolve()
+        self.binary = self.fixture / "skarmory"
+        self.case_id = (
+            f"{CLEANUP_SOURCE}::"
+            "test_authorized_passing_tests_and_same_scope_rescan_produce_verified_receipt"
+        )
+        self.cli = CleanupCaseCli(self.binary, self.fixture, self.case_id)
+        self.output = StringIO()
+        self.queue = {
+            "schema_version": 1, "analysis_errors": [], "status": "review", "tasks": [{
+                "file": "app.py", "name": "math", "rule_id": "SKY-U002", "eligible": True,
+                "source_fingerprint": "blake3:test", "id": "math-task",
+            }],
+        }
+        self.apply = {
+            "schema_version": 1, "analysis_errors": [], "execution": {
+                "rescan": {"status": "passed", "original_present": False},
+                "tests": {
+                    "status": "passed", "observed": True, "evidence": "pytest_junit", "count": 1,
+                },
+            },
+        }
+        self.options = [
+            "--task", "math-task", "--apply", "--test-cmd",
+            shlex.join([sys.executable, "-m", "pytest", "-q", "test_app.py"]),
+        ]
+
+    def invoke(self, *args):
+        return self.cli.run(
+            [str(self.fixture), *args, "--format", "json"], stdout=self.output,
+        )
+
+    @staticmethod
+    def result(report):
+        return subprocess.CompletedProcess([], 0, stdout=json.dumps(report), stderr="")
+
+    @patch("phase03_cli.subprocess.run")
+    def test_requires_real_queue_and_forwards_the_authorized_check(self, run):
+        run.side_effect = [self.result(self.queue), self.result(self.apply)]
+        self.assertEqual(self.invoke(), 0)
+        self.assertFalse(self.cli.proved)
+        self.assertEqual(self.invoke(*self.options), 0)
+        self.assertTrue(self.cli.proved)
+        run.assert_called_with(
+            [str(self.binary), "cleanup", str(self.fixture), *self.options, "--format", "json"],
+            cwd=self.fixture, capture_output=True, text=True, timeout=60, check=False,
+        )
+
+    @patch("phase03_cli.subprocess.run")
+    def test_unobserved_checks_cannot_prove_the_pinned_verification(self, run):
+        self.apply["execution"]["tests"]["observed"] = False
+        run.side_effect = [self.result(self.queue), self.result(self.apply)]
+        self.invoke()
+        self.invoke(*self.options)
+        self.assertFalse(self.cli.proved)
+
+    @patch("phase03_cli.subprocess.run")
+    def test_rejects_different_validation_commands(self, run):
+        run.return_value = self.result(self.queue)
+        self.invoke()
+        with self.assertRaisesRegex(ValueError, "validation command changed"):
+            self.invoke(*self.options[:-1], "echo passed")
+        self.assertEqual(run.call_count, 1)
+
+
+class CleanupExecutionCliTests(unittest.TestCase):
+    def test_requires_candidate_rescan_instead_of_the_reference_stub(self):
+        for status, expected in (("passed", True), ("incomplete", False)):
+            with self.subTest(status=status), TemporaryDirectory() as temporary:
+                fixture = Path(temporary).resolve()
+                path = fixture / "app.py"
+                path.write_text("import math\nanswer = 42\n", encoding="utf-8")
+                cli = CleanupExecutionCli(
+                    fixture / "skarmory", fixture,
+                    f"{EXECUTION_SOURCE}::test_rescan_alone_does_not_claim_runtime_verification",
+                    fixture / EXECUTION_SOURCE,
+                )
+                task = {"rule_id": "SKY-U002", "name": "math", "line": 1}
+                finding = {
+                    **task, "file": "app.py", "eligible": True, "id": "task",
+                    "source_fingerprint": "fingerprint",
+                }
+                receipt = {
+                    "rescan": {"status": status, "original_present": False},
+                    "tests": {"status": "skipped"},
+                }
+                with patch.object(cli, "run", side_effect=[
+                    (0, {"status": "review", "tasks": [finding]}),
+                    (0, {"status": "preview", "edit": {
+                        "proof": "proof", "source_fingerprint": "fingerprint",
+                    }}),
+                    (0, {"execution": receipt}),
+                ]) as run:
+                    edit = cli.plan(task, fixture)
+                    actual = cli.apply(edit, fixture, rescan=lambda: self.fail("reference scan ran"))
+                    self.assertIs(actual, receipt)
+                    self.assertIs(cli.proved, expected)
+                    run.assert_called_with("--task", "task", "--apply")
 
 
 if __name__ == "__main__":

@@ -100,6 +100,7 @@ port = "crates/analysis_core/tests/resolve.rs"
             "environment": "reference-lock" if sdk else "native-lock",
             "artifact_sha256": digest(self.artifact),
             "runner_status": "passed",
+            "runner_errors": [],
             "reference_command": ["pytest", CASE_ID] if sdk else ["cargo", "test"],
             "candidate_command": ["run", "candidate"],
             "results": [{
@@ -292,6 +293,9 @@ port = ""
                 self.assertEqual(report["cases"][1]["status"], "blocked")
         self.assert_blocked([sdk, dict(engine, runner_status="error")], "runner did not complete")
         self.assert_blocked([sdk, dict(engine, runner_errors=["collection error"])], "runner did not complete")
+        del engine["runner_errors"]
+        self.assert_blocked([sdk, engine], "runner did not complete")
+        engine["runner_errors"] = []
         self.assert_blocked([sdk, '{"variant":"python-engine","variant":"python-engine"}'], "duplicate JSON key")
         self.assert_blocked([sdk, engine], "candidate artifact is missing", artifacts=False)
         self.artifact.write_bytes(b"rebuilt artifact")
@@ -317,6 +321,8 @@ port = ""
                 ledger = dict(sdk, results=[dict(outcome, reference_failed_assertion=assertion)])
                 self.assert_blocked([ledger, engine], "expected failing reference assertion")
         ledger = dict(sdk, results=[dict(outcome, reference_assertions=[])])
+        self.assert_blocked([ledger, engine], "completed reference assertions")
+        ledger = dict(sdk, results=[dict(outcome, reference_assertions=[EARLIER_ASSERTION, ASSERTION])])
         self.assert_blocked([ledger, engine], "completed reference assertions")
 
     def test_reference_pass_requires_completed_assertions(self):

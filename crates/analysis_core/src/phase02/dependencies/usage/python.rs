@@ -154,6 +154,23 @@ impl<'a> Python<'a> {
                         self.expression(value, &bindings);
                     }
                 }
+                Stmt::AssignDjangoSettings { environment, value } => {
+                    self.expression(value, &bindings);
+                    self.expression(environment, &bindings);
+                    if qualified(environment, &bindings).as_deref() == Some("os.environ")
+                        && let Expr::Text(module) = &value.kind
+                        && is_module(module)
+                    {
+                        self.module(value.at.line, module, "python_configuration");
+                    } else {
+                        self.usage.reasons.push(Reason::new(
+                            "unresolved_dependency_configuration",
+                            self.path,
+                            Some(statement.at.line),
+                            "Django settings assignment could not be resolved",
+                        ));
+                    }
+                }
                 Stmt::Assert(value) | Stmt::Evaluate(value) => self.expression(value, &bindings),
             }
         }

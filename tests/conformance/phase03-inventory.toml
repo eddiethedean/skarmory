@@ -21,6 +21,14 @@ environment = "CPython 3.11 for original CLI assertions, Skylos uv.lock test ext
 artifact = "cli"
 
 [[variants]]
+id = "linux-x86_64-cp311-python-engine"
+platform = "linux-x86_64-cp311"
+backend = "python"
+layer = "engine"
+environment = "Rust 1.98.1 locked library test executable and CPython 3.11, Skylos uv.lock test extra SHA-256 21dd281b15e9dc0cc872a5e7083bcf16acca0e8ae67e6a9bcb11c416efcbac41"
+artifact = "python-engine-tests"
+
+[[variants]]
 id = "linux-x86_64-native-go-engine"
 platform = "linux-x86_64"
 backend = "native-go"
@@ -616,3 +624,2686 @@ provenance = "benchmarks/dead_code/fixtures/basic_unused_symbols from the pinned
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
+
+# Run original Python cleanup assertions against the native CLI.
+
+[[cases]]
+id = "test/test_cleanup_workflow.py::test_preview_then_apply_rescans_and_skipped_tests_stay_unverified"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_workflow.py"
+assertions = ["test/test_cleanup_workflow.py:123","test/test_cleanup_workflow.py:124","test/test_cleanup_workflow.py:125","test/test_cleanup_workflow.py:127","test/test_cleanup_workflow.py:128","test/test_cleanup_workflow.py:129","test/test_cleanup_workflow.py:130","test/test_cleanup_workflow.py:131"]
+prerequisites = ["test/test_cleanup_workflow.py:115","native-cli-cleanup"]
+provenance = "The original fixture previews and applies without explicit tests in the pinned checkout"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_workflow.py::test_authorized_passing_tests_and_same_scope_rescan_produce_verified_receipt"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_workflow.py"
+assertions = ["test/test_cleanup_workflow.py:152","test/test_cleanup_workflow.py:153","test/test_cleanup_workflow.py:154","test/test_cleanup_workflow.py:155"]
+prerequisites = ["test/test_cleanup_workflow.py:138","test/test_cleanup_workflow.py:144","native-cli-cleanup"]
+provenance = "The original fixture exercises an explicit passing pytest check in the pinned checkout"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_workflow.py::test_failing_authorized_check_rolls_back_and_returns_failure"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_workflow.py"
+assertions = ["test/test_cleanup_workflow.py:172","test/test_cleanup_workflow.py:173","test/test_cleanup_workflow.py:174"]
+prerequisites = ["test/test_cleanup_workflow.py:161","native-cli-cleanup"]
+provenance = "The original fixture requests an explicit command failure in the pinned checkout"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_workflow.py::test_actual_analyzer_patch_roundtrip"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_workflow.py"
+assertions = ["test/test_cleanup_workflow.py:263","test/test_cleanup_workflow.py:271","test/test_cleanup_workflow.py:272","test/test_cleanup_workflow.py:273","test/test_cleanup_workflow.py:274"]
+prerequisites = ["test/test_cleanup_workflow.py:259","native-cli-cleanup"]
+provenance = "The original fixture runs a native cleanup round trip in the pinned checkout"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_workflow.py::test_policy_changed_by_authorized_check_cannot_verify_a_fix"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_workflow.py"
+assertions = ["test/test_cleanup_workflow.py:310","test/test_cleanup_workflow.py:311","test/test_cleanup_workflow.py:312"]
+prerequisites = ["test/test_cleanup_workflow.py:279","test/test_cleanup_workflow.py:298","native-cli-cleanup"]
+provenance = "The original validation-time callback changes project policy in the pinned checkout"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+# Low-level Python cleanup assertions via real native edits and rescans.
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_failed_explicit_test_rolls_back_exact_applied_bytes"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:282", "test/test_cleanup_execution.py:283", "test/test_cleanup_execution.py:284", "test/test_cleanup_execution.py:285", "test/test_cleanup_execution.py:286"]
+prerequisites = ["test/test_cleanup_execution.py:275", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_failed_test_preserves_a_user_change_instead_of_rollback"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:306", "test/test_cleanup_execution.py:307", "test/test_cleanup_execution.py:308", "test/test_cleanup_execution.py:309"]
+prerequisites = ["test/test_cleanup_execution.py:290", "test/test_cleanup_execution.py:304", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_test_command_unavailable_is_incomplete_never_passed"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:328", "test/test_cleanup_execution.py:329", "test/test_cleanup_execution.py:330"]
+prerequisites = ["test/test_cleanup_execution.py:324", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_complete_rescan_and_authorized_tests_are_required_for_verified"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:341", "test/test_cleanup_execution.py:342", "test/test_cleanup_execution.py:343", "test/test_cleanup_execution.py:344"]
+prerequisites = ["test/test_cleanup_execution.py:334", "test/test_cleanup_execution.py:338", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_rescan_alone_does_not_claim_runtime_verification"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:350", "test/test_cleanup_execution.py:351", "test/test_cleanup_execution.py:352"]
+prerequisites = ["test/test_cleanup_execution.py:348", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_zero_exit_without_observed_tests_cannot_verify_a_cleanup"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:360", "test/test_cleanup_execution.py:361", "test/test_cleanup_execution.py:362", "test/test_cleanup_execution.py:363", "test/test_cleanup_execution.py:364"]
+prerequisites = ["test/test_cleanup_execution.py:356", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_original_anchor_returning_during_rescan_is_not_verified"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:585", "test/test_cleanup_execution.py:586", "test/test_cleanup_execution.py:587"]
+prerequisites = ["test/test_cleanup_execution.py:575", "test/test_cleanup_execution.py:576", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_fstring_verification.py::test_deletion_only_verification_explains_its_coverage_limit"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_fstring_verification.py"
+assertions = ["test/test_cleanup_fstring_verification.py:197", "test/test_cleanup_fstring_verification.py:198", "test/test_cleanup_fstring_verification.py:199"]
+prerequisites = ["test/test_cleanup_fstring_verification.py:181", "test/test_cleanup_fstring_verification.py:187", "native-cli-cleanup-execution"]
+provenance = "Original source and validation command constructed by this pinned pytest fixture"
+variants = ["linux-x86_64-cp311-python-cli"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_cleanup_execution.py::test_source_removed_after_rescan_preserves_the_incomplete_receipt"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_cleanup_execution.py"
+assertions = ["test/test_cleanup_execution.py:387", "test/test_cleanup_execution.py:388", "test/test_cleanup_execution.py:389", "test/test_cleanup_execution.py:390", "test/test_cleanup_execution.py:391"]
+prerequisites = ["test/test_cleanup_execution.py:372", "native-core-cleanup-removal"]
+provenance = "Original _task and _passing_tests fixtures from the pinned checkout, with source removal after live report comparison in the Rust engine port"
+variants = ["linux-x86_64-cp311-python-engine"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+# Reviewed report-facing framework and test discovery cases (#43).
+# Four probes of private Skylos internals remain outside this report port slice.
+# Unmapped cases remain required and earn no compatibility credit.
+
+# Standalone Django signal registration and activation
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_loaded_real_receiver_bindings_keep_callback_and_its_helper[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\n-receiver(post_save)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_loaded_real_receiver_bindings_keep_callback_and_its_helper[from django.dispatch import receiver as listen\\nfrom django.db.models.signals import post_save as saved\\n-listen(saved)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_loaded_real_receiver_bindings_keep_callback_and_its_helper[import django.dispatch as dispatch\\nfrom django.db.models.signals import post_save\\n-dispatch.receiver(post_save)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_loaded_real_receiver_bindings_keep_callback_and_its_helper[import django.dispatch\\nimport django.db.models.signals\\n-django.dispatch.receiver(django.db.models.signals.post_save)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_loaded_real_receiver_bindings_keep_callback_and_its_helper[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\nlisten = receiver\\nsaved = post_save\\n-listen(saved)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_loaded_real_receiver_bindings_keep_callback_and_its_helper[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\n-receiver([post_save])]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_loaded_real_receiver_bindings_keep_callback_and_its_helper[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\n-receiver(signal=post_save)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_missing_signal_module_loading_is_uncertainty[pass]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_missing_signal_module_loading_is_uncertainty[if False:\\n    from . import signals]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_missing_signal_module_loading_is_uncertainty[return\\nfrom . import signals]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_uninstalled_app_ready_does_not_prove_signal_loading"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_noop_receiver_spelling_does_not_keep_unused_functions[from django.db.models.signals import post_save\\ndef receiver(signal):\\n    def decorate(callback):\\n        return callback\\n    return decorate\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:147", "test/test_django_signal_liveness.py:152", "test/test_django_signal_liveness.py:155", "test/test_django_signal_liveness.py:158"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): local decorator may replace or invoke the decorated definition (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_noop_receiver_spelling_does_not_keep_unused_functions[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\ndef noop(signal):\\n    def decorate(callback):\\n        return callback\\n    return decorate\\nreceiver = noop\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:147", "test/test_django_signal_liveness.py:152", "test/test_django_signal_liveness.py:155", "test/test_django_signal_liveness.py:158"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): local decorator may replace or invoke the decorated definition (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_noop_receiver_spelling_does_not_keep_unused_functions[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\nreceiver = lambda signal: (lambda callback: callback)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:147", "test/test_django_signal_liveness.py:152", "test/test_django_signal_liveness.py:155", "test/test_django_signal_liveness.py:158"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_noop_receiver_spelling_does_not_keep_unused_functions[from django.db.models.signals import post_save\\ndef receiver(signal):\\n    'No registration occurs.'\\n    def decorate(callback):\\n        'Return the input.'\\n        return callback\\n    return decorate\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:147", "test/test_django_signal_liveness.py:152", "test/test_django_signal_liveness.py:155", "test/test_django_signal_liveness.py:158"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): local decorator may replace or invoke the decorated definition (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_connect_inside_registration_wrapper_requires_invocation[True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_connect_inside_registration_wrapper_requires_invocation[False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:180", "test/test_django_signal_liveness.py:183", "test/test_django_signal_liveness.py:184"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_custom_signal_instances_preserve_genuine_callbacks[from django.dispatch import Signal, receiver\\nsaved = Signal()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_custom_signal_instances_preserve_genuine_callbacks[from django.dispatch import Signal, receiver\\nSignal = Signal()\\nsaved = Signal\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_custom_signal_instances_preserve_genuine_callbacks[from django.dispatch import Signal as Event, receiver\\nsaved = Event()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_custom_signal_instances_preserve_genuine_callbacks[from django.dispatch import Signal, receiver\\nclass DomainSignal(Signal):\\n    pass\\nsaved = DomainSignal()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_unsupported_signal_provider_retains_callback_as_uncertain[from django.dispatch import receiver\\nfrom third_party.signals import saved\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:211", "test/test_django_signal_liveness.py:212", "test/test_django_signal_liveness.py:213", "test/test_django_signal_liveness.py:216"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_unsupported_signal_provider_retains_callback_as_uncertain[from django.dispatch import Signal, receiver\\nclass DomainSignal(Signal):\\n    def connect(self, callback):\\n        return connector(callback)\\nsaved = DomainSignal()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:211", "test/test_django_signal_liveness.py:212", "test/test_django_signal_liveness.py:213", "test/test_django_signal_liveness.py:216"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_unknown_external_receiver_keeps_previous_uncertainty_without_django"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:227", "test/test_django_signal_liveness.py:228", "test/test_django_signal_liveness.py:230", "test/test_django_signal_liveness.py:231"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): decorator identity is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_source_imported_identity_receiver_is_not_a_registration"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:248"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): local decorator may replace or invoke the decorated definition (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_source_reexport_of_real_receiver_keeps_provider_identity"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_appconfig_or_ready_does_not_prove_signal_loading[ShopConfig = object\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_appconfig_or_ready_does_not_prove_signal_loading[ShopConfig.ready = lambda self: None\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_appconfig_or_ready_does_not_prove_signal_loading[setattr(ShopConfig, 'ready', lambda self: None)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_appconfig_or_ready_does_not_prove_signal_loading[del ShopConfig.ready\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): statement is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_django_awaits_async_receivers[decorated]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_django_awaits_async_receivers[direct]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[(post_save.connect(on_save) for value in [1])\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[[post_save.connect(on_save) for value in []]\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[False and post_save.connect(on_save)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[True or post_save.connect(on_save)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[post_save.connect(on_save) if False else None\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[None if True else post_save.connect(on_save)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[def install():\\n    return\\n    post_save.connect(on_save)\\ninstall()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[async def install():\\n    post_save.connect(on_save)\\ninstall()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_inactive_expression_or_suspended_wrapper_does_not_prove_registration[def install():\\n    post_save.connect(on_save)\\n    yield None\\ninstall()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:308"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_uncalled_alias_signal_wrapper_has_no_name_only_framework_root[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\nsaved = post_save\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:325", "test/test_django_signal_liveness.py:327"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native framework findings differ from the original assertions (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_uncalled_alias_signal_wrapper_has_no_name_only_framework_root[from django.dispatch import Signal\\nsaved = Signal()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:325", "test/test_django_signal_liveness.py:327"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native framework findings differ from the original assertions (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_connect_method_cannot_claim_genuine_registration[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\npost_save.connect = lambda callback: None\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:345"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_connect_method_cannot_claim_genuine_registration[from django.dispatch import receiver\\nfrom django.db.models.signals import post_save\\nsetattr(post_save, 'connect', lambda callback: None)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:345"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_connect_method_cannot_claim_genuine_registration[from django.dispatch import Signal\\npost_save = Signal()\\npost_save.connect = lambda callback: None\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:345"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_replaced_connect_method_cannot_claim_genuine_registration[from django.dispatch import Signal\\npost_save = Signal()\\nsetattr(post_save, 'connect', lambda callback: None)\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:345"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_captured_real_receiver_survives_later_provider_replacement[]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_captured_real_receiver_survives_later_provider_replacement[import os\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_loading_uses_effective_selected_appconfig[shop.apps.ShopConfig-class ShopConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        pass\\nclass OtherConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        from . import signals\\n-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_loading_uses_effective_selected_appconfig[shop-class ShopConfig(AppConfig):\\n    name = 'shop'\\n    default = False\\n    def ready(self):\\n        from . import signals\\n-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_loading_uses_effective_selected_appconfig[shop-class ShopConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        from . import signals\\n-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_loading_uses_effective_selected_appconfig[shop-class ShopConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        from . import signals\\nclass OtherConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        pass\\n-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:68", "test/test_django_signal_liveness.py:69", "test/test_django_signal_liveness.py:70", "test/test_django_signal_liveness.py:71", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_loading_uses_effective_selected_appconfig[shop-class ShopConfig(AppConfig):\\n    name = 'shop'\\n    default = True\\n    def ready(self):\\n        from . import signals\\nclass OtherConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        pass\\n-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_loading_uses_effective_selected_appconfig[shop.apps.Captured-class ShopConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        from . import signals\\nCaptured = ShopConfig\\nShopConfig = object\\n-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_loading_uses_effective_selected_appconfig[shop.apps.ShopConfig-class BaseConfig(AppConfig):\\n    name = 'shop'\\n    def ready(self):\\n        from . import signals\\nclass ShopConfig(BaseConfig):\\n    pass\\n-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_malformed_or_opaque_receiver_arguments_cannot_supply_execution_root[receiver(post_save, signal=post_save)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:438"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_malformed_or_opaque_receiver_arguments_cannot_supply_execution_root[receiver(post_save, invalid=True)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:438"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_malformed_or_opaque_receiver_arguments_cannot_supply_execution_root[receiver(post_save, **options)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:438"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): unbounded keyword expansion (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_uncalled_custom_constructor_alias_has_no_framework_root[import django.dispatch as dispatch\\nsaved = dispatch.Signal()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:456", "test/test_django_signal_liveness.py:460"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_uncalled_custom_constructor_alias_has_no_framework_root[from django.dispatch import Signal\\nFactory = Signal\\nsaved = Factory()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:456", "test/test_django_signal_liveness.py:460"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_uncalled_custom_constructor_alias_has_no_framework_root[from django.dispatch import Signal\\nclass DomainSignal(Signal):\\n    pass\\nsaved = DomainSignal()\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:456", "test/test_django_signal_liveness.py:460"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_repeated_registration_wrapper_graph_is_memoized"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = ["test/test_django_signal_liveness.py:511"]
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43); the omitted line counts calls to Skylos's private scanner"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_bare_receiver_decorator_preserves_unknown_provider_but_not_identity[True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:523", "test/test_django_signal_liveness.py:524", "test/test_django_signal_liveness.py:525"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): decorator identity is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_bare_receiver_decorator_preserves_unknown_provider_but_not_identity[False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:530"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): local decorator may replace or invoke the decorated definition (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_signal_memo_observes_called_modules_global_binding_changes"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:550"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): statement is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_staticmethod_receiver_preserves_real_contract_only[True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:598", "test/test_django_signal_liveness.py:599"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_staticmethod_receiver_preserves_real_contract_only[False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:603", "test/test_django_signal_liveness.py:604"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (ambiguous_binding): an enclosing name has multiple bindings and the active version is unresolved (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_actual_signal_can_connect_source_bound_instance_method"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:617", "test/test_django_signal_liveness.py:620", "test/test_django_signal_liveness.py:621"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_appconfig_ready_can_connect_its_bound_method"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:636", "test/test_django_signal_liveness.py:639", "test/test_django_signal_liveness.py:640"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native reports cannot establish the original Django signal rescue evidence contract (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_conditional_static_receiver_keeps_only_possible_callback_contract[True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:660", "test/test_django_signal_liveness.py:661"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_conditional_static_receiver_keeps_only_possible_callback_contract[False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:658"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_conditional_static_receiver_keeps_only_possible_callback_contract[enabled]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:660", "test/test_django_signal_liveness.py:661"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_registration): Django signal registration has no selected startup (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_source_owned_method_resolves_before_unknown_external_ancestry[]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:680", "test/test_django_signal_liveness.py:681"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_constructor): allocation result is outside the bounded class model (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_source_owned_method_resolves_before_unknown_external_ancestry[    on_save = None\\n]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:685"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_constructor): allocation result is outside the bounded class model (#43)"
+
+[[cases]]
+id = "test/test_django_signal_liveness.py::test_unresolved_class_base_does_not_abort_signal_liveness"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_signal_liveness.py"
+assertions = ["test/test_django_signal_liveness.py:64", "test/test_django_signal_liveness.py:65", "test/test_django_signal_liveness.py:66", "test/test_django_signal_liveness.py:72", "test/test_django_signal_liveness.py:73", "test/test_django_signal_liveness.py:74", "test/test_django_signal_liveness.py:75"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Django settings, app configuration and signal modules generated by _sources at line 26 and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_constructor): allocation result is outside the bounded class model (#43)"
+
+# Unittest and Django TestCase discovery
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest-unittest.TestCase-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest-unittest.TestCase-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest-unittest.TestCase-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest-unittest.TestCase-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest as unit-unit.TestCase-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest as unit-unit.TestCase-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest as unit-unit.TestCase-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[import unittest as unit-unit.TestCase-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import TestCase as Base-Base-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import TestCase as Base-Base-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import TestCase as Base-Base-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import TestCase as Base-Base-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest.case import TestCase-TestCase-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest.case import TestCase-TestCase-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest.case import TestCase-TestCase-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest.case import TestCase-TestCase-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import TestCase-TestCase-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import TestCase-TestCase-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import TestCase-TestCase-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import TestCase-TestCase-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import SimpleTestCase as Base-Base-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import SimpleTestCase as Base-Base-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import SimpleTestCase as Base-Base-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test import SimpleTestCase as Base-Base-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test.testcases import TransactionTestCase-TransactionTestCase-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test.testcases import TransactionTestCase-TransactionTestCase-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test.testcases import TransactionTestCase-TransactionTestCase-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from django.test.testcases import TransactionTestCase-TransactionTestCase-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import IsolatedAsyncioTestCase-IsolatedAsyncioTestCase-tests.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import IsolatedAsyncioTestCase-IsolatedAsyncioTestCase-test_api.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import IsolatedAsyncioTestCase-IsolatedAsyncioTestCase-api_test.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_discovered_cases_and_actual_test_methods_are_roots[from unittest import IsolatedAsyncioTestCase-IsolatedAsyncioTestCase-testcases.py]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:63", "test/test_unittest_discovery_liveness.py:64", "test/test_unittest_discovery_liveness.py:65", "test/test_unittest_discovery_liveness.py:67", "test/test_unittest_discovery_liveness.py:68", "test/test_unittest_discovery_liveness.py:69"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lookalikes_and_replaced_discovery_values_do_not_gain_roots[fake]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:96"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lookalikes_and_replaced_discovery_values_do_not_gain_roots[rebound]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:96"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lookalikes_and_replaced_discovery_values_do_not_gain_roots[mutated]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:96"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lookalikes_and_replaced_discovery_values_do_not_gain_roots[wrong_file]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:96"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lookalikes_and_replaced_discovery_values_do_not_gain_roots[replaced_class]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:96"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_source_provider_named_like_a_framework_is_not_the_framework[unittest]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:109"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_source_provider_named_like_a_framework_is_not_the_framework[django]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:109"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_imported_source_case_inheritance_preserves_exact_overrides"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:131", "test/test_unittest_discovery_liveness.py:132", "test/test_unittest_discovery_liveness.py:133"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_overwritten_test_method_body_is_not_a_runner_root[testCamelCase = None]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:151", "test/test_unittest_discovery_liveness.py:152"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native unittest findings or certain runner evidence differ from the original assertions (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_overwritten_test_method_body_is_not_a_runner_root[testCamelCase = 0]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:151", "test/test_unittest_discovery_liveness.py:152"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native unittest findings or certain runner evidence differ from the original assertions (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_bare_annotation_does_not_replace_a_test_method"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:169", "test/test_unittest_discovery_liveness.py:170"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native unittest findings or certain runner evidence differ from the original assertions (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_inherited_lifecycle_and_run_test_are_roots"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:191", "test/test_unittest_discovery_liveness.py:192"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_class_member_replacement_does_not_root_retired_test_body[Example.testCamelCase = None]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:217", "test/test_unittest_discovery_liveness.py:219"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_class_member_replacement_does_not_root_retired_test_body[setattr(Example, 'testCamelCase', None)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:217"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_class_member_replacement_does_not_root_retired_test_body[del Example.testCamelCase]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:217", "test/test_unittest_discovery_liveness.py:219"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): statement is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_provider_reimport_after_mutation_does_not_restore_proof[unittest.TestCase = object]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:245", "test/test_unittest_discovery_liveness.py:246"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_provider_reimport_after_mutation_does_not_restore_proof[setattr(unittest, 'TestCase', object)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:245", "test/test_unittest_discovery_liveness.py:246"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_provider_reimport_after_mutation_does_not_restore_proof[sys.modules['unittest'] = object()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:245", "test/test_unittest_discovery_liveness.py:246"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_class_local_decorator_binding_is_not_a_builtin"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:264", "test/test_unittest_discovery_liveness.py:265"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_captured_base_survives_later_provider_rebinding"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:283", "test/test_unittest_discovery_liveness.py:284"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_noncallable_or_empty_cases_do_not_gain_execution_proof[@property\\n    def testCamelCase(self): return retired_helper()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:302", "test/test_unittest_discovery_liveness.py:303"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): decorator identity is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_noncallable_or_empty_cases_do_not_gain_execution_proof[def setUp(self): return retired_helper()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:302", "test/test_unittest_discovery_liveness.py:303"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_source_module_class_replacement_prevents_later_import_proof"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:321"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): assignment target must be a simple name (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_builtin_callable_test_decorators_preserve_execution_proof[classmethod]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:339", "test/test_unittest_discovery_liveness.py:340"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_builtin_callable_test_decorators_preserve_execution_proof[staticmethod]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:339", "test/test_unittest_discovery_liveness.py:340"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lifecycle_roots_match_the_actual_runner[from unittest import TestCase-TestCase-asyncSetUp-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:381"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lifecycle_roots_match_the_actual_runner[from unittest import TestCase-TestCase-setUpTestData-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:381"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lifecycle_roots_match_the_actual_runner[from django.test import SimpleTestCase-SimpleTestCase-setUpTestData-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:381"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lifecycle_roots_match_the_actual_runner[from django.test import TestCase-TestCase-setUpTestData-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:381"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_lifecycle_roots_match_the_actual_runner[from unittest import IsolatedAsyncioTestCase-IsolatedAsyncioTestCase-asyncSetUp-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:381"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_async_test_body_requires_an_awaiting_runner[from unittest import TestCase-TestCase-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:408"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_async_test_body_requires_an_awaiting_runner[from unittest import IsolatedAsyncioTestCase-IsolatedAsyncioTestCase-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:408"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_async_test_body_requires_an_awaiting_runner[from django.test import TestCase-TestCase-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:408"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_subclass_hook): class creation hook dispatch is outside the bounded class hierarchy (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_creating_a_generator_test_does_not_execute_its_body[TestCase]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:425"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_creating_a_generator_test_does_not_execute_its_body[IsolatedAsyncioTestCase]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:425"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unsupported_construct): expression is outside the compatibility subset (#43)"
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_async_lifecycle_only_awaits_the_documented_hook[setUp-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:442"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_async_lifecycle_only_awaits_the_documented_hook[asyncSetUp-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:442"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_async_runner_rejects_sync_async_lifecycle_before_its_body[asyncSetUp]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:459"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_unittest_discovery_liveness.py::test_async_runner_rejects_sync_async_lifecycle_before_its_body[asyncTearDown]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_unittest_discovery_liveness.py"
+assertions = ["test/test_unittest_discovery_liveness.py:459"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture", "native-unittest-evidence"]
+provenance = "Static unittest fixtures declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+# Django and Flask application liveness
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_registered_blueprint_callback_and_helper_are_live"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:27", "test/test_web_framework_liveness.py:28", "test/test_web_framework_liveness.py:29", "test/test_web_framework_liveness.py:31"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native web framework findings or evidence differ from the original assertions (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_blueprint_import_and_called_app_factory"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:59", "test/test_web_framework_liveness.py:60", "test/test_web_framework_liveness.py:61"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_flask_lookalikes_and_unregistered_blueprints_remain_unused[from local_framework import Blueprint\\nbp = Blueprint()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:83", "test/test_web_framework_liveness.py:84"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): decorator identity is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_flask_lookalikes_and_unregistered_blueprints_remain_unused[from flask import Blueprint\\nBlueprint = replacement\\nbp = Blueprint()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:83", "test/test_web_framework_liveness.py:84"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_flask_lookalikes_and_unregistered_blueprints_remain_unused[from flask import Blueprint\\nbp = Blueprint('shop', __name__)\\nbp = replacement]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:83", "test/test_web_framework_liveness.py:84"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_decorator): decorator identity is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_flask_lookalikes_and_unregistered_blueprints_remain_unused[from flask import Blueprint\\nbp = Blueprint('shop', __name__)]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:83", "test/test_web_framework_liveness.py:84"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_factory_arguments_shadow_framework_imports[Blueprint]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:106"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): callable parameter is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_factory_arguments_shadow_framework_imports[*Blueprint]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:106"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): callable parameter is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_factory_arguments_shadow_framework_imports[**Blueprint]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:106"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): callable parameter is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_unused_factory_does_not_register_callbacks"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:126", "test/test_web_framework_liveness.py:127"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_blueprint_callback_cannot_register_itself_into_liveness"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:146", "test/test_web_framework_liveness.py:147"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_explicit_django_settings_module_and_application[from django.core.wsgi import get_wsgi_application as factory\\napplication = factory()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:169", "test/test_web_framework_liveness.py:170", "test/test_web_framework_liveness.py:171", "test/test_web_framework_liveness.py:172"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native WSGI/ASGI startup reports incomplete coverage when the fixture has no ROOT_URLCONF (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_explicit_django_settings_module_and_application[from django.core.asgi import get_asgi_application as factory\\napplication = factory()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:169", "test/test_web_framework_liveness.py:170", "test/test_web_framework_liveness.py:171", "test/test_web_framework_liveness.py:172"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native WSGI/ASGI startup reports incomplete coverage when the fixture has no ROOT_URLCONF (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_explicit_django_settings_module_and_application[from django.core.wsgi import get_wsgi_application as application\\napplication = application()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:169", "test/test_web_framework_liveness.py:170", "test/test_web_framework_liveness.py:171", "test/test_web_framework_liveness.py:172"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native WSGI/ASGI startup reports incomplete coverage when the fixture has no ROOT_URLCONF (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_explicit_django_settings_module_and_application[import django\\ndjango.setup()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:169", "test/test_web_framework_liveness.py:170", "test/test_web_framework_liveness.py:171", "test/test_web_framework_liveness.py:172"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_settings_and_wsgi_names_do_not_establish_framework_provenance[application = factory()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:197", "test/test_web_framework_liveness.py:198"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_settings_and_wsgi_names_do_not_establish_framework_provenance[from local_framework import get_wsgi_application\\napplication = get_wsgi_application()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:197", "test/test_web_framework_liveness.py:198"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_settings_and_wsgi_names_do_not_establish_framework_provenance[from django.core.wsgi import get_wsgi_application\\nget_wsgi_application = factory\\napplication = get_wsgi_application()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:197", "test/test_web_framework_liveness.py:198"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_settings_and_wsgi_names_do_not_establish_framework_provenance[import django\\ndjango = replacement\\ndjango.setup()\\napplication = factory()]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:197", "test/test_web_framework_liveness.py:198"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_settings_file_lookalike_and_shadowed_django_module"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:210"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_django_admin_named_callbacks_only"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:232", "test/test_web_framework_liveness.py:233", "test/test_web_framework_liveness.py:234", "test/test_web_framework_liveness.py:235"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_overwritten_admin_option_does_not_consume_stale_method"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:249"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_admin_callbacks_need_autodiscovery_or_an_entry_module_import[None--False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:283"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_admin_callbacks_need_autodiscovery_or_an_entry_module_import[django.contrib.admin.apps.SimpleAdminConfig--False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:283"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_admin_callbacks_need_autodiscovery_or_an_entry_module_import[django.contrib.admin--True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:283"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_admin_callbacks_need_autodiscovery_or_an_entry_module_import[django.contrib.admin.apps.AdminConfig--True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:283"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_admin_callbacks_need_autodiscovery_or_an_entry_module_import[None-import shop.admin\\n-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:283"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+[[cases]]
+id = "test/test_web_framework_liveness.py::test_admin_callbacks_need_autodiscovery_or_an_entry_module_import[None-from shop import admin\\n-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_web_framework_liveness.py"
+assertions = ["test/test_web_framework_liveness.py:283"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
+provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+# Standalone Django application unittest reproduction
+
+[[cases]]
+id = "test/test_django_app_repro_liveness.py::test_repro_14_unittest_testcase_is_live_helper_is_not"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_django_app_repro_liveness.py"
+assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_app_repro_liveness.py:50", "test/test_django_app_repro_liveness.py:56"]
+prerequisites = ["installed-sdk", "grep-verification-disabled"]
+provenance = "Literal test module tree declared by _TEST_MODULE and written by _write_tree"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
+
+# Pytest hooks in the pinned analyzer tests
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_suppresses_pytest_plugin_hook_methods"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3747", "test/test_analyzer.py:3748", "test/test_analyzer.py:3749"]
+prerequisites = ["installed-sdk", "grep-verification"]
+provenance = "Original temporary plugin.py source written verbatim by the pinned node"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_suppresses_additional_pytest_plugin_hooks"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3775", "test/test_analyzer.py:3776", "test/test_analyzer.py:3777"]
+prerequisites = ["installed-sdk", "grep-verification"]
+provenance = "Original temporary plugin.py source written verbatim by the pinned node"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_suppresses_pytest_hook_parameters"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3797", "test/test_analyzer.py:3798", "test/test_analyzer.py:3799", "test/test_analyzer.py:3800"]
+prerequisites = ["installed-sdk", "grep-verification"]
+provenance = "Original temporary plugin.py source written verbatim by the pinned node"
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+# Python SKY-U005 cases retaining the pinned requirement, configuration, and usage fixtures.
+# SCA at test/test_requirements_includes_and_unused_deps.py:113-133 is a separate later scope.
+# The shared low-level requirements parser tests at 51-110 still need engine port review.
+
+[[cases]]
+id = "test/test_requirements_includes_and_unused_deps.py::test_lock_entries_are_never_flagged_and_direct_inputs_are"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_requirements_includes_and_unused_deps.py"
+assertions = ["test/test_requirements_includes_and_unused_deps.py:161", "test/test_requirements_includes_and_unused_deps.py:163", "test/test_requirements_includes_and_unused_deps.py:164"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_requirements_includes_and_unused_deps.py:151-164 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_requirements_includes_and_unused_deps.py::test_framework_and_command_uses_count"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_requirements_includes_and_unused_deps.py"
+assertions = ["test/test_requirements_includes_and_unused_deps.py:223"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_requirements_includes_and_unused_deps.py:167-223 in the pinned checkout. The unchanged docs/conf.py is read as separate Sphinx configuration by Skylos and as Python configuration facts by Skarmory."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_requirements_includes_and_unused_deps.py::test_hand_written_requirements_behave_as_before"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_requirements_includes_and_unused_deps.py"
+assertions = ["test/test_requirements_includes_and_unused_deps.py:232", "test/test_requirements_includes_and_unused_deps.py:233", "test/test_requirements_includes_and_unused_deps.py:234"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_requirements_includes_and_unused_deps.py:226-234 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_setuptools_declarations.py::test_unused_setup_cfg_runtime_dependency_points_at_its_line"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_setuptools_declarations.py"
+assertions = ["test/test_setuptools_declarations.py:399", "test/test_setuptools_declarations.py:400", "test/test_setuptools_declarations.py:401"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_setuptools_declarations.py:385-401 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_setuptools_declarations.py::test_setup_py_build_requirements_are_not_reported_unused"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_setuptools_declarations.py"
+assertions = ["test/test_setuptools_declarations.py:419", "test/test_setuptools_declarations.py:420", "test/test_setuptools_declarations.py:421"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_setuptools_declarations.py:404-421 in the pinned checkout. Keep setup.py as a declaration manifest and exclude it from the original usage source set."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_declared_and_imported_not_flagged"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:673", "test/test_vibe_rules.py:674", "test/test_vibe_rules.py:675", "test/test_vibe_rules.py:676"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:661-676 in the pinned checkout. The unsupported dynamic import must report incomplete rule coverage and abstain."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_declared_never_imported_flagged"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:689", "test/test_vibe_rules.py:690", "test/test_vibe_rules.py:691", "test/test_vibe_rules.py:692"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:678-692 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_cli_only_package_not_flagged"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:704"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:694-704 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_own_project_name_not_flagged"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:719"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:706-719 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_no_manifest_no_findings"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:727"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:721-727 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_hyphen_underscore_mapping"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:739"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:729-739 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_multiple_unused"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:752", "test/test_vibe_rules.py:753"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:741-753 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_unused_dependency_points_at_declaring_manifest_line"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:767", "test/test_vibe_rules.py:768", "test/test_vibe_rules.py:769", "test/test_vibe_rules.py:770"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:755-770 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_unused_dependency_in_pyproject_points_at_its_line"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:783", "test/test_vibe_rules.py:784"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:772-784 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_manifest_above_the_scanned_project_is_not_used_as_location"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:803", "test/test_vibe_rules.py:804", "test/test_vibe_rules.py:805", "test/test_vibe_rules.py:806"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:786-806 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_manifest_inside_the_project_above_the_sources_is_used"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:820", "test/test_vibe_rules.py:821"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:808-821 in the pinned checkout. The SDK scans the original report root and verifies the fixture's same nested source set."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_pyproject_toml_deps"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:836", "test/test_vibe_rules.py:837"]
+prerequisites = ["installed-sdk", "native-sdk-unused-dependencies"]
+provenance = "Original fixtures, scan arguments and controls scoped by test/test_vibe_rules.py:823-837 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_vibe_rules.py::TestUnusedDependencies::test_pyproject_comment_apostrophe_is_not_a_dependency"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_vibe_rules.py"
+assertions = ["test/test_vibe_rules.py:859", "test/test_vibe_rules.py:860", "test/test_vibe_rules.py:861"]
+prerequisites = ["pinned pyproject declaration names", "pinned project identity", "installed-sdk"]
+provenance = "Original commented pyproject.toml and importer from test/test_vibe_rules.py:839-861 in the pinned checkout."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The SDK can exercise the unused-finding assertion, but does not expose the declaration name set and project identity required by the other two assertions."

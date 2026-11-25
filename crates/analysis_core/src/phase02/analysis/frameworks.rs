@@ -339,6 +339,11 @@ impl Graph<'_> {
                 _ => self.unresolved_pytest_plugins(file, binding),
             }
         }
+        for file in 0..self.files.len() {
+            if !plugins.contains(&file) {
+                self.collect_possible_pytest_hooks(file);
+            }
+        }
         for file in plugins {
             for (hook, certain) in self.pytest_registrations(&self.scopes[file].names, "pytest_") {
                 if self.is_pytest_function(hook.target) {
@@ -347,6 +352,97 @@ impl Graph<'_> {
                 }
             }
         }
+    }
+
+    fn collect_possible_pytest_hooks(&mut self, file: ScopeId) {
+        let basename = self.files[file].path.rsplit('/').next().unwrap_or_default();
+        if !(basename == "plugin.py"
+            || basename.starts_with("pytest_")
+            || basename.ends_with("_plugin.py"))
+            || self.modules.contains_key("pytest")
+            || !self.scopes[file].names.values().any(|bindings| {
+                let &[id] = self.effective_bindings(bindings) else {
+                    return false;
+                };
+                !self.conditional.contains_key(&id)
+                    && matches!(self.symbols[id].binding, Binding::Import(import)
+                        if import.level == 0 && import.module == "pytest" && import.member.is_none())
+            })
+        {
+            return;
+        }
+
+        // A conventionally named plugin can be loaded by an external runner.
+        // Without a registration in the project, its hooks have possible use.
+        self.retain_possible_pytest_hooks(file, false);
+        let classes: Vec<_> = self.scopes[file]
+            .names
+            .iter()
+            .filter_map(|(name, bindings)| {
+                let &[owner] = self.effective_bindings(bindings) else {
+                    return None;
+                };
+                let Binding::Definition(definition, scope) = self.symbols[owner].binding else {
+                    return None;
+                };
+                (name.ends_with("Plugin")
+                    && definition.kind == DefinitionKind::Class
+                    && definition.bases.is_empty()
+                    && definition.decorators.is_empty()
+                    && !self.conditional.contains_key(&owner)
+                    && !self.dormant_classes.contains(&owner))
+                .then_some((owner, scope))
+            })
+            .collect();
+        for (owner, scope) in classes {
+            if self.retain_possible_pytest_hooks(scope, true) {
+                self.framework_root(owner, "pytest_hook_candidate", false);
+            }
+        }
+    }
+
+    fn retain_possible_pytest_hooks(&mut self, scope: ScopeId, method: bool) -> bool {
+        const HOOKS: &[(&str, &[&str])] = &[
+            ("pytest_addhooks", &["pluginmanager"]),
+            (
+                "pytest_assertrepr_compare",
+                &["config", "op", "left", "right"],
+            ),
+            ("pytest_cmdline_main", &["config"]),
+            ("pytest_collection_finish", &["session"]),
+            ("pytest_fixture_setup", &["fixturedef", "request"]),
+            ("pytest_sessionfinish", &["session", "exitstatus"]),
+        ];
+        let mut found = false;
+        for (name, arguments) in HOOKS {
+            let Some(bindings) = self.scopes[scope].names.get(name) else {
+                continue;
+            };
+            let &[target] = self.effective_bindings(bindings) else {
+                continue;
+            };
+            let Binding::Definition(definition, _) = self.symbols[target].binding else {
+                continue;
+            };
+            let expected = method
+                .then_some("self")
+                .into_iter()
+                .chain(arguments.iter().copied());
+            if definition.kind == DefinitionKind::Function
+                && definition.decorators.is_empty()
+                && definition.simple_positional_parameters
+                && definition
+                    .parameters
+                    .iter()
+                    .map(|name| name.text.as_str())
+                    .eq(expected)
+                && !self.conditional.contains_key(&target)
+            {
+                self.framework_root(target, "pytest_hook_candidate", false);
+                found = true;
+            }
+        }
+        found
     }
 
     fn collect_pytest_plugin(
@@ -484,6 +580,13 @@ impl Graph<'_> {
                     django_loaded_module(settings),
                     django_loaded_module(row.file),
                 ]);
+                // Django reads DEBUG from the loaded settings object. Tie the
+                // read to the launcher so dormant configurations remain unused.
+                if let Some(debug) = self.local(settings, "DEBUG", END)
+                    && matches!(self.symbols[debug].binding, Binding::Variable(..))
+                {
+                    self.edge(scope, debug, "django_setting", "certain");
+                }
                 self.collect_django_apps(scope, settings, &startup.commands);
                 let binding = self.local(settings, "ROOT_URLCONF", END);
                 let root = binding.and_then(|binding| match self.binding(binding, END, 0) {

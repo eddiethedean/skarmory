@@ -229,8 +229,8 @@ def verify_result(result, case):
         reasons.append("expected failing reference assertion does not match the execution evidence")
     mapped = case["assertions"]
     required_reference = mapped[:mapped.index(expected_failure)] if expected_failure else mapped
-    reference_assertions = set(string_list(result, "reference_assertions", unique=True))
-    if not set(required_reference) <= reference_assertions <= set(mapped):
+    reference_assertions = string_list(result, "reference_assertions", unique=True)
+    if reference_assertions != required_reference:
         reasons.append("completed reference assertions do not match the inventory")
     if status != "passed":
         if status not in RESULT_STATUSES:
@@ -259,7 +259,7 @@ def verify_ledger(ledger, identity, cases, deferred_ids, errors):
         errors.append(f"{variant}: schema_version must be an integer")
     if identity["artifact_sha256"] is None:
         errors.append(f"{variant}: candidate artifact is missing")
-    if ledger.get("runner_status") != "passed" or ledger.get("runner_errors", []) != []:
+    if ledger.get("runner_status") != "passed" or ledger.get("runner_errors") != []:
         errors.append(f"{variant}: runner did not complete successfully")
     try:
         string_list(ledger, "reference_command", required=True)

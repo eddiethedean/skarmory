@@ -12,7 +12,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from phase03_cli import CASE as CLI_CASE
-from phase03_cli import WORKFLOW_SOURCES, RecursiveCaseCli, WorkflowCaseCli
+from phase03_cli import CLEANUP_CASES, WORKFLOW_SOURCES, CleanupCaseCli, RecursiveCaseCli, WorkflowCaseCli
+from phase03_cleanup_execution import CLEANUP_EXECUTION_CASES, CleanupExecutionCli
+from phase03_dependencies import (
+    UNUSED_DEPENDENCY_PREREQUISITE,
+    UNUSED_DEPENDENCY_SOURCES,
+    unused_dependencies,
+)
+from phase03_engine import CASE as ENGINE_CASE
+from phase03_engine import engine_case
 
 PORT = "tests/conformance/run_phase03_seed.py"
 BENCHMARK_SOURCE = "benchmarks/dead_code/manifest.json"
@@ -107,18 +115,29 @@ def port_cases(args):
         raise ValueError(f"not a required Phase 0.3 variant: {args.variant}")
     variant = variants[args.variant]
     layer = variant["layer"]
-    if layer not in {"sdk", "cli"} or variant["backend"] != "python":
-        raise ValueError("the seed runner requires a Python backend SDK or CLI variant")
+    if layer not in {"sdk", "cli", "engine"} or variant["backend"] != "python":
+        raise ValueError("the seed runner requires a Python backend SDK, CLI, or engine variant")
     cases = {key: case for key, case in expected[args.variant].items() if case["port"] == PORT}
     if not cases:
         raise ValueError(f"no seed port mappings for {args.variant}")
+    if (layer == "engine" and set(cases) != {ENGINE_CASE}) or (
+        ENGINE_CASE in cases and layer != "engine"
+    ):
+        raise ValueError("the engine port requires its own single-case variant")
     if layer == "cli" and any(
-        key != CLI_CASE and case["source"] not in WORKFLOW_SOURCES
+        key != CLI_CASE and key not in CLEANUP_CASES and key not in CLEANUP_EXECUTION_CASES
+        and case["source"] not in WORKFLOW_SOURCES
         for key, case in cases.items()
     ):
         raise ValueError("missing native CLI adapter for a mapped case")
     if layer == "sdk" and args.sdk_python is None:
         raise ValueError("--sdk-python is required for the SDK variant")
+    if any(
+        UNUSED_DEPENDENCY_PREREQUISITE in case["prerequisites"]
+        and (layer != "sdk" or case["source"] not in UNUSED_DEPENDENCY_SOURCES)
+        for case in cases.values()
+    ):
+        raise ValueError("missing native SDK adapter for a mapped dependency case")
     return inventory, digest, variant, cases
 
 
@@ -231,9 +250,14 @@ def run_basic_benchmark(args, case):
 
 
 def pytest_worker(args):
+    _, _, variant, cases = port_cases(args)
+    if args.mode == "candidate" and variant["layer"] == "engine":
+        result = engine_case(args, cases[ENGINE_CASE], environment())
+        args.output.write_text(json.dumps({ENGINE_CASE: result}), encoding="utf-8")
+        return int(result["status"] != "passed")
+
     import pytest
 
-    _, _, variant, cases = port_cases(args)
     benchmark = cases.pop(BENCHMARK_CASE, None)
     sys.path.insert(0, str(args.upstream))
     sys.modules["skylos_fast"] = None
@@ -261,6 +285,7 @@ def pytest_worker(args):
             self.trace_imports = set()
             self.trace_disables = set()
             self.trace_rejections = set()
+            self.unittest_evidence = set()
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
@@ -296,6 +321,12 @@ def pytest_worker(args):
                     for issue in report.get("runtime_evidence_issues", [])
                 ):
                     self.trace_rejections.add(key)
+                if "native-unittest-evidence" in case["prerequisites"]:
+                    from phase03_framework import unittest_report
+
+                    projected = unittest_report(report)
+                    self.unittest_evidence.add(key)
+                    return json.dumps(projected)
                 return scanned
 
             cli = None
@@ -305,9 +336,36 @@ def pytest_worker(args):
                         if key == CLI_CASE:
                             cli = RecursiveCaseCli(args.artifact)
                             patch.setattr(item.module, "subprocess", cli)
+                        elif key in CLEANUP_CASES:
+                            cli = CleanupCaseCli(
+                                args.artifact, item.funcargs["tmp_path"], key,
+                                args.upstream / case["source"],
+                            )
+                            patch.setattr(item.module, "run_cleanup_command", cli.run)
+                        elif key in CLEANUP_EXECUTION_CASES:
+                            cli = CleanupExecutionCli(
+                                args.artifact, item.funcargs["tmp_path"], key,
+                                args.upstream / case["source"],
+                            )
+                            patch.setattr(item.module, "plan_cleanup_edit", cli.plan)
+                            patch.setattr(item.module, "apply_cleanup_edit", cli.apply)
                         else:
                             cli = WorkflowCaseCli(args.artifact, item.funcargs["tmp_path"], key)
                             patch.setattr(item.module.cli, "main", cli.run)
+                    elif "shared-framework-fixture" in case["prerequisites"]:
+                        from test import web_framework_fixtures
+
+                        patch.setattr(web_framework_fixtures, "analyze", analyze)
+                    elif UNUSED_DEPENDENCY_PREREQUISITE in case["prerequisites"]:
+                        def scan_rule(path, options):
+                            return scan_candidate(args.sdk_python, path, options)
+
+                        def analyze_dependencies(*inputs, **options):
+                            findings = unused_dependencies(key, scan_rule, *inputs, **options)
+                            self.scans.add(key)
+                            return findings
+
+                        patch.setattr(item.module, "scan_unused_dependencies", analyze_dependencies)
                     else:
                         patch.setattr(item.module, "analyze", analyze)
                 try:
@@ -361,8 +419,17 @@ def pytest_worker(args):
             proven = required in lines
             if required == "installed-sdk":
                 proven = args.mode == "candidate"
-            elif required in {"native-cli-control-pair", "native-cli-workflow"}:
+            elif required in {
+                "native-cli-control-pair", "native-cli-workflow", "native-cli-cleanup",
+                "native-cli-cleanup-execution",
+            }:
                 proven = key in capture.scans
+            elif required == "shared-framework-fixture":
+                proven = key in capture.scans
+            elif required == UNUSED_DEPENDENCY_PREREQUISITE:
+                proven = key in capture.scans
+            elif required == "native-unittest-evidence":
+                proven = key in capture.unittest_evidence
             elif required == "grep-verification":
                 proven = key in capture.grep_scans
             elif required == "grep-verification-disabled":
@@ -406,7 +473,11 @@ def write_receipt(args):
     artifact_digest = sha256(args.artifact)
     env = environment()
     with TemporaryDirectory(prefix="skarmory-phase03-") as temporary:
-        work = Path(temporary)
+        work = Path(temporary).resolve()
+        # Original fixture assertions compare absolute manifest paths. Use the
+        # same real temp root for both analyzers so a host alias such as
+        # /var -> /private/var does not change the spelling of fixture paths.
+        env["TMPDIR"] = str(work)
         commands = {}
         reports = {}
         errors = []
@@ -472,6 +543,8 @@ def write_receipt(args):
                 "reference": reference.get("benchmark"),
                 "candidate": candidate.get("benchmark"),
             }
+        if case_id == ENGINE_CASE:
+            result["native_test"] = candidate.get("native_test")
         results.append(result)
     receipt = {
         "schema_version": 1,

@@ -45,6 +45,10 @@ pub enum StatementKind {
         value: Option<Expression>,
         annotation: Option<Expression>,
     },
+    AssignDjangoSettings {
+        environment: Expression,
+        value: Expression,
+    },
     If {
         test: Expression,
         body: Vec<Statement>,
@@ -552,15 +556,27 @@ impl Lowering<'_> {
                             .unwrap_or_default(),
                     })
                 }
-                Stmt::Assign(node) => StatementKind::Assign {
-                    names: node
-                        .targets
-                        .iter()
-                        .map(|target| self.target(target))
-                        .collect::<Result<_, _>>()?,
-                    value: Some(expression(&node.value)?),
-                    annotation: None,
-                },
+                Stmt::Assign(node) => {
+                    if let [Expr::Subscript(target)] = node.targets.as_slice()
+                        && matches!(target.slice.as_ref(), Expr::StringLiteral(key)
+                            if key.value.to_str() == "DJANGO_SETTINGS_MODULE")
+                    {
+                        StatementKind::AssignDjangoSettings {
+                            environment: expression(&target.value)?,
+                            value: expression(&node.value)?,
+                        }
+                    } else {
+                        StatementKind::Assign {
+                            names: node
+                                .targets
+                                .iter()
+                                .map(|target| self.target(target))
+                                .collect::<Result<_, _>>()?,
+                            value: Some(expression(&node.value)?),
+                            annotation: None,
+                        }
+                    }
+                }
                 Stmt::AnnAssign(node) => StatementKind::Assign {
                     names: vec![self.target(&node.target)?],
                     value: node.value.as_deref().map(expression).transpose()?,

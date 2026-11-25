@@ -518,20 +518,26 @@ pub(super) fn analyze_with_verification(
         graph.retain_package_entrypoints(package_entrypoints, &initialization_edges);
     }
     roots.extend(graph.test_edges());
+    let mut possible_roots = Vec::new();
     if phase03 {
-        roots.extend(graph.phase03_framework_edges());
+        for edge in graph.phase03_framework_edges() {
+            if edge.kind == "pytest_hook_candidate" {
+                possible_roots.push(edge);
+            } else {
+                roots.push(edge);
+            }
+        }
     }
     // A dormant consumer must not consume another scope's export traversal.
     for exports in std::mem::take(&mut graph.namespace_exports).into_values() {
         graph.retain_exports(exports, &initialization_edges, "possible");
     }
-    let mut possible_runtime_roots = Vec::new();
     let (observed, rejected) = runtime
         .filter(|snapshot| !snapshot.observations.is_empty())
         .map_or_else(Default::default, |snapshot| {
-            graph.runtime_roots(snapshot, &mut roots, &mut possible_runtime_roots)
+            graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
-    let mut analysis = graph.finish(roots, possible_runtime_roots, verification);
+    let mut analysis = graph.finish(roots, possible_roots, verification);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -4901,6 +4907,22 @@ impl<'a> Graph<'a> {
                         self.annotation(scope, annotation, at, evaluated);
                     }
                 }
+                StatementKind::AssignDjangoSettings { environment, value } => {
+                    self.walk(scope, value, at);
+                    self.walk(scope, environment, at);
+                    if self.phase03
+                        && matches!(self.identity(scope, environment, at, 0),
+                            Value::Provider(provider) if provider == "os.environ")
+                    {
+                        self.scopes[scope].django_settings =
+                            match self.identity(scope, value, at, 0) {
+                                Value::Text(module) => DjangoSettings::Module(module),
+                                _ => DjangoSettings::Unknown,
+                            };
+                    } else {
+                        self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
+                    }
+                }
                 StatementKind::Return(value) => {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
@@ -6756,13 +6778,13 @@ impl<'a> Graph<'a> {
     fn finish(
         mut self,
         roots: Vec<Edge>,
-        mut possible_runtime_roots: Vec<Edge>,
+        mut possible_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
     ) -> Analysis {
         // Declaration hints retain only the definition in the compatibility
         // report. Leave them out of the execution graph and parameter analysis.
         let mut coverage_declarations = BTreeSet::new();
-        possible_runtime_roots.retain(|edge| {
+        possible_roots.retain(|edge| {
             if edge.kind == runtime_evidence::COVERAGE_DECLARATION {
                 coverage_declarations.insert(edge.target);
                 false
@@ -6777,7 +6799,7 @@ impl<'a> Graph<'a> {
         };
         let runtime_targets: BTreeSet<_> = roots
             .iter()
-            .chain(&possible_runtime_roots)
+            .chain(&possible_roots)
             .filter(|edge| is_runtime_execution_edge(edge.kind))
             .map(|edge| edge.target)
             .collect();
@@ -6824,10 +6846,10 @@ impl<'a> Graph<'a> {
             }
         }
         let baseline_converged = self.traverse_with_atexit(&mut reach, pending, &class_bodies);
-        if !possible_runtime_roots.is_empty()
+        if !possible_roots.is_empty()
             && !self.traverse(
                 &mut reach,
-                possible_runtime_roots.into(),
+                possible_roots.into(),
                 &class_bodies,
                 false,
                 true,
@@ -6973,6 +6995,9 @@ impl<'a> Graph<'a> {
         {
             if is_verification_edge(kind) {
                 continue;
+            }
+            if kind == "django_setting" {
+                self.read.insert(id);
             }
             let symbol = &self.symbols[id];
             retained.push(Evidence {
@@ -7253,6 +7278,10 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 if class && !postponed {
                     expressions.extend(annotation);
                 }
+            }
+            StatementKind::AssignDjangoSettings { environment, value } => {
+                expressions.push(environment);
+                expressions.push(value);
             }
             StatementKind::If {
                 test,
@@ -9202,6 +9231,31 @@ print(Status.default)
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "child_urls.Child.get" && entry.kind == "framework_lifecycle"
         }));
+    }
+
+    #[test]
+    fn phase03_direct_django_settings_assignment_overrides_the_default() {
+        let files = [
+            module("config.py", "config", "DEBUG = True\nunused_value = 1\n"),
+            module("dormant.py", "dormant", "DEBUG = False\n"),
+            module(
+                "wsgi.py",
+                "wsgi",
+                "import os as environment\nimport django\nenvironment.environ.setdefault('DJANGO_SETTINGS_MODULE', 'dormant')\nenvironment.environ['DJANGO_SETTINGS_MODULE'] = 'config'\ndjango.setup()\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let unused: BTreeSet<_> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.category == Category::Variable)
+            .map(|finding| finding.full_name.as_str())
+            .collect();
+        assert_eq!(
+            unused,
+            BTreeSet::from(["config.unused_value", "dormant.DEBUG"])
+        );
     }
 
     #[test]

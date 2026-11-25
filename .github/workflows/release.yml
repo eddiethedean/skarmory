@@ -17,7 +17,7 @@ on:
       - 'scripts/check_dead_code_gate.py'
       - 'tests/conformance/baselines/skylos-5.7.0.toml'
       - 'tests/conformance/phase03-inventory.toml'
-      - 'tests/conformance/phase03_cli.py'
+      - 'tests/conformance/phase03_*.py'
       - 'tests/conformance/run_phase03_seed.py'
   workflow_dispatch:
 
@@ -272,6 +272,7 @@ jobs:
           || github.event_name == 'workflow_dispatch' }}
       DEAD_CODE_SDK_VARIANT: linux-x86_64-cp311-python-sdk
       DEAD_CODE_CLI_VARIANT: linux-x86_64-cp311-python-cli
+      DEAD_CODE_ENGINE_VARIANT: linux-x86_64-cp311-python-engine
     steps:
       - name: Verify the release gate policy
         run: |
@@ -279,7 +280,7 @@ jobs:
             true) echo 'This release requires pinned dead-code results.' ;;
             false)
               if [[ "$DEAD_CODE_GATE_ENABLED" == true ]]; then
-                echo 'Verify mapped SDK and CLI cases and record the full gate decision separately.'
+                echo 'Verify mapped SDK, CLI, and engine cases and record the full gate decision separately.'
               else
                 echo 'The pinned dead-code gate starts with version 0.3.'
               fi
@@ -356,6 +357,20 @@ jobs:
             --artifact target/release/skarmory \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/cli.receipt.json
+      - name: Run the native engine conformance shard
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        run: |
+          cargo test --locked --release -p skarmory_core --lib --no-run --message-format=json \
+            > phase03-evidence/engine.build.json
+          engine=$(python tests/conformance/phase03_engine.py phase03-evidence/engine.build.json)
+          printf '%s\n' "$engine" > phase03-evidence/engine.path
+          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
+            --upstream phase03-skylos \
+            --inventory tests/conformance/phase03-inventory.toml \
+            --variant "$DEAD_CODE_ENGINE_VARIANT" \
+            --artifact "$engine" \
+            --candidate-revision "$(git rev-parse HEAD)" \
+            --output phase03-evidence/engine.receipt.json
       - name: Reconcile required case results
         if: ${{ !cancelled() && env.DEAD_CODE_GATE_ENABLED == 'true' }}
         shell: bash
@@ -369,6 +384,10 @@ jobs:
           fi
           if [[ -f target/release/skarmory ]]; then
             evidence+=(--artifact "cli=target/release/skarmory")
+          fi
+          if [[ -s phase03-evidence/engine.path ]]; then
+            engine=$(<phase03-evidence/engine.path)
+            evidence+=(--artifact "python-engine-tests=$engine")
           fi
           for receipt in phase03-evidence/*.receipt.json; do
             evidence+=(--ledger "$receipt")
@@ -393,7 +412,7 @@ jobs:
 
           _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
           report = json.loads(Path("phase03-evidence/gate.json").read_text())
-          for layer in ("SDK", "CLI"):
+          for layer in ("SDK", "CLI", "ENGINE"):
               variant = os.environ[f"DEAD_CODE_{layer}_VARIANT"]
               expected = {
                   case_id

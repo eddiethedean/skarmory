@@ -239,10 +239,11 @@ different routes or postponed dependencies, or when ordering across scopes
 cannot be determined. It retains constructors of resolved class dependencies.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
 
-Django URL discovery follows a reachable, recognized launcher. The settings
-module comes from a literal `--settings` option in a management launcher, the
-scan process's `DJANGO_SETTINGS_MODULE`, or the first literal default set in
-the launcher's scope, in that order. It resolves
+Django URL discovery follows a reachable, recognized launcher. A literal
+`--settings` option takes precedence in a management launcher. Otherwise, a
+literal assignment through the resolved `os.environ` provider can override
+the scan process's `DJANGO_SETTINGS_MODULE`, and `setdefault` supplies the
+settings module when unset. Skarmory resolves
 the selected settings module's `ROOT_URLCONF`, literal `urlpatterns`,
 `path` and `re_path` registrations, and literal `include` modules. Registered
 class-based views reach their effective `setup()` hook. Unresolved URL

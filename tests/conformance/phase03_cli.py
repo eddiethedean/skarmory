@@ -1,15 +1,30 @@
 """Bridge pinned real-CLI cases to the candidate executable."""
 
+import inspect
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from textwrap import dedent
 
 CASE = (
     "test/test_reachability_integration_qa.py"
     "::test_real_cli_reports_dead_cycle_and_keeps_live_variant"
 )
 WORKFLOW_SOURCES = {"test/test_pr_impact.py", "test/test_cli_json_ci_format.py"}
+CLEANUP_SOURCE = "test/test_cleanup_workflow.py"
+CLEANUP_CASES = {
+    f"{CLEANUP_SOURCE}::{name}": actions
+    for name, actions in (
+        ("test_preview_then_apply_rescans_and_skipped_tests_stay_unverified", ("queue", "preview", "apply")),
+        ("test_authorized_passing_tests_and_same_scope_rescan_produce_verified_receipt", ("queue", "verified")),
+        ("test_failing_authorized_check_rolls_back_and_returns_failure", ("queue", "rollback")),
+        ("test_actual_analyzer_patch_roundtrip", ("queue", "apply")),
+        ("test_policy_changed_by_authorized_check_cannot_verify_a_fix", ("queue", "policy")),
+    )
+}
 INVALID_IMPACT = (
     "test/test_pr_impact.py::test_impact_rejects_missing_diff_or_partial_head"
 )
@@ -119,3 +134,142 @@ class WorkflowCaseCli:
         sys.stderr.write(completed.stderr)
         if completed.returncode:
             raise SystemExit(completed.returncode)
+
+
+class CleanupCaseCli:
+    def __init__(self, binary, fixture, case_id, source=None):
+        self.binary = binary
+        self.fixture = fixture.resolve()
+        self.source = source
+        self.actions = CLEANUP_CASES[case_id]
+        self.invocations = 0
+        self.verified = 0
+        self.task_id = None
+
+    @property
+    def proved(self):
+        return self.invocations == self.verified == len(self.actions)
+
+    def run(self, command, *, stdout, analyze_func=None):
+        # The pinned fixtures may supply a synthetic scanner. The candidate
+        # always obtains its findings and post-edit comparison from the CLI.
+        if self.invocations >= len(self.actions) or not command:
+            raise ValueError("unexpected pinned cleanup invocation")
+        action = self.actions[self.invocations]
+        self.invocations += 1
+        source, *options = command
+        if Path(source).resolve() != self.fixture or options[-2:] != ["--format", "json"]:
+            raise ValueError("pinned cleanup CLI did not select its fixture and JSON format")
+        expected = [] if action == "queue" else ["--task", self.task_id]
+        if action not in {"queue", "preview"}:
+            expected.append("--apply")
+        checks = {
+            "verified": [sys.executable, "-m", "pytest", "-q", "test_app.py"],
+            "rollback": [sys.executable, "-c", "raise SystemExit(1)"],
+            "policy": ["pytest"],
+        }
+        if action in checks:
+            if (
+                len(options) < 4 or options[-4] != "--test-cmd"
+                or shlex.split(options[-3]) != checks[action]
+            ):
+                raise ValueError("pinned cleanup validation command changed")
+            expected.extend(("--test-cmd", options[-3]))
+        if options[:-2] != expected:
+            raise ValueError("unexpected pinned cleanup options")
+
+        completed = self.run_check(options, action)
+        stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        if completed.stdout:
+            self.verify(action, completed.returncode, json.loads(completed.stdout))
+        return completed.returncode
+
+    def run_check(self, options, action):
+        def invoke(args):
+            return subprocess.run(
+                [str(self.binary), "cleanup", str(self.fixture), *args],
+                cwd=self.fixture, capture_output=True, text=True, timeout=60, check=False,
+            )
+
+        if action != "policy":
+            return invoke(options)
+
+        from skylos.cleanup_checks import run_cleanup_tests as callback
+
+        nonlocals = inspect.getclosurevars(callback).nonlocals
+        if (
+            callback.__name__ != "changed_policy" or self.source is None
+            or Path(inspect.getfile(callback)).resolve() != self.source.resolve()
+            or set(nonlocals) != {"tmp_path"} or nonlocals["tmp_path"].resolve() != self.fixture
+            or (self.fixture / "pyproject.toml").exists()
+        ):
+            raise ValueError("pinned cleanup policy callback did not capture its fixture")
+        # Run the original mutation inside a real authorized pytest child, at
+        # the boundary that the reference monkeypatch replaces. Pytest observes
+        # the callback returning; its synthetic receipt is unused.
+        with TemporaryDirectory(prefix="skarmory-cleanup-policy-") as workspace:
+            test = Path(workspace) / "test_policy_change.py"
+            test.write_text(
+                "from pathlib import Path\n\ntmp_path = Path.cwd()\n\n"
+                + dedent(inspect.getsource(callback))
+                + "\n\ndef test_policy_change():\n    changed_policy()\n",
+                encoding="utf-8",
+            )
+            argv = [sys.executable, "-m", "pytest", "-q", str(test)]
+            return invoke([*options[:-3], shlex.join(argv), *options[-2:]])
+
+    def verify(self, action, returncode, report):
+        if report.get("schema_version") != 1 or report.get("analysis_errors") != []:
+            return
+        if action == "queue":
+            if returncode != 0 or report.get("status") != "review":
+                return
+            matches = [
+                item for item in report.get("tasks", [])
+                if item.get("file") == "app.py" and item.get("name") == "math"
+                and item.get("rule_id") == "SKY-U002" and item.get("eligible") is True
+            ]
+            if (
+                len(matches) != 1 or not matches[0].get("source_fingerprint")
+                or not matches[0].get("id")
+            ):
+                return
+            self.task_id = matches[0]["id"]
+        elif action == "preview":
+            if (
+                returncode != 0 or report.get("status") != "preview"
+                or not report.get("edit", {}).get("proof")
+            ):
+                return
+        else:
+            execution = report.get("execution", {})
+            rescan = execution.get("rescan", {})
+            checks = execution.get("tests", {})
+            if action != "policy" and (
+                rescan.get("status") != "passed" or rescan.get("original_present") is not False
+            ):
+                return
+            if action == "rollback":
+                if (
+                    returncode != 1 or checks.get("returncode") != 1
+                    or checks.get("status") != "failed" or execution.get("rolled_back") is not True
+                ):
+                    return
+            elif action in {"verified", "policy"}:
+                if (
+                    checks.get("status") != "passed" or checks.get("observed") is not True
+                    or checks.get("evidence") != "pytest_junit" or checks.get("count") != 1
+                ):
+                    return
+                if action == "verified" and returncode != 0:
+                    return
+                if action == "policy" and (
+                    returncode != 2 or rescan.get("status") != "incomplete"
+                    or not (self.fixture / "pyproject.toml").is_file()
+                    or execution.get("rolled_back") is not False
+                ):
+                    return
+            elif returncode != 0 or checks.get("status") != "skipped":
+                return
+        self.verified += 1
