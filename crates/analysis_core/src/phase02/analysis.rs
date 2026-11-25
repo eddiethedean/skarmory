@@ -40,6 +40,7 @@ mod field_dispatch;
 mod flask;
 mod frameworks;
 mod gunicorn;
+mod literal_text;
 mod logging_config;
 mod mcp_tools;
 mod mutations;
@@ -47,6 +48,7 @@ mod pydantic;
 mod sanic;
 mod starlette;
 mod terminal;
+mod wagtail;
 
 pub(super) use django_templates::TemplateProject;
 
@@ -968,6 +970,19 @@ impl<'a> Graph<'a> {
                 StatementKind::Assign { names, value, .. } => {
                     for name in names {
                         self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
+                    }
+                }
+                StatementKind::AssignUnpack { names, value } => {
+                    let items = match &value.kind {
+                        ExpressionKind::Sequence { items, .. } if items.len() == names.len() => {
+                            Some(items)
+                        }
+                        _ => None,
+                    };
+                    for (index, name) in names.iter().enumerate() {
+                        // Every RHS element sees the namespace before any of the stores.
+                        let item = items.and_then(|items| items.get(index));
+                        self.bind(scope, name, Binding::Variable(item, statement.at));
                     }
                 }
                 StatementKind::DeleteName(name)
@@ -3188,6 +3203,7 @@ impl<'a> Graph<'a> {
                     || self.phase03
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
+                            || self.wagtail_declaration_base(&name)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -3511,6 +3527,25 @@ impl<'a> Graph<'a> {
                     );
                 }
                 self.member(base, name, (scope, before), depth + 1)
+            }
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } if self.phase03
+                && let Some(call) = self.literal_text_call(
+                    function,
+                    CallArguments {
+                        scope,
+                        before,
+                        at: expression.at,
+                        positional: arguments,
+                        keywords,
+                    },
+                    depth,
+                ) =>
+            {
+                Value::Text(call.value)
             }
             ExpressionKind::Call {
                 function,
@@ -5008,6 +5043,20 @@ impl<'a> Graph<'a> {
                 keywords,
             } => {
                 if self.phase03
+                    && self.walk_literal_text_call(
+                        function,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                {
+                    return;
+                }
+                if self.phase03
                     && arguments.is_empty()
                     && keywords.is_empty()
                     && let ExpressionKind::DeferredLambda(body) = &function.kind
@@ -5074,6 +5123,13 @@ impl<'a> Graph<'a> {
                             scope, before, at: expr.at, positional: arguments, keywords,
                         },
                     ),
+                    Value::Provider(name) if self.phase03
+                        && self.wagtail_field_constructor(
+                            CallArguments {
+                                scope, before, at: expr.at, positional: arguments, keywords,
+                            },
+                            &name,
+                        ) => {}
                     Value::Provider(name) if self.phase03 && django_forms::is_field_provider(&name) => {
                         if self.django_field_value(
                             &name,
@@ -5569,6 +5625,11 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::DjangoViewFactory(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
+                        self.record_failed_django_include(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
                     Value::Provider(name) if self.phase03 && name == "django.core.management.call_command" => {
                         self.register_django_programmatic_command(CallArguments {
                             scope, before, at: expr.at, positional: arguments, keywords,
@@ -5786,6 +5847,11 @@ impl<'a> Graph<'a> {
                     Value::Provider(name) if self.phase03 && mcp_tools::is_server_provider(&name) => {
                         if !matches!(self.mcp_server(scope, expr.at, arguments, keywords), Value::McpServer(_)) {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "FastMCP server arguments are outside the bounded model");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && drf::is_method_field(&name) => {
+                        if drf::method_field_name(arguments, keywords).is_none() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF method field requires an omitted or literal callback name");
                         }
                     }
                     Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
@@ -6793,6 +6859,9 @@ impl<'a> Graph<'a> {
                         }
                     }
                     let mut valid_bases = true;
+                    let literal_string_enum = self.phase03
+                        && definition.kind == DefinitionKind::Class
+                        && self.literal_string_enum(target);
                     for base in &definition.bases {
                         self.walk(scope, base, at);
                         let value = self.class_base(scope, base, at, 0);
@@ -6800,7 +6869,9 @@ impl<'a> Graph<'a> {
                         if let Value::Callable(Invocation { target: id, .. }) = value {
                             self.edge(scope, id, "base_class", "certain");
                         }
-                        self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                        if !literal_string_enum {
+                            self.subclass_hook(scope, value, base.at, definition.bases.len() == 1);
+                        }
                     }
                     if definition.kind == DefinitionKind::Class {
                         if let Some(table) = definition.table_keyword {
@@ -6856,6 +6927,36 @@ impl<'a> Graph<'a> {
                             .owner
                             .is_none_or(|owner| self.is_class(owner));
                         self.annotation(scope, annotation, at, evaluated);
+                    }
+                }
+                StatementKind::AssignUnpack { names, value } => {
+                    if !self.phase03 {
+                        self.issue(
+                            self.scopes[scope].file,
+                            at,
+                            "unsupported_construct",
+                            "unpacking is outside the compatibility subset",
+                        );
+                        continue;
+                    }
+                    self.walk(scope, value, at);
+                    match &value.kind {
+                        ExpressionKind::Sequence { items, .. } if items.len() == names.len() => {}
+                        ExpressionKind::Sequence { .. } => {
+                            self.scope_issue(
+                                scope,
+                                at,
+                                "invalid_unpack",
+                                "assignment unpacking has a known element count mismatch",
+                            );
+                            return true;
+                        }
+                        _ => self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_unpack",
+                            "assignment unpacking requires a fresh list or tuple literal",
+                        ),
                     }
                 }
                 StatementKind::AssignDjangoSettings { environment, value } => {
@@ -7463,6 +7564,9 @@ impl<'a> Graph<'a> {
                     self.framework_lifecycle
                         .push((owner, target, "framework_lifecycle"));
                 }
+            }
+            Value::Provider(name) if self.phase03 && wagtail::is_setting_registrar(&name) => {
+                self.register_wagtail_setting(scope, decorator, target, args, keywords);
             }
             Value::Provider(name)
                 if self.phase03
@@ -9402,6 +9506,10 @@ impl<'a> Graph<'a> {
                         | "django_migration_callback_declaration"
                         | drf::PROTOCOL_DECLARATION
                         | drf::FIELD_DECLARATION
+                        | wagtail::FIELD_DECLARATION
+                        | wagtail::BLOCK_METADATA
+                        | wagtail::MODEL_OPTION
+                        | wagtail::CALLBACK_PARAMETER
                         | mcp_tools::DECORATOR_APPLICATION
                         | "click_command_declaration"
                         | "celery_task_declaration"
@@ -9865,6 +9973,10 @@ impl<'a> Graph<'a> {
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
                     | drf::FIELD_DECLARATION
+                    | wagtail::FIELD_DECLARATION
+                    | wagtail::BLOCK_METADATA
+                    | wagtail::MODEL_OPTION
+                    | wagtail::CALLBACK_PARAMETER
             ) {
                 self.read.insert(id);
             }
@@ -10202,6 +10314,10 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                     expressions.extend(annotation);
                 }
             }
+            StatementKind::AssignUnpack { names, value } => {
+                assigned.extend(names.iter().map(|name| name.text.as_str()));
+                expressions.push(value);
+            }
             StatementKind::AssignDjangoSettings { environment, value } => {
                 expressions.push(environment);
                 expressions.push(value);
@@ -10373,7 +10489,9 @@ fn suite_binds_name(body: &[Statement], name: &str) -> bool {
         StatementKind::ProviderWildcardImport(imports) => {
             imports.iter().any(|import| import.local.text == name)
         }
-        StatementKind::Assign { names, .. } => names.iter().any(|target| target.text == name),
+        StatementKind::Assign { names, .. } | StatementKind::AssignUnpack { names, .. } => {
+            names.iter().any(|target| target.text == name)
+        }
         StatementKind::LiteralRouteLoop { path, .. } => path.text == name,
         StatementKind::If {
             body, otherwise, ..
@@ -11205,6 +11323,203 @@ configure()
                 .issues
                 .iter()
                 .any(|issue| issue.kind == "unresolved_call")
+        );
+    }
+
+    #[test]
+    fn django_settings_prove_literal_logging_versions_through_named_imports() {
+        let formatters = "import logging\nclass Formatter(logging.Formatter):\n    def format(self, record): return record.getMessage()\n";
+        for (version, active) in [(0, false), (1, true), (2, false)] {
+            let logging = format!(
+                "{{'version': {version}, 'formatters': {{'active': {{'()': 'shop.formatters.Formatter'}}}}}}"
+            );
+            let base = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n";
+            let origin = format!("ORIGINAL = {logging}\n");
+            for settings in [
+                format!("{base}LOGGING = {logging}\n"),
+                format!(
+                    "{base}VERSION = {version}\nLOGGING = {}\n",
+                    logging.replace(&format!("'version': {version}"), "'version': VERSION")
+                ),
+                format!("{base}from shop.reexports import EXPORTED as LOGGING\n"),
+            ] {
+                let report = analyze_phase03(
+                    &[
+                        module("shop/__init__.py", "shop", ""),
+                        module("shop/settings.py", "shop.settings", &settings),
+                        module(
+                            "shop/reexports.py",
+                            "shop.reexports",
+                            "from shop.logging_data import ORIGINAL as EXPORTED\n",
+                        ),
+                        module("shop/logging_data.py", "shop.logging_data", &origin),
+                        module("shop/formatters.py", "shop.formatters", formatters),
+                    ],
+                    &[],
+                );
+                assert!(report.issues.is_empty(), "{settings}: {:?}", report.issues);
+                assert_eq!(
+                    report
+                        .evidence
+                        .iter()
+                        .any(|row| row.kind == "django_logging_factory"),
+                    active,
+                    "{version}: {settings}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wagtail_registration_and_block_schema_use_canonical_providers() {
+        let providers = "from django.db import models\nfrom wagtail.contrib.settings.models import BaseSiteSetting, register_setting\nfrom wagtail.blocks import CharBlock, ListBlock, StreamBlock, StructBlock\n";
+        let declarations = "@register_setting(icon='site')\nclass SiteSettings(BaseSiteSetting):\n    footer = models.CharField(max_length=10)\n    unrelated = 1\n\nclass Quote(StructBlock):\n    text = CharBlock()\n    class Meta:\n        label_format = '{text}'\n        ignored = 'control'\n\nclass Body(StreamBlock):\n    items = ListBlock(CharBlock())\n";
+        let report = analyze_phase03(
+            &[module(
+                "site/models.py",
+                "site.models",
+                &format!("{providers}{declarations}"),
+            )],
+            &[],
+        );
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for (name, kind) in [
+            ("site.models.SiteSettings", "wagtail_setting_registration"),
+            (
+                "site.models.SiteSettings.footer",
+                "wagtail_field_declaration",
+            ),
+            ("site.models.Quote.text", "wagtail_field_declaration"),
+            ("site.models.Body.items", "wagtail_field_declaration"),
+        ] {
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.full_name == name && row.kind == kind),
+                "{name}: {:?}",
+                report.evidence
+            );
+        }
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|row| row.full_name.ends_with(".Meta.label_format")
+                    && row.kind == "wagtail_block_metadata")
+        );
+        let reported: BTreeSet<_> = report
+            .findings
+            .iter()
+            .map(|row| row.full_name.as_str())
+            .collect();
+        assert!(!reported.iter().any(|name| name.ends_with(".footer")));
+        assert!(!reported.iter().any(|name| name.ends_with(".items")));
+        assert!(!reported.iter().any(|name| name.ends_with(".label_format")));
+        assert!(reported.iter().any(|name| name.ends_with(".unrelated")));
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind.starts_with("wagtail_")
+                    && (row.full_name.ends_with(".unrelated")
+                        || row.full_name.ends_with(".ignored")))
+        );
+
+        let report = analyze_phase03(
+            &[module(
+                "site/models.py",
+                "site.models",
+                &format!(
+                    "{providers}from external import ICON\n{}",
+                    declarations.replace("icon='site'", "icon=ICON")
+                ),
+            )],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind == "wagtail_setting_registration")
+        );
+
+        let report = analyze_phase03(
+            &[
+                module("wagtail/__init__.py", "wagtail", ""),
+                module(
+                    "site/models.py",
+                    "site.models",
+                    &format!("{providers}{declarations}"),
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind.starts_with("wagtail_"))
+        );
+    }
+
+    #[test]
+    fn wagtail_models_retain_only_proven_fields_and_callbacks() {
+        let source = "from django.db import models\nfrom modelcluster.fields import ParentalKey\nfrom wagtail.models import Page, Orderable, Task\nfrom wagtail.fields import RichTextField\nfrom wagtail.admin.panels import FieldPanel\nclass Home(Page):\n    lead = RichTextField(blank=True)\n    hero = models.ForeignKey('wagtailimages.Image', on_delete=models.SET_NULL, null=True)\n    content_panels = Page.content_panels + [FieldPanel('lead')]\n    subpage_types = ['home.Home']\n    max_count = 2\n    def get_preview_template(self, request, mode): return 'page.html'\n    def paginate(self, request, *args): return request\n    class Meta:\n        verbose_name = 'Home'\nclass MenuItem(Orderable):\n    owner = ParentalKey('home.Home', related_name='menu')\nclass Review(Task):\n    task_state_class = None\n    def user_can_access_editor(self, obj, user): return False\nclass CustomPreview(Page):\n    def serve_preview(self, request, mode): return None\n    def get_preview_template(self, request, mode): return 'unused.html'\nclass AbstractPage(Page):\n    class Meta:\n        abstract = True\n";
+        let report = analyze_phase03(&[module("home/models.py", "home.models", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        for (kind, ending) in [
+            ("wagtail_field_declaration", ".Home.lead"),
+            ("wagtail_field_declaration", ".Home.hero"),
+            ("wagtail_field_declaration", ".MenuItem.owner"),
+            ("wagtail_model_declaration", ".MenuItem"),
+            ("wagtail_model_declaration", ".Review"),
+            ("wagtail_model_option", ".Home.content_panels"),
+            ("wagtail_model_option", ".Home.subpage_types"),
+            ("wagtail_model_option", ".Home.max_count"),
+            ("wagtail_model_option", ".Meta.verbose_name"),
+            ("wagtail_model_option", ".Review.task_state_class"),
+            (
+                "wagtail_callback_parameter",
+                ".Home.get_preview_template.request",
+            ),
+            (
+                "wagtail_callback_parameter",
+                ".Home.get_preview_template.mode",
+            ),
+            (
+                "wagtail_callback_parameter",
+                ".Review.user_can_access_editor.obj",
+            ),
+        ] {
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == kind && row.full_name.ends_with(ending)),
+                "{ending}: {:?}",
+                report.evidence
+            );
+        }
+        assert!(!report.evidence.iter().any(|row| {
+            row.kind.starts_with("wagtail_")
+                && (row.full_name.contains(".paginate")
+                    || row.full_name.ends_with(".AbstractPage")
+                    || row
+                        .full_name
+                        .contains(".CustomPreview.get_preview_template"))
+        }));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|row| row.full_name.ends_with(".paginate.args"))
         );
     }
 
@@ -14027,7 +14342,11 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
     fn django_failed_view_initializer_cannot_register_a_callback() {
         let urls = "from django.urls import path\nfrom rejected import view\nurlpatterns = [path('', view)]\n";
         let mut files = django_url_test_files(urls, "");
-        files.push(module("rejected.py", "rejected", "def view(request): return helper()\ndef helper(): return 1\nraise RuntimeError('not ready')\n"));
+        files.push(module(
+            "rejected.py",
+            "rejected",
+            "def view(request): return helper()\ndef helper(): return 1\nraise external_cause()\n",
+        ));
         let report = analyze_phase03(&files, &[]);
         assert!(
             report
@@ -14042,6 +14361,44 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                 .iter()
                 .any(|edge| edge.kind == "direct_call" && edge.full_name == "rejected.helper")
         );
+    }
+
+    #[test]
+    fn django_proven_failed_callback_import_aborts_url_initialization() {
+        let urls = "from django.urls import path\nfrom views import view\nfrom unrelated import after\nurlpatterns = [path('', view), path('after/', after)]\n";
+        let mut files = django_url_test_files(urls, "");
+        files[3] = module(
+            "views.py",
+            "views",
+            "import prefix_effect\ndef view(request): return 1\nraise RuntimeError('cannot load')\n",
+        );
+        let effect = "from django.db.models.signals import post_save\ndef received(sender, **kwargs): pass\npost_save.connect(received)\n";
+        files.extend([
+            module("prefix_effect.py", "prefix_effect", effect),
+            module(
+                "unrelated.py",
+                "unrelated",
+                &format!("{effect}def after(request): return 2\n"),
+            ),
+        ]);
+        for _ in 0..2 {
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(
+                !report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_registration")
+            );
+            let receivers: BTreeSet<_> = report
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_signal" && row.certainty == "certain")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(receivers, ["prefix_effect.received"].into());
+            files.swap(1, 3);
+        }
     }
 
     #[test]
@@ -14064,6 +14421,49 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                     .iter()
                     .any(|issue| issue.kind == "unresolved_call")
             );
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_include_preserves_terminal_view_option_failure() {
+        let root = "from django.urls import include, path\nfrom views import view\n\
+                    urlpatterns = [path('valid/', view), path('', include('child_urls'))]\n";
+        for (option, terminal) in [("Missing", true), ("external()", false)] {
+            let mut files = django_url_test_files(root, "");
+            files[2] = module(
+                "child_urls.py",
+                "child_urls",
+                &format!(
+                    "from django.urls import path\nfrom views import Page\nimport included_effect\n\
+                     urlpatterns = [path('page/', Page.as_view(model={option}))]\n"
+                ),
+            );
+            files[3] = module(
+                "views.py",
+                "views",
+                "from django.views.generic import DetailView\nclass Page(DetailView): model = None\ndef view(request): return 1\n",
+            );
+            files.push(module(
+                "included_effect.py",
+                "included_effect",
+                "from django.db.models.signals import post_save\ndef received(sender, **kwargs): pass\npost_save.connect(received)\n",
+            ));
+            for _ in 0..2 {
+                let report = analyze_phase03(&files, &[]);
+                assert_eq!(report.issues.is_empty(), terminal, "{:?}", report.issues);
+                assert_eq!(
+                    report.evidence.iter().any(|edge| {
+                        edge.kind == "django_registration" && edge.full_name == "views.view"
+                    }),
+                    !terminal,
+                );
+                assert!(report.evidence.iter().any(|edge| {
+                    edge.kind == "django_signal"
+                        && edge.certainty == "certain"
+                        && edge.full_name == "included_effect.received"
+                }));
+                files.swap(1, 2);
+            }
         }
     }
 

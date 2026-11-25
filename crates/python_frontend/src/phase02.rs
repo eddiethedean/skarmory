@@ -103,6 +103,10 @@ pub enum StatementKind {
         value: Option<Expression>,
         annotation: Option<Expression>,
     },
+    AssignUnpack {
+        names: Vec<Name>,
+        value: Expression,
+    },
     AssignDjangoSettings {
         environment: Expression,
         value: Expression,
@@ -1007,6 +1011,20 @@ impl Lowering<'_> {
                     {
                         StatementKind::AssignDjangoSettings {
                             environment: expression(&target.value)?,
+                            value: expression(&node.value)?,
+                        }
+                    } else if let [target] = node.targets.as_slice()
+                        && let Some(targets) = match target {
+                            Expr::Tuple(tuple) => Some(&tuple.elts),
+                            Expr::List(list) => Some(&list.elts),
+                            _ => None,
+                        }
+                    {
+                        StatementKind::AssignUnpack {
+                            names: targets
+                                .iter()
+                                .map(|target| self.target(target))
+                                .collect::<Result<_, _>>()?,
                             value: expression(&node.value)?,
                         }
                     } else if let [target] = node.targets.as_slice()

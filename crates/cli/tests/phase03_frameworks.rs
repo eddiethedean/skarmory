@@ -410,6 +410,51 @@ fn drf_declarations_keep_only_proven_framework_protocol_members() {
 }
 
 #[test]
+fn drf_method_fields_use_declared_serializer_fields_and_inherited_getters() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("api.py"),
+        "from rest_framework import serializers
+class Base(serializers.Serializer):
+    title = serializers.SerializerMethodField(method_name='render_title')
+    invalid = serializers.SerializerMethodField()
+class Mixin:
+    extra = serializers.SerializerMethodField()
+    def get_total(self, obj): return unreachable_effect(obj)
+    def render_title(self, obj): return obj
+    def get_extra(self, obj): return obj
+    def get_invalid(self, obj, required): return obj
+    def get_orphan(self, obj): return obj
+class Report(Mixin, Base):
+    total = serializers.SerializerMethodField()
+",
+    )
+    .unwrap();
+    let report = scan(root);
+    let reported = findings(&report, "unused_functions");
+    assert_eq!(
+        reported,
+        [
+            "api.Mixin.get_extra",
+            "api.Mixin.get_invalid",
+            "api.Mixin.get_orphan"
+        ],
+        "{report}"
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for name in ["api.Mixin.get_total", "api.Mixin.render_title"] {
+        assert!(
+            symbols.iter().any(|symbol| symbol["qualified_name"] == name
+                && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                    edge["kind"] == "drf_protocol_declaration" && edge["certainty"] == "possible"
+                })),
+            "{name}\n{report}"
+        );
+    }
+}
+
+#[test]
 fn phase03_named_conditions_bind_before_testing_and_keep_phase02_coverage() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -5738,6 +5783,144 @@ register_converter(Lookalike, 'lookalike')
 }
 
 #[test]
+fn flat_unpack_keeps_assignment_order_and_reports_active_unresolved_iteration() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("entry.py");
+    let code = r#"def first():
+    return 'first'
+
+def second():
+    return 'second'
+
+chosen, inactive = first, second
+[inactive, chosen] = [chosen, inactive]
+chosen()
+
+def unpack_external(source):
+    callback, label = source
+    callback(label)
+"#;
+    fs::write(&source, code).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        unreachable_functions(&report),
+        ["entry.first", "entry.unpack_external"]
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in [
+            "coverage",
+            "unused_functions",
+            "unused_variables",
+            "dead_code_evidence",
+        ] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+
+    fs::write(
+        &source,
+        format!("{code}\nfrom external import opaque\nunpack_external(opaque)\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_unpack"
+                    && issue["path"] == "entry.py"
+                    && issue["line"] == 12
+            })
+    );
+}
+
+#[test]
+fn flat_unpack_evaluates_operands_before_rejecting_wrong_arity() {
+    let project = tempfile::tempdir().unwrap();
+    let source = project.path().join("entry.py");
+    fs::write(&source, "def before():\n    return 1\n\ndef after():\n    return 2\n\nfirst, second = (before(),)\nafter()\n").unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "invalid_unpack"
+                    && issue["path"] == "entry.py"
+                    && issue["line"] == 7
+            })
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let direct_call = |name: &str| {
+        symbols.iter().any(|symbol| {
+            symbol["qualified_name"] == name
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "direct_call" && edge["certainty"] == "certain")
+        })
+    };
+    assert!(direct_call("entry.before"), "{report}");
+    assert!(!direct_call("entry.after"), "{report}");
+}
+
+#[test]
+fn string_enum_joins_use_only_the_reached_literal_members() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("entry.py");
+    let code = r#"from enum import Enum as Tags
+
+class Data(str, Tags):
+    FIRST = 'a'
+    SECOND = 'b'
+    ALIAS = 'a'
+
+def expected():
+    return 1
+
+def unexpected():
+    return 2
+
+pattern = '^({})$'.format('|'.join(item.value for item in Data))
+if pattern == '^(a|b)$':
+    expected()
+else:
+    unexpected()
+"#;
+    fs::write(&source, code).unwrap();
+    let report = scan(root);
+    assert_eq!(unreachable_functions(&report), ["entry.unexpected"]);
+    assert_eq!(findings(&report, "unused_variables"), ["entry.Data.ALIAS"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    // A project-owned class has a distinct identity from the standard Enum.
+    fs::write(root.join("enum.py"), "class Enum:\n    pass\n").unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_generator_execution" && issue["path"] == "entry.py"
+            })
+    );
+}
+
+#[test]
 fn django_converter_wrappers_resolve_reached_arguments_only() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -6272,7 +6455,11 @@ urlpatterns = [path("", Home.as_view())]
     let report = scan(root);
     assert_eq!(
         findings(&report, "unused_functions"),
-        ["urls.Dormant.setup", "urls.dormant_setup"],
+        [
+            "urls.Audited.get",
+            "urls.Dormant.setup",
+            "urls.dormant_setup"
+        ],
         "{report}"
     );
     assert_setup_evidence(&report);
@@ -6282,6 +6469,15 @@ urlpatterns = [path("", Home.as_view())]
         assert_eq!(stats["hits"], hits);
         assert_eq!(cached, report);
     }
+
+    write_views("        self.request = request");
+    let report = scan(root);
+    assert_setup_evidence(&report);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["urls.Dormant.setup", "urls.dormant_setup"],
+        "{report}"
+    );
 
     write_views("        super().setup(request)");
     let incomplete = scan_with_exit(root, None, None, 2);
