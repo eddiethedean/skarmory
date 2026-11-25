@@ -11237,6 +11237,49 @@ mod tests {
     }
 
     #[test]
+    fn django_wsgi_terminal_initializer_keeps_prefix_effects_and_unused_findings() {
+        let prefix = "import os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\n";
+        for (tail, complete) in [
+            ("application = missing_factory()\n", true),
+            (
+                "from django.core.wsgi import get_wsgi_application\nget_wsgi_application = missing_factory\napplication = get_wsgi_application()\n",
+                true,
+            ),
+            (
+                "import django\ndjango = missing_replacement\ndjango.setup()\napplication = missing_factory()\n",
+                true,
+            ),
+            (
+                "from outside import supplied_factory\napplication = supplied_factory()\n",
+                false,
+            ),
+        ] {
+            let files = [
+                module("settings.py", "settings", "DEBUG = True\n"),
+                module("wsgi.py", "wsgi", &format!("{prefix}{tail}")),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert_eq!(
+                report.issues.is_empty(),
+                complete,
+                "{tail}: {:?}",
+                report.issues
+            );
+            assert!(!report.findings.iter().any(|finding| {
+                finding.category == Category::Import && finding.full_name == "os"
+            }));
+            for qualified in ["settings.DEBUG", "wsgi.application"] {
+                assert!(
+                    report.findings.iter().any(|finding| {
+                        finding.category == Category::Variable && finding.full_name == qualified
+                    }),
+                    "{tail}: no unused finding for {qualified}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn django_settings_replays_literal_backend_list_edits_and_global_reads() {
         let cases = [
             (
