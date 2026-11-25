@@ -15725,9 +15725,8 @@ assertions = ["test/test_fastapi_nested_projects.py:209", "test/test_fastapi_nes
 prerequisites = ["original regular package and source-layout roots", "tool-only manifest control"]
 provenance = "Original regular package, nested source layout, tool-only manifest, and top-level module fixture."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "An engine port must verify the original alias identities and both negative controls (#43)"
 
 [[cases]]
 id = "test/test_django_admin_stubs.py::test_admin_filename_does_not_rescue_unused_functions"
