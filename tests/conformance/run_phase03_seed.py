@@ -8,6 +8,7 @@ import os
 import platform
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -32,6 +33,7 @@ BENCHMARK_ID = "basic-unused-symbols"
 BENCHMARK_CASE = f"{BENCHMARK_SOURCE}::{BENCHMARK_ID}"
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
+SOURCE_EDIT_CACHE = "installed-sdk-source-edit-cache-reuse"
 
 
 # Run in an isolated interpreter so the candidate never imports the Skylos
@@ -393,6 +395,7 @@ def pytest_worker(args):
             self.unittest_evidence = set()
             self.framework_evidence = set()
             self.live_router_receipts = set()
+            self.source_edit_cache = set()
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
@@ -400,6 +403,8 @@ def pytest_worker(args):
             case = cases[key]
             trace = AssertionTrace(args.upstream, assertion_sources[key])
             old_trace = sys.gettrace()
+            cache_path = None
+            scans_with_cache = []
 
             def analyze(path, **options):
                 if router_policy is not None:
@@ -407,11 +412,32 @@ def pytest_worker(args):
                         pytest.fail("the original case already supplies a configuration")
                     prove_live_router(path, wheels, environment())
                     options["config_file"] = router_policy
+                if cache_path is not None:
+                    if options.get("cache_dir") is not None:
+                        pytest.fail("the original source-edit case already selects a cache")
+                    options["cache_dir"] = cache_path
                 scanned = scan_candidate(args.sdk_python, path, options)
                 report = json.loads(scanned)
                 if report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
                 self.scans.add(key)
+                if cache_path is not None:
+                    cache = report.get("cache")
+                    if not cache or cache["write_failures"] or cache["writes"] != cache["misses"]:
+                        pytest.fail(f"candidate could not cache every selected source: {cache}")
+                    if not scans_with_cache and cache["misses"] < 2:
+                        pytest.fail(f"source-edit case expected a fresh cache: {cache}")
+                    if len(scans_with_cache) == 1:
+                        initial = scans_with_cache[0]
+                        selected = initial["hits"] + initial["misses"]
+                        if cache["misses"] != 1 or cache["hits"] != selected - 1:
+                            pytest.fail(f"source-edit case expected only the edited file to miss: {cache}")
+                        uncached = json.loads(scan_candidate(
+                            args.sdk_python, path, {**options, "cache_dir": None},
+                        ))
+                        if {**report, "cache": None} != {**uncached, "cache": None}:
+                            pytest.fail("cached and uncached reports differ after the source edit")
+                    scans_with_cache.append(cache)
                 if router_policy is not None and str(router_policy) in report["config_sources"]:
                     self.live_router_receipts.add(key)
                 grep_enabled = report["analysis_summary"]["grep_verify"]["enabled"]
@@ -449,8 +475,13 @@ def pytest_worker(args):
                 return scanned
 
             cli = None
-            with pytest.MonkeyPatch.context() as patch:
+            with ExitStack() as stack:
+                patch = stack.enter_context(pytest.MonkeyPatch.context())
                 if args.mode == "candidate":
+                    if SOURCE_EDIT_CACHE in case["prerequisites"]:
+                        cache_path = stack.enter_context(TemporaryDirectory(
+                            prefix="skarmory-pinned-source-edit-cache-",
+                        ))
                     if variant["layer"] == "cli":
                         if key == CLI_CASE:
                             cli = RecursiveCaseCli(args.artifact)
@@ -496,6 +527,8 @@ def pytest_worker(args):
                     sys.settrace(old_trace)
                     if cli is not None and cli.proved:
                         self.scans.add(key)
+                    if len(scans_with_cache) == 2:
+                        self.source_edit_cache.add(key)
                     self.lines[key] = trace.completed
 
         def pytest_runtest_makereport(self, item, call):
@@ -565,6 +598,8 @@ def pytest_worker(args):
                 proven = key in capture.trace_imports
             elif required == "runtime-trace-disabled":
                 proven = key in capture.trace_disables
+            elif required == SOURCE_EDIT_CACHE:
+                proven = key in capture.source_edit_cache
             elif required == "runtime-trace-rejected":
                 proven = key in capture.trace_rejections
             prerequisites[required] = "passed" if proven else "blocked"
