@@ -4,6 +4,55 @@ use super::*;
 
 pub(super) const VALIDATION_HOOK: &str = "django_form_validation";
 
+const WIDGET: &str = "django.forms.widgets.Widget";
+const CHAR_FIELD: &str = "django.db.models.fields.CharField";
+
+pub(super) fn is_declaration_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        WIDGET
+            | "django.forms.Widget"
+            | "django.forms.widgets.MediaDefiningClass"
+            | "django.forms.widgets"
+            | "django.forms"
+            | CHAR_FIELD
+            | "django.db.models.CharField"
+            | "django.db.models.Field"
+            | "django.db.models.fields.Field"
+            | "django.db.models.query_utils.RegisterLookupMixin"
+            | "django.db.models.fields"
+            | "django.db.models"
+    )
+}
+
+impl Graph<'_> {
+    pub(super) fn django_plain_widget_or_field(
+        &self,
+        provider: &str,
+        subclass: &Definition,
+    ) -> bool {
+        // Django 4.2 and 5.2 model CharField with type. Widget's metaclass
+        // adds a property whose media lookup runs on future instance access.
+        // Both verified base chains use object.__init_subclass__.
+        matches!(
+            provider,
+            WIDGET | "django.forms.Widget" | CHAR_FIELD | "django.db.models.CharField"
+        ) && !self.modules.contains_key("django")
+            && subclass.bases.len() == 1
+            && !subclass.has_class_keywords()
+            && subclass.decorators.is_empty()
+            && subclass.body_coverage_lines.is_empty()
+            && body_without_docstring(subclass).iter().all(|statement| {
+                matches!(&statement.kind, StatementKind::Define(method)
+                    if method.kind == DefinitionKind::Function
+                        && !method.name.text.starts_with("__")
+                        && method.decorators.is_empty()
+                        && method.defaults.is_empty()
+                        && method.annotations.is_empty())
+            })
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Field {
     Form,
