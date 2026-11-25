@@ -11069,9 +11069,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_active_or_possibly_active_dictionary_keeps_protocol_roots[-LOGGING-True]"
@@ -11082,9 +11081,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_active_or_possibly_active_dictionary_keeps_protocol_roots[-STORAGES-False]"
@@ -11095,9 +11093,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_active_or_possibly_active_dictionary_keeps_protocol_roots[-STORAGES-True]"
@@ -11108,9 +11105,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_active_or_possibly_active_dictionary_keeps_protocol_roots[if enabled:\\n    {setting} = {{}}\\n-LOGGING-False]"
@@ -11121,9 +11117,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_active_or_possibly_active_dictionary_keeps_protocol_roots[if enabled:\\n    {setting} = {{}}\\n-LOGGING-True]"
@@ -11134,9 +11129,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_active_or_possibly_active_dictionary_keeps_protocol_roots[if enabled:\\n    {setting} = {{}}\\n-STORAGES-False]"
@@ -11147,9 +11141,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_active_or_possibly_active_dictionary_keeps_protocol_roots[if enabled:\\n    {setting} = {{}}\\n-STORAGES-True]"
@@ -11160,9 +11153,8 @@ assertions = ["test/test_django_config_replacement_liveness.py:38", "test/test_d
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified temporary project written by the pinned test/test_django_config_replacement_liveness.py test"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original Django assertion differs from the installed SDK result (#43)"
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_replacement_keeps_newly_added_protocol_factory[LOGGING]"
@@ -13382,9 +13374,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:70", "test/test_django_
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:70 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_actual_backend_sequence_entries_supply_hook_roots[AUTHENTICATION_BACKENDS = (\"shop.backends.Configured\",)\\n]"
@@ -13395,9 +13386,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:98", "test/web_framewor
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:98 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_actual_backend_sequence_entries_supply_hook_roots[AUTHENTICATION_BACKENDS = []\\nAUTHENTICATION_BACKENDS.append(\"shop.backends.Configured\")\\n]"
@@ -13473,9 +13463,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:98", "test/web_framewor
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:98 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_actual_backend_sequence_entries_supply_hook_roots[def configure():\\n    AUTHENTICATION_BACKENDS.append(\"shop.backends.Configured\")\\nAUTHENTICATION_BACKENDS = []\\nconfigure()\\n]"
@@ -13822,9 +13811,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:172", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:172 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_backend_mro_selects_the_first_inherited_implementation"
@@ -13835,9 +13823,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:187", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:187 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_imported_backend_base_keeps_classmethod_and_hook_dependencies"
@@ -13848,9 +13835,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:203", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:203 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_backend_member_override_does_not_root_shadowed_base_method[get_user = None]"
@@ -14024,9 +14010,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:337", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:337 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_backend_method_decorator_requires_the_actual_builtin[-staticmethod]"
@@ -14037,9 +14022,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:337", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:337 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_backend_method_builtin_decorator_cannot_be_shadowed_in_class[classmethod]"
@@ -14252,9 +14236,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:439", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:439 (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_unreachable_helper_destruction_keeps_the_configured_backend"
@@ -14265,9 +14248,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:452", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_auth_backend_liveness.py:452 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_importing_scalar_setting_does_not_activate_its_satellite"
@@ -14302,9 +14284,8 @@ assertions = ["test/test_django_named_setting_imports.py:93", "test/test_django_
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:93 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_only_named_setting_is_selected[AUTHENTICATION_BACKENDS-Backend.get_user-django_web_auth_backend]"
@@ -14315,9 +14296,8 @@ assertions = ["test/test_django_named_setting_imports.py:93", "test/test_django_
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:93 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_only_named_setting_is_selected[STORAGES-Storage.save-django_web_storage_backend]"
@@ -14328,9 +14308,8 @@ assertions = ["test/test_django_named_setting_imports.py:93", "test/test_django_
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:93 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_only_named_setting_is_selected[TEMPLATES-context_processor-django_web_setting_reference]"
@@ -14341,9 +14320,8 @@ assertions = ["test/test_django_named_setting_imports.py:93", "test/test_django_
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:93 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_named_settings_aliases_and_reexports_keep_the_effective_role[LOGGING-Factory.filter]"
