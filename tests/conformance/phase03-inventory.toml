@@ -7439,9 +7439,8 @@ assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_registration: FastAPI lifespan must resolve to a supported async context manager (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_replaced_registration_methods_do_not_prove_callbacks_run[add_exception_handler]"
@@ -7524,9 +7523,8 @@ assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_registration: FastAPI middleware provider or dispatch callback could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_source_owned_starlette_lookalike_does_not_prove_dispatch_execution[function]"
@@ -7537,9 +7535,8 @@ assertions = ["test/test_fastapi_hook_precision.py:17", "test/test_fastapi_hook_
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_hook_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_registration: FastAPI middleware provider or dispatch callback could not be resolved (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_startup_in_an_uncalled_app_factory_is_unused[False-0]"
@@ -7634,9 +7631,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-0-dead_app_factory]"
@@ -8033,9 +8029,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[False-80-dead_app_factory]"
@@ -8432,9 +8427,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-0-dead_app_factory]"
@@ -8831,9 +8825,8 @@ assertions = ["test/test_fastapi_route_precision.py:267", "test/test_fastapi_rou
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_route_precision.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A pinned framework assertion still fails on the installed SDK (#43)"
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_fastapi_routes_need_real_executing_registration[True-80-dead_app_factory]"
