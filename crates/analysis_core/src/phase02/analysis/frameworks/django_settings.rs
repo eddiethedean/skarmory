@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod backend_writes;
 mod collections;
 
 const PROTOCOL_SETTINGS: [&str; 4] = [

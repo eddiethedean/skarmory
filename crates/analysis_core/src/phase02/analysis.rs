@@ -9165,6 +9165,7 @@ impl<'a> Graph<'a> {
                         | "generator_creation"
                         | "flask_factory_failed_call"
                         | "flask_initializer_failed_call"
+                        | "django_settings_failed_initializer_call"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
                         | aiohttp::DECLARATION
@@ -11034,6 +11035,100 @@ def retired(pk):
             .collect();
         assert_eq!(hooks, ["shop.backends.Actual.get_user"]);
         assert!(names(&report, Category::Function).contains(&"retired"));
+    }
+
+    #[test]
+    fn django_auth_backend_stops_before_proven_unbound_writes() {
+        const HEADER: &str = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n";
+        const SETTING: &str = "AUTHENTICATION_BACKENDS = ['shop.backends.Selected']\n";
+        const BACKEND: &str = "class Selected:\n    def get_user(self, pk): return pk\n";
+        for (provider, settings, other, retains_hook) in [
+            ("Selected.get_user = replacement\n", "", "", false),
+            (
+                "if enabled:\n    Selected.get_user = replacement\n",
+                "",
+                "",
+                false,
+            ),
+            (
+                "def replace():\n    Selected.get_user = replacement\nreplace()\n",
+                "",
+                "",
+                false,
+            ),
+            (
+                "",
+                "from shop import backends\nbackends.Selected = replacement\n",
+                "",
+                false,
+            ),
+            (
+                "",
+                "",
+                "from shop import backends\nbackends.Selected = replacement\n",
+                true,
+            ),
+        ] {
+            let settings_source = format!("{HEADER}{settings}{SETTING}");
+            let backend = format!("{BACKEND}{provider}");
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings_source),
+                module("shop/backends.py", "shop.backends", &backend),
+                module("consumer.py", "consumer", other),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert!(
+                report.issues.is_empty(),
+                "provider {provider:?}, settings {settings:?}, other {other:?}: {:?}",
+                report.issues
+            );
+            assert_eq!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "django_auth_backend"),
+                retains_hook
+            );
+        }
+
+        let settings = format!("{HEADER}{SETTING}");
+        let backend =
+            format!("{BACKEND}from external import replacement\nSelected.get_user = replacement\n");
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings),
+                module("shop/backends.py", "shop.backends", &backend),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_attribute_write")
+        );
+        let backend = format!("{BACKEND}Selected.get_user = replacement\n");
+        let report = analyze_phase03(
+            &[
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings),
+                module("shop/backends.py", "shop.backends", &backend),
+                module(
+                    "consumer.py",
+                    "consumer",
+                    "from shop.backends import Selected\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| { issue.path == "consumer.py" && issue.kind == "unresolved_import" })
+        );
     }
 
     #[test]

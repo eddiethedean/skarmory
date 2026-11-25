@@ -362,7 +362,8 @@ dictionary edits follow initializer order, including directly called local
 helpers, reassignments, and named imports in finite conditional branches.
 The authentication backend list supports literal augmentation, repetition,
 and item edits in the selected settings module. Proven invalid list operations
-can stop initialization before Django consumes the setting. A closed source
+and unbound backend replacements can stop initialization before Django consumes
+the setting. A closed source
 decorator can replace a backend class with another initialized class or
 discard a hook without executing its body. Source importers of a mutated list
 and unresolved mutations retain their coverage diagnostics.

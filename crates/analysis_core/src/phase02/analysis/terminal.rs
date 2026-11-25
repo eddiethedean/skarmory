@@ -26,6 +26,7 @@ impl Graph<'_> {
             || self.phase03
                 && (self.terminal_missing_django_reloader(scope, statement)
                     || self.terminal_django_auth_initializer(scope, statement)
+                    || self.terminal_django_backend_replacement(scope, statement)
                     || self.terminal_django_runpython(scope, statement)
                     || self.terminal_celery_router_failure(scope, statement)
                     || self.terminal_logging_config_failure(scope, statement))

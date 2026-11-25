@@ -154,7 +154,7 @@ fn text_dictionary(items: Vec<Value>) -> Option<BTreeMap<String, Value>> {
     Some(result)
 }
 
-fn literal(expression: &Expression) -> Option<Value> {
+pub(super) fn literal(expression: &Expression) -> Option<Value> {
     match &expression.kind {
         ExpressionKind::Text(value) if value.len() <= MAX_ITEMS => Some(Value::Text(value.clone())),
         ExpressionKind::Bool(value) => Some(Value::Bool(*value)),
