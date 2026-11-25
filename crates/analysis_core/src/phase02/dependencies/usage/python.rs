@@ -121,6 +121,15 @@ impl<'a> Python<'a> {
                 Stmt::SetGlobalName { value, .. } => {
                     self.expression(value, &bindings);
                 }
+                Stmt::DjangoSettingsGlobalCall(value) => {
+                    self.expression(value, &bindings);
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "a call can change Django dependency configuration",
+                    ));
+                }
                 Stmt::LiteralRouteLoop {
                     path, registration, ..
                 } => {
@@ -190,6 +199,18 @@ impl<'a> Python<'a> {
                             "Django settings assignment could not be resolved",
                         ));
                     }
+                }
+                Stmt::EditDjangoBackendList { receiver, edit } => {
+                    self.expression(receiver, &bindings);
+                    if let Some(value) = edit.value() {
+                        self.expression(value, &bindings);
+                    }
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "Django backend list mutation can change selected dependencies",
+                    ));
                 }
                 Stmt::WriteAttribute {
                     receiver, value, ..
@@ -398,6 +419,7 @@ impl<'a> Python<'a> {
             | Expr::FormattedString(values)
             | Expr::Boolean { values, .. }
             | Expr::Addition(values)
+            | Expr::Divide(values)
             | Expr::Operands(values) => {
                 for item in values {
                     self.expression(item, bindings);

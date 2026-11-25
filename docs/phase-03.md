@@ -331,8 +331,24 @@ A unique conventional settings package with literal application and secret-key
 settings can describe an externally selected configuration. Storage and logging
 entries use their effective dictionary keys. Bounded literal list and
 dictionary edits follow initializer order, including directly called local
-helpers, reassignments, and finite conditional branches. Unresolved mutations
-retain their coverage diagnostics.
+helpers, reassignments, and finite conditional branches. The authentication
+backend list supports literal augmentation, repetition, and item edits in
+the selected settings module. Source importers of a mutated list and
+unresolved mutations retain their coverage diagnostics.
+
+The preview recognizes stdlib `logging.config.dictConfig` consumers with bounded
+module initialization. It follows literal formatter and filter declarations,
+ordered dictionary edits, aliases, and eligible one-argument mutation helpers.
+An opaque configuration or consumer leaves coverage incomplete.
+
+Mounted Django DetailViews with resolved model and template context retain
+possible references to source model methods. The preview follows selected
+Django template directories, literal inheritance and includes, and supported
+template scopes. Bounded pathlib paths start at the file that defines them,
+including settings imported from another module. The preview applies file
+exclusions and requires resolved loader settings and context. Unsupported
+markup in a selected template produces a coverage diagnostic.
+[Django generic views](https://docs.djangoproject.com/en/5.2/ref/class-based-views/generic-display/) · [Django template API](https://docs.djangoproject.com/en/5.2/ref/templates/api/)
 
 A supported Django form validation call retains possible `clean` and
 `clean_<field>` callbacks from its effective field table. The preview
@@ -376,7 +392,14 @@ registration is reached. The model does not prove which dispatches occur.
 The profile also recognizes selected Celery task registrations, including
 reached `register_task` calls on a resolved app. Bounded Celery backend
 configuration tracks the effective provider per app and honors the first
-reached backend read. It models SQLAlchemy listeners
+reached backend read. Bounded task routing follows per-app `task_routes`
+settings from constructors and updates. Callable entries and resolved import
+paths retain possible-use evidence and the supported router argument slots.
+Literal routing map keys are task selectors. Opaque changes can leave routing
+coverage incomplete.
+[Celery task routing](https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-routes)
+
+The profile models SQLAlchemy listeners
 and declared fields through a resolved SQLAlchemy or SQLModel base, including
 SQLModel's literal `table` class option. It recognizes Pydantic model hooks,
 unittest tests and lifecycle methods through effective class bindings, and pytest

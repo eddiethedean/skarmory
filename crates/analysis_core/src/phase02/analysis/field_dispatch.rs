@@ -12,6 +12,11 @@ pub(super) struct FreshFieldInvocation {
     dependencies: [SymbolId; 3],
 }
 
+enum ConstructorField<'a> {
+    FromArgument(&'a str),
+    Literal,
+}
+
 impl Graph<'_> {
     pub(super) fn invoke_fresh_field_method(
         &mut self,
@@ -52,7 +57,7 @@ impl Graph<'_> {
             return false;
         };
         if self.scopes[self.symbols[invocation.target].scope].owner != Some(class)
-            || self.fresh_constructor_field(class) != Some(field)
+            || !matches!(self.fresh_constructor_field(class), Some(ConstructorField::FromArgument(member)) if member == field)
             || !self.class_discovery_writes(class, call.scope).is_empty()
         {
             return false;
@@ -256,7 +261,7 @@ impl Graph<'_> {
         }
     }
 
-    fn fresh_constructor_field(&self, class: SymbolId) -> Option<&str> {
+    fn fresh_constructor_field(&self, class: SymbolId) -> Option<ConstructorField<'_>> {
         let Binding::Definition(definition, _) = self.symbols[class].binding else {
             return None;
         };
@@ -277,7 +282,7 @@ impl Graph<'_> {
                 return None;
             }
             if method.name.text == "__init__" {
-                if !plain_method(method, 2) || field.is_some() {
+                if field.is_some() {
                     return None;
                 }
                 let [
@@ -294,13 +299,34 @@ impl Graph<'_> {
                 else {
                     return None;
                 };
-                if !matches!((&receiver.kind, &value.kind), (ExpressionKind::Name(receiver), ExpressionKind::Name(argument))
-                    if receiver == &method.parameters[0].text && argument == &method.parameters[1].text)
-                    || member.starts_with("__")
+                if member.starts_with("__")
+                    || !matches!(&receiver.kind,
+                    ExpressionKind::Name(name) if method.parameters.first().is_some_and(|parameter| parameter.text == *name))
                 {
                     return None;
                 }
-                field = Some(member.as_str());
+                field = match &value.kind {
+                    ExpressionKind::Name(argument)
+                        if plain_method(method, 2) && argument == &method.parameters[1].text =>
+                    {
+                        Some(ConstructorField::FromArgument(member))
+                    }
+                    ExpressionKind::Sequence { items, .. }
+                        if plain_method(method, 1)
+                            && items.iter().all(|item| {
+                                matches!(
+                                    item.kind,
+                                    ExpressionKind::Text(_)
+                                        | ExpressionKind::Scalar(_)
+                                        | ExpressionKind::Bool(_)
+                                        | ExpressionKind::None
+                                )
+                            }) =>
+                    {
+                        Some(ConstructorField::Literal)
+                    }
+                    _ => return None,
+                };
             } else if method.name.text.starts_with("__") {
                 return None;
             }

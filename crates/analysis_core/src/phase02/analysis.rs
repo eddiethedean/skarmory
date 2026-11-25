@@ -5,12 +5,12 @@ use std::cell::OnceCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::RangeInclusive;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use skarmory_python::Location;
 use skarmory_python::phase02::{
-    ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, Expression,
-    ExpressionKind, Import, Name, Statement, StatementKind,
+    ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, DjangoBackendListEdit,
+    Expression, ExpressionKind, Import, Name, Statement, StatementKind,
 };
 
 use super::config::{Entrypoint, FastapiRouterMode};
@@ -21,20 +21,26 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
 mod aiohttp;
 mod celery;
+mod celery_routes;
 mod comprehension;
 mod django_forms;
 mod django_globals;
+mod django_template_paths;
+mod django_templates;
 mod django_urls;
 mod fastapi;
 mod field_dispatch;
 mod flask;
 mod frameworks;
 mod gunicorn;
+mod logging_config;
 mod mutations;
 mod pydantic;
 mod sanic;
 mod starlette;
 mod terminal;
+
+pub(super) use django_templates::{DjangoInput, TemplateProject};
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -91,6 +97,8 @@ enum Value {
     Process(Box<Value>),
     Start(Box<Value>),
     Text(String),
+    ProjectPath(PathBuf),
+    ResolveProjectPath(PathBuf),
     Bool(bool),
     Integer(i64),
     None,
@@ -458,12 +466,28 @@ enum SubmoduleAttachment {
 
 #[cfg(test)]
 fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None, false, None)
+    analyze_with_verification(
+        files,
+        entrypoints,
+        None,
+        None,
+        None,
+        false,
+        DjangoInput::default(),
+    )
 }
 
 #[cfg(test)]
 fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None, true, None)
+    analyze_with_verification(
+        files,
+        entrypoints,
+        None,
+        None,
+        None,
+        true,
+        DjangoInput::default(),
+    )
 }
 
 #[derive(Default)]
@@ -524,7 +548,7 @@ pub(super) fn analyze_with_verification(
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
     runtime: Option<&runtime_evidence::Snapshot>,
     phase03: bool,
-    django_settings: Option<&std::ffi::OsStr>,
+    django: DjangoInput<'_>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
@@ -588,6 +612,7 @@ pub(super) fn analyze_with_verification(
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
         celery_backends: celery::Backends::default(),
+        celery_routes: celery_routes::Routes::default(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
         flask_hooks: Vec::new(),
@@ -600,10 +625,11 @@ pub(super) fn analyze_with_verification(
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_settings_sources: BTreeSet::new(),
+        django_template_apps: BTreeMap::new(),
         django_registration_issues: Vec::new(),
         framework_route_receivers: BTreeMap::new(),
         registered_django_admin_models: BTreeSet::new(),
-        initial_django_settings: django_settings.map_or(DjangoSettings::Unset, |value| {
+        initial_django_settings: django.settings.map_or(DjangoSettings::Unset, |value| {
             value.to_str().map_or(DjangoSettings::Unknown, |value| {
                 DjangoSettings::Module(value.to_owned())
             })
@@ -660,6 +686,7 @@ pub(super) fn analyze_with_verification(
     }
     if phase03 {
         graph.resolve_fresh_field_invocations();
+        graph.collect_logging_configs();
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
@@ -670,6 +697,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
+        graph.collect_celery_routes();
     }
     graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
@@ -715,7 +743,7 @@ pub(super) fn analyze_with_verification(
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
     graph.report_failed_terminal_module_consumers();
-    let mut analysis = graph.finish(roots, possible_roots, verification);
+    let mut analysis = graph.finish(roots, possible_roots, verification, django.templates);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -777,6 +805,7 @@ struct Graph<'a> {
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
     celery_backends: celery::Backends,
+    celery_routes: celery_routes::Routes,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
     flask_hooks: Vec<flask::ParameterHook>,
@@ -789,6 +818,7 @@ struct Graph<'a> {
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
+    django_template_apps: BTreeMap<ScopeId, BTreeMap<usize, Option<String>>>,
     django_registration_issues: Vec<(Object, Issue)>,
     framework_route_receivers: BTreeMap<(ScopeId, Object, SymbolId), BTreeSet<SymbolId>>,
     registered_django_admin_models: BTreeSet<(ScopeId, SymbolId)>,
@@ -2579,6 +2609,7 @@ impl<'a> Graph<'a> {
                 ModuleMemberAccess::Attribute,
                 depth,
             ),
+            Value::ProjectPath(path) => self.project_path_member(path, name, access),
             Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
                 if self.is_class(class) =>
             {
@@ -2660,7 +2691,7 @@ impl<'a> Graph<'a> {
                 | ObjectKind::FlaskLoginManager),
             ) if self.phase03 => self.flask_member(object, kind, name, access),
             Value::Object(object, ObjectKind::CeleryApp) if name == "conf" => {
-                Value::CeleryConfig(object)
+                self.celery_config_member(object, access)
             }
             Value::Object(object, ObjectKind::CeleryApp) if name == "backend" => {
                 Value::CeleryBackend(object)
@@ -3129,6 +3160,7 @@ impl<'a> Graph<'a> {
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
+                    | ExpressionKind::Divide(_)
                     | ExpressionKind::Operands(_)
             )
         {
@@ -3736,6 +3768,12 @@ impl<'a> Graph<'a> {
                         self.django_receiver(scope, arguments, keywords, before, depth),
                     )
                 }
+                Value::Provider(name) if self.phase03 && name == "pathlib.Path" => self
+                    .source_project_path(scope, before, arguments, keywords)
+                    .map_or(Value::Unknown, Value::ProjectPath),
+                Value::ResolveProjectPath(path) if arguments.is_empty() && keywords.is_empty() => {
+                    Value::ProjectPath(path)
+                }
                 Value::Provider(name) if self.phase03 && name == "django.urls.include" => self
                     .django_include(
                         CallArguments {
@@ -3823,7 +3861,26 @@ impl<'a> Graph<'a> {
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
             ExpressionKind::DeferredLambda(_) => Value::DeferredLambda,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
-            ExpressionKind::Addition(operands) | ExpressionKind::Operands(operands) => {
+            ExpressionKind::Divide(operands) if self.phase03 => {
+                let [left, right] = operands.as_slice() else {
+                    return Value::Unknown;
+                };
+                let path = recurse(self, left);
+                if let Value::ProjectPath(path) = path {
+                    return self.join_project_path(path, right, (scope, before));
+                }
+                if self.has_namespace_reads(scope)
+                    && (path.may_contain_namespace()
+                        || recurse(self, right).may_contain_namespace())
+                {
+                    Value::OpaqueNamespace
+                } else {
+                    Value::OperatorResult
+                }
+            }
+            ExpressionKind::Addition(operands)
+            | ExpressionKind::Divide(operands)
+            | ExpressionKind::Operands(operands) => {
                 if self.has_namespace_reads(scope)
                     && operands
                         .iter()
@@ -5052,6 +5109,14 @@ impl<'a> Graph<'a> {
                             },
                         );
                     }
+                    Value::Method(object, ObjectKind::CeleryApp, method)
+                        if self.phase03 && method == "send_task" =>
+                    {
+                        if keywords.is_empty() && matches!(arguments.as_slice(), [task] if matches!(task.kind, ExpressionKind::Text(_))) {
+                            self.record_celery_route_load(object, scope, expr.at);
+                        }
+                        self.scope_issue(scope, expr.at, "unresolved_call", "Celery task submission is outside the bounded model");
+                    }
                     Value::Method(parent, ObjectKind::App, method)
                         if self.phase03 && method == "mount" =>
                     {
@@ -5434,6 +5499,10 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
                         }
                     }
+                    Value::Provider(name)
+                        if self.phase03 && name == "pathlib.Path"
+                            && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
+                    Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -5584,6 +5653,7 @@ impl<'a> Graph<'a> {
             ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::Addition(values)
+            | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values) => {
                 for item in values {
                     self.walk(scope, item, before);
@@ -6269,6 +6339,7 @@ impl<'a> Graph<'a> {
                 .postponed_annotations;
         match &expr.kind {
             ExpressionKind::Addition(values)
+            | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values)
             | ExpressionKind::Sequence { items: values, .. } => {
                 for reference in values {
@@ -6443,6 +6514,30 @@ impl<'a> Graph<'a> {
                 }
                 StatementKind::SetGlobalName { value, .. } => {
                     self.record_django_global_write(scope, value, at);
+                }
+                StatementKind::DjangoSettingsGlobalCall(call) => {
+                    if self.phase03 {
+                        self.walk(scope, call, at);
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "global declarations are outside the compatibility subset",
+                        );
+                    }
+                }
+                StatementKind::EditDjangoBackendList { receiver, edit } => {
+                    if let Some(value) = edit.value() {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, receiver, at);
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_setting_mutation",
+                        "Django backend list mutation requires a proven list in the selected settings",
+                    );
                 }
                 StatementKind::DeleteName(name) => {
                     if !self.phase03
@@ -8976,6 +9071,7 @@ impl<'a> Graph<'a> {
         roots: Vec<Edge>,
         mut possible_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
+        templates: Option<&TemplateProject<'_>>,
     ) -> Analysis {
         // Declaration hints retain only the definition in the compatibility
         // report. Leave them out of the execution graph and parameter analysis.
@@ -9002,7 +9098,10 @@ impl<'a> Graph<'a> {
                 self.establish_reachability(&roots, &possible_roots, snapshot);
         }
         if self.phase03 && converged {
-            let protocols = self.django_settings_protocol_roots(&reach);
+            let mut protocols = self.django_settings_protocol_roots(&reach);
+            if let Some(templates) = templates {
+                protocols.extend(self.django_template_roots(&reach, templates));
+            }
             if !protocols.is_empty() {
                 possible_roots.extend(protocols);
                 self.resolve_receiver_calls();
@@ -9114,6 +9213,7 @@ impl<'a> Graph<'a> {
             .filter_map(|&(target, kind, _)| {
                 (self.retain_sanic_listener_parameters(target, kind)
                     || self.retain_fastapi_callback_parameters(target, kind)
+                    || kind == celery_routes::ROUTER
                     || kind == "django_migration_callback_declaration")
                     .then_some(target)
             })
@@ -9147,6 +9247,7 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_converter_regex"
                     | "django_migration_parameter"
+                    | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
             ) {
@@ -9462,6 +9563,10 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.push(environment);
                 expressions.push(value);
             }
+            StatementKind::EditDjangoBackendList { receiver, edit } => {
+                expressions.push(receiver);
+                expressions.extend(edit.value());
+            }
             StatementKind::LiteralRouteLoop {
                 path, registration, ..
             } => {
@@ -9501,6 +9606,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
+            | StatementKind::DjangoSettingsGlobalCall(value)
             | StatementKind::SetGlobalName { value, .. }
             | StatementKind::DiscardedComprehension(value) => expressions.push(value),
         }
@@ -9532,6 +9638,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::FormattedString(values)
             | ExpressionKind::Boolean { values, .. }
             | ExpressionKind::Addition(values)
+            | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),
             ExpressionKind::Comprehension {
                 iterators,
@@ -9824,7 +9931,14 @@ fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
 }
 
 fn is_deferred_possible_edge(kind: &str) -> bool {
-    is_atexit_edge(kind) || kind == django_forms::VALIDATION_HOOK
+    is_atexit_edge(kind)
+        || matches!(
+            kind,
+            django_forms::VALIDATION_HOOK
+                | "logging_factory"
+                | celery_routes::ROUTER
+                | celery_routes::ROUTER_PARAMETER
+        )
 }
 
 fn is_atexit_edge(kind: &str) -> bool {
@@ -10202,6 +10316,446 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn django_settings_replays_literal_backend_list_edits_and_global_reads() {
+        let cases = [
+            (
+                r#"AUTHENTICATION_BACKENDS = ['shop.backends.Retired']
+AUTHENTICATION_BACKENDS *= 0
+AUTHENTICATION_BACKENDS += ['shop.backends.Removed', 'shop.backends.Retired']
+del AUTHENTICATION_BACKENDS[0]
+AUTHENTICATION_BACKENDS[-1] = 'shop.backends.Active'
+"#,
+                "shop.backends.Active.get_user",
+                "django_auth_backend",
+            ),
+            (
+                r#"STORAGES = {}
+def configure():
+    global STORAGES
+    STORAGES.update({'default': {'BACKEND': 'shop.backends.Active'}})
+configure()
+"#,
+                "shop.backends.Active.save",
+                "django_storage_backend",
+            ),
+        ];
+        for (configuration, hook, kind) in cases {
+            let settings =
+                format!("INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n{configuration}");
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings),
+                module(
+                    "shop/backends.py",
+                    "shop.backends",
+                    concat!(
+                        "class Active:\n    def get_user(self, user_id): return user_id\n",
+                        "    def save(self, name, value): return name\n",
+                        "class Removed:\n    def get_user(self, user_id): return None\n",
+                        "class Retired:\n    def get_user(self, user_id): return None\n",
+                    ),
+                ),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            let hooks: Vec<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == kind).then_some((row.full_name.as_str(), row.certainty))
+                })
+                .collect();
+            assert_eq!(hooks, [(hook, "possible")]);
+        }
+    }
+
+    #[test]
+    fn django_auth_backend_bare_annotation_preserves_the_effective_member() {
+        for (body, expected) in [
+            (
+                "    get_user: object\n",
+                Some("shop.backends.Parent.get_user"),
+            ),
+            ("    get_user: object = None\n", None),
+            (
+                "    def get_user(self, key): return key\n    get_user: object\n",
+                Some("shop.backends.Selected.get_user"),
+            ),
+        ] {
+            let backends = format!(
+                "class Parent:\n    def get_user(self, key): return None\nclass Selected(Parent):\n{body}"
+            );
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module(
+                    "shop/settings.py",
+                    "shop.settings",
+                    "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nAUTHENTICATION_BACKENDS = ['shop.backends.Selected']\n",
+                ),
+                module("shop/backends.py", "shop.backends", &backends),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            let hooks: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_auth_backend")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(hooks, expected.into_iter().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn django_backend_list_edit_keeps_coverage_incomplete_for_source_importers() {
+        let files = [
+            module("shop/__init__.py", "shop", ""),
+            module(
+                "shop/settings.py",
+                "shop.settings",
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nAUTHENTICATION_BACKENDS = []\nAUTHENTICATION_BACKENDS += ['shop.backends.Selected']\n",
+            ),
+            module(
+                "shop/backends.py",
+                "shop.backends",
+                "class Selected:\n    def get_user(self, key): return key\n",
+            ),
+            module(
+                "consumer.py",
+                "consumer",
+                "from shop.settings import AUTHENTICATION_BACKENDS\nif AUTHENTICATION_BACKENDS:\n    selected()\ndef selected(): pass\n",
+            ),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_setting_mutation")
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind == "django_auth_backend")
+        );
+    }
+
+    #[test]
+    fn django_settings_paths_require_an_original_file_anchor_and_path_provider() {
+        let source = "from pathlib import Path as FilePath\n\
+                      BASE = FilePath(__file__).resolve().parent\n\
+                      TEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', \
+                                    'DIRS': [BASE / 'pages']}]\n";
+        let settings = module(
+            "shop/settings.py",
+            "shop.settings",
+            "from .satellite import TEMPLATES\n",
+        );
+        let package = module("shop/__init__.py", "shop", "");
+        let sat = module("shop/satellite.py", "shop.satellite", source);
+        let report = analyze_phase03(&[package, settings, sat], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+
+        for replacement in [
+            "__file__ = '/different/site.py'\n",
+            "import pathlib\npathlib.Path.resolve = implementation\n",
+        ] {
+            let source = format!("{replacement}{source}");
+            let sat = module("shop/satellite.py", "shop.satellite", &source);
+            let report = analyze_phase03(&[sat], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call")
+            );
+        }
+    }
+
+    #[test]
+    fn dict_config_resolves_factory_at_the_reached_stdlib_consumer() {
+        let source = "from logging.config import dictConfig as apply\n\
+                      apply({'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}})\n";
+        let candidate = module("app.py", "app", source);
+        let factories = module(
+            "formatters.py",
+            "formatters",
+            "class Selected:\n    def format(self, rec): return render(rec)\n\
+             def render(rec): return str(rec)\n\
+             class Retired: pass\n",
+        );
+        let result = analyze_phase03(&[candidate, factories], &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Class), ["Retired"]);
+        assert!(result.evidence.iter().any(|entry| {
+            entry.full_name == "formatters.Selected"
+                && entry.kind == "logging_factory"
+                && entry.certainty == "possible"
+        }));
+        assert_eq!(names(&result, Category::Function), ["format", "render"]);
+    }
+
+    #[test]
+    fn dict_config_stops_before_later_factories_after_proven_binding_failure() {
+        let source = "import logging.config as config\n\
+                      apply = config.dictConfig\n\
+                      config.dictConfig = lambda configuration: None\n\
+                      apply({'version': 1, 'formatters': {'z': {'class': 'formatters.Invalid'}, 'a': {'()': 'formatters.Later'}}})\n";
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module(
+                    "formatters.py",
+                    "formatters",
+                    "class Invalid: pass\nclass Later: pass\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Class), ["Later"]);
+    }
+
+    #[test]
+    fn dict_config_observes_projected_alias_mutation_and_local_clears() {
+        for (edit, selected) in [
+            (
+                "wrapped = {'selected': CONFIG['formatters']['main']}\nwrapped['selected']['()'] = 'formatters.Other'\n",
+                Some("Other"),
+            ),
+            (
+                "def mutate(config):\n    config.clear()\nmutate(CONFIG)\n",
+                None,
+            ),
+            ("alias = CONFIG\nalias.clear()\n", None),
+        ] {
+            let source = format!(
+                "import logging.config\nCONFIG = {{'version': 1, 'formatters': {{'main': {{'()': 'formatters.Original'}}}}}}\n\
+                {edit}logging.config.dictConfig(CONFIG)\n"
+            );
+            let result = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module(
+                        "formatters.py",
+                        "formatters",
+                        "class Original: pass\nclass Other: pass\n",
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{edit}: {:?}", result.issues);
+            let expected = if selected.is_some() {
+                vec!["Original"]
+            } else {
+                vec!["Original", "Other"]
+            };
+            assert_eq!(names(&result, Category::Class), expected);
+        }
+    }
+
+    #[test]
+    fn dict_config_with_opaque_mutation_keeps_coverage_incomplete() {
+        let source = "import logging.config\n\
+                      CONFIG = {'version': 1, 'formatters': {'main': {'()': 'formatters.Selected'}}}\n\
+                      configure(CONFIG)\n\
+                      logging.config.dictConfig(CONFIG)\n";
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module("formatters.py", "formatters", "class Selected: pass\n"),
+            ],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|entry| entry.kind == "logging_factory")
+        );
+    }
+
+    #[test]
+    fn dict_config_does_not_read_a_shadowed_package_member_as_a_submodule() {
+        let source = "import logging.config\n\
+                      logging.config.dictConfig({'version': 1, 'formatters': {'main': {'()': 'pkg.formatters.Selected'}}})\n";
+        let result = analyze_phase03(
+            &[
+                module("app.py", "app", source),
+                module("pkg/__init__.py", "pkg", "formatters = object()\n"),
+                module(
+                    "pkg/formatters.py",
+                    "pkg.formatters",
+                    "class Selected: pass\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|entry| entry.kind == "logging_factory")
+        );
+    }
+
+    #[test]
+    fn celery_routes_use_the_effective_configuration_and_bind_only_router_slots() {
+        let files = [
+            module(
+                "app.py",
+                "app",
+                concat!(
+                    "from celery import Celery as Factory\n",
+                    "from routers import active as route\n",
+                    "app = Factory('shop', task_routes=('routers:stale',))\n",
+                    "alias = app.conf\n",
+                    "alias.update({'task_routes': (route, {'routers.mapping_key': {'queue': 'jobs'}})})\n",
+                    "class Other:\n    app = object()\n",
+                ),
+            ),
+            module(
+                "routers.py",
+                "routers",
+                concat!(
+                    "def stale(name, args, kwargs, options, task=None): pass\n",
+                    "def mapping_key(name, args, kwargs, options, task=None): pass\n",
+                    "def active(name, args, /, *rest, task, extra=None, **kw):\n    helper()\n",
+                    "def helper(): pass\n",
+                ),
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["mapping_key", "stale"]);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.full_name == "routers.active.extra")
+        );
+        let injected: BTreeSet<_> = result
+            .evidence
+            .iter()
+            .filter_map(|edge| {
+                (edge.kind == celery_routes::ROUTER_PARAMETER).then_some(edge.full_name.as_str())
+            })
+            .collect();
+        assert_eq!(
+            injected,
+            BTreeSet::from([
+                "routers.active.args",
+                "routers.active.kw",
+                "routers.active.name",
+                "routers.active.rest",
+                "routers.active.task"
+            ])
+        );
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name == "routers.helper" && edge.certainty == "possible")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name == "routers.helper" && edge.certainty == "certain")
+        );
+    }
+
+    #[test]
+    fn celery_terminal_router_failures_preserve_only_reached_evaluation() {
+        for failure in [
+            "app.conf.update(missing)",
+            "app = object()\napp.conf.task_routes = ('routers.route',)",
+            "app.conf = object()\napp.conf.task_routes = ('routers.route',)",
+        ] {
+            let source = format!(
+                "from celery import Celery\napp = Celery('shop', task_routes=('routers.route',))\n{failure}\n"
+            );
+            let files = [
+                module("app.py", "app", &source),
+                module(
+                    "routers.py",
+                    "routers",
+                    "def route(*args, **kwargs): pass\n",
+                ),
+            ];
+            let result = analyze_phase03(&files, &[]);
+            assert!(result.issues.is_empty(), "{failure}: {:?}", result.issues);
+            assert_eq!(names(&result, Category::Function), ["route"], "{failure}");
+        }
+        let files = [
+            module(
+                "app.py",
+                "app",
+                "from celery import Celery\napp = Celery('shop', task_routes=('routers.route',))\nfrom cfg import cfg\napp.conf.update(cfg)\n",
+            ),
+            module("cfg.py", "cfg", "cfg = object()\n"),
+            module(
+                "routers.py",
+                "routers",
+                "def route(*args, **kwargs): pass\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_registration")
+        );
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|edge| edge.full_name == "routers.route" && edge.certainty == "possible")
+        );
+    }
+
+    #[test]
+    fn celery_early_submission_resolves_module_names_before_later_rebinding() {
+        let files = [module(
+            "app.py",
+            "app",
+            concat!(
+                "from celery import Celery\n",
+                "def original(name, args, kwargs, options, task=None): pass\n",
+                "def late(name, args, kwargs, options, task=None): pass\n",
+                "selected = original\n",
+                "app = Celery('shop', task_routes=('app:selected',))\n",
+                "app.send_task('jobs.run')\n",
+                "selected = late\n",
+                "app.conf.task_routes = ()\n",
+            ),
+        )];
+        let result = analyze_phase03(&files, &[]);
+        let routers: Vec<_> = result
+            .evidence
+            .iter()
+            .filter_map(|edge| {
+                (edge.kind == celery_routes::ROUTER).then_some(edge.full_name.as_str())
+            })
+            .collect();
+        assert_eq!(routers, ["app.original"]);
     }
 
     #[test]

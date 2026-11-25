@@ -1,6 +1,6 @@
 //! Resolve Celery result backends through ordered, source-owned settings.
 
-use super::*;
+use super::{celery_routes::RouteOperation, *};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Setting {
@@ -38,7 +38,15 @@ impl Graph<'_> {
         let value = self.identity(scope, mapping, before, 0);
         if matches!(&value, Value::Mapping(items) if items.as_chunks::<2>().0.iter().all(|[key, _]| matches!(key, Value::Text(_))))
         {
-            if let Some(setting) = configured_mapping(value) {
+            if let Some(routes) = configured_mapping_member(&value, "task_routes") {
+                self.record_celery_route_event(
+                    object,
+                    scope,
+                    at,
+                    RouteOperation::Configure(routes),
+                );
+            }
+            if let Some(setting) = configured_mapping(&value) {
                 self.record_celery_backend_event(object, scope, at, Operation::Configure(setting));
             }
         } else {
@@ -58,6 +66,7 @@ impl Graph<'_> {
                 Operation::Configure(Setting::Unknown),
             );
             self.branch_depth -= 1;
+            self.record_celery_route_event(object, scope, at, RouteOperation::OpaqueUpdate);
         }
     }
 
@@ -87,6 +96,17 @@ impl Graph<'_> {
             })
         };
         self.record_celery_backend_event(object, call.scope, call.at, Operation::Create(setting));
+        let routes = match kwarg("task_routes") {
+            Some(value) => Some(self.celery_route_setting(call.scope, value, call.before)),
+            None if kwarg("config_source").is_some()
+                || kwarg("changes").is_some()
+                || call.positional.len() > 11 =>
+            {
+                Some(Value::Unknown)
+            }
+            None => None,
+        };
+        self.record_celery_route_event(object, call.scope, call.at, RouteOperation::Create(routes));
     }
 
     pub(super) fn record_celery_backend_config(
@@ -95,6 +115,44 @@ impl Graph<'_> {
         method: &str,
         call: CallArguments<'_>,
     ) {
+        if method == "conf.update" {
+            if let Some((_, value)) = call.keywords.iter().find(|(key, _)| key == "task_routes") {
+                let routes = self.celery_route_setting(call.scope, value, call.before);
+                self.record_celery_route_event(
+                    object,
+                    call.scope,
+                    call.at,
+                    RouteOperation::Configure(routes),
+                );
+            } else if let [mapping] = call.positional {
+                let mapping = self.identity(call.scope, mapping, call.before, 0);
+                if matches!(&mapping, Value::Mapping(items) if items.as_chunks::<2>().0.iter().all(|[key, _]| matches!(key, Value::Text(_))))
+                {
+                    if let Some(routes) = configured_mapping_member(&mapping, "task_routes") {
+                        self.record_celery_route_event(
+                            object,
+                            call.scope,
+                            call.at,
+                            RouteOperation::Configure(routes),
+                        );
+                    }
+                } else {
+                    self.record_celery_route_event(
+                        object,
+                        call.scope,
+                        call.at,
+                        RouteOperation::OpaqueUpdate,
+                    );
+                }
+            } else if !call.positional.is_empty() {
+                self.record_celery_route_event(
+                    object,
+                    call.scope,
+                    call.at,
+                    RouteOperation::OpaqueUpdate,
+                );
+            }
+        }
         let setting = match method {
             "conf.update" => {
                 if let Some((_, value)) = call
@@ -107,7 +165,7 @@ impl Graph<'_> {
                     match call.positional {
                         [] => None,
                         [mapping] => {
-                            configured_mapping(self.identity(call.scope, mapping, call.before, 0))
+                            configured_mapping(&self.identity(call.scope, mapping, call.before, 0))
                         }
                         _ => Some(Setting::Unknown),
                     }
@@ -122,15 +180,38 @@ impl Graph<'_> {
                     };
                     if let Some(file) = module {
                         self.scopes[call.scope].imports.push(file);
+                        let routes = self
+                            .local(file, "task_routes", END)
+                            .map_or(Value::None, |binding| self.binding(binding, END, 0));
+                        self.record_celery_route_event(
+                            object,
+                            call.scope,
+                            call.at,
+                            RouteOperation::Configure(routes),
+                        );
                         match self.local(file, "result_backend", END) {
                             Some(binding) => setting_value(self.binding(binding, END, 0)),
                             None => Setting::Builtin,
                         }
                     } else {
+                        self.record_celery_route_event(
+                            object,
+                            call.scope,
+                            call.at,
+                            RouteOperation::OpaqueUpdate,
+                        );
                         Setting::Unknown
                     }
                 }
-                _ => Setting::Unknown,
+                _ => {
+                    self.record_celery_route_event(
+                        object,
+                        call.scope,
+                        call.at,
+                        RouteOperation::OpaqueUpdate,
+                    );
+                    Setting::Unknown
+                }
             }),
             _ => unreachable!("only recognized Celery settings methods are recorded"),
         };
@@ -164,15 +245,40 @@ impl Graph<'_> {
             _ => return false,
         };
         let (object, setting) = match self.identity(scope, receiver, at, 0) {
-            Value::CeleryConfig(object) => (
-                object,
-                (member == "result_backend").then(|| {
-                    value.as_ref().map_or(Setting::Builtin, |value| {
-                        self.celery_setting(scope, value, at)
-                    })
-                }),
-            ),
+            Value::CeleryConfig(object) => {
+                if member == "task_routes" {
+                    let routes = value.as_ref().map_or(Value::None, |value| {
+                        self.celery_route_setting(scope, value, at)
+                    });
+                    self.record_celery_route_event(
+                        object,
+                        scope,
+                        at,
+                        RouteOperation::Configure(routes),
+                    );
+                } else if member == "update" {
+                    self.record_celery_route_event(object, scope, at, RouteOperation::OpaqueUpdate);
+                    return false;
+                }
+                (
+                    object,
+                    (member == "result_backend").then(|| {
+                        value.as_ref().map_or(Setting::Builtin, |value| {
+                            self.celery_setting(scope, value, at)
+                        })
+                    }),
+                )
+            }
             Value::Object(object, ObjectKind::CeleryApp) if member == "conf" => {
+                let plain_object = value
+                    .as_ref()
+                    .is_some_and(|value| self.celery_plain_object(scope, value, at));
+                self.record_celery_route_event(
+                    object,
+                    scope,
+                    at,
+                    RouteOperation::ReplaceConfiguration { plain_object },
+                );
                 self.record_celery_backend_event(
                     object,
                     scope,
@@ -408,17 +514,19 @@ impl Graph<'_> {
     }
 }
 
-fn configured_mapping(value: Value) -> Option<Setting> {
+fn configured_mapping(value: &Value) -> Option<Setting> {
+    configured_mapping_member(value, "result_backend").map(setting_value)
+}
+
+fn configured_mapping_member(value: &Value, name: &str) -> Option<Value> {
     let Value::Mapping(items) = value else {
-        return Some(Setting::Unknown);
+        return Some(Value::Unknown);
     };
     for [key, value] in items.as_chunks::<2>().0.iter().rev() {
         match key {
-            Value::Text(key) if key == "result_backend" => {
-                return Some(setting_value(value.clone()));
-            }
+            Value::Text(key) if key == name => return Some(value.clone()),
             Value::Text(_) => {}
-            _ => return Some(Setting::Unknown),
+            _ => return Some(Value::Unknown),
         }
     }
     None

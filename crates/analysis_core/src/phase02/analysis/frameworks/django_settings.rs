@@ -84,6 +84,23 @@ struct SettingsWrites {
 }
 
 impl Graph<'_> {
+    pub(in crate::phase02::analysis) fn django_template_setting(
+        &mut self,
+        settings: ScopeId,
+        reach: &Reachability,
+    ) -> Option<Value> {
+        let binding = self.local(settings, "TEMPLATES", END)?;
+        let effective = self.django_collection_values(settings, "TEMPLATES", reach);
+        if !self
+            .django_settings_initializer_writes(settings)?
+            .modules
+            .is_empty()
+        {
+            return None;
+        }
+        Some(effective.unwrap_or_else(|| self.binding(binding, END, 0)))
+    }
+
     pub(in crate::phase02::analysis) fn django_settings_protocol_roots(
         &mut self,
         reach: &Reachability,
@@ -441,7 +458,17 @@ impl Graph<'_> {
                 Some(_) => return None,
                 None => {}
             }
-            if let Some(binding) = self.local(body, name, END) {
+            // Bare class annotations update __annotations__, leaving any
+            // earlier member or inherited descriptor in place.
+            if let Some(binding) = self.scopes[body]
+                .names
+                .get(name)
+                .into_iter()
+                .flatten()
+                .rev()
+                .copied()
+                .find(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+            {
                 if self.binding_depends_on_branch(binding, END) {
                     return None;
                 }
