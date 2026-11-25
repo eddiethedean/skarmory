@@ -706,6 +706,9 @@ impl Graph<'_> {
                                 .into_iter()
                                 .any(|body| self.local(body, member, END).is_some()))
                         || role == FrameworkClassRole::DjangoSignal && member == "connect"
+                        || role == FrameworkClassRole::DrfViewSet && drf::is_viewset_action(member)
+                        || role == FrameworkClassRole::DrfSerializer
+                            && drf::is_serializer_mutation(member)
                         || matches!(
                             role,
                             FrameworkClassRole::DjangoForm | FrameworkClassRole::DjangoModelForm

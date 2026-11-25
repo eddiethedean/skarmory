@@ -28,6 +28,7 @@ mod django_globals;
 mod django_template_paths;
 mod django_templates;
 mod django_urls;
+mod drf;
 mod fastapi;
 mod field_dispatch;
 mod flask;
@@ -262,6 +263,8 @@ enum FrameworkClassRole {
     DjangoFormField,
     DjangoSignal,
     DjangoAdmin,
+    DrfSerializer,
+    DrfViewSet,
     CeleryTask,
     SqlAlchemyModel,
     SqlModel,
@@ -5653,6 +5656,11 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
                         }
                     }
+                    Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
+                        if self.drf_field_writable(scope, before, arguments, keywords).is_none() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF serializer field arguments are outside the bounded model");
+                        }
+                    }
                     Value::Provider(name)
                         if self.phase03 && name == "pathlib.Path"
                             && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
@@ -9101,6 +9109,8 @@ impl<'a> Graph<'a> {
                         | "marshmallow_hook_declaration"
                         | "celery_backend_default"
                         | "django_migration_callback_declaration"
+                        | drf::PROTOCOL_DECLARATION
+                        | drf::FIELD_DECLARATION
                 ) {
                     continue;
                 }
@@ -9550,6 +9560,7 @@ impl<'a> Graph<'a> {
                     | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
+                    | drf::FIELD_DECLARATION
             ) {
                 self.read.insert(id);
             }
@@ -10563,6 +10574,13 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
+        "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
+            Some(FrameworkClassRole::DrfSerializer)
+        }
+        "rest_framework.viewsets.ViewSet"
+        | "rest_framework.viewsets.GenericViewSet"
+        | "rest_framework.viewsets.ModelViewSet"
+        | "rest_framework.viewsets.ReadOnlyModelViewSet" => Some(FrameworkClassRole::DrfViewSet),
         "celery.Task" | "celery.app.task.Task" => Some(FrameworkClassRole::CeleryTask),
         "sqlalchemy.orm.DeclarativeBase"
         | "sqlalchemy.orm.decl_api.DeclarativeBase"

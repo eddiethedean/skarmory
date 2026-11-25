@@ -234,9 +234,10 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoFormField
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
-                FrameworkClassRole::CeleryTask | FrameworkClassRole::MarshmallowSchema => {
-                    (None, &[][..], false)
-                }
+                FrameworkClassRole::CeleryTask
+                | FrameworkClassRole::MarshmallowSchema
+                | FrameworkClassRole::DrfSerializer
+                | FrameworkClassRole::DrfViewSet => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
                     &["__declare_first__", "__declare_last__"][..],
@@ -271,6 +272,12 @@ impl Graph<'_> {
             }
             if role == FrameworkClassRole::MarshmallowSchema {
                 self.collect_marshmallow_registration(class, class_scope);
+            }
+            if matches!(
+                role,
+                FrameworkClassRole::DrfSerializer | FrameworkClassRole::DrfViewSet
+            ) {
+                self.collect_drf_declaration(class, class_scope, role);
             }
             for name in lifecycle {
                 if let Some(target) = self.local(class_scope, name, END)
