@@ -586,7 +586,28 @@ dormant.add_route("/", inactive)
             .as_array()
             .unwrap()
             .iter()
-            .any(|issue| { issue["kind"] == "unresolved_registration" }),
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration"
+                    && issue["path"] == "app.py"
+                    && issue["line"] == 7
+            }),
+        "{invalid}"
+    );
+    // endpoint is accepted by Router.add_route. Starlette.add_route rejects
+    // it before registering the application callback.
+    assert!(
+        !invalid["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.homepage"
+                    && symbol["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "starlette_route")
+            }),
         "{invalid}"
     );
 
@@ -5112,6 +5133,97 @@ fn fastapi_shadows_an_unavailable_submodule_in_a_closed_regular_package() {
                         .any(|edge| edge["kind"] == "fastapi_registration")
             })
     );
+}
+
+#[test]
+fn fastapi_tool_config_leaves_namespace_route_selection_to_the_scan_root() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let backend = root.join("backend");
+    let namespace = backend.join("app");
+    fs::create_dir_all(&namespace).unwrap();
+    for directory in [root, backend.as_path()] {
+        fs::write(
+            directory.join("pyproject.toml"),
+            "[tool.ruff]\nline-length = 100\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        namespace.join("main.py"),
+        "from fastapi import FastAPI\nfrom app.routes import router\n\napp = FastAPI()\napp.include_router(router)\n",
+    )
+    .unwrap();
+    fs::write(
+        namespace.join("routes.py"),
+        "from fastapi import APIRouter\nrouter = APIRouter()\n\n@router.get('/namespace_route')\ndef namespace_route(): return 1\ndef dormant(): return 2\n",
+    )
+    .unwrap();
+
+    let unresolved = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        unresolved["coverage"]["status"], "incomplete",
+        "{unresolved}"
+    );
+    assert!(
+        unresolved["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration"
+                    && issue["file"] == "backend/app/main.py"
+                    && issue["line"] == 5
+            }),
+        "{unresolved}"
+    );
+    assert!(
+        unresolved["analysis_summary"]["fastapi_route_declarations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|route| route["qualified_name"] == "backend.app.routes.namespace_route"),
+        "{unresolved}"
+    );
+    assert!(
+        !unresolved["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "backend.app.routes.namespace_route"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{unresolved}"
+    );
+
+    let resolved = scan(&backend);
+    assert_eq!(
+        findings(&resolved, "unused_functions"),
+        ["app.routes.dormant"],
+        "{resolved}"
+    );
+    assert!(
+        resolved["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "app.routes.namespace_route"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "fastapi_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{resolved}"
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(&backend, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, resolved);
+    }
 }
 
 #[test]
