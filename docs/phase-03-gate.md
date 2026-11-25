@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,143 have port mappings. The reported release
+milestones. Of the required cases, 1,173 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -75,9 +75,9 @@ The framework audit now includes the FastAPI dependency-parameter tests and
 all 40 nested-project route variants. Thirty-two route variants have SDK
 ports. The remaining eight lack a resolved router. The audit also records
 eight import-scope cases where a project-local package has no such submodule.
-Those cases still expect a complete report. Three additional engine cases
-cover import-root aliases, graph limits, and cycle handling. They need
-ports for the original inputs and assertions.
+Those cases still expect a complete report. The import-root alias engine port
+stages the original nested project and verifies both negative controls through
+the native index. The graph limit and cycle handling cases still need ports.
 
 The eight version-sensitive FastAPI variants use a separate live-router
 receipt. The runner verifies the FastAPI 0.141.1 runtime wheels against a
@@ -93,11 +93,12 @@ Django settings protocols and ordered collection mutations.
 
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
-| URL function callbacks and view providers | 35 | 16 |
-| Authentication backend selection and hooks | 58 | 13 |
-| Named settings imports and overrides | 18 | 10 |
-| Model, command, and form hook provenance | 30 | 17 |
-| Python template liveness | 47 | 2 |
+| URL function callbacks and view providers | 41 | 10 |
+| Authentication backend selection and hooks | 64 | 7 |
+| Named settings imports and overrides | 26 | 2 |
+| Model, command, and form hook provenance | 32 | 15 |
+| Management command reachability | 19 | 17 |
+| Python template liveness | 48 | 1 |
 | Form hook evidence after source edits | 2 | 0 |
 | Autoreload callback selection | 29 | 3 |
 | Admin stub context | 5 | 2 |
@@ -108,7 +109,9 @@ implementation call counts outside the native report contract. The broader
 framework inventory remains under review.
 
 The logging configuration suite maps 42 of 43 cases. The Flask callback
-provider suite maps 38 of 58 cases.
+provider suite maps 38 of 58 cases. Proven provider initialization failures
+stop later Flask registration, while the selected importers still report
+incomplete coverage.
 
 The SDK shard also executes the pinned basic dead-code benchmark with
 the original scorer and staged fixtures. Both score reports are included in

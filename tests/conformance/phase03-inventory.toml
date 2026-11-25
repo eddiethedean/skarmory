@@ -6453,9 +6453,8 @@ assertions = ["test/test_django_management_command_reachability.py:33", "test/te
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_inherited_constructor_override_also_declines_new_handle_root"
@@ -6602,9 +6601,8 @@ assertions = ["test/test_django_management_command_reachability.py:33", "test/te
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_module_namespace_replacement_cannot_root_old_command[globals-direct]"
@@ -6615,9 +6613,8 @@ assertions = ["test/test_django_management_command_reachability.py:33", "test/te
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_module_namespace_replacement_cannot_root_old_command[module-object]"
@@ -6628,9 +6625,8 @@ assertions = ["test/test_django_management_command_reachability.py:33", "test/te
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_module_namespace_replacement_cannot_root_old_command[module-vars]"
@@ -6641,9 +6637,8 @@ assertions = ["test/test_django_management_command_reachability.py:33", "test/te
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_replaced_handle_through_attribute_protocol_receives_no_new_root"
@@ -6666,9 +6661,8 @@ assertions = ["test/test_django_management_command_reachability.py:33", "test/te
 prerequisites = ["installed-sdk", "native-framework-evidence"]
 provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Candidate reports unresolved_attribute_write: attribute mutation is outside the bounded framework model (#43)"
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_true_dead_analysis_island_stays_reported_beside_a_real_command"
@@ -13044,9 +13038,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[opaque_patterns-80]"
@@ -13057,9 +13050,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[replace_callback-0]"
@@ -13094,9 +13086,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[replace_code-80]"
@@ -13107,9 +13098,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[replace_code_alias-0]"
@@ -13120,9 +13110,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[replace_code_alias-80]"
@@ -13133,9 +13122,8 @@ assertions = ["test/test_django_function_view_roots.py:29", "test/test_django_fu
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[opaque_view-0]"
@@ -13612,9 +13600,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:133", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_subscript) (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_other_strings_and_unregistered_mutations_do_not_root_hooks[AUTHENTICATION_BACKENDS = [\"shop.backends.Configured\"]\\nAUTHENTICATION_BACKENDS = []\\n]"
@@ -13709,9 +13696,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:133", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_other_strings_and_unregistered_mutations_do_not_root_hooks[AUTHENTICATION_BACKENDS = []\\nasync def configure():\\n    AUTHENTICATION_BACKENDS.append(\"shop.backends.Configured\")\\nconfigure()\\n]"
@@ -13968,9 +13954,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:291", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_decorator, unresolved_subclass_hook) (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_transformed_backend_class_does_not_root_stale_methods[class Configured(metaclass=Redirect):]"
@@ -14018,9 +14003,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:334", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_decorator) (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_backend_method_decorator_requires_the_actual_builtin[classmethod = lambda fn: None\\n-classmethod]"
@@ -14175,9 +14159,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:380", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_destructive_or_unknown_backend_list_mutation_does_not_keep_removed_hook[unknown_mutation(AUTHENTICATION_BACKENDS)]"
@@ -14188,9 +14171,8 @@ assertions = ["test/test_django_auth_backend_liveness.py:380", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_auth_backend_liveness.py::test_later_backend_list_assignment_restores_proof_after_destruction[\\n]"
@@ -14369,9 +14351,8 @@ assertions = ["test/test_django_named_setting_imports.py:127", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:127 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_named_settings_aliases_and_reexports_keep_the_effective_role[AUTHENTICATION_BACKENDS-Backend.get_user]"
@@ -14382,9 +14363,8 @@ assertions = ["test/test_django_named_setting_imports.py:127", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:127 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_named_settings_aliases_and_reexports_keep_the_effective_role[STORAGES-Storage.save]"
@@ -14395,9 +14375,8 @@ assertions = ["test/test_django_named_setting_imports.py:127", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:127 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_overwritten_named_import_does_not_activate_its_old_value[LOGGING = {}\\n]"
@@ -14432,9 +14411,8 @@ assertions = ["test/test_django_named_setting_imports.py:149", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:149 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_literal_dead_named_import_has_no_setting_effect"
@@ -14457,9 +14435,8 @@ assertions = ["test/test_django_named_setting_imports.py:164", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete installed SDK report disagrees with the pinned assertion at test/test_django_named_setting_imports.py:164 (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_imported_value_is_interpreted_in_its_settings_role[AUTHENTICATION_BACKENDS]"
@@ -14506,9 +14483,8 @@ assertions = ["test/test_django_named_setting_imports.py:201", "test/test_django
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_called_setting_mutation_helper_uses_the_module_binding[argument-LOGGING-Factory.filter]"
@@ -14580,9 +14556,8 @@ assertions = ["test/test_django_named_setting_imports.py:230", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unsupported_construct) (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_called_setting_mutation_helper_uses_the_module_binding[read-global-LOGGING-Factory.filter]"
@@ -14606,9 +14581,8 @@ assertions = ["test/test_django_named_setting_imports.py:230", "test/web_framewo
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_call) (#43)"
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_selected_import_precision_at_default_confidence[False]"
@@ -14963,9 +14937,8 @@ assertions = ["test/test_django_hook_provenance.py:414", "test/web_framework_fix
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call, unresolved_constructor, unresolved_subclass_hook) (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_module_field_table_mutation_preserves_dynamic_hook_uncertainty[declared_fields]"
@@ -14976,9 +14949,8 @@ assertions = ["test/test_django_hook_provenance.py:414", "test/web_framework_fix
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_attribute_write, unresolved_call, unresolved_constructor, unresolved_subclass_hook) (#43)"
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_model_form_exclusion_does_not_mutate_another_forms_model_fields"
@@ -15597,9 +15569,8 @@ assertions = ["test/test_django_template_liveness.py:152", "test/web_framework_f
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The installed SDK reports incomplete analysis (unresolved_registration) (#43)"
 
 [[cases]]
 id = "test/test_django_template_liveness.py::test_unrouted_view_template_does_not_consume_model_method[urlpatterns = []]"
