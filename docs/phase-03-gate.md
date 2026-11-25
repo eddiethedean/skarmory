@@ -10,6 +10,31 @@ decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
 
+## Reviewed framework mismatches
+
+The original assertions and prerequisite checks still apply to these required
+cases. The records explain why the current behavior earns zero pass credit.
+The [case inventory](../tests/conformance/phase03-inventory.toml) identifies
+each original variant.
+
+| Required cases | Observed behavior |
+| --- | --- |
+| Flask callback providers and blueprint exports | The original source executions failed before publishing a callback. Twenty fixtures raised `NameError` for an unbound replacement, opaque consumer, or decorator. The remaining two raised `ImportError` during a named re-export cycle or `TypeError` while constructing a local blueprint lookalike. The SDK preserves incomplete coverage for the failed consumer and records no registration. |
+| External decorator in the FastAPI evidence suite | The original project supplies no `plugin` module. A real external decorator may invoke the supplied callback. The SDK retains possible callback and helper evidence and reports the unresolved decorator. |
+| FastAPI nested projects | With FastAPI 0.141.1, the tool-only namespace fixture fails to import from the repository root and serves `/namespace_route` with HTTP 200 when `backend` is on the import path. The fixture does not choose between those paths. The sibling-service fixture fails to import `other` from `backend`; including `worker` on the path finds `router = None` and fails at router inclusion. |
+| Django function view negatives | Django supports a mounted async function view and can dispatch its provider. A view module that raises while the selected URLconf imports it cannot supply a callback. The latter case retains incomplete registration coverage. |
+| Django command, autoreload and hook tests | Standalone command modules do not select installed apps or invoke a command. Command construction does not dispatch `handle`, and form and model construction alone do not dispatch validation, saving, or manager query hooks. Escaped callbacks and classes remain unresolved without the external installer's code. |
+| Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. |
+| Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. |
+| FastAPI source-layout corpus case | The unannotated `websocket` argument is treated as a query parameter. The original handler cannot receive a WebSocket object through that argument. |
+| unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. The analyzer does not assign test execution evidence to those declarations. |
+
+[Django async views](https://docs.djangoproject.com/en/5.2/topics/async/#async-views) ·
+[Django command dispatch](https://github.com/django/django/blob/stable/5.2.x/django/core/management/base.py) ·
+[Django app population](https://github.com/django/django/blob/stable/5.2.x/django/apps/registry.py) ·
+[Starlette 1.3.1 API](https://github.com/Kludex/starlette/blob/1.3.1/starlette/applications.py#L99-L107) ·
+[unittest test loading](https://docs.python.org/3.11/library/unittest.html#loading-and-running-tests)
+
 ## Inventory and receipts
 
 Add one case per upstream pytest node, native subtest, or deterministic
