@@ -21,6 +21,10 @@ impl Graph<'_> {
             || self.terminal_django_url_assignment(scope, statement)
             || self.terminal_django_url_initializer(scope, statement)
             || self.terminal_django_url_callback_import(scope, statement)
+            || self
+                .django_failed_view_initializers
+                .get(&scope)
+                .is_some_and(|at| position(*at) == position(statement.at))
             || self.terminal_unbound_flask_initializer(scope, statement)
             || self.terminal_flask_factory_initializer(scope, statement)
             || self.terminal_flask_global_initializer(scope, statement)

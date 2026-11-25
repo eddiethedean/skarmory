@@ -666,6 +666,7 @@ pub(super) fn analyze_with_verification(
         logging_record_calls: Vec::new(),
         logging_formatter_methods: BTreeSet::new(),
         django_view_arguments: BTreeMap::new(),
+        django_failed_view_initializers: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
@@ -728,6 +729,7 @@ pub(super) fn analyze_with_verification(
     if phase03 {
         graph.index_django_global_writes();
         graph.index_failed_flask_provider_initializers();
+        graph.index_failed_django_view_initializers();
         graph.index_flask_context();
     }
     for scope in 0..graph.scopes.len() {
@@ -873,6 +875,7 @@ struct Graph<'a> {
     logging_record_calls: Vec<ParameterCall>,
     logging_formatter_methods: BTreeSet<SymbolId>,
     django_view_arguments: django_views::ViewRouteArguments,
+    django_failed_view_initializers: BTreeMap<ScopeId, Location>,
     django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,

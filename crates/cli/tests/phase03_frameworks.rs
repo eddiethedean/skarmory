@@ -8851,6 +8851,74 @@ fn django_url_callback_dispatches_only_the_fresh_instances_selected_provider() {
 }
 
 #[test]
+fn django_url_import_stops_at_a_proven_unbound_view_initializer() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (file, source) in [
+        (
+            "manage.py",
+            "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+        ),
+        (
+            "settings.py",
+            "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+        ),
+        (
+            "urls.py",
+            "from django.urls import path\nfrom views import view\nurlpatterns = [path('', view)]\n",
+        ),
+        (
+            "helpers.py",
+            "class Provider:\n    def render(self): return 'ok'\nprovider = Provider()\ndef render(): return provider.render()\n",
+        ),
+    ] {
+        fs::write(root.join(file), source).unwrap();
+    }
+    let views = root.join("views.py");
+    let body = "def view(request): return render()\n";
+    for source in [
+        format!("{body}install(view)\n"),
+        format!("@install\n{body}"),
+    ] {
+        fs::write(&views, format!("from helpers import render\n{source}")).unwrap();
+        let report = scan(root);
+        assert!(
+            unreachable_functions(&report).contains(&"helpers.render"),
+            "{report}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(report, cached);
+        }
+
+        // Binding the same name to an actual identity keeps the selected view.
+        fs::write(
+            &views,
+            format!("from helpers import render\ndef install(value): return value\n{source}"),
+        )
+        .unwrap();
+        assert!(!unreachable_functions(&scan(root)).contains(&"helpers.render"));
+    }
+
+    fs::write(
+        &views,
+        format!("from external import install\nfrom helpers import render\n@install\n{body}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "unresolved_decorator"),
+        "{report}"
+    );
+}
+
+#[test]
 fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
