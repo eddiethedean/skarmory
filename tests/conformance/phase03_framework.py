@@ -43,6 +43,10 @@ _SIGNAL_REASONS = {
         "possible",
     ): "django_signal_registration_unknown_loading",
 }
+_METHOD_FINDING_SOURCES = {
+    "test_django_function_view_roots.py",
+    "test_django_template_liveness.py",
+}
 
 
 def framework_report(report, *, source=None):
@@ -51,7 +55,7 @@ def framework_report(report, *, source=None):
     def key(entry, name):
         return entry[name], entry["file"], entry["line"]
 
-    if source is not None and PurePath(source).name == "test_django_function_view_roots.py":
+    if source is not None and PurePath(source).name in _METHOD_FINDING_SOURCES:
         # This assertion family observes methods individually. The native
         # report keeps these same findings under their unused class.
         methods = [
