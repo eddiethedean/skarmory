@@ -968,6 +968,12 @@ fn scan_selected(
     let django_settings = (include_dead_code && phase03)
         .then(|| std::env::var_os("DJANGO_SETTINGS_MODULE"))
         .flatten();
+    let django_templates = (include_dead_code && phase03 && path.is_dir())
+        .then(|| analysis::TemplateProject::new(&project, &config.selection));
+    let django = analysis::DjangoInput {
+        settings: django_settings.as_deref(),
+        templates: django_templates.as_ref(),
+    };
     let mut analysis = if include_dead_code && issues.is_empty() {
         if local_configs.is_empty() {
             analysis::analyze_with_verification(
@@ -977,7 +983,7 @@ fn scan_selected(
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
-                django_settings.as_deref(),
+                django,
             )
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
@@ -1003,7 +1009,7 @@ fn scan_selected(
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
-                django_settings.as_deref(),
+                django,
             )
         }
     } else {
@@ -1031,6 +1037,9 @@ fn scan_selected(
         analysis.runtime_evidence_issues.dedup();
     }
     if let Some(inputs) = cleanup_inputs.as_deref_mut() {
+        if let Some(templates) = &django_templates {
+            inputs.policy.extend(templates.input_digests());
+        }
         for config in std::iter::once(&config).chain(&local_configs) {
             inputs.policy.extend(
                 config
@@ -1094,7 +1103,10 @@ fn scan_selected(
                 }),
         );
     }
-    let snapshot_issues = project.verify(stamps);
+    let mut snapshot_issues = project.verify(stamps);
+    if let Some(templates) = django_templates {
+        snapshot_issues.extend(templates.verify());
+    }
     if !snapshot_issues.is_empty()
         && dependency_result.is_some()
         && !config.ignores_rule(dependencies::RULE)

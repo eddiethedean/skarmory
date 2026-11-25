@@ -2148,7 +2148,7 @@ impl Graph<'_> {
             } else {
                 None
             };
-            let Some(app) = resolved else {
+            let Some((app, label)) = resolved else {
                 self.django_registration_issue(
                     object,
                     at,
@@ -2156,6 +2156,10 @@ impl Graph<'_> {
                 );
                 continue;
             };
+            self.django_template_apps
+                .entry(settings)
+                .or_default()
+                .insert(app, label);
             let prefix = format!("{}.", self.files[app].module);
             for module in [
                 Some(app),
@@ -2523,10 +2527,10 @@ impl Graph<'_> {
         object: Object,
         entry: &str,
         at: Location,
-    ) -> Option<usize> {
+    ) -> Option<(usize, Option<String>)> {
         let (file, config) = if let Some(&app) = self.modules.get(entry) {
             let Some(&file) = self.modules.get(format!("{entry}.apps").as_str()) else {
-                return Some(app);
+                return Some((app, Some(django_default_app_label(entry).to_owned())));
             };
             self.scopes[scope]
                 .activated_apps
@@ -2560,7 +2564,9 @@ impl Graph<'_> {
                 let mut defaults = configs.into_iter().filter(|(_, default)| *default);
                 match (defaults.next(), defaults.next()) {
                     (Some((config, _)), None) => config,
-                    (None, _) => return Some(app),
+                    (None, _) => {
+                        return Some((app, Some(django_default_app_label(entry).to_owned())));
+                    }
                     _ => return None,
                 }
             };
@@ -2582,6 +2588,24 @@ impl Graph<'_> {
             return None;
         };
         let app = *self.modules.get(name.as_str())?;
+        let default_path = [
+            "path",
+            "__init__",
+            "__new__",
+            "__getattribute__",
+            "__getattr__",
+        ]
+        .iter()
+        .all(|name| self.django_class_value(class, name, scope).is_none());
+        let label = if default_path {
+            match self.django_class_value(class, "label", scope) {
+                None => Some(django_default_app_label(&name).to_owned()),
+                Some(Value::Text(label)) if skarmory_python::simple_name(&label) => Some(label),
+                _ => None,
+            }
+        } else {
+            None
+        };
         self.read.extend(config.bindings);
         self.scopes[scope]
             .activated_apps
@@ -2594,7 +2618,7 @@ impl Graph<'_> {
             "django_app_config",
             at,
         );
-        Some(app)
+        Some((app, label))
     }
 
     fn django_class_binding(
@@ -2978,6 +3002,10 @@ fn has_django_pattern(value: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+fn django_default_app_label(name: &str) -> &str {
+    name.rsplit('.').next().expect("application module name")
 }
 
 fn literal_settings_entries(value: &Expression) -> impl Iterator<Item = (&str, &Expression)> {

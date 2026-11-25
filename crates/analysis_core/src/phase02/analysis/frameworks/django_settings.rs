@@ -84,6 +84,23 @@ struct SettingsWrites {
 }
 
 impl Graph<'_> {
+    pub(in crate::phase02::analysis) fn django_template_setting(
+        &mut self,
+        settings: ScopeId,
+        reach: &Reachability,
+    ) -> Option<Value> {
+        let binding = self.local(settings, "TEMPLATES", END)?;
+        let effective = self.django_collection_values(settings, "TEMPLATES", reach);
+        if !self
+            .django_settings_initializer_writes(settings)?
+            .modules
+            .is_empty()
+        {
+            return None;
+        }
+        Some(effective.unwrap_or_else(|| self.binding(binding, END, 0)))
+    }
+
     pub(in crate::phase02::analysis) fn django_settings_protocol_roots(
         &mut self,
         reach: &Reachability,

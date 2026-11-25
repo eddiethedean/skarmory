@@ -25,6 +25,7 @@ mod comprehension;
 mod django_forms;
 mod django_globals;
 mod django_template_paths;
+mod django_templates;
 mod django_urls;
 mod fastapi;
 mod field_dispatch;
@@ -37,6 +38,8 @@ mod pydantic;
 mod sanic;
 mod starlette;
 mod terminal;
+
+pub(super) use django_templates::{DjangoInput, TemplateProject};
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -462,12 +465,28 @@ enum SubmoduleAttachment {
 
 #[cfg(test)]
 fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None, false, None)
+    analyze_with_verification(
+        files,
+        entrypoints,
+        None,
+        None,
+        None,
+        false,
+        DjangoInput::default(),
+    )
 }
 
 #[cfg(test)]
 fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
-    analyze_with_verification(files, entrypoints, None, None, None, true, None)
+    analyze_with_verification(
+        files,
+        entrypoints,
+        None,
+        None,
+        None,
+        true,
+        DjangoInput::default(),
+    )
 }
 
 #[derive(Default)]
@@ -528,7 +547,7 @@ pub(super) fn analyze_with_verification(
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
     runtime: Option<&runtime_evidence::Snapshot>,
     phase03: bool,
-    django_settings: Option<&std::ffi::OsStr>,
+    django: DjangoInput<'_>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
@@ -604,10 +623,11 @@ pub(super) fn analyze_with_verification(
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
         django_settings_sources: BTreeSet::new(),
+        django_template_apps: BTreeMap::new(),
         django_registration_issues: Vec::new(),
         framework_route_receivers: BTreeMap::new(),
         registered_django_admin_models: BTreeSet::new(),
-        initial_django_settings: django_settings.map_or(DjangoSettings::Unset, |value| {
+        initial_django_settings: django.settings.map_or(DjangoSettings::Unset, |value| {
             value.to_str().map_or(DjangoSettings::Unknown, |value| {
                 DjangoSettings::Module(value.to_owned())
             })
@@ -720,7 +740,7 @@ pub(super) fn analyze_with_verification(
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
     graph.report_failed_terminal_module_consumers();
-    let mut analysis = graph.finish(roots, possible_roots, verification);
+    let mut analysis = graph.finish(roots, possible_roots, verification, django.templates);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -794,6 +814,7 @@ struct Graph<'a> {
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
+    django_template_apps: BTreeMap<ScopeId, BTreeMap<usize, Option<String>>>,
     django_registration_issues: Vec<(Object, Issue)>,
     framework_route_receivers: BTreeMap<(ScopeId, Object, SymbolId), BTreeSet<SymbolId>>,
     registered_django_admin_models: BTreeSet<(ScopeId, SymbolId)>,
@@ -9029,6 +9050,7 @@ impl<'a> Graph<'a> {
         roots: Vec<Edge>,
         mut possible_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
+        templates: Option<&TemplateProject<'_>>,
     ) -> Analysis {
         // Declaration hints retain only the definition in the compatibility
         // report. Leave them out of the execution graph and parameter analysis.
@@ -9055,7 +9077,10 @@ impl<'a> Graph<'a> {
                 self.establish_reachability(&roots, &possible_roots, snapshot);
         }
         if self.phase03 && converged {
-            let protocols = self.django_settings_protocol_roots(&reach);
+            let mut protocols = self.django_settings_protocol_roots(&reach);
+            if let Some(templates) = templates {
+                protocols.extend(self.django_template_roots(&reach, templates));
+            }
             if !protocols.is_empty() {
                 possible_roots.extend(protocols);
                 self.resolve_receiver_calls();

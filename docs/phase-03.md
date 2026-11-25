@@ -333,6 +333,14 @@ module initialization. It follows literal formatter and filter declarations,
 ordered dictionary edits, aliases, and eligible one-argument mutation helpers.
 An opaque configuration or consumer leaves coverage incomplete.
 
+Mounted Django DetailViews with resolved model and template context retain
+possible references to source model methods. The preview follows selected
+Django template directories, literal inheritance and includes, and supported
+template scopes. It applies file exclusions and requires resolved loader
+settings and context. Unsupported markup in a selected template produces a
+coverage diagnostic.
+[Django generic views](https://docs.djangoproject.com/en/5.2/ref/class-based-views/generic-display/) · [Django template API](https://docs.djangoproject.com/en/5.2/ref/templates/api/)
+
 A supported Django form validation call retains possible `clean` and
 `clean_<field>` callbacks from its effective field table. The preview
 follows supported inherited fields, `None` masks, and literal ModelForm
