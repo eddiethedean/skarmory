@@ -16340,9 +16340,8 @@ assertions = ["test/test_django_quiet_dead_code.py:312", "test/test_django_quiet
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
 provenance = "Original Python project produced by the pinned test and its fixture helpers."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The method field retains the inherited getter with complete analysis. The report identifies the entire dormant Plain class. The original expects its method as an independent finding (#43)"
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_settings_module_found_without_a_launcher"

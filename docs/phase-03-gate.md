@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,251 have port mappings. The reported release
+milestones. Of the required cases, 1,252 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -30,7 +30,6 @@ each original variant.
 | FastAPI source-layout corpus case | The unannotated `websocket` argument is treated as a query parameter. The original handler cannot receive a WebSocket object through that argument. |
 | Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. |
 | Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. |
-| DRF method-field finding granularity | The inherited method-field getter has possible declaration evidence. The original expects a separate unused-method finding inside `Plain`. The analyzer reports the entire dormant class. |
 | Wagtail snippet settings | The view-set class supplies neither a model nor a `register_snippet` call. The analyzer records the related model and block declarations separately. |
 | unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. Those declarations remain dormant in the analyzer. |
 
@@ -127,7 +126,8 @@ FastAPI 0.136.0 returns HTTP 404 for both late routes, while 0.141.1 returns
 HTTP 200. [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
 
 The mapped Django SDK cases also verify assertions in the pinned shared
-fixture helper. The configuration replacement suite has thirty ports exercising effective
+fixture helper. The DRF method-field case checks the inherited getter and
+reads the unused sibling method from the native report's grouped findings. The configuration replacement suite has thirty ports exercising effective
 Django settings protocols and ordered collection mutations.
 
 | Django family | Mapped | Blocked |

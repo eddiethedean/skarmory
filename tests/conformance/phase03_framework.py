@@ -47,6 +47,7 @@ _SIGNAL_REASONS = {
 _METHOD_FINDING_SOURCES = {
     "test_django_converter_precision.py",
     "test_django_function_view_roots.py",
+    "test_django_quiet_dead_code.py",
     "test_django_template_liveness.py",
 }
 
