@@ -3985,6 +3985,97 @@ router.add_api_route("/late", late, dependencies=[Depends(late_dependency)])
 }
 
 #[test]
+fn fastapi_shadows_an_unavailable_submodule_in_a_closed_regular_package() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for package in ["app", "backend/app"] {
+        fs::create_dir_all(root.join(package)).unwrap();
+        fs::write(root.join(package).join("__init__.py"), "").unwrap();
+    }
+    let route = "from fastapi import APIRouter\nrouter = APIRouter()\n\
+                 @router.get('/')\ndef endpoint(): return 1\n";
+    fs::write(root.join("app/routes.py"), route).unwrap();
+    let main = root.join("backend/app/main.py");
+    for mount in [
+        "from app.routes import router\napp.include_router(router)\n",
+        "import app.routes as routes\napp.include_router(routes.router)\n",
+    ] {
+        fs::write(
+            &main,
+            format!("from fastapi import FastAPI\napp = FastAPI()\n{mount}"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["app.routes.endpoint"]
+        );
+        assert!(
+            report["analysis_summary"]["fastapi_route_declarations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["qualified_name"] == "app.routes.endpoint" && row["file"] == "app/routes.py"
+                })
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    for artifact in ["routes.cpython-311.so", "__init__.abi3.so", "routes.pyc"] {
+        let native_candidate = root.join("backend/app").join(artifact);
+        fs::write(&native_candidate, "").unwrap();
+        let unavailable = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            unavailable["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_import")
+        );
+        fs::remove_file(native_candidate).unwrap();
+    }
+
+    let consumer = root.join("consumer.py");
+    fs::write(&consumer, "from backend.app.main import app\n").unwrap();
+    let consumer_failure = scan_with_exit(root, None, None, 2);
+    assert!(
+        consumer_failure["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_import" && issue["path"] == "consumer.py")
+    );
+    fs::remove_file(consumer).unwrap();
+
+    fs::write(root.join("backend/app/routes.py"), route).unwrap();
+    let resolved = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&resolved, "unused_functions"),
+        ["app.routes.endpoint"]
+    );
+    assert!(
+        resolved["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "backend.app.routes.endpoint"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "fastapi_registration")
+            })
+    );
+}
+
+#[test]
 fn fastapi_resolves_regular_packages_from_the_importing_service() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

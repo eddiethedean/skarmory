@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::OsStr;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
@@ -42,7 +43,7 @@ mod sanic;
 mod starlette;
 mod terminal;
 
-pub(super) use django_templates::{DjangoInput, TemplateProject};
+pub(super) use django_templates::TemplateProject;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -485,7 +486,7 @@ fn analyze(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analysis {
         None,
         None,
         false,
-        DjangoInput::default(),
+        FrameworkInputs::default(),
     )
 }
 
@@ -498,7 +499,7 @@ fn analyze_phase03(files: &[AnalyzedFile], entrypoints: &[Entrypoint]) -> Analys
         None,
         None,
         true,
-        DjangoInput::default(),
+        FrameworkInputs::default(),
     )
 }
 
@@ -553,6 +554,13 @@ impl<'a> NestedPackages<'a> {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct FrameworkInputs<'a> {
+    pub(super) settings: Option<&'a OsStr>,
+    pub(super) templates: Option<&'a TemplateProject<'a>>,
+    pub(super) discovery: Option<&'a crate::preview_source::Project>,
+}
+
 pub(super) fn analyze_with_verification(
     files: &[AnalyzedFile],
     entrypoints: &[Entrypoint],
@@ -560,10 +568,11 @@ pub(super) fn analyze_with_verification(
     package_entrypoints: Option<&package_entrypoints::Snapshot>,
     runtime: Option<&runtime_evidence::Snapshot>,
     phase03: bool,
-    django: DjangoInput<'_>,
+    framework: FrameworkInputs<'_>,
 ) -> Analysis {
     let mut graph = Graph {
         files,
+        discovery: framework.discovery,
         modules: BTreeMap::new(),
         nested_packages: if phase03 {
             NestedPackages::index(files)
@@ -642,7 +651,7 @@ pub(super) fn analyze_with_verification(
         django_registration_issues: Vec::new(),
         framework_route_receivers: BTreeMap::new(),
         registered_django_admin_models: BTreeSet::new(),
-        initial_django_settings: django.settings.map_or(DjangoSettings::Unset, |value| {
+        initial_django_settings: framework.settings.map_or(DjangoSettings::Unset, |value| {
             value.to_str().map_or(DjangoSettings::Unknown, |value| {
                 DjangoSettings::Module(value.to_owned())
             })
@@ -757,7 +766,7 @@ pub(super) fn analyze_with_verification(
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
     graph.report_failed_terminal_module_consumers();
-    let mut analysis = graph.finish(roots, possible_roots, verification, django.templates);
+    let mut analysis = graph.finish(roots, possible_roots, verification, framework.templates);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -765,6 +774,7 @@ pub(super) fn analyze_with_verification(
 
 struct Graph<'a> {
     files: &'a [AnalyzedFile],
+    discovery: Option<&'a crate::preview_source::Project>,
     modules: BTreeMap<&'a str, usize>,
     nested_packages: NestedPackages<'a>,
     scopes: Vec<Scope<'a>>,
@@ -9805,6 +9815,20 @@ impl<'a> Graph<'a> {
                 });
             }
         }
+        let mut fastapi_route_declarations: Vec<_> = self
+            .fastapi
+            .route_declarations
+            .iter()
+            .map(|&target| {
+                let symbol = &self.symbols[target];
+                super::FastapiRouteDeclaration {
+                    file: self.files[self.scopes[symbol.scope].file].path.clone(),
+                    line: position(symbol.name.at)[0],
+                    qualified_name: self.full_name(target),
+                }
+            })
+            .collect();
+        fastapi_route_declarations.sort();
         self.issues.extend(
             self.scope_issues
                 .into_iter()
@@ -9818,6 +9842,7 @@ impl<'a> Graph<'a> {
             findings,
             definitions,
             evidence: retained,
+            fastapi_route_declarations,
             issues: self.issues,
             uncertainties: self.uncertainties,
             verification: verification.evidence,

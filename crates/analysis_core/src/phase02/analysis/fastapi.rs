@@ -31,6 +31,7 @@ pub(super) struct Fastapi {
     lifespans: BTreeMap<Object, (Site, ScopeId)>,
     observable_objects: BTreeSet<Object>,
     parameter_routes: Vec<ParameterRoute>,
+    pub(super) route_declarations: BTreeSet<SymbolId>,
 }
 
 struct ParameterRoute {
@@ -105,6 +106,83 @@ enum DecoratorLayer<'a> {
 }
 
 impl<'a> Graph<'a> {
+    pub(super) fn terminal_fastapi_shadowed_import(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let StatementKind::Import(import) = &statement.kind else {
+            return false;
+        };
+        if import.level != 0 || !self.modules.contains_key(import.module.as_str()) {
+            return false;
+        }
+        let Cow::Owned(selected) = self.nested_packages.resolve(scope, &import.module) else {
+            return false;
+        };
+        let Some((parent, child)) = selected.rsplit_once('.') else {
+            return false;
+        };
+        let Some(&package) = self.modules.get(parent) else {
+            return false;
+        };
+        if !self.files[package].is_package
+            || self.files[scope]
+                .module
+                .rsplit_once('.')
+                .map(|(name, _)| name)
+                != Some(parent)
+            || self.modules.contains_key(selected.as_str())
+            || !self.scopes[package].body.iter().all(|row| {
+                matches!(
+                    row.kind,
+                    StatementKind::Evaluate(Expression {
+                        kind: ExpressionKind::Text(_),
+                        ..
+                    })
+                )
+            })
+            || self.discovery.is_none_or(|project| {
+                !project.direct_submodule_absent(&self.files[package].path, child)
+            })
+        {
+            return false;
+        }
+        let [provider, initializer, importing, ..] = self.scopes[scope].body else {
+            return false;
+        };
+        if !std::ptr::eq(importing, statement)
+            || !matches!(&provider.kind, StatementKind::Import(import)
+                if import.level == 0 && matches!(import.module.as_str(), "fastapi" | "fastapi.applications"))
+        {
+            return false;
+        }
+        let StatementKind::Assign {
+            names,
+            value:
+                Some(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }),
+            annotation: None,
+        } = &initializer.kind
+        else {
+            return false;
+        };
+        // This prefix cannot extend package search or publish the missing
+        // submodule before the ordinary import reaches the selected package.
+        names.len() == 1
+            && arguments.is_empty()
+            && keywords.is_empty()
+            && matches!(self.probe_identity(scope, function, initializer.at),
+                Value::Provider(provider) if is_app_constructor(&provider))
+    }
+
     fn fastapi_effect_scope(&mut self, site: Site) -> ScopeId {
         self.push_scope(self.scopes[site.scope].file, None, None, &[])
     }
@@ -1270,6 +1348,7 @@ impl<'a> Graph<'a> {
             event.api_route = true;
             event.signature_targets = self.fastapi_options(effects, site, keywords);
             if let Some(target) = target {
+                self.fastapi.route_declarations.insert(target);
                 event.signature_targets.push(target);
                 let path = positional.first().or_else(|| {
                     keywords

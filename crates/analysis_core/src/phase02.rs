@@ -148,12 +148,20 @@ struct Analysis {
     definitions: BTreeMap<String, DefinitionContext>,
     findings: Vec<Finding>,
     evidence: Vec<Evidence>,
+    fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     issues: Vec<Issue>,
     uncertainties: Vec<Issue>,
     verification: Vec<VerificationEvidence>,
     rescued_count: usize,
     runtime_evidence: Vec<runtime_evidence::Evidence>,
     runtime_evidence_issues: Vec<Issue>,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct FastapiRouteDeclaration {
+    file: String,
+    line: usize,
+    qualified_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -357,6 +365,8 @@ struct Summary {
     analysis_error_count: usize,
     coverage_status: &'static str,
     languages: BTreeMap<&'static str, usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     javascript_file_analysis: Option<JavaScriptFileAnalysis>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -970,9 +980,10 @@ fn scan_selected(
         .flatten();
     let django_templates = (include_dead_code && phase03 && path.is_dir())
         .then(|| analysis::TemplateProject::new(&project, &config.selection));
-    let django = analysis::DjangoInput {
+    let framework = analysis::FrameworkInputs {
         settings: django_settings.as_deref(),
         templates: django_templates.as_ref(),
+        discovery: (phase03 && path.is_dir()).then_some(&project),
     };
     let mut analysis = if include_dead_code && issues.is_empty() {
         if local_configs.is_empty() {
@@ -983,7 +994,7 @@ fn scan_selected(
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
-                django,
+                framework,
             )
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
@@ -1009,7 +1020,7 @@ fn scan_selected(
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
-                django,
+                framework,
             )
         }
     } else {
@@ -1335,6 +1346,7 @@ fn scan_selected(
             analysis_error_count: issues.len(),
             coverage_status: status,
             languages,
+            fastapi_route_declarations: analysis.fastapi_route_declarations,
             javascript_file_analysis: has_javascript.then_some(JavaScriptFileAnalysis {
                 rule_id: javascript::RULE,
                 status: if javascript_complete {

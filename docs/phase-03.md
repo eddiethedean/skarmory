@@ -278,6 +278,13 @@ callbacks still come from the lifecycle list captured at inclusion. It retains c
 leading wildcard imports from the supported FastAPI and typing export tables.
 Unmodeled FastAPI wildcard names and opaque namespace inspection leave coverage
 incomplete.
+When a nested regular package shadows a root package, the preview can prove
+that a specific missing submodule stops a FastAPI initializer. This requires
+an inert package initializer, a closed import prefix and a verified package
+directory. Excluded modules, opaque extensions and consumers of the failed
+initializer preserve incomplete coverage. The optional
+`analysis_summary.fastapi_route_declarations` field records identified route
+declaration locations separately from activation evidence.
 [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14) · [Lifespan events](https://fastapi.tiangolo.com/advanced/events/)
 
 Django URL discovery follows a reachable, recognized launcher. An explicit

@@ -95,6 +95,7 @@ enum SeenEntry {
     SourceFile,
     LinkedSource,
     OtherSource,
+    OpaquePythonModule,
     JavaScriptContext,
 }
 
@@ -666,6 +667,29 @@ impl Project {
         self.directories.keys()
     }
 
+    pub(super) fn direct_submodule_absent(&self, initializer: &str, module: &str) -> bool {
+        let Some(package) = Path::new(initializer).parent() else {
+            return false;
+        };
+        self.directories
+            .get(&self.base.join(package))
+            .is_some_and(|entries| {
+                !entries.iter().any(|(name, kind)| {
+                    // Retain uncertainty for an excluded source, namespace
+                    // directory, extension module, or sourceless bytecode.
+                    name.to_str().is_none_or(|name| {
+                        let candidate = match kind {
+                            SeenEntry::Directory | SeenEntry::LinkedDirectory => name,
+                            _ => name.split('.').next().unwrap_or(name),
+                        };
+                        candidate.eq_ignore_ascii_case(module)
+                            || *kind == SeenEntry::OpaquePythonModule
+                                && candidate.eq_ignore_ascii_case("__init__")
+                    })
+                })
+            })
+    }
+
     pub(super) fn base(&self) -> &Path {
         &self.base
     }
@@ -748,7 +772,7 @@ pub(super) fn is_javascript_context(name: &OsStr) -> bool {
     })
 }
 
-/// Record entries that can affect source selection or JavaScript reachability.
+/// Record entries that can affect source selection or module resolution.
 fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<SeenEntry> {
     let name = path.file_name()?;
     let is_source = is_source(name, include_javascript);
@@ -759,17 +783,31 @@ fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<S
         if fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
             Some(SeenEntry::LinkedDirectory)
         } else {
-            is_source.then_some(SeenEntry::LinkedSource)
+            if is_source {
+                Some(SeenEntry::LinkedSource)
+            } else {
+                opaque_python_module(path).then_some(SeenEntry::OpaquePythonModule)
+            }
         }
     } else if kind.is_dir() {
         Some(SeenEntry::Directory)
     } else if !is_source {
-        None
+        opaque_python_module(path).then_some(SeenEntry::OpaquePythonModule)
     } else if kind.is_file() {
         Some(SeenEntry::SourceFile)
     } else {
         Some(SeenEntry::OtherSource)
     }
+}
+
+fn opaque_python_module(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|suffix| {
+            ["pyc", "so", "pyd"]
+                .iter()
+                .any(|known| suffix.eq_ignore_ascii_case(known))
+        })
 }
 
 fn read_directory_entries(

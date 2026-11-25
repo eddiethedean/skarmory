@@ -1,7 +1,6 @@
 //! Evidence from selected Django templates and source-backed context.
 
 use std::cell::RefCell;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Component, PathBuf};
@@ -16,12 +15,6 @@ mod markup;
 const MAX_INPUTS: usize = 256;
 const MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TEMPLATE_DEPTH: usize = 16;
-
-#[derive(Clone, Copy, Default)]
-pub(in crate::phase02) struct DjangoInput<'a> {
-    pub(in crate::phase02) settings: Option<&'a OsStr>,
-    pub(in crate::phase02) templates: Option<&'a TemplateProject<'a>>,
-}
 
 pub(in crate::phase02) struct TemplateProject<'a> {
     project: &'a Project,
