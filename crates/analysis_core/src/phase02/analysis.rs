@@ -11689,6 +11689,37 @@ configure()
     }
 
     #[test]
+    fn wagtail_unregistered_snippet_does_not_retain_viewset_options() {
+        let report = analyze_phase03(
+            &[module(
+                "home/views.py",
+                "home.views",
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "class PersonViewSet(SnippetViewSet):\n",
+                    "    list_display = ('name',)\n",
+                    "    sort_order_field = 'sort_order'\n",
+                    "    unrelated_option = 1\n",
+                ),
+            )],
+            &[],
+        );
+        // The framework's snippet base is outside the bounded class model.
+        assert!(report.issues.iter().any(|issue| {
+            issue.path == "home/views.py" && issue.kind == "unresolved_subclass_hook"
+        }));
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind.starts_with("wagtail_")
+                    && row.full_name.starts_with("home.views.PersonViewSet")),
+            "{:?}",
+            report.evidence
+        );
+    }
+
+    #[test]
     fn django_middleware_preserves_only_the_configured_continuation() {
         let middleware = "class Active:\n    def __init__(self, next_handler): self.next = next_handler\n    def __call__(self, request): return self.next(request)\nclass Retired:\n    def __init__(self, next_handler): self.next = next_handler\n    def __call__(self, request): return self.next(request)\n";
         for (setting, selected) in [
@@ -12478,6 +12509,54 @@ server.apply()
                 .iter()
                 .any(|edge| edge.full_name == "routers.helper" && edge.certainty == "certain")
         );
+    }
+
+    #[test]
+    fn celery_function_router_requires_accepting_the_task_keyword() {
+        for (keyword, callable) in [("", false), (", *, task=None", true)] {
+            let result = analyze_phase03(
+                &[
+                    module(
+                        "app.py",
+                        "app",
+                        concat!(
+                            "from celery import Celery\n",
+                            "app = Celery('shop')\n",
+                            "app.conf.task_routes = ('routers.route_task',)\n",
+                            "class Other:\n    app = object()\n",
+                        ),
+                    ),
+                    module(
+                        "routers.py",
+                        "routers",
+                        &format!(
+                            "def route_task(name, args, kwargs, options{keyword}):\n    helper()\ndef helper(): pass\n"
+                        ),
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{:?}", result.issues);
+            for (name, kind) in [
+                ("routers.route_task", celery_routes::ROUTER),
+                ("routers.route_task.args", celery_routes::ROUTER_PARAMETER),
+                ("routers.helper", "direct_call"),
+            ] {
+                assert_eq!(
+                    result
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.full_name == name && edge.kind == kind),
+                    callable,
+                    "{name}: {:?}",
+                    result.evidence
+                );
+            }
+            assert_eq!(
+                names(&result, Category::Function).contains(&"helper"),
+                !callable
+            );
+        }
     }
 
     #[test]
@@ -15048,6 +15127,65 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "demo.signals.on_save" && entry.kind == "django_signal"
         }));
+    }
+
+    #[test]
+    fn django_appconfig_ready_requires_startup_and_an_effective_app_name() {
+        let launcher = "import django, os\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n";
+        for (startup, name, ready, incomplete) in [
+            ("", "", false, false),
+            (launcher, "", false, true),
+            (launcher, "    name = 'shop'\n", true, false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module(
+                        "settings.py",
+                        "settings",
+                        "INSTALLED_APPS = ['shop.apps.ShopConfig']\n",
+                    ),
+                    module("shop/__init__.py", "shop", ""),
+                    module(
+                        "shop/apps.py",
+                        "shop.apps",
+                        &format!(
+                            "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n{name}    def ready(self):\n        initialize()\ndef initialize(): pass\n"
+                        ),
+                    ),
+                    module("startup.py", "startup", startup),
+                ],
+                &[],
+            );
+            let expected_issues: &[&str] = if incomplete {
+                &["unresolved_registration"]
+            } else {
+                &[]
+            };
+            assert_eq!(
+                result
+                    .issues
+                    .iter()
+                    .map(|issue| issue.kind)
+                    .collect::<Vec<_>>(),
+                expected_issues,
+                "{:?}",
+                result.issues
+            );
+            for (name, kind) in [
+                ("shop.apps.ShopConfig.ready", "django_app_config"),
+                ("shop.apps.initialize", "direct_call"),
+            ] {
+                assert_eq!(
+                    result
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.full_name == name && edge.kind == kind),
+                    ready,
+                    "{name}: {:?}",
+                    result.evidence
+                );
+            }
+        }
     }
 
     #[test]

@@ -5735,6 +5735,17 @@ fn django_management_settings_option_selects_the_installed_commands() {
             "from django.core.management.base import BaseCommand\nclass Command(BaseCommand):\n    def handle(self, *args, **options):\n        return record_message()\ndef record_message():\n    return '{settings}'\n",
         )).unwrap();
     }
+    let dormant = scan(root);
+    assert_eq!(
+        unreachable_functions(&dormant),
+        [
+            "alternate.management.commands.record.Command.handle",
+            "alternate.management.commands.record.record_message",
+            "primary.management.commands.record.Command.handle",
+            "primary.management.commands.record.record_message",
+        ],
+        "{dormant}"
+    );
     let launcher = |argv: &str| {
         fs::write(
             root.join("manage.py"),
@@ -9241,7 +9252,7 @@ fn django_url_import_stops_at_a_proven_unbound_view_initializer() {
 }
 
 #[test]
-fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
+fn django_url_callbacks_enter_async_views_before_validating_the_response() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
     for (file, source) in [
@@ -9259,7 +9270,7 @@ fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
         ),
         (
             "views.py",
-            "async def ordinary(request): return async_helper()\ndef stream(request): yield generator_helper()\ndef async_helper(): return 1\ndef generator_helper(): return 2\n",
+            "async def ordinary(request): return async_helper()\ndef stream(request): yield generator_helper()\ndef async_helper(): return [2026]\ndef generator_helper(): return 2\n",
         ),
     ] {
         fs::write(root.join(file), source).unwrap();
@@ -9273,6 +9284,8 @@ fn django_url_callbacks_enter_async_views_and_only_create_generator_views() {
     let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
     for (name, kind) in [
         ("views.ordinary", "django_registration"),
+        // Django reaches this call before rejecting the view's list response.
+        ("views.async_helper", "direct_call"),
         ("views.stream", "generator_creation"),
     ] {
         assert!(
