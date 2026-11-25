@@ -258,9 +258,11 @@ impl<'a> Replay<'_, 'a> {
                     // This branch has reached the import. Resolve the source
                     // member directly and keep the other branches' prior values.
                     let value = self.graph.binding_value(binding, 0);
+                    // The replay has selected this import, even when the
+                    // original syntax placed it under an unresolved guard.
                     let value = self
                         .graph
-                        .exact_settings_collection_version(self.name, binding, value);
+                        .exact_settings_collection_version(self.name, binding, None, value);
                     if value.contains_unknown() {
                         return None;
                     }
@@ -588,7 +590,9 @@ impl Graph<'_> {
         };
         let statements = replay.graph.scopes[module].body;
         let states = replay.suite(module, statements, vec![State::default()])?;
-        if (replay.mutations.is_empty() && !replay.selected_import)
+        // Logging versions must stay exact even when only finite assignment
+        // alternatives are present and there are no collection mutations.
+        if (name != "LOGGING" && replay.mutations.is_empty() && !replay.selected_import)
             || !replay.accounts_for_helpers(reach)
         {
             return None;

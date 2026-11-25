@@ -11332,6 +11332,8 @@ configure()
                     logging.replace(&format!("'version': {version}"), "'version': VERSION")
                 ),
                 format!("{base}from shop.reexports import EXPORTED as LOGGING\n"),
+                format!("{base}LOGGING = {logging}\nif enabled:\n    LOGGING = {{}}\n"),
+                format!("{base}if enabled:\n    from shop.reexports import EXPORTED as LOGGING\n"),
             ] {
                 let report = analyze_phase03(
                     &[
