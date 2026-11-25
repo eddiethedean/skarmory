@@ -1067,8 +1067,20 @@ impl<'a> Graph<'a> {
         import: &Import,
     ) -> Option<Location> {
         let file = self.scopes[scope].file;
-        (scope == file && import.level > 0 && self.files[file].module == module)
-            .then_some(import.local.at)
+        if scope == file
+            && self.files[file].module == module
+            && (import.level > 0
+                || self.phase03 && self.files[file].is_package && import.member.is_some())
+        {
+            return Some(import.local.at);
+        }
+        if self.phase03
+            && scope == file
+            && let Some(member) = &import.member
+        {
+            return self.flask_blueprint_import_position(file, module, member);
+        }
+        None
     }
 
     fn index_submodule_imports(&mut self) {

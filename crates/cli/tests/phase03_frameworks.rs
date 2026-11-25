@@ -220,6 +220,74 @@ def unused(required): return 1
 }
 
 #[test]
+fn flask_blueprint_child_reads_the_initialized_package_prefix() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir_all(root.join("app/views")).unwrap();
+    fs::write(
+        root.join("app/views/__init__.py"),
+        "from flask import Blueprint as Factory\n\
+         bp = Factory('views', __name__)\n\
+         from app.views import routes\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app/views/routes.py"),
+        "from app.views import bp\n\
+         @bp.before_app_request\n\
+         def prepare(): return helper()\n\
+         def helper(): return 1\n\
+         def retired(): return 2\n",
+    )
+    .unwrap();
+    let factory = "from flask import Flask\n\
+                   def create_app():\n    app = Flask(__name__)\n    from app.views import bp\n";
+    for (mount, unused) in [
+        (
+            "    app.register_blueprint(bp)\n",
+            vec!["app.views.routes.retired"],
+        ),
+        (
+            "",
+            vec![
+                "app.views.routes.helper",
+                "app.views.routes.prepare",
+                "app.views.routes.retired",
+            ],
+        ),
+    ] {
+        fs::write(
+            root.join("app/__init__.py"),
+            format!("{factory}{mount}    return app\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(findings(&report, "unused_functions"), unused);
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+    // If the child runs before the export exists, no finite prefix can prove
+    // this cycle safe.
+    fs::write(
+        root.join("app/views/__init__.py"),
+        "from flask import Blueprint\n\
+         from app.views import routes\n\
+         bp = Blueprint('views', __name__)\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "cyclic_imports" })
+    );
+}
+
+#[test]
 fn fastapi_startup_keeps_callbacks_with_proven_identity_decorators() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

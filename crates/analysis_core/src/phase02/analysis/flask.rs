@@ -11,6 +11,68 @@ pub(super) struct ParameterHook {
 }
 
 impl Graph<'_> {
+    pub(super) fn flask_blueprint_import_position(
+        &self,
+        child: usize,
+        module: &str,
+        member: &str,
+    ) -> Option<Location> {
+        let (package, child_name) = self.files[child].module.rsplit_once('.')?;
+        let &parent = self.modules.get(package)?;
+        if package != module || !self.files[parent].is_package || child_name == member {
+            return None;
+        }
+
+        // A package can publish its Blueprint before importing the module that
+        // decorates its callbacks. That child observes the initialized prefix,
+        // even when Python originally entered through the child module name.
+        let mut constructor = None;
+        let mut assigned = false;
+        for statement in self.scopes[parent].body {
+            match &statement.kind {
+                StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }) => {}
+                StatementKind::Import(import)
+                    if !assigned
+                        && import.level == 0
+                        && import.module == "flask"
+                        && import.member.as_deref() == Some("Blueprint")
+                        && !self.modules.contains_key("flask") =>
+                {
+                    constructor = Some(import.local.text.as_str());
+                }
+                StatementKind::Assign {
+                    names,
+                    value: Some(value),
+                    annotation: None,
+                } if !assigned
+                    && matches!(names.as_slice(), [name] if name.text == member)
+                    && matches!(&value.kind, ExpressionKind::Call { function, arguments, keywords }
+                            if matches!(&function.kind, ExpressionKind::Name(name)
+                                if Some(name.as_str()) == constructor)
+                            && keywords.is_empty()
+                            && matches!(arguments.as_slice(), [
+                                Expression { kind: ExpressionKind::Text(_), .. },
+                                Expression { kind: ExpressionKind::Name(name), .. },
+                            ] if name == "__name__")) =>
+                {
+                    assigned = true;
+                }
+                StatementKind::Import(import)
+                    if assigned
+                        && import.member.as_deref() == Some(child_name)
+                        && self.relative_module(parent, import).as_deref() == Some(package) =>
+                {
+                    return Some(statement.at);
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     pub(super) fn collect_flask_cli_factory(&mut self) {
         let mut selected = None;
         for file in 0..self.files.len() {
