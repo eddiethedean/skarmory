@@ -965,6 +965,130 @@ fn flask_login_empty_provider_lookalike_has_no_registration_method() {
 }
 
 #[test]
+fn flask_class_writes_do_not_supply_stale_framework_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        r#"from flask import Flask
+from flask_login import LoginManager as Manager
+
+app = Flask(__name__)
+login = Manager()
+
+@app.shell_context_processor
+def app_before(): return {}
+
+@login.user_loader
+def login_before(user_id): return user_id
+
+def passthrough(self, callback): return callback
+setattr(Manager, 'user_loader', passthrough)
+
+@login.user_loader
+def login_after(user_id): return user_id
+
+@login.request_loader
+def independent(request): return request
+
+def replace_allocation(cls, import_name): return object()
+Flask.__new__ = replace_allocation
+replaced = Flask(__name__)
+
+@replaced.shell_context_processor
+def app_after(): return {}
+"#,
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    let evidence = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let framework = |symbol: &str| {
+        evidence.iter().any(|row| {
+            row["qualified_name"] == symbol
+                && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                    matches!(
+                        edge["kind"].as_str().unwrap(),
+                        "flask_registration" | "flask_login_registration"
+                    )
+                })
+        })
+    };
+    for name in ["app.app_before", "app.login_before", "app.independent"] {
+        assert!(framework(name), "{report}");
+    }
+    for name in ["app.app_after", "app.login_after"] {
+        assert!(!framework(name), "{report}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+}
+
+#[test]
+fn flask_opaque_consumers_invalidate_only_exposed_registration_providers() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("provider.py"),
+        "from flask_login import LoginManager\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    for argument in [
+        "login",
+        "{'manager': login}",
+        "manager=login",
+        "login.user_loader",
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!(
+                r#"from extension import customize
+from flask_login import LoginManager
+from provider import login
+
+other = LoginManager()
+
+@login.user_loader
+def before(user_id): return user_id
+
+customize({argument})
+
+@login.user_loader
+def after(user_id): return user_id
+
+@other.user_loader
+def independent(user_id): return user_id
+"#,
+            ),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        let registrations: Vec<_> = report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|symbol| {
+                symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "flask_login_registration")
+            })
+            .map(|symbol| symbol["qualified_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(registrations, ["app.before", "app.independent"], "{report}");
+        let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+}
+
+#[test]
 fn flask_constructor_rebinding_does_not_change_the_earlier_import_capture() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -989,6 +1113,135 @@ def detached(): return {}
     .unwrap();
     let report = scan(project.path());
     assert_eq!(findings(&report, "unused_functions"), ["app.detached"]);
+}
+
+#[test]
+fn fastapi_deployment_factory_preserves_possible_routes() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let cache = tempfile::tempdir().unwrap();
+    let source = r#"from fastapi import FastAPI
+
+def helper(): return 1
+def retired(): return 2
+
+def create_app():
+    application = FastAPI()
+    @application.get('/')
+    def handler():
+        return helper()
+    return application
+"#;
+    for (suffix, certainty) in [("", "possible"), ("app = create_app()\n", "certain")] {
+        fs::write(&path, format!("{source}{suffix}")).unwrap();
+        let report = scan(project.path());
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["app.retired"],
+            "{report}"
+        );
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(
+            symbols.iter().any(|symbol| {
+                symbol["qualified_name"] == "app.create_app.handler"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "fastapi_registration" && edge["certainty"] == certainty
+                    })
+            }),
+            "{report}"
+        );
+    }
+    for changed in [
+        source.replace("return application", "return None"),
+        format!("{source}create_app = None\n"),
+        source.replace(
+            "from fastapi import FastAPI",
+            "class FastAPI:\n    def get(self, path): return lambda callback: callback",
+        ),
+    ] {
+        fs::write(&path, changed).unwrap();
+        let report = scan(project.path());
+        assert!(
+            findings(&report, "unused_functions").contains(&"app.helper"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn fastapi_plain_async_lifespan_does_not_open_its_body() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        "from fastapi import FastAPI\nasync def lifespan(app): return helper()\ndef helper(): return 1\napp = FastAPI(lifespan=lifespan)\n",
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert!(
+        findings(&report, "unused_functions").contains(&"app.helper"),
+        "{report}"
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        !symbols.iter().any(|symbol| {
+            symbol["qualified_name"] == "app.lifespan"
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "fastapi_lifespan")
+        }),
+        "{report}"
+    );
+}
+
+#[test]
+fn fastapi_source_middleware_does_not_consume_an_ignored_dispatch_option() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir_all(root.join("starlette/middleware")).unwrap();
+    for name in ["starlette/__init__.py", "starlette/middleware/__init__.py"] {
+        fs::write(root.join(name), "").unwrap();
+    }
+    fs::write(
+        root.join("app.py"),
+        "from fastapi import FastAPI\nfrom starlette.middleware.base import BaseHTTPMiddleware\ndef helper(): return 1\ndef dispatch(request, call_next): return helper()\napplication = FastAPI()\napplication.add_middleware(BaseHTTPMiddleware, dispatch=dispatch)\n",
+    ).unwrap();
+    let path = root.join("starlette/middleware/base.py");
+    for provider in [
+        "class BaseHTTPMiddleware:\n    def __init__(self, app, **kwargs): pass\n    async def __call__(self, scope, receive, send): pass\n",
+        "def BaseHTTPMiddleware(app, **kwargs):\n    async def middleware(scope, receive, send): pass\n    return middleware\n",
+    ] {
+        fs::write(&path, provider).unwrap();
+        let report = scan(root);
+        assert!(
+            findings(&report, "unused_functions").contains(&"app.helper"),
+            "{report}"
+        );
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert!(
+            !symbols
+                .iter()
+                .any(|symbol| symbol["qualified_name"] == "app.dispatch"),
+            "{report}"
+        );
+    }
+    fs::write(
+        &path,
+        "def BaseHTTPMiddleware(app, **kwargs): return unknown(app, kwargs)\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_registration" })
+    );
 }
 
 #[test]
@@ -5841,6 +6094,147 @@ fn django_setting_class_declaration_does_not_activate_replaced_protocol_callback
         !symbols
             .iter()
             .any(|symbol| symbol["qualified_name"] == "service.backend.Filter.filter")
+    );
+}
+
+#[test]
+fn django_effective_settings_keep_only_possible_protocol_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let package = root.join("service");
+    fs::create_dir(&package).unwrap();
+    for (name, source) in [
+        ("__init__.py", ""),
+        (
+            "settings.py",
+            "INSTALLED_APPS = ['service']\nSECRET_KEY = 'fixture'\nfrom .config import BACKENDS as AUTHENTICATION_BACKENDS, LOGGING, TEMPLATES\nif enabled:\n    LOGGING = {}\nSTORAGES = {'default': {'BACKEND': 'service.backends.Old'}, 'default': {'BACKEND': 'service.backends.Store'}}\n",
+        ),
+        (
+            "config.py",
+            "BACKENDS = ('service.backends.Configured',)\nLOGGING = {'version': 1, 'filters': {'active': {'()': 'service.backends.Filter'}}}\nTEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', 'OPTIONS': {'context_processors': ['service.backends.context']}}]\n",
+        ),
+        (
+            "backends.py",
+            r#"class Base:
+    def get_user(self, user_id): return False
+class Left(Base):
+    pass
+class Right(Base):
+    def get_user(self, user_id): return lookup(user_id)
+    async def aget_user(self, user_id): return lookup(user_id)
+class Configured(Left, Right):
+    pass
+class Filter:
+    def filter(self, record): return valid(record)
+    def unrelated(self): return True
+class Store:
+    def save(self, name, content): return name
+class Old:
+    def save(self, name, content): return name
+
+def lookup(user_id): return user_id
+def valid(record): return True
+def context(request): return {}
+"#,
+        ),
+    ] {
+        fs::write(package.join(name), source).unwrap();
+    }
+    let report = scan(root);
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    let edges = |name: &str, kind: &str| {
+        symbols
+            .iter()
+            .filter(|item| item["qualified_name"] == name)
+            .flat_map(|item| item["evidence"].as_array().unwrap())
+            .filter(|edge| edge["kind"] == kind)
+            .map(|edge| edge["certainty"].as_str().unwrap())
+            .collect::<Vec<_>>()
+    };
+    for (name, kind) in [
+        ("service.backends.Right.get_user", "django_auth_backend"),
+        ("service.backends.Right.aget_user", "django_auth_backend"),
+        ("service.backends.Filter.filter", "django_logging_factory"),
+        ("service.backends.Store.save", "django_storage_backend"),
+        ("service.backends.context", "django_setting_reference"),
+        ("service.backends.lookup", "direct_call"),
+    ] {
+        assert_eq!(edges(name, kind), ["possible"], "{name}: {report}");
+    }
+    for (name, kind) in [
+        ("service.backends.Base.get_user", "django_auth_backend"),
+        ("service.backends.Old.save", "django_storage_backend"),
+        (
+            "service.backends.Filter.unrelated",
+            "django_logging_factory",
+        ),
+    ] {
+        assert!(edges(name, kind).is_empty(), "{name}: {report}");
+    }
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        package.join("config.py"),
+        "BACKENDS = []\nLOGGING = {}\nTEMPLATES = []\n",
+    )
+    .unwrap();
+    let edited = scan(root);
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, edited);
+    assert!(
+        findings(&edited, "unused_functions").contains(&"service.backends.lookup"),
+        "{edited}"
+    );
+    let settings = fs::read_to_string(package.join("settings.py")).unwrap();
+    fs::write(
+        package.join("settings.py"),
+        format!("{settings}from . import backends\nsetattr(backends.Right, 'get_user', None)\n"),
+    )
+    .unwrap();
+    fs::write(
+        package.join("config.py"),
+        "BACKENDS = ['service.backends.Configured']\nLOGGING = {}\nTEMPLATES = []\n",
+    )
+    .unwrap();
+    let replaced = scan(root);
+    let symbols = replaced["dead_code_evidence"]["symbols"]
+        .as_array()
+        .unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Right.aget_user")
+    );
+    assert!(
+        !symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Right.get_user")
+    );
+
+    fs::write(
+        package.join("config.py"),
+        concat!(
+            "BACKENDS = ['service.backends.Configured']\n",
+            "LOGGING = {'version': 1, 'filters': {'live': {'()': 'service.backends.Filter'}}}\n",
+            "TEMPLATES = []\n",
+            "def reset():\n    LOGGING.clear()\n",
+            "reset()\n",
+        ),
+    )
+    .unwrap();
+    let mutated = scan_with_exit(root, None, None, 2);
+    assert_eq!(mutated["coverage"]["status"], "incomplete");
+    assert!(
+        !mutated["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["qualified_name"] == "service.backends.Filter.filter")
     );
 }
 

@@ -10,6 +10,7 @@ enum ReceiverKey {
     FlaskLoginManager(Object),
     TyperApp(Object),
     FlaskApplication(Object),
+    FlaskBase(ObjectKind),
     Fastapi(Object),
     FastapiBase,
 }
@@ -31,17 +32,28 @@ struct Write {
 pub(super) struct Mutations {
     members: BTreeMap<ReceiverKey, BTreeMap<String, Vec<Write>>>,
     modules: BTreeMap<String, Vec<Write>>,
+    flask_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
 
 impl Graph<'_> {
     pub(super) fn index_framework_mutations(&mut self) {
+        let track_flask_escapes = self.symbols.iter().any(|symbol| {
+            matches!(symbol.binding, Binding::Import(import) if import.level == 0
+                && matches!(import.module.split('.').next(), Some("flask" | "flask_login")))
+        });
         for file in 0..self.files.len() {
-            self.index_module_mutations(file, self.scopes[file].body, false);
+            self.index_module_mutations(file, self.scopes[file].body, false, track_flask_escapes);
         }
     }
 
-    fn index_module_mutations(&mut self, file: ScopeId, body: &[Statement], conditional: bool) {
+    fn index_module_mutations(
+        &mut self,
+        file: ScopeId,
+        body: &[Statement],
+        conditional: bool,
+        track_flask_escapes: bool,
+    ) {
         for statement in body {
             let at = statement.at;
             match &statement.kind {
@@ -87,13 +99,16 @@ impl Graph<'_> {
                         }
                     }
                 }
-                StatementKind::Evaluate(call) => {
-                    if let ExpressionKind::Call {
-                        function,
-                        arguments,
-                        keywords,
-                    } = &call.kind
-                        && keywords.is_empty()
+                StatementKind::Evaluate(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }) if !arguments.is_empty() || !keywords.is_empty() => {
+                    if keywords.is_empty()
                         && let [receiver, name, rest @ ..] = arguments.as_slice()
                         && let ExpressionKind::Text(member) = &name.kind
                         && let Value::Provider(provider) = self.probe_identity(file, function, at)
@@ -110,6 +125,16 @@ impl Graph<'_> {
                             rest.first(),
                             conditional,
                         );
+                    } else if track_flask_escapes {
+                        match self.probe_identity(file, function, at) {
+                            Value::Unknown => {
+                                self.index_flask_escape(file, at, arguments, keywords)
+                            }
+                            Value::Provider(provider) if !is_known_call(&provider, true) => {
+                                self.index_flask_escape(file, at, arguments, keywords);
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 StatementKind::If {
@@ -117,16 +142,50 @@ impl Graph<'_> {
                     body,
                     otherwise,
                 } => match self.indexed_bool(file, test, at, 0) {
-                    Some(true) => self.index_module_mutations(file, body, conditional),
-                    Some(false) => self.index_module_mutations(file, otherwise, conditional),
+                    Some(true) => {
+                        self.index_module_mutations(file, body, conditional, track_flask_escapes)
+                    }
+                    Some(false) => self.index_module_mutations(
+                        file,
+                        otherwise,
+                        conditional,
+                        track_flask_escapes,
+                    ),
                     None => {
-                        self.index_module_mutations(file, body, true);
-                        self.index_module_mutations(file, otherwise, true);
+                        self.index_module_mutations(file, body, true, track_flask_escapes);
+                        self.index_module_mutations(file, otherwise, true, track_flask_escapes);
                     }
                 },
                 StatementKind::Return(_) | StatementKind::Raise(_) => break,
                 _ => {}
             }
+        }
+    }
+
+    fn index_flask_escape(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+    ) {
+        let mut escaped = BTreeSet::new();
+        for expression in arguments
+            .iter()
+            .chain(keywords.iter().map(|(_, value)| value))
+        {
+            flask_escape_keys(self.probe_identity(file, expression, at), &mut escaped);
+        }
+        for receiver in escaped {
+            self.mutations
+                .flask_escapes
+                .entry(receiver)
+                .or_default()
+                .push(Write {
+                    file,
+                    at,
+                    value: MemberWriteValue::Ambiguous,
+                });
         }
     }
 
@@ -149,7 +208,9 @@ impl Graph<'_> {
         let deletes_inherited_method = value.is_none()
             && matches!(
                 receiver,
-                ReceiverKey::Fastapi(_) | ReceiverKey::FlaskApplication(_)
+                ReceiverKey::Fastapi(_)
+                    | ReceiverKey::FlaskApplication(_)
+                    | ReceiverKey::FlaskLoginManager(_)
             )
             && !matches!(
                 self.member_write(&receiver, member, (file, at)),
@@ -157,8 +218,10 @@ impl Graph<'_> {
             );
         let value = if conditional
             || deletes_inherited_method
-            || matches!(receiver, ReceiverKey::FastapiBase)
-        {
+            || matches!(
+                receiver,
+                ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_)
+            ) {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
             let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
@@ -276,6 +339,16 @@ impl Graph<'_> {
                             is_route(kind, member, true) || is_imperative_registration(kind, member)
                         })
             }
+            ReceiverKey::FlaskBase(kind) => {
+                is_route(*kind, member, true)
+                    || is_imperative_registration(*kind, member)
+                    || matches!(
+                        member,
+                        "__new__" | "__init__" | "__getattr__" | "__getattribute__"
+                    )
+                    || matches!(kind, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
+                        && member == "register_blueprint"
+            }
             ReceiverKey::Fastapi(_) => {
                 is_route(ObjectKind::App, member, true)
                     || is_imperative_registration(ObjectKind::App, member)
@@ -302,6 +375,9 @@ impl Graph<'_> {
             Value::Module(file) => Some(ReceiverKey::Module(self.files[*file].module.clone())),
             Value::Provider(provider) if fastapi::is_app_constructor(provider) => {
                 Some(ReceiverKey::FastapiBase)
+            }
+            Value::Provider(provider) if flask::provider_kind(provider).is_some() => {
+                flask::provider_kind(provider).map(ReceiverKey::FlaskBase)
             }
             Value::Provider(module) if provider_module(module) || is_django_signal(module) => {
                 Some(ReceiverKey::Module(module.clone()))
@@ -401,14 +477,51 @@ impl Graph<'_> {
         } else {
             ReceiverKey::FlaskApplication(site)
         };
-        if self.member_write(&receiver, "__class__", access).is_some() {
+        let class = ReceiverKey::FlaskBase(kind);
+        if self.flask_has_escaped(&receiver, Some(site.0), access)
+            || self.flask_has_escaped(&class, None, access)
+            || self.member_write(&receiver, "__class__", access).is_some()
+            || ["__getattr__", "__getattribute__"]
+                .iter()
+                .any(|member| self.member_write(&class, member, access).is_some())
+        {
             return Value::Unknown;
         }
         match self.member_write(&receiver, name, access) {
             Some(MemberWriteValue::Replacement(value)) => value,
             Some(MemberWriteValue::Ambiguous) => Value::Unknown,
-            Some(MemberWriteValue::Deleted) | None => Value::Method(site, kind, name.into()),
+            Some(MemberWriteValue::Deleted) | None => {
+                if self.member_write(&class, name, access).is_some() {
+                    Value::Unknown
+                } else {
+                    Value::Method(site, kind, name.into())
+                }
+            }
         }
+    }
+
+    pub(super) fn flask_constructor_changed(
+        &self,
+        kind: ObjectKind,
+        access: (ScopeId, Location),
+    ) -> bool {
+        let class = ReceiverKey::FlaskBase(kind);
+        self.flask_has_escaped(&class, None, access)
+            || ["__new__", "__init__"]
+                .iter()
+                .any(|member| self.member_write(&class, member, access).is_some())
+    }
+
+    fn flask_has_escaped(
+        &self,
+        receiver: &ReceiverKey,
+        origin: Option<ScopeId>,
+        access: (ScopeId, Location),
+    ) -> bool {
+        self.mutations
+            .flask_escapes
+            .get(receiver)
+            .is_some_and(|writes| self.write_value(writes, origin, access).is_some())
     }
 
     pub(super) fn signal_member_write(
@@ -459,7 +572,7 @@ impl Graph<'_> {
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
-            ReceiverKey::FastapiBase => None,
+            ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_) => None,
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
             | ReceiverKey::FlaskApplication(site)
@@ -518,6 +631,29 @@ impl Graph<'_> {
                     .find(|write| Some(write.file) == original && write.file != reader)
             })
             .map(|write| write.value.clone())
+    }
+}
+
+// These values expose either the object itself or a bound method's receiver.
+fn flask_escape_keys(value: Value, escaped: &mut BTreeSet<ReceiverKey>) {
+    match value {
+        Value::Object(site, ObjectKind::FlaskLoginManager)
+        | Value::Method(site, ObjectKind::FlaskLoginManager, _) => {
+            escaped.insert(ReceiverKey::FlaskLoginManager(site));
+        }
+        Value::Object(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint)
+        | Value::Method(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint, _) => {
+            escaped.insert(ReceiverKey::FlaskApplication(site));
+        }
+        Value::Provider(name) => {
+            escaped.extend(flask::provider_kind(&name).map(ReceiverKey::FlaskBase));
+        }
+        Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
+            for value in values {
+                flask_escape_keys(value, escaped);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -211,7 +211,7 @@ impl Receiver {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum ObjectKind {
     App,
     Router,
@@ -585,6 +585,7 @@ pub(super) fn analyze_with_verification(
         django_autoreload_wrappers: Vec::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
+        django_settings_sources: BTreeSet::new(),
         django_registration_issues: Vec::new(),
         framework_route_receivers: BTreeMap::new(),
         registered_django_admin_models: BTreeSet::new(),
@@ -647,6 +648,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
+        graph.collect_fastapi_deployment_factory();
         graph.collect_conventional_app(ObjectKind::SanicApp);
         graph.collect_conventional_app(ObjectKind::StarletteApp);
         graph.collect_gunicorn_config();
@@ -678,7 +680,10 @@ pub(super) fn analyze_with_verification(
     let mut possible_roots = Vec::new();
     if phase03 {
         for edge in graph.phase03_framework_edges() {
-            if matches!(edge.kind, "pytest_hook_candidate" | "flask_cli_factory") {
+            if matches!(
+                edge.kind,
+                "pytest_hook_candidate" | "flask_cli_factory" | "fastapi_deployment_factory"
+            ) {
                 possible_roots.push(edge);
             } else {
                 roots.push(edge);
@@ -766,6 +771,7 @@ struct Graph<'a> {
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
+    django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
     django_registration_issues: Vec<(Object, Issue)>,
     framework_route_receivers: BTreeMap<(ScopeId, Object, SymbolId), BTreeSet<SymbolId>>,
     registered_django_admin_models: BTreeSet<(ScopeId, SymbolId)>,
@@ -3574,14 +3580,7 @@ impl<'a> Graph<'a> {
                     if self.phase03
                         && matches!(name.as_str(), "flask.Flask" | "flask.app.Flask") =>
                 {
-                    Value::Object(
-                        (
-                            self.scopes[scope].file,
-                            expression.at.line,
-                            expression.at.column,
-                        ),
-                        ObjectKind::FlaskApp,
-                    )
+                    self.flask_instance(scope, expression.at, before, ObjectKind::FlaskApp)
                 }
                 Value::Provider(name)
                     if self.phase03
@@ -3590,14 +3589,7 @@ impl<'a> Graph<'a> {
                             "flask.Blueprint" | "flask.blueprints.Blueprint"
                         ) =>
                 {
-                    Value::Object(
-                        (
-                            self.scopes[scope].file,
-                            expression.at.line,
-                            expression.at.column,
-                        ),
-                        ObjectKind::FlaskBlueprint,
-                    )
+                    self.flask_instance(scope, expression.at, before, ObjectKind::FlaskBlueprint)
                 }
                 Value::Provider(name)
                     if self.phase03
@@ -3609,14 +3601,7 @@ impl<'a> Graph<'a> {
                         )
                         .is_some() =>
                 {
-                    Value::Object(
-                        (
-                            self.scopes[scope].file,
-                            expression.at.line,
-                            expression.at.column,
-                        ),
-                        ObjectKind::FlaskLoginManager,
-                    )
+                    self.flask_instance(scope, expression.at, before, ObjectKind::FlaskLoginManager)
                 }
                 Value::Provider(name)
                     if self.phase03
@@ -8858,6 +8843,16 @@ impl<'a> Graph<'a> {
             self.resolve_class_invocations();
             (reach, static_reach, verification, converged) =
                 self.establish_reachability(&roots, &possible_roots, snapshot);
+        }
+        if self.phase03 && converged {
+            let protocols = self.django_settings_protocol_roots(&reach);
+            if !protocols.is_empty() {
+                possible_roots.extend(protocols);
+                self.resolve_receiver_calls();
+                self.resolve_class_invocations();
+                (reach, static_reach, verification, converged) =
+                    self.establish_reachability(&roots, &possible_roots, snapshot);
+            }
         }
         if !converged {
             self.issues.push(framework_limit());

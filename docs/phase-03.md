@@ -250,6 +250,13 @@ own source root. Services can use the same package name while retaining
 only the callbacks they register. A missing local submodule keeps coverage
 incomplete when the registration depends on it.
 
+A conventional module-level `create_app` factory that returns its resolved
+FastAPI instance contributes possible deployment evidence. A plain async
+function used as a lifespan provider does not enter its coroutine body.
+Source-owned no-op ASGI middleware receives possible-use evidence and leaves
+an ignored `dispatch` option unrooted.
+[Uvicorn factory setting](https://uvicorn.dev/settings/#application)
+
 FastAPI supports imperative endpoint registration and literal `Depends` or
 `Security` dependencies in defaults, `Annotated` parameters and imported type
 aliases, and route and router registration options. App-wide dependencies apply
@@ -291,6 +298,15 @@ subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen
 command. An unresolved app or command export produces incomplete coverage.
+
+The analyzer resolves local classes and functions named by effective authentication,
+storage, logging, and Django template settings. Bounded backend methods and
+context processors contribute possible-use evidence. The model follows named
+imports, locally defined class inheritance, and finite setting alternatives.
+A unique conventional settings package with literal application and secret-key
+settings can describe an externally selected configuration. Storage and logging
+entries use their effective dictionary keys, and incomplete configuration
+writes retain their coverage diagnostics.
 
 Django admin discovery follows installed apps when `django.contrib.admin` or
 `AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules

@@ -29,6 +29,12 @@ _ROOT_KINDS = {
 _CLASS_ROOT_REASONS = {
     "django_command": "dead_code_liveness:django_web_management_command_handle",
 }
+_SETTINGS_REASONS = {
+    "django_auth_backend": "django_web_auth_backend",
+    "django_storage_backend": "django_web_storage_backend",
+    "django_logging_factory": "django_web_logging_factory",
+    "django_setting_reference": "django_web_setting_reference",
+}
 _SIGNAL_REASONS = {
     ("django_signal", "certain"): "django_web_signal_receiver",
     (
@@ -72,6 +78,9 @@ def framework_report(report):
             if (reason := _SIGNAL_REASONS.get((native_kind, certainty))) is not None:
                 rescued.append({"name": name, "reason": reason})
                 kind = "framework_root" if certainty == "certain" else native_kind
+            elif (reason := _SETTINGS_REASONS.get(native_kind)) is not None:
+                rescued.append({"name": name, "reason": reason})
+                kind = native_kind
             elif native_kind == "unittest_discovery" and certainty == "certain":
                 kind = "framework_root"
                 reason = "unittest_discovery"

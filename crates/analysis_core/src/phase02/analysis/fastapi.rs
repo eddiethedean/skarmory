@@ -111,6 +111,78 @@ impl<'a> Graph<'a> {
         self.fastapi.apps.insert(object, scope);
     }
 
+    pub(super) fn collect_fastapi_deployment_factory(&mut self) {
+        for file in 0..self.files.len() {
+            let module = &self.files[file].module;
+            if !matches!(module.as_str(), "app" | "main" | "asgi")
+                || self.failed_terminal_modules.contains(&file)
+                || self
+                    .module_member_write(module, "create_app", (file, END))
+                    .is_some()
+            {
+                continue;
+            }
+            let Some(factory) = self.local(file, "create_app", END) else {
+                continue;
+            };
+            let Binding::Definition(definition, body) = self.symbols[factory].binding else {
+                continue;
+            };
+            if self.conditional.contains_key(&factory)
+                || definition.kind != DefinitionKind::Function
+                || definition.is_generator
+                || !definition.decorators.is_empty()
+                || !definition.parameters.is_empty()
+            {
+                continue;
+            }
+            let [
+                Statement {
+                    kind: StatementKind::Assign { names, .. },
+                    ..
+                },
+                callbacks @ ..,
+                Statement {
+                    at,
+                    kind: StatementKind::Return(Some(value)),
+                    ..
+                },
+            ] = body_without_docstring(definition)
+            else {
+                continue;
+            };
+            let [application] = names.as_slice() else {
+                continue;
+            };
+            if !matches!(&value.kind, ExpressionKind::Name(name) if name == &application.text)
+                || !callbacks.iter().all(|statement| {
+                    matches!(&statement.kind, StatementKind::Define(callback)
+                        if callback.kind != DefinitionKind::Class)
+                })
+            {
+                continue;
+            }
+            let Value::Object(object, ObjectKind::App) = self.probe_identity(body, value, *at)
+            else {
+                continue;
+            };
+            // The deployment may name the factory. Only the returned app can
+            // become active through that path.
+            let mut apps = self
+                .fastapi
+                .apps
+                .iter()
+                .filter(|(_, scope)| **scope == body);
+            if matches!((apps.next(), apps.next()), (Some((&app, _)), None) if app == object) {
+                self.framework_roots.push(Edge {
+                    target: factory,
+                    kind: "fastapi_deployment_factory",
+                    certainty: "possible",
+                });
+            }
+        }
+    }
+
     pub(super) fn fastapi_direct_subclass_scope(
         &mut self,
         class: SymbolId,
@@ -308,6 +380,14 @@ impl<'a> Graph<'a> {
             Value::Callable(invocation) if self.is_fastapi_lifespan(invocation.target) => {
                 self.edge(effects, invocation.target, "fastapi_lifespan", "certain");
             }
+            Value::Callable(invocation)
+                if matches!(self.symbols[invocation.target].binding,
+                    Binding::Definition(definition, _) if definition.kind == DefinitionKind::Coroutine
+                        && !definition.is_generator && definition.decorators.is_empty()) =>
+            {
+                // Calling a plain async function only creates a coroutine.
+                // The lifespan protocol requires an async context manager.
+            }
             _ => self.scope_issue(
                 effects,
                 expression.at,
@@ -432,9 +512,84 @@ impl<'a> Graph<'a> {
                 },
                 "add_middleware",
             );
+        } else if let Some(targets) = self.fastapi_noop_middleware(site, arguments, keywords) {
+            let effects = self.fastapi_effect_scope(site);
+            for target in targets {
+                self.edge(effects, target, "fastapi_source_middleware", "possible");
+            }
+            self.fastapi_event(object, Event::new(site, effects));
         } else {
             self.unresolved_fastapi_middleware(site);
         }
+    }
+
+    fn fastapi_noop_middleware(
+        &mut self,
+        site: Site,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+    ) -> Option<Vec<SymbolId>> {
+        let [Some(provider), Some(_)] =
+            registration_arguments(arguments, keywords, ["middleware_class", "dispatch"])?
+        else {
+            return None;
+        };
+        let Value::Callable(invocation) = self.probe_identity(site.scope, provider, site.before)
+        else {
+            return None;
+        };
+        let Binding::Definition(definition, scope) = self.symbols[invocation.target].binding else {
+            return None;
+        };
+        if invocation.verified
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || definition.is_generator
+            || !definition.decorators.is_empty()
+            || !definition.annotations.is_empty()
+            || !definition.defaults.is_empty()
+        {
+            return None;
+        }
+        let [first, second] = body_without_docstring(definition) else {
+            return None;
+        };
+        // Starlette calls the supplied provider with the wrapped ASGI app and
+        // middleware options. These source bodies cannot consume the dispatch option.
+        let mut targets = vec![invocation.target];
+        match (&first.kind, &second.kind) {
+            (StatementKind::Define(init), StatementKind::Define(call))
+                if self.is_class(invocation.target)
+                    && definition.bases.is_empty()
+                    && definition.table_keyword.is_none()
+                    && init.name.text == "__init__"
+                    && call.name.text == "__call__"
+                    && init.kind == DefinitionKind::Function
+                    && call.kind == DefinitionKind::Coroutine
+                    && plain_empty_middleware_body(init)
+                    && plain_empty_middleware_body(call)
+                    && self
+                        .class_discovery_writes(invocation.target, site.scope)
+                        .is_empty() =>
+            {
+                targets.push(self.local(scope, "__init__", END)?);
+                targets.push(self.local(scope, "__call__", END)?);
+            }
+            (
+                StatementKind::Define(call),
+                StatementKind::Return(Some(Expression {
+                    kind: ExpressionKind::Name(name),
+                    ..
+                })),
+            ) if definition.kind == DefinitionKind::Function
+                && &call.name.text == name
+                && call.kind == DefinitionKind::Coroutine
+                && plain_empty_middleware_body(call) =>
+            {
+                targets.push(self.local(scope, name, END)?);
+            }
+            _ => return None,
+        }
+        Some(targets)
     }
 
     pub(super) fn fastapi_middleware_callback(
@@ -1746,6 +1901,13 @@ impl<'a> Graph<'a> {
             );
         }
     }
+}
+
+fn plain_empty_middleware_body(definition: &Definition) -> bool {
+    definition.decorators.is_empty()
+        && definition.annotations.is_empty()
+        && definition.defaults.is_empty()
+        && body_without_docstring(definition).is_empty()
 }
 
 fn is_literal_api_decorator(method: &str) -> bool {

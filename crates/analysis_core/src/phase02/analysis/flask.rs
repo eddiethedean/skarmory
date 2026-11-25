@@ -2,6 +2,15 @@
 
 use super::*;
 
+pub(super) fn provider_kind(name: &str) -> Option<ObjectKind> {
+    match name {
+        "flask.Flask" | "flask.app.Flask" => Some(ObjectKind::FlaskApp),
+        "flask.Blueprint" | "flask.blueprints.Blueprint" => Some(ObjectKind::FlaskBlueprint),
+        _ if is_flask_login_constructor(name) => Some(ObjectKind::FlaskLoginManager),
+        _ => None,
+    }
+}
+
 pub(super) struct ParameterHook {
     owner: SymbolId,
     scope: ScopeId,
@@ -11,6 +20,19 @@ pub(super) struct ParameterHook {
 }
 
 impl Graph<'_> {
+    pub(super) fn flask_instance(
+        &self,
+        scope: ScopeId,
+        at: Location,
+        before: Location,
+        kind: ObjectKind,
+    ) -> Value {
+        if self.flask_constructor_changed(kind, (scope, before)) {
+            return Value::Unknown;
+        }
+        Value::Object((self.scopes[scope].file, at.line, at.column), kind)
+    }
+
     pub(super) fn flask_factory_app(
         &mut self,
         invocation: Invocation,
@@ -85,7 +107,8 @@ impl Graph<'_> {
                 ExpressionKind::Name(_) | ExpressionKind::Member(_, _)
             )
             || !matches!(self.identity(scope, function, before, depth + 1),
-                Value::Provider(name) if matches!(name.as_str(), "flask.Flask" | "flask.app.Flask"))
+                Value::Provider(name) if provider_kind(&name) == Some(ObjectKind::FlaskApp))
+            || self.flask_constructor_changed(ObjectKind::FlaskApp, (scope, before))
         {
             return None;
         }
