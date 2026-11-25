@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,252 have port mappings. The reported release
+milestones. Of the required cases, 1,253 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -30,6 +30,8 @@ each original variant.
 | FastAPI source-layout corpus case | The unannotated `websocket` argument is treated as a query parameter. The original handler cannot receive a WebSocket object through that argument. |
 | Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. |
 | Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. |
+| Django signature conventions | CPython 3.11 resolves `site` to its frozen non-package module. The original project cannot import `site.checks`, `site.views`, or `site.signals` by name under that interpreter configuration. |
+| Logging configuration | The satellite settings omit `version`, so `dictConfig` raises before invoking either factory. In the path-like lookalike fixture, CPython 3.11 selects frozen `os`, the dictionary fails the `PathLike` guard, and `dictConfig` creates the formatter the original expects to be unused. |
 | Wagtail snippet settings | The view-set class supplies neither a model nor a `register_snippet` call. The analyzer records the related model and block declarations separately. |
 | unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. Those declarations remain dormant in the analyzer. |
 
