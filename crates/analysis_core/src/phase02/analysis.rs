@@ -105,6 +105,7 @@ enum Value {
     IdentityFunction,
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
+    FlaskConfig,
     MissingFrameworkMember,
     DeletedModuleBinding,
     UnittestComparison,
@@ -3371,10 +3372,10 @@ impl<'a> Graph<'a> {
                     }
                     if arguments.is_empty()
                         && keywords.is_empty()
-                        && let Some(object) =
-                            self.flask_factory_app(invocation, scope, expression.at, depth + 1)
+                        && let Some(value) =
+                            self.flask_factory_result(invocation, scope, expression.at, depth + 1)
                     {
-                        return Value::Object(object, ObjectKind::FlaskApp);
+                        return value;
                     }
                     self.fastapi_conditional_app_result(invocation, arguments, keywords, depth + 1)
                 }
@@ -4751,7 +4752,8 @@ impl<'a> Graph<'a> {
                         if self.phase03
                             && arguments.is_empty()
                             && keywords.is_empty()
-                            && let Some(object) = self.flask_factory_app(invocation, scope, expr.at, 0)
+                            && let Some(Value::Object(object, ObjectKind::FlaskApp)) =
+                                self.flask_factory_result(invocation, scope, expr.at, 0)
                         {
                             self.scopes[scope].activated_apps.push(object);
                         }

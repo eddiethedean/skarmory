@@ -948,6 +948,229 @@ def direct_hook(): return {}
 }
 
 #[test]
+fn flask_factory_preserves_aliases_and_no_argument_defaults() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("provider.py"),
+        "from flask import Flask
+def create_app(config=None):
+    source = Flask(__name__)
+    alias = source
+    final = alias
+    return final
+",
+    )
+    .unwrap();
+    fs::write(
+        root.join("web.py"),
+        "from provider import create_app
+first = create_app()
+second = create_app()
+alias = first
+alias.shell_context_processor = lambda callback: callback
+@first.shell_context_processor
+def dormant(): return {}
+@second.shell_context_processor
+def served(): return {}
+",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dormant"],
+        "{report}"
+    );
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+}
+
+#[test]
+fn flask_config_and_deferred_factory_results_cannot_register_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let file = root.join("web.py");
+    for (setup, decorator) in [
+        (
+            "from flask import Flask
+app = Flask(__name__)
+config = app.config
+",
+            "config.shell_context_processor",
+        ),
+        (
+            "from flask import Flask
+async def create(): return Flask(__name__)
+config = create()
+",
+            "config.shell_context_processor",
+        ),
+        (
+            "from flask_login import LoginManager
+login = LoginManager()
+",
+            "login.config.user_loader",
+        ),
+    ] {
+        fs::write(
+            &file,
+            format!(
+                "{setup}def helper(): return 1
+@{decorator}
+def dead(): return helper()
+"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        let unused = findings(&report, "unused_functions");
+        for name in ["web.dead", "web.helper"] {
+            assert!(unused.contains(&name), "{report}");
+        }
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+    fs::write(
+        root.join("provider.py"),
+        "from flask import Flask
+def create():
+    app = Flask(__name__)
+    return app.config
+",
+    )
+    .unwrap();
+    fs::write(
+        &file,
+        "from provider import create
+config = create()
+@config.shell_context_processor
+def dead(): return {}
+",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dead"],
+        "{report}"
+    );
+    // An unresolved effect could supply a method on the configuration object.
+    fs::write(
+        &file,
+        "from flask import Flask
+app = Flask(__name__)
+config = app.config
+opaque(config)
+@config.shell_context_processor
+def callback(): return {}
+",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator"),
+        "{report}"
+    );
+    fs::write(
+        &file,
+        "from flask import Flask\napp = Flask(__name__)\nhandler_owner = Flask(__name__)\napp.config = handler_owner\n@app.config.shell_context_processor\ndef active(): return {}\n",
+    ).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["provider.create"],
+        "{report}"
+    );
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "web.active"
+                    && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "flask_registration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    for (setup, bootstrap) in [
+        (
+            "app = Flask(__name__)\napp = missing",
+            "@app.shell_context_processor\ndef dead(): return {}",
+        ),
+        (
+            "def factory(value):\n    app = Flask(__name__)\n    @app.shell_context_processor\n    def dead(): return {}\n    return app",
+            "app = factory(missing)",
+        ),
+    ] {
+        fs::write(
+            root.join("web.py"),
+            format!("from flask import Flask\n{setup}\n{bootstrap}\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert!(
+            findings(&report, "unused_functions")
+                .iter()
+                .any(|name| name.ends_with(".dead")),
+            "{report}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+    fs::write(root.join("consumer.py"), "from web import app\n").unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["file"] == "consumer.py" && error["kind"] == "unresolved_import"
+            }),
+        "{report}"
+    );
+    // Imported module hooks can initialize otherwise absent globals.
+    fs::write(
+        root.join("consumer.py"),
+        "def __getattr__(name): return missing
+",
+    )
+    .unwrap();
+    fs::write(
+        root.join("web.py"),
+        "from flask import Flask\nfrom consumer import setup\napp = Flask(__name__)\napp = missing\n@app.shell_context_processor\ndef callback(): return {}\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["file"] == "web.py" && error["kind"] == "unresolved_decorator" }),
+        "{report}"
+    );
+}
+
+#[test]
 fn flask_login_empty_provider_lookalike_has_no_registration_method() {
     let project = tempfile::tempdir().unwrap();
     fs::write(

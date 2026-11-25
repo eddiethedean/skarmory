@@ -229,7 +229,12 @@ these models. A selected Flask app can register routes, request and context
 callbacks, and error handlers directly or mount a blueprint. Blueprint callbacks
 require the mount to be reached. A unique conventional CLI factory that
 returns a resolved Flask app contributes possible-use evidence. Local teardown
-setup helpers can receive that app through a resolved call. The scanner treats
+setup helpers can receive that app through a resolved call. A bounded
+zero-argument factory call can return one fresh Flask app through local aliases.
+Defaulted factory parameters are supported when the factory can allocate the app
+without consulting them. A closed module initializer that stops on a proven
+missing binding or incompatible decorator receiver contributes no later
+registrations. Selected importers of a failed module retain incomplete coverage. The scanner treats
 literal `g.pop(key, None)` as empty only when the selected code establishes
 that the context key has no writers or opaque access. A resolved Flask-Login
 manager records reached loader and error callback registrations through its
