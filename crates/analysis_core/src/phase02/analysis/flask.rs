@@ -11,6 +11,89 @@ pub(super) struct ParameterHook {
 }
 
 impl Graph<'_> {
+    pub(super) fn flask_factory_app(
+        &mut self,
+        invocation: Invocation,
+        caller: ScopeId,
+        at: Location,
+        depth: usize,
+    ) -> Option<Object> {
+        let symbol = &self.symbols[invocation.target];
+        let Binding::Definition(definition, scope) = symbol.binding else {
+            return None;
+        };
+        if depth >= MAX_BINDING_CHAIN
+            || invocation.verified
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || self.scopes[symbol.scope].owner.is_some()
+            || self.scopes[caller].owner.is_some()
+            || definition.kind != DefinitionKind::Function
+            || definition.is_generator
+            || !definition.decorators.is_empty()
+            || !definition.parameters.is_empty()
+        {
+            return None;
+        }
+        // Other statements may mutate or leak the Flask object before it is
+        // returned. Accept only a direct return or a single local assignment.
+        let (constructor, before) = match body_without_docstring(definition) {
+            [
+                Statement {
+                    at,
+                    kind: StatementKind::Return(Some(value)),
+                },
+            ] => (value, *at),
+            [
+                Statement {
+                    at,
+                    kind:
+                        StatementKind::Assign {
+                            names,
+                            value: Some(value),
+                            annotation: None,
+                        },
+                },
+                Statement {
+                    kind: StatementKind::Return(Some(returned)),
+                    ..
+                },
+            ] if matches!((names.as_slice(), &returned.kind), ([name], ExpressionKind::Name(returned)) if &name.text == returned) => {
+                (value, *at)
+            }
+            _ => return None,
+        };
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &constructor.kind
+        else {
+            return None;
+        };
+        let [name] = arguments.as_slice() else {
+            return None;
+        };
+        let literal_name = match &name.kind {
+            ExpressionKind::Text(_) => true,
+            ExpressionKind::Name(name) => name == "__name__",
+            _ => false,
+        };
+        if !keywords.is_empty()
+            || !literal_name
+            || !matches!(
+                function.kind,
+                ExpressionKind::Name(_) | ExpressionKind::Member(_, _)
+            )
+            || !matches!(self.identity(scope, function, before, depth + 1),
+                Value::Provider(name) if matches!(name.as_str(), "flask.Flask" | "flask.app.Flask"))
+        {
+            return None;
+        }
+        // The caller can create multiple independent instances from the same
+        // constructor. Associate member writes with the specific outer call.
+        Some((self.scopes[caller].file, at.line, at.column))
+    }
+
     pub(super) fn flask_blueprint_import_position(
         &self,
         child: usize,

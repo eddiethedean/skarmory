@@ -17,14 +17,19 @@ use super::{package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
+mod aiohttp;
 mod celery;
 mod comprehension;
+mod django_globals;
 mod fastapi;
 mod flask;
 mod frameworks;
+mod gunicorn;
 mod mutations;
 mod pydantic;
 mod sanic;
+mod starlette;
+mod terminal;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -63,6 +68,8 @@ enum Value {
     FastapiInferredDependency,
     FastapiAnnotated(Option<SymbolId>),
     FastapiFieldMarker,
+    FastapiSubclassApp(Object, SymbolId),
+    FastapiInheritedMethod,
     FastapiMiddleware(Option<SymbolId>),
     PydanticDump(SymbolId),
     PluggyHookMarker,
@@ -202,7 +209,7 @@ impl Receiver {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum ObjectKind {
     App,
     Router,
@@ -211,6 +218,8 @@ enum ObjectKind {
     FlaskLoginManager,
     TyperApp,
     SanicApp,
+    StarletteApp,
+    AiohttpRouteTable,
     CeleryApp,
 }
 
@@ -496,6 +505,10 @@ pub(super) fn analyze_with_verification(
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
         phase03,
+        terminal_proofs: entrypoints.is_empty()
+            && package_entrypoints.is_none_or(|snapshot| snapshot.entries.is_empty())
+            && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
+        failed_terminal_modules: BTreeSet::new(),
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
         framework_class_whitelists: BTreeMap::new(),
@@ -508,6 +521,7 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        django_globals: django_globals::Globals::default(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
@@ -565,6 +579,7 @@ pub(super) fn analyze_with_verification(
     graph.index_base_classes();
     if phase03 {
         graph.index_flask_context();
+        graph.index_django_global_writes();
     }
     for scope in 0..graph.scopes.len() {
         let body = graph.scopes[scope].body;
@@ -574,7 +589,9 @@ pub(super) fn analyze_with_verification(
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
-        graph.collect_sanic_cli_app();
+        graph.collect_conventional_app(ObjectKind::SanicApp);
+        graph.collect_conventional_app(ObjectKind::StarletteApp);
+        graph.collect_gunicorn_config();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
@@ -619,6 +636,7 @@ pub(super) fn analyze_with_verification(
         .map_or_else(Default::default, |snapshot| {
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
+    graph.report_failed_terminal_module_consumers();
     let mut analysis = graph.finish(roots, possible_roots, verification);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
@@ -669,6 +687,8 @@ struct Graph<'a> {
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
     phase03: bool,
+    terminal_proofs: bool,
+    failed_terminal_modules: BTreeSet<ScopeId>,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
     framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
@@ -681,6 +701,7 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    django_globals: django_globals::Globals,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
@@ -1469,6 +1490,9 @@ impl<'a> Graph<'a> {
                 }
                 return None;
             }
+            if let ModuleMember::Binding(id, _) = &lookup {
+                self.record_django_global_read(scope, *id, import.local.at);
+            }
             match lookup {
                 ModuleMember::Lazy(_, branch) => return Some(branch),
                 ModuleMember::Missing => self.import_issue(
@@ -2011,6 +2035,7 @@ impl<'a> Graph<'a> {
             return match self.selected_module_member(file, member, before, access, mode) {
                 ModuleMember::Binding(id, import) => {
                     self.read.extend(import);
+                    self.record_django_global_read(scope, id, at);
                     if matches!(self.symbols[id].binding, Binding::Deleted)
                         && (self.local(file, "__getattr__", before).is_some()
                             || self.modules.contains_key(submodule.as_str()))
@@ -2497,6 +2522,12 @@ impl<'a> Graph<'a> {
                     && self.receiver_parameter(invocation.target).is_some()
                 {
                     let receiver = match base {
+                        Value::Callable(_)
+                            if self.phase03
+                                && self.fastapi_class_factory(class, invocation.target, depth) =>
+                        {
+                            Receiver::Bound(class)
+                        }
                         Value::Callable(_) => Receiver::Explicit(None),
                         _ => Receiver::Bound(class),
                     };
@@ -2504,6 +2535,9 @@ impl<'a> Graph<'a> {
                 } else {
                     member
                 }
+            }
+            Value::FastapiSubclassApp(object, class) => {
+                self.fastapi_subclass_member(object, class, name, access, depth)
             }
             Value::DjangoSignal(site) if name == "connect" => {
                 match self.signal_member_write(site, name, access) {
@@ -2530,23 +2564,33 @@ impl<'a> Graph<'a> {
             Value::CeleryConfig(object) if name == "update" => {
                 Value::Method(object, ObjectKind::CeleryApp, "conf.update".into())
             }
-            Value::Object(site, kind @ (ObjectKind::App | ObjectKind::Router)) if self.phase03 => {
-                match self.fastapi_member_write(site, name, access) {
-                    Some(mutations::MemberWriteValue::Replacement(value)) => value,
-                    Some(mutations::MemberWriteValue::Deleted) | None => {
-                        Value::Method(site, kind, name.into())
-                    }
-                    Some(mutations::MemberWriteValue::Ambiguous) => {
-                        self.scope_issue(
-                            access.0,
-                            access.1,
-                            "unresolved_attribute_write",
-                            "FastAPI registration method depends on an unresolved write",
-                        );
-                        Value::Unknown
-                    }
+            Value::Object(
+                site,
+                kind @ (ObjectKind::App
+                | ObjectKind::Router
+                | ObjectKind::StarletteApp
+                | ObjectKind::AiohttpRouteTable),
+            ) if self.phase03 => match self.fastapi_member_write(site, name, access) {
+                Some(mutations::MemberWriteValue::Replacement(value)) => value,
+                Some(mutations::MemberWriteValue::Deleted) | None
+                    if matches!(kind, ObjectKind::App)
+                        && self.fastapi_base_member_changed(name, access) =>
+                {
+                    Value::Unknown
                 }
-            }
+                Some(mutations::MemberWriteValue::Deleted) | None => {
+                    Value::Method(site, kind, name.into())
+                }
+                Some(mutations::MemberWriteValue::Ambiguous) => {
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "unresolved_attribute_write",
+                        "ASGI registration method depends on an unresolved write",
+                    );
+                    Value::Unknown
+                }
+            },
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),
@@ -2729,6 +2773,20 @@ impl<'a> Graph<'a> {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
                 Value::Provider(name) if name == "builtins.object" => None,
+                Value::Provider(provider)
+                    if self.phase03 && fastapi::is_app_constructor(&provider) =>
+                {
+                    if access.is_some_and(|site| self.fastapi_base_member_changed(name, site)) {
+                        return Some(Value::Unknown);
+                    }
+                    match name {
+                        "__init__" | "__new__" | "__init_subclass__" => None,
+                        _ if fastapi::is_supported_app_method(name) => {
+                            Some(Value::FastapiInheritedMethod)
+                        }
+                        _ => Some(Value::Unknown),
+                    }
+                }
                 Value::Provider(base) if self.phase03 && is_django_string_converter(&base) => {
                     match name {
                         "__init__" | "__new__" | "__init_subclass__" => None,
@@ -2841,7 +2899,9 @@ impl<'a> Graph<'a> {
             Value::MissingFrameworkMember => None,
             Value::Provider(name)
                 if builtin_noop_subclass_hook(&name)
-                    || self.phase03 && framework_managed_base(&name) =>
+                    || self.phase03
+                        && (framework_managed_base(&name)
+                            || fastapi::is_app_constructor(&name)) =>
             {
                 None
             }
@@ -2948,6 +3008,7 @@ impl<'a> Graph<'a> {
                 expression.kind,
                 ExpressionKind::Await(_)
                     | ExpressionKind::FormattedString(_)
+                    | ExpressionKind::KeywordMappingCall { .. }
                     | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
@@ -3013,6 +3074,7 @@ impl<'a> Graph<'a> {
                     return Value::Unknown;
                 }
                 if let LexicalBinding::Found(id) = binding {
+                    self.record_django_global_read(scope, id, expression.at);
                     if let ValueEvaluation::Lazy {
                         argument: Some((parameter, text)),
                         ..
@@ -3164,9 +3226,25 @@ impl<'a> Graph<'a> {
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
                 }
-                Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => self
-                    .allocation_class(id, depth + 1)
-                    .map_or(Value::Unknown, Value::Instance),
+                Value::Callable(invocation) if self.is_class(invocation.target) => {
+                    if self.phase03
+                        && let Some(app) = self.fastapi_subclass_app(
+                            invocation,
+                            CallArguments {
+                                scope,
+                                at: expression.at,
+                                before,
+                                positional: arguments,
+                                keywords,
+                            },
+                            depth + 1,
+                        )
+                    {
+                        return app;
+                    }
+                    self.allocation_class(invocation.target, depth + 1)
+                        .map_or(Value::Unknown, Value::Instance)
+                }
                 Value::Alternatives(values) => {
                     let mut instances = Vec::new();
                     for value in values {
@@ -3189,6 +3267,26 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::Callable(invocation) if self.phase03 => {
+                    if let Some(app) = self.fastapi_subclass_app(
+                        invocation,
+                        CallArguments {
+                            scope,
+                            at: expression.at,
+                            before,
+                            positional: arguments,
+                            keywords,
+                        },
+                        depth + 1,
+                    ) {
+                        return app;
+                    }
+                    if arguments.is_empty()
+                        && keywords.is_empty()
+                        && let Some(object) =
+                            self.flask_factory_app(invocation, scope, expression.at, depth + 1)
+                    {
+                        return Value::Object(object, ObjectKind::FlaskApp);
+                    }
                     self.fastapi_conditional_app_result(invocation, arguments, keywords, depth + 1)
                 }
                 Value::ConstantFunction => Value::Scalar,
@@ -3477,6 +3575,36 @@ impl<'a> Graph<'a> {
                         _ => Value::Unknown,
                     }
                 }
+                Value::Provider(name)
+                    if self.phase03
+                        && aiohttp::is_route_table(&name)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::AiohttpRouteTable,
+                    )
+                }
+                Value::Provider(name)
+                    if self.phase03
+                        && starlette::is_constructor(&name)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::StarletteApp,
+                    )
+                }
                 Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
                     self.sanic_constructor(scope, expression.at, before, arguments, keywords)
                 }
@@ -3758,7 +3886,7 @@ impl<'a> Graph<'a> {
                     Value::Scalar
                 }
             }
-            ExpressionKind::Await(_) => Value::Unknown,
+            ExpressionKind::Await(_) | ExpressionKind::KeywordMappingCall { .. } => Value::Unknown,
         }
     }
 
@@ -4435,6 +4563,24 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::KeywordMappingCall { function, mapping } => {
+                self.walk_expression(scope, function, before, true);
+                self.walk(scope, mapping, before);
+                if self.phase03
+                    && let Value::Method(object, ObjectKind::CeleryApp, method) =
+                        self.call_target_identity(scope, function, before, 0)
+                    && method == "conf.update"
+                {
+                    self.record_celery_expanded_config(object, scope, mapping, before, expr.at);
+                } else {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unsupported_construct",
+                        "unbounded keyword expansion",
+                    );
+                }
+            }
             ExpressionKind::Call {
                 function,
                 arguments,
@@ -4483,6 +4629,13 @@ impl<'a> Graph<'a> {
                     return;
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
+                if self.phase03
+                    && arguments.is_empty()
+                    && keywords.is_empty()
+                    && self.fastapi_class_factory_allocation(scope, function)
+                {
+                    return;
+                }
                 match callee {
                     Value::Provider(name)
                         if self.empty_flask_context_pop(&name, arguments, keywords) => {}
@@ -4514,17 +4667,22 @@ impl<'a> Graph<'a> {
                             && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && self.modeled_framework_write(scope, before) => {}
                     Value::Callable(invocation) => {
-                        self.call_invocation(
-                            invocation,
-                            CallArguments {
-                                scope,
-                                before,
-                                at: expr.at,
-                                positional: arguments,
-                                keywords,
-                            },
-                            "certain",
-                        );
+                        let call = CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        };
+                        if self.phase03 && let Some(Value::FastapiSubclassApp(object, _)) =
+                            self.fastapi_subclass_app(invocation, call, 0)
+                        {
+                            self.fastapi_app(object, scope);
+                        }
+                        if self.phase03
+                            && arguments.is_empty()
+                            && keywords.is_empty()
+                            && let Some(object) = self.flask_factory_app(invocation, scope, expr.at, 0)
+                        {
+                            self.scopes[scope].activated_apps.push(object);
+                        }
+                        self.call_invocation(invocation, call, "certain");
                     }
                     Value::Alternatives(values)
                         if self.phase03 && !values.is_empty() && values.iter().all(|value| {
@@ -4760,6 +4918,11 @@ impl<'a> Graph<'a> {
                         if method == "run" && arguments.is_empty() && keywords.is_empty() =>
                     {
                         self.scopes[scope].activated_apps.push(object);
+                    }
+                    Value::Method(object, ObjectKind::StarletteApp, method) if method == "add_route" => {
+                        self.register_starlette_route(object, CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
                     }
                     Value::Method(object, ObjectKind::CeleryApp, method)
                         if self.phase03
@@ -5130,6 +5293,16 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
                         }
                     }
+                    Value::Provider(name) if self.phase03 && starlette::is_constructor(&name) => {
+                        if !arguments.is_empty() || !keywords.is_empty() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Starlette constructor arguments are outside the bounded model");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && aiohttp::is_route_table(&name) => {
+                        if !arguments.is_empty() || !keywords.is_empty() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
+                        }
+                    }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -5426,6 +5599,7 @@ impl<'a> Graph<'a> {
         if !invocation.verified {
             self.direct.insert(id);
         }
+        self.record_django_global_call(invocation, call, certainty);
         self.record_direct_arguments(invocation, call, certainty);
         if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
         {
@@ -5883,7 +6057,9 @@ impl<'a> Graph<'a> {
                     self.annotation(scope, reference, before, evaluated);
                 }
             }
-            ExpressionKind::Call { .. } if evaluated => {
+            ExpressionKind::Call { .. } | ExpressionKind::KeywordMappingCall { .. }
+                if evaluated =>
+            {
                 self.walk(scope, expr, before);
             }
             _ => {
@@ -5903,6 +6079,10 @@ impl<'a> Graph<'a> {
     fn suite(&mut self, scope: ScopeId, body: &[Statement]) -> bool {
         for statement in body {
             let at = statement.at;
+            if self.phase03 && self.prove_terminal_module_failure(scope, statement) {
+                self.failed_terminal_modules.insert(scope);
+                return true;
+            }
             match &statement.kind {
                 StatementKind::Define(definition) => {
                     if definition.is_generator && !self.phase03 {
@@ -6010,10 +6190,15 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::Assign {
-                    value, annotation, ..
+                    names,
+                    value,
+                    annotation,
                 } => {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
+                        if annotation.is_none() {
+                            self.record_django_global_initializer(scope, names, value, at);
+                        }
                     }
                     if let Some(annotation) = annotation {
                         let evaluated = self.scopes[scope]
@@ -6037,6 +6222,9 @@ impl<'a> Graph<'a> {
                     } else {
                         self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
                     }
+                }
+                StatementKind::SetGlobalName { value, .. } => {
+                    self.record_django_global_write(scope, value, at);
                 }
                 StatementKind::DeleteName(name) => {
                     if !self.phase03
@@ -6280,6 +6468,17 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         before: Location,
     ) -> bool {
+        if let ExpressionKind::KeywordMappingCall { function, mapping } = &decorator.kind {
+            self.walk(scope, function, before);
+            self.walk(scope, mapping, before);
+            self.scope_issue(
+                scope,
+                decorator.at,
+                "unsupported_construct",
+                "unbounded decorator keyword expansion",
+            );
+            return false;
+        }
         let (function, args, keywords) = match &decorator.kind {
             ExpressionKind::Call {
                 function,
@@ -6296,6 +6495,12 @@ impl<'a> Graph<'a> {
             return false;
         }
         match self.call_target_identity(scope, function, before, 0) {
+            Value::Method(_, ObjectKind::AiohttpRouteTable, name)
+                if aiohttp::is_http_decorator(&name)
+                    && self.aiohttp_route_declaration(scope, target, decorator, before) =>
+            {
+                return true;
+            }
             Value::Method(object, ObjectKind::App, name)
                 if self.phase03 && name == "middleware" =>
             {
@@ -6743,6 +6948,7 @@ impl<'a> Graph<'a> {
         };
         if !is_route(ObjectKind::FlaskApp, name, true)
             && !is_route(ObjectKind::FlaskBlueprint, name, true)
+            && !flask_login_callback(name)
         {
             return false;
         }
@@ -8271,6 +8477,8 @@ impl<'a> Graph<'a> {
                         | "generator_creation"
                         | "sqlalchemy_hybrid_descriptor"
                         | "pluggy_hook_declaration"
+                        | aiohttp::DECLARATION
+                        | gunicorn::DECLARATION
                         | "marshmallow_schema_registry"
                         | "marshmallow_schema_options"
                         | "marshmallow_hook_declaration"
@@ -8336,7 +8544,7 @@ impl<'a> Graph<'a> {
                         pending.push_back(Edge {
                             target,
                             kind,
-                            certainty: if kind == "sanic_listener" {
+                            certainty: if matches!(kind, "sanic_listener" | "starlette_route") {
                                 "possible"
                             } else {
                                 "certain"
@@ -8556,6 +8764,7 @@ impl<'a> Graph<'a> {
             }
         });
         self.resolve_class_invocations();
+        self.resolve_django_global_signals(&roots, &possible_roots);
         let (mut reach, mut static_reach, mut verification, mut converged) =
             self.establish_reachability(&roots, &possible_roots, snapshot);
         if self.phase03
@@ -8583,6 +8792,7 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.report_django_global_signals(&reach);
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
@@ -8700,6 +8910,7 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_converter_regex"
                     | "fastapi_parameter"
+                    | gunicorn::DECLARATION
             ) {
                 self.read.insert(id);
             }
@@ -9049,6 +9260,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
+            | StatementKind::SetGlobalName { value, .. }
             | StatementKind::DiscardedComprehension(value) => expressions.push(value),
         }
     }
@@ -9070,6 +9282,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.push(function);
                 expressions.extend(arguments);
                 expressions.extend(keywords.iter().map(|(_, value)| value));
+            }
+            ExpressionKind::KeywordMappingCall { function, mapping } => {
+                expressions.extend([function.as_ref(), mapping.as_ref()]);
             }
             ExpressionKind::Sequence(values)
             | ExpressionKind::Dictionary(values)
@@ -9303,7 +9518,11 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
                 || flask_callback_method(kind, name)
                 || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
-        ObjectKind::FlaskLoginManager | ObjectKind::TyperApp | ObjectKind::SanicApp => false,
+        ObjectKind::FlaskLoginManager
+        | ObjectKind::TyperApp
+        | ObjectKind::SanicApp
+        | ObjectKind::StarletteApp
+        | ObjectKind::AiohttpRouteTable => false,
         ObjectKind::CeleryApp => name == "task",
     }
 }
@@ -9321,7 +9540,10 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
                 || flask_callback_method(kind, method)
         }
         ObjectKind::FlaskLoginManager => flask_login_callback(method),
-        ObjectKind::TyperApp | ObjectKind::SanicApp => false,
+        ObjectKind::TyperApp
+        | ObjectKind::SanicApp
+        | ObjectKind::StarletteApp
+        | ObjectKind::AiohttpRouteTable => false,
         ObjectKind::CeleryApp => method == "task",
     }
 }
@@ -9527,6 +9749,8 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
         ObjectKind::FlaskLoginManager => "flask_login_registration",
         ObjectKind::TyperApp => "typer_callback",
         ObjectKind::SanicApp => "sanic_listener",
+        ObjectKind::StarletteApp => "starlette_route",
+        ObjectKind::AiohttpRouteTable => aiohttp::DECLARATION,
         ObjectKind::CeleryApp => "celery_task",
     }
 }

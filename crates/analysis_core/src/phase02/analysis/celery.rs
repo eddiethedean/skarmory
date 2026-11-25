@@ -27,6 +27,40 @@ struct Event {
 pub(super) struct Backends(BTreeMap<Object, Vec<Event>>);
 
 impl Graph<'_> {
+    pub(super) fn record_celery_expanded_config(
+        &mut self,
+        object: Object,
+        scope: ScopeId,
+        mapping: &Expression,
+        before: Location,
+        at: Location,
+    ) {
+        let value = self.identity(scope, mapping, before, 0);
+        if matches!(&value, Value::Mapping(items) if items.as_chunks::<2>().0.iter().all(|[key, _]| matches!(key, Value::Text(_))))
+        {
+            if let Some(setting) = configured_mapping(value) {
+                self.record_celery_backend_event(object, scope, at, Operation::Configure(setting));
+            }
+        } else {
+            // An unbounded mapping may update result_backend or leave the
+            // previous setting in force. Keep both possibilities visible.
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_registration",
+                "Celery keyword expansion requires a bounded mapping with string keys",
+            );
+            self.branch_depth += 1;
+            self.record_celery_backend_event(
+                object,
+                scope,
+                at,
+                Operation::Configure(Setting::Unknown),
+            );
+            self.branch_depth -= 1;
+        }
+    }
+
     pub(super) fn record_celery_backend_creation(
         &mut self,
         object: Object,
@@ -274,7 +308,9 @@ impl Graph<'_> {
                     }
                 }
             }
-            if let Some(at) = last {
+            if let Some(at) = last
+                && !self.failed_terminal_modules.contains(&scope)
+            {
                 let exact_default =
                     possible_load && !external && !conditional_creation && !opaque_config;
                 self.retain_celery_backends(scope, at, &current, possible_load, exact_default);

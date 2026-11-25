@@ -49,13 +49,14 @@ impl Graph<'_> {
         }
     }
 
-    pub(super) fn collect_sanic_cli_app(&mut self) {
+    pub(super) fn collect_conventional_app(&mut self, expected: ObjectKind) {
         let mut selected = None;
         for file in 0..self.files.len() {
             if matches!(self.files[file].module.as_str(), "app" | "server")
                 && let Some(binding) = self.local(file, "app", END)
                 && !self.binding_depends_on_branch(binding, END)
-                && let Value::Object(object, ObjectKind::SanicApp) = self.binding_value(binding, 0)
+                && let Value::Object(object, kind) = self.binding_value(binding, 0)
+                && kind == expected
                 && selected.replace((file, object)).is_some()
             {
                 return;

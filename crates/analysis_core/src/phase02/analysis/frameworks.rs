@@ -2770,8 +2770,19 @@ impl Graph<'_> {
             keywords,
             ["receiver", "sender", "weak", "dispatch_uid"],
         )
-        .and_then(|[callback, ..]| callback)
-        .map(|callback| self.identity(scope, callback, before, 0));
+        .and_then(|[callback, ..]| callback);
+        if let Some(callback) = callback
+            && self.record_django_global_connect(
+                scope,
+                callback,
+                before,
+                at,
+                args.len() + keywords.len() == 1,
+            )
+        {
+            return;
+        }
+        let callback = callback.map(|callback| self.identity(scope, callback, before, 0));
         self.record_django_signal(scope, DjangoReceiver::Certain, callback, at);
     }
 

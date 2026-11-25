@@ -11,6 +11,7 @@ enum ReceiverKey {
     TyperApp(Object),
     FlaskApplication(Object),
     Fastapi(Object),
+    FastapiBase,
 }
 
 #[derive(Clone)]
@@ -154,7 +155,10 @@ impl Graph<'_> {
                 self.member_write(&receiver, member, (file, at)),
                 Some(MemberWriteValue::Replacement(_))
             );
-        let value = if conditional || deletes_inherited_method {
+        let value = if conditional
+            || deletes_inherited_method
+            || matches!(receiver, ReceiverKey::FastapiBase)
+        {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
             let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
@@ -199,6 +203,13 @@ impl Graph<'_> {
     fn modeled_mutation_member(&mut self, receiver: &ReceiverKey, member: &str) -> bool {
         match receiver {
             ReceiverKey::Class(class) => {
+                if self.fastapi_direct_subclass_scope(*class, 0).is_some() {
+                    return fastapi::is_supported_app_method(member)
+                        || matches!(
+                            member,
+                            "__new__" | "__init__" | "__getattr__" | "__getattribute__"
+                        );
+                }
                 let role = self.framework_class_role(*class, &mut BTreeSet::new(), 0);
                 role.is_some_and(|role| {
                     role.is_unittest()
@@ -238,6 +249,13 @@ impl Graph<'_> {
                 }
                 let qualified = format!("{module}.{member}");
                 framework_class_provider(&qualified).is_some_and(FrameworkClassRole::is_unittest)
+                    || matches!(
+                        qualified.as_str(),
+                        "flask.Flask"
+                            | "flask.app.Flask"
+                            | "flask.Blueprint"
+                            | "flask.blueprints.Blueprint"
+                    )
                     || is_flask_login_constructor(&qualified)
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
@@ -266,6 +284,13 @@ impl Graph<'_> {
                         "include_router" | "mount" | "middleware" | "add_middleware"
                     )
             }
+            ReceiverKey::FastapiBase => {
+                fastapi::is_supported_app_method(member)
+                    || matches!(
+                        member,
+                        "__new__" | "__init__" | "__getattr__" | "__getattribute__"
+                    )
+            }
         }
     }
 
@@ -275,6 +300,9 @@ impl Graph<'_> {
                 Some(ReceiverKey::Class(invocation.target))
             }
             Value::Module(file) => Some(ReceiverKey::Module(self.files[*file].module.clone())),
+            Value::Provider(provider) if fastapi::is_app_constructor(provider) => {
+                Some(ReceiverKey::FastapiBase)
+            }
             Value::Provider(module) if provider_module(module) || is_django_signal(module) => {
                 Some(ReceiverKey::Module(module.clone()))
             }
@@ -286,9 +314,14 @@ impl Graph<'_> {
             Value::Object(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint) => {
                 Some(ReceiverKey::FlaskApplication(*site))
             }
-            Value::Object(site, ObjectKind::App | ObjectKind::Router) => {
-                Some(ReceiverKey::Fastapi(*site))
-            }
+            Value::Object(
+                site,
+                ObjectKind::App
+                | ObjectKind::Router
+                | ObjectKind::StarletteApp
+                | ObjectKind::AiohttpRouteTable,
+            )
+            | Value::FastapiSubclassApp(site, _) => Some(ReceiverKey::Fastapi(*site)),
             _ => None,
         }
     }
@@ -396,6 +429,15 @@ impl Graph<'_> {
         self.member_write(&ReceiverKey::Fastapi(site), name, access)
     }
 
+    pub(super) fn fastapi_base_member_changed(
+        &self,
+        name: &str,
+        access: (ScopeId, Location),
+    ) -> bool {
+        self.member_write(&ReceiverKey::FastapiBase, name, access)
+            .is_some()
+    }
+
     pub(super) fn imported_module_write(
         &self,
         module: &str,
@@ -417,6 +459,7 @@ impl Graph<'_> {
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
+            ReceiverKey::FastapiBase => None,
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
             | ReceiverKey::FlaskApplication(site)
@@ -490,6 +533,9 @@ fn provider_module(name: &str) -> bool {
             | "django.dispatch"
             | "django.dispatch.dispatcher"
             | "django.db.models.signals"
+            | "flask"
+            | "flask.app"
+            | "flask.blueprints"
             | "flask_login"
             | "flask_login.login_manager"
             | "typer"

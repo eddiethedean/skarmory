@@ -64,6 +64,10 @@ pub enum StatementKind {
         environment: Expression,
         value: Expression,
     },
+    SetGlobalName {
+        name: Name,
+        value: Expression,
+    },
     DiscardedComprehension(Expression),
     DeleteName(Name),
     LiteralRouteLoop {
@@ -181,6 +185,10 @@ pub enum ExpressionKind {
         function: Box<Expression>,
         arguments: Vec<Expression>,
         keywords: Vec<(String, Expression)>,
+    },
+    KeywordMappingCall {
+        function: Box<Expression>,
+        mapping: Box<Expression>,
     },
     Text(String),
     FormattedString(Vec<Expression>),
@@ -626,7 +634,7 @@ impl Lowering<'_> {
                     }
                     let name = self.binding_name(node.name.as_str(), &node.name)?;
                     let is_async = node.is_async;
-                    let body = Lowering(
+                    let lowering = Lowering(
                         self.0,
                         if is_async {
                             SyntaxScope::AsyncFunction
@@ -634,8 +642,26 @@ impl Lowering<'_> {
                             SyntaxScope::Function
                         },
                         BTreeMap::new(),
-                    )
-                    .suite(&node.body, next)?;
+                    );
+                    let body = if !is_async
+                        && parameters.is_empty()
+                        && node.decorator_list.is_empty()
+                        && let [Stmt::Global(declare), Stmt::Assign(assign)] = node.body.as_slice()
+                        && let [name] = declare.names.as_slice()
+                        && let [Expr::Name(target)] = assign.targets.as_slice()
+                        && target.id.as_str() == name.as_str()
+                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                    {
+                        vec![Statement {
+                            at: self.0.locate(declare.start()),
+                            kind: StatementKind::SetGlobalName {
+                                name: self.binding_name(name.as_str(), target)?,
+                                value: lowering.expression(&assign.value, next + 1)?,
+                            },
+                        }]
+                    } else {
+                        lowering.suite(&node.body, next)?
+                    };
                     let mut coverage = BodyCoverage {
                         source: self.0,
                         lines: BTreeSet::new(),
@@ -890,6 +916,15 @@ impl Lowering<'_> {
             ),
             Expr::Attribute(node) => {
                 ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
+            }
+            Expr::Call(node)
+                if node.arguments.args.is_empty()
+                    && matches!(node.arguments.keywords.as_slice(), [keyword] if keyword.arg.is_none()) =>
+            {
+                ExpressionKind::KeywordMappingCall {
+                    function: Box::new(lower(&node.func)?),
+                    mapping: Box::new(lower(&node.arguments.keywords[0].value)?),
+                }
             }
             Expr::Call(node) => {
                 let mut keyword_names = BTreeSet::new();

@@ -359,6 +359,15 @@ to be retained without a discovered test method and an unrelated helper to be
 whitelisted by path. These expectations remain required differences in the
 reviewed inventory and do not receive pass credit.
 
+The Starlette preview records possible HTTP route use through the supported
+`add_route` call on a resolved conventional ASGI application. The aiohttp
+preview records the callback captured by a genuine route table decorator.
+Mounting and serving an aiohttp table requires a separate activation proof.
+Recognized Gunicorn config files contribute possible-use evidence for supported
+setting and lifecycle hook declarations.
+[aiohttp route tables](https://docs.aiohttp.org/en/stable/web_reference.html#routetabledef)
+· [Gunicorn settings](https://gunicorn.org/reference/settings/)
+
 Some pinned Flask and Django lookalike cases deliberately introduce an opaque
 replacement and expect a complete report. Skarmory keeps the missing evidence
 visible when the replacement can affect reachability. FastAPI fixtures whose

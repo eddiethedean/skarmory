@@ -118,6 +118,9 @@ impl<'a> Python<'a> {
                 Stmt::DeleteName(name) => {
                     bindings.insert(&name.text, None);
                 }
+                Stmt::SetGlobalName { value, .. } => {
+                    self.expression(value, &bindings);
+                }
                 Stmt::LiteralRouteLoop {
                     path, registration, ..
                 } => {
@@ -356,6 +359,16 @@ impl<'a> Python<'a> {
                 {
                     self.expression(argument, bindings);
                 }
+            }
+            Expr::KeywordMappingCall { function, mapping } => {
+                self.expression(function, bindings);
+                self.expression(mapping, bindings);
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "expanded keyword dependency bindings are outside the bounded model",
+                ));
             }
             Expr::Member(value, _) => {
                 let origin = qualified(expression, bindings);
