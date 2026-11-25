@@ -1629,7 +1629,11 @@ impl Graph<'_> {
                 .flatten()
                 .filter(|invocation| reach.scopes.contains(&invocation.caller))
                 .map(|invocation| match invocation.values.get(name) {
-                    Some(Value::Instance(class)) if invocation.arguments_bound => {
+                    // The recorded explicit arguments omit the implicit receiver
+                    // of a module function installed as a class descriptor.
+                    Some(Value::Instance(class))
+                        if invocation.arguments_bound && !invocation.implicit_receiver =>
+                    {
                         Some((*class, invocation.conditional))
                     }
                     _ => None,
