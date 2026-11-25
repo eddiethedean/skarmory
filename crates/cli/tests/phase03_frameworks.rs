@@ -6538,3 +6538,84 @@ fn django_setting_collections_follow_initializer_call_and_reassignment_order() {
         assert!(!roots(&report, "service.backends.Backend.get_user"));
     }
 }
+
+#[test]
+fn django_url_callback_dispatches_only_the_fresh_instances_selected_provider() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (file, source) in [
+        (
+            "manage.py",
+            "import os\nfrom django.core.management import execute_from_command_line\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\nexecute_from_command_line([])\n",
+        ),
+        (
+            "settings.py",
+            "ROOT_URLCONF = 'urls'\nINSTALLED_APPS = []\n",
+        ),
+        (
+            "providers.py",
+            "class Base: pass\nclass First(Base):\n    def run(self, value): return value\nclass Second(Base):\n    def run(self, value): return value\ndef choose(name):\n    if name == 'first':\n        return First()\n    return Second()\n",
+        ),
+        (
+            "pipeline.py",
+            "from providers import choose\nclass Pipeline:\n    def __init__(self, provider):\n        self.provider = provider\n    def dispatch(self):\n        return self.provider.run(1)\ndef select():\n    return Pipeline(choose('first')).dispatch()\n",
+        ),
+        (
+            "views.py",
+            "from pipeline import select\ndef view(request): return select()\n",
+        ),
+    ] {
+        fs::write(root.join(file), source).unwrap();
+    }
+    let urls = root.join("urls.py");
+    let registered =
+        "from django.urls import path\nfrom views import view\nurlpatterns = [path('', view)]\n";
+    for (source, live, unused) in [
+        (registered, true, &["providers.Second.run"][..]),
+        (
+            "urlpatterns = []\n",
+            false,
+            &["providers.First.run", "providers.Second.run"][..],
+        ),
+    ] {
+        fs::write(&urls, source).unwrap();
+        let report = scan(root);
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        assert_eq!(
+            symbols.iter().any(|row| {
+                row["qualified_name"] == "providers.First.run"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "direct_call" && edge["certainty"] == "certain")
+            }),
+            live,
+            "{report}"
+        );
+        let unused_functions = unreachable_functions(&report);
+        assert!(
+            unused.iter().all(|name| unused_functions.contains(name)),
+            "{report}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(&urls, registered).unwrap();
+    fs::write(
+        root.join("views.py"),
+        "from pipeline import Pipeline, select\nfrom providers import choose\ndef view(request):\n    select()\n    other = Pipeline(choose('second'))\n    return other.dispatch()\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_call" && error["file"] == "pipeline.py" }),
+        "{report}"
+    );
+}

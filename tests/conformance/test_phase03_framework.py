@@ -54,3 +54,30 @@ def test_only_matching_native_evidence_proves_framework_activation():
     assert definitions["app.live"].heuristic_refs == {"framework_root": 1.0}
     assert definitions["app.possible"].heuristic_refs == {}
     assert definitions["app.dead"].heuristic_refs == {}
+
+
+def test_grouped_methods_expand_for_django_view_assertions():
+    method = {
+        "type": "function",
+        "full_name": "app.Client.schedule",
+        "file": "app.py",
+        "line": 2,
+        "dead_code_classification": "likely_dead",
+        "reason": "covered by the unused class finding",
+    }
+    report = {
+        "definitions": {
+            "schedule": {"name": "app.Client.schedule", "file": "app.py", "line": 2},
+        },
+        "analysis_summary": {},
+        "dead_code_evidence": {"symbols": []},
+        "unused_functions": [],
+        "unused_classes": [],
+        "unused_variables": [],
+        "unused_parameters": [],
+        "suppressed": [method, {**method, "full_name": "app.filtered", "reason": "whitelist"}],
+    }
+    projected = framework_report(report, source="test/test_django_function_view_roots.py")
+    assert projected["unused_functions"] == [method]
+    assert projected["dead_code_evidence"]["symbols"][0]["classification"] == "likely_dead"
+    assert framework_report(report)["unused_functions"] == report["unused_functions"] == []

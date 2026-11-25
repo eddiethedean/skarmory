@@ -24,6 +24,7 @@ mod celery;
 mod comprehension;
 mod django_globals;
 mod fastapi;
+mod field_dispatch;
 mod flask;
 mod frameworks;
 mod gunicorn;
@@ -540,6 +541,8 @@ pub(super) fn analyze_with_verification(
         atexit_receivers: BTreeMap::new(),
         method_receivers: BTreeMap::new(),
         receiver_calls: Vec::new(),
+        fresh_field_calls: BTreeMap::new(),
+        fresh_field_invocations: Vec::new(),
         resolved_receiver_calls: BTreeSet::new(),
         receiver_call_issues: BTreeSet::new(),
         issues: Vec::new(),
@@ -645,6 +648,7 @@ pub(super) fn analyze_with_verification(
         graph.suite(scope, body);
     }
     if phase03 {
+        graph.resolve_fresh_field_invocations();
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
@@ -728,6 +732,8 @@ struct Graph<'a> {
     atexit_receivers: BTreeMap<ScopeId, Vec<(Edge, SymbolId)>>,
     method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     receiver_calls: Vec<ReceiverCall>,
+    fresh_field_calls: BTreeMap<SymbolId, Location>,
+    fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
     receiver_call_issues: BTreeSet<usize>,
     issues: Vec<Issue>,
@@ -1682,6 +1688,7 @@ impl<'a> Graph<'a> {
             if (matches!(
                 edge.kind,
                 "direct_call"
+                    | field_dispatch::DIRECT
                     | "constructor"
                     | "decorator"
                     | "subclass_hook"
@@ -4746,7 +4753,11 @@ impl<'a> Graph<'a> {
                         {
                             self.scopes[scope].activated_apps.push(object);
                         }
-                        self.call_invocation(invocation, call, "certain");
+                        if !self.phase03
+                            || !self.invoke_fresh_field_method(invocation, function, call)
+                        {
+                            self.call_invocation(invocation, call, "certain");
+                        }
                     }
                     Value::Alternatives(values)
                         if self.phase03 && !values.is_empty() && values.iter().all(|value| {
@@ -5424,6 +5435,9 @@ impl<'a> Graph<'a> {
                                 scope, function, arguments, keywords, before, expr.at,
                             )
                         {
+                            return;
+                        }
+                        if self.phase03 && self.defer_fresh_field_call(scope, expr) {
                             return;
                         }
                         let parameter = self.parameter_binding(scope, function, before);
@@ -6327,7 +6341,13 @@ impl<'a> Graph<'a> {
                         if self.modeled_flask_context_write(scope, receiver, member, at));
                     let celery_write = self.phase03
                         && self.record_celery_backend_write(scope, at, &statement.kind);
-                    if !flask_write && !celery_write && !self.modeled_framework_write(scope, at) {
+                    let fresh_field_write =
+                        self.phase03 && self.is_fresh_field_initializer(scope, statement);
+                    if !flask_write
+                        && !celery_write
+                        && !fresh_field_write
+                        && !self.modeled_framework_write(scope, at)
+                    {
                         self.scope_issue(
                             scope,
                             at,
@@ -8854,6 +8874,7 @@ impl<'a> Graph<'a> {
             self.issues.push(framework_limit());
         }
         self.report_unbound_receiver_calls(&reach);
+        self.report_fresh_field_calls(&reach);
         self.issues
             .extend(
                 self.fastapi_dependency_issues

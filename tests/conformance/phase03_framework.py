@@ -1,6 +1,7 @@
 """Project native framework evidence into the pinned Skylos assertion fields."""
 
 import json
+from pathlib import PurePath
 from types import SimpleNamespace
 
 
@@ -44,11 +45,22 @@ _SIGNAL_REASONS = {
 }
 
 
-def framework_report(report):
+def framework_report(report, *, source=None):
     """Match evidence to definitions by qualified name, file, and line."""
 
     def key(entry, name):
         return entry[name], entry["file"], entry["line"]
+
+    if source is not None and PurePath(source).name == "test_django_function_view_roots.py":
+        # This assertion family observes methods individually. The native
+        # report keeps these same findings under their unused class.
+        methods = [
+            row for row in report.get("suppressed", ())
+            if row["type"] == "function"
+            and row["reason"] == "covered by the unused class finding"
+            and row.get("dead_code_classification") == "likely_dead"
+        ]
+        report = {**report, "unused_functions": [*report["unused_functions"], *methods]}
 
     events = {
         key(symbol, "qualified_name"): symbol["evidence"]
