@@ -321,7 +321,11 @@ impl Graph<'_> {
         .then_some(definition)
     }
 
-    fn plain_argument_initializer(&self, class: SymbolId, initializer: SymbolId) -> bool {
+    pub(super) fn plain_argument_initializer(
+        &self,
+        class: SymbolId,
+        initializer: SymbolId,
+    ) -> bool {
         let Some(class) = self.fresh_field_class(class) else {
             return false;
         };

@@ -6157,6 +6157,94 @@ install(Active, 'current')
 }
 
 #[test]
+fn nested_static_arguments_keep_value_flow_local_to_the_selected_calls() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let wrapper = root.join("wrapper.py");
+    let caller = root.join("app.py");
+    fs::write(&wrapper, "def install(converter, sample):\n    _ = converter.regex\n    converter.parse('mg_1')\n    converter.render(converter.parse(sample))\n").unwrap();
+    let definitions = r#"from enum import Enum
+from wrapper import install
+
+class Category(str, Enum):
+    GAME = "mg"
+
+class Key:
+    def __init__(self, category, number):
+        self.category = category
+        self.number = number
+
+    def __str__(self):
+        return f"{self.category.value}_{self.number}"
+
+class Converter:
+    regex = '[a-z]+'
+
+    @staticmethod
+    def parse(text):
+        category, number = text.split("_")
+        return Key(Category(category), int(number))
+
+    @staticmethod
+    def render(key):
+        return str(key)
+
+def retired():
+    return 1
+"#;
+    fs::write(&caller, definitions).unwrap();
+    let dormant = scan(root);
+    assert!(unreachable_functions(&dormant).contains(&"app.Converter.render"));
+
+    let entry = format!("{definitions}\ninstall(Converter, 'mg_2')\n");
+    fs::write(&caller, &entry).unwrap();
+    let active = scan(root);
+    let symbols = active["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for (name, kind) in [
+        ("app.Converter.parse", "direct_call"),
+        ("app.Converter.render", "direct_call"),
+        ("app.Key.__str__", "formatting_hook"),
+    ] {
+        assert!(
+            symbols.iter().any(|symbol| {
+                symbol["qualified_name"] == name
+                    && symbol["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == kind)
+            }),
+            "{active}"
+        );
+    }
+    assert_eq!(findings(&active, "unused_functions"), ["app.retired"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, active);
+    }
+
+    for bad_call in [
+        "install(Converter, 'mg')",                             // Arity differs.
+        "install(Converter, 'te_2')",                           // Enum value is absent.
+        "install(Converter, 'mg_two')",                         // Integer conversion is unproved.
+        "from external import opaque\nConverter.parse(opaque)", // A separate call can supply any value.
+    ] {
+        fs::write(&caller, format!("{entry}\n{bad_call}\n")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_unpack" }),
+            "{report}"
+        );
+    }
+}
+
+#[test]
 fn django_converter_wrappers_resolve_reached_arguments_only() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

@@ -21,7 +21,7 @@ impl<'a> Graph<'a> {
         self.string_enum_members(class, 0).is_some()
     }
 
-    fn string_enum_members(
+    pub(super) fn string_enum_members(
         &mut self,
         class: SymbolId,
         depth: usize,
@@ -198,20 +198,10 @@ impl<'a> Graph<'a> {
             return None;
         }
         let value = if method == "split" {
-            if argument.is_empty() {
-                return None;
-            }
-            let parts: Vec<_> = receiver
-                .split(&argument)
-                .take(MAX_SPLIT_ITEMS + 1)
-                .collect();
-            if parts.len() > MAX_SPLIT_ITEMS {
-                return None;
-            }
             Value::Sequence(
-                parts
+                split_text(&receiver, &argument)?
                     .into_iter()
-                    .map(|part| Value::Text(part.into()))
+                    .map(Value::Text)
                     .collect(),
             )
         } else {
@@ -280,4 +270,15 @@ impl<'a> Graph<'a> {
         }
         true
     }
+}
+
+pub(super) fn split_text(receiver: &str, separator: &str) -> Option<Vec<String>> {
+    if separator.is_empty() || receiver.len().saturating_add(separator.len()) > MAX_TEXT_BYTES {
+        return None;
+    }
+    let parts: Vec<_> = receiver
+        .split(separator)
+        .take(MAX_SPLIT_ITEMS + 1)
+        .collect();
+    (parts.len() <= MAX_SPLIT_ITEMS).then(|| parts.into_iter().map(str::to_owned).collect())
 }

@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod closed;
+
 const MAX_WRAPPER_PREFIX: usize = 16;
 
 #[derive(Clone)]
@@ -118,6 +120,7 @@ impl Graph<'_> {
         reach: &mut Reachability,
         pending: &mut VecDeque<Edge>,
     ) {
+        self.activate_closed_class_calls(reach, pending);
         for index in 0..self.static_parameter_calls.len() {
             let site = &self.static_parameter_calls[index];
             if !reach.scopes.contains(&site.scope) {
@@ -191,6 +194,30 @@ impl Graph<'_> {
             })
             .collect();
         self.scope_issues.retain(|(scope, issue)| {
+            let closed_reason = matches!(
+                (issue.kind, issue.message.as_str()),
+                (
+                    "unresolved_call",
+                    "call target is outside the bounded model"
+                ) | (
+                    "unresolved_constructor",
+                    "allocation result is outside the bounded class model"
+                ) | (
+                    "unresolved_unpack",
+                    "assignment unpacking requires a bounded list or tuple value"
+                ) | (
+                    "unresolved_formatting",
+                    "formatted string dispatch is outside the bounded model"
+                )
+            );
+            if closed_reason
+                && let (Some(line), Some(column)) = (issue.line, issue.column)
+                && reach
+                    .closed_class_call_sites
+                    .contains(&(*scope, [line, column], issue.kind))
+            {
+                return false;
+            }
             issue.kind != "unresolved_call"
                 || issue.message != "call target is outside the bounded model"
                 || !proved.contains(&(*scope, issue.line, issue.column))
@@ -202,6 +229,26 @@ impl Graph<'_> {
         class: SymbolId,
         site: &StaticParameterCall,
     ) -> Option<SymbolId> {
+        let class_scope = self.static_parameter_class(class, site.scope)?;
+        let access = Some((site.scope, site.at));
+        for read in &site.prefix_reads {
+            if !self
+                .class_member_at(class, read, 0, access)
+                .is_some_and(|value| value.is_builtin_scalar())
+            {
+                return None;
+            }
+        }
+        self.static_parameter_method(
+            class,
+            class_scope,
+            &site.member,
+            site.arguments,
+            (site.scope, site.at),
+        )
+    }
+
+    fn static_parameter_class(&mut self, class: SymbolId, caller: ScopeId) -> Option<ScopeId> {
         let symbol = &self.symbols[class];
         let Binding::Definition(definition, class_scope) = symbol.binding else {
             return None;
@@ -219,7 +266,7 @@ impl Graph<'_> {
             || self.dormant_classes.contains(&class)
             || self.subclassed.contains(&class)
             || self.has_unmodeled_class_write(class)
-            || !self.class_discovery_writes(class, site.scope).is_empty()
+            || !self.class_discovery_writes(class, caller).is_empty()
         {
             return None;
         }
@@ -241,16 +288,18 @@ impl Graph<'_> {
                 _ => return None,
             }
         }
-        let access = Some((site.scope, site.at));
-        for read in &site.prefix_reads {
-            if !self
-                .class_member_at(class, read, 0, access)
-                .is_some_and(|value| value.is_builtin_scalar())
-            {
-                return None;
-            }
-        }
-        let Value::Callable(invocation) = self.class_member_at(class, &site.member, 0, access)?
+        Some(class_scope)
+    }
+
+    fn static_parameter_method(
+        &mut self,
+        class: SymbolId,
+        class_scope: ScopeId,
+        member: &str,
+        arguments: usize,
+        access: (ScopeId, Location),
+    ) -> Option<SymbolId> {
+        let Value::Callable(invocation) = self.class_member_at(class, member, 0, Some(access))?
         else {
             return None;
         };
@@ -266,7 +315,7 @@ impl Graph<'_> {
             && method.kind == DefinitionKind::Function
             && !method.is_generator
             && method.simple_positional_parameters
-            && method.parameters.len() == site.arguments
+            && method.parameters.len() == arguments
             && is_staticmethod(self, class_scope, decorator, method.name.at))
         .then_some(invocation.target)
     }
