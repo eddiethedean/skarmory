@@ -595,7 +595,6 @@ pub(super) fn analyze_with_verification(
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
-        graph.report_failed_terminal_module_consumers();
     }
     graph.resolve_receiver_calls();
     graph.resolve_class_invocations();
@@ -637,6 +636,7 @@ pub(super) fn analyze_with_verification(
         .map_or_else(Default::default, |snapshot| {
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
+    graph.report_failed_terminal_module_consumers();
     let mut analysis = graph.finish(roots, possible_roots, verification);
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
