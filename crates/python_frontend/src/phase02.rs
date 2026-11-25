@@ -268,6 +268,7 @@ pub enum ExpressionKind {
     },
     KeywordMappingCall {
         function: Box<Expression>,
+        arguments: Vec<Expression>,
         mapping: Box<Expression>,
     },
     RepeatedKeywordCall {
@@ -1151,11 +1152,11 @@ impl Lowering<'_> {
                 ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
             }
             Expr::Call(node)
-                if node.arguments.args.is_empty()
-                    && matches!(node.arguments.keywords.as_slice(), [keyword] if keyword.arg.is_none()) =>
+                if matches!(node.arguments.keywords.as_slice(), [keyword] if keyword.arg.is_none()) =>
             {
                 ExpressionKind::KeywordMappingCall {
                     function: Box::new(lower(&node.func)?),
+                    arguments: self.expressions(&node.arguments.args, next)?,
                     mapping: Box::new(lower(&node.arguments.keywords[0].value)?),
                 }
             }

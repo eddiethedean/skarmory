@@ -398,8 +398,15 @@ impl<'a> Python<'a> {
                     self.expression(argument, bindings);
                 }
             }
-            Expr::KeywordMappingCall { function, mapping } => {
+            Expr::KeywordMappingCall {
+                function,
+                arguments,
+                mapping,
+            } => {
                 self.expression(function, bindings);
+                for argument in arguments {
+                    self.expression(argument, bindings);
+                }
                 self.expression(mapping, bindings);
                 self.usage.reasons.push(Reason::new(
                     "unresolved_dependency_configuration",

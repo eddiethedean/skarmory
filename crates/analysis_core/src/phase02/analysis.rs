@@ -4898,10 +4898,18 @@ impl<'a> Graph<'a> {
                     "keyword expansion with a duplicate argument is outside the bounded call model",
                 );
             }
-            ExpressionKind::KeywordMappingCall { function, mapping } => {
+            ExpressionKind::KeywordMappingCall {
+                function,
+                arguments,
+                mapping,
+            } => {
                 self.walk_expression(scope, function, before, true);
+                for argument in arguments {
+                    self.walk(scope, argument, before);
+                }
                 self.walk(scope, mapping, before);
                 if self.phase03
+                    && arguments.is_empty()
                     && let Value::Method(object, ObjectKind::CeleryApp, method) =
                         self.call_target_identity(scope, function, before, 0)
                     && method == "conf.update"
@@ -6646,7 +6654,21 @@ impl<'a> Graph<'a> {
                         && let [decorator] = definition.decorators.as_slice()
                         && self.django_receiver_rejects_definition(scope, decorator, at)
                     {
-                        self.walk(scope, decorator, at);
+                        if let ExpressionKind::KeywordMappingCall {
+                            function,
+                            arguments,
+                            ..
+                        } = &decorator.kind
+                        {
+                            // These operands are evaluated before the missing
+                            // mapping aborts the decorator expression.
+                            self.walk(scope, function, at);
+                            for argument in arguments {
+                                self.walk(scope, argument, at);
+                            }
+                        } else {
+                            self.walk(scope, decorator, at);
+                        }
                         self.rejected_django_callbacks.insert(target);
                         return true;
                     }
@@ -7085,8 +7107,16 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         before: Location,
     ) -> bool {
-        if let ExpressionKind::KeywordMappingCall { function, mapping } = &decorator.kind {
+        if let ExpressionKind::KeywordMappingCall {
+            function,
+            arguments,
+            mapping,
+        } = &decorator.kind
+        {
             self.walk(scope, function, before);
+            for argument in arguments {
+                self.walk(scope, argument, before);
+            }
             self.walk(scope, mapping, before);
             self.scope_issue(
                 scope,
@@ -10042,8 +10072,13 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.extend(arguments);
                 expressions.extend(keywords.iter().map(|(_, value)| value));
             }
-            ExpressionKind::KeywordMappingCall { function, mapping } => {
+            ExpressionKind::KeywordMappingCall {
+                function,
+                arguments,
+                mapping,
+            } => {
                 expressions.extend([function.as_ref(), mapping.as_ref()]);
+                expressions.extend(arguments);
             }
             ExpressionKind::RepeatedKeywordCall {
                 function,
@@ -14356,6 +14391,94 @@ class Command:
             }),
             "{:?}",
             result.issues
+        );
+    }
+
+    #[test]
+    fn phase03_django_app_config_failure_precedes_models_and_ready_hooks() {
+        let shop = || module("shop/__init__.py", "shop", "");
+        let launch = || {
+            module(
+                "startup.py",
+                "startup",
+                "import django\nimport os\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')\ndjango.setup()\n",
+            )
+        };
+        let ready = || {
+            module(
+                "shop/apps.py",
+                "shop.apps",
+                "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from . import signals\n",
+            )
+        };
+        let signal = "from django.db.models.signals import post_save\ndef callback(sender, **kwargs): return None\npost_save.connect(callback)\n";
+        for (apps, loaded) in [
+            ("['shop.apps.ShopConfig']", true),
+            ("['shop.apps.ShopConfig', 'bad.apps.Broken']", false),
+        ] {
+            let result = analyze_phase03(
+                &[
+                    module(
+                        "settings.py",
+                        "settings",
+                        &format!("INSTALLED_APPS = {apps}\n"),
+                    ),
+                    launch(),
+                    shop(),
+                    ready(),
+                    module("shop/signals.py", "shop.signals", signal),
+                    module("shop/models.py", "shop.models", signal),
+                    module("bad/__init__.py", "bad", ""),
+                    module("bad/apps.py", "bad.apps", "Broken = object\n"),
+                ],
+                &[],
+            );
+            assert_eq!(
+                result.issues.is_empty(),
+                loaded,
+                "{apps}: {:?}",
+                result.issues
+            );
+            let activated: BTreeSet<_> = result
+                .evidence
+                .iter()
+                .filter(|event| event.kind == "django_signal" && event.certainty == "certain")
+                .map(|event| event.full_name.as_str())
+                .collect();
+            assert_eq!(
+                activated,
+                if loaded {
+                    BTreeSet::from(["shop.models.callback", "shop.signals.callback"])
+                } else {
+                    BTreeSet::new()
+                },
+                "{apps}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_receiver_unbound_keyword_mapping_stops_after_positional_arguments() {
+        let result = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\ndef select(): return post_save\n@receiver(select(), **options)\ndef blocked(sender, **kwargs): return None\ndef later(): return 1\nlater()\n",
+            )],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert!(
+            result
+                .evidence
+                .iter()
+                .any(|event| event.full_name == "app.select" && event.kind == "direct_call")
+        );
+        assert!(
+            !result
+                .evidence
+                .iter()
+                .any(|event| event.full_name == "app.blocked" || event.full_name == "app.later")
         );
     }
 
