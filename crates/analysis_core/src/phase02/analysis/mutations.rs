@@ -8,6 +8,8 @@ enum ReceiverKey {
     Module(String),
     Signal(Object),
     FlaskLoginManager(Object),
+    TyperApp(Object),
+    FlaskApplication(Object),
     Fastapi(Object),
 }
 
@@ -144,7 +146,10 @@ impl Graph<'_> {
             return;
         }
         let deletes_inherited_method = value.is_none()
-            && matches!(receiver, ReceiverKey::Fastapi(_))
+            && matches!(
+                receiver,
+                ReceiverKey::Fastapi(_) | ReceiverKey::FlaskApplication(_)
+            )
             && !matches!(
                 self.member_write(&receiver, member, (file, at)),
                 Some(MemberWriteValue::Replacement(_))
@@ -152,7 +157,19 @@ impl Graph<'_> {
         let value = if conditional || deletes_inherited_method {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
-            let value = self.probe_identity(file, value, at);
+            let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
+                && matches!(
+                    receiver,
+                    ReceiverKey::FlaskApplication(_)
+                        | ReceiverKey::FlaskLoginManager(_)
+                        | ReceiverKey::Fastapi(_)
+                ) {
+                // A direct write to an instance stores the function without
+                // descriptor binding to the instance on later reads.
+                Value::IdentityFunction
+            } else {
+                self.probe_identity(file, value, at)
+            };
             if value.contains_unknown() {
                 MemberWriteValue::Ambiguous
             } else {
@@ -222,14 +239,24 @@ impl Graph<'_> {
                 let qualified = format!("{module}.{member}");
                 framework_class_provider(&qualified).is_some_and(FrameworkClassRole::is_unittest)
                     || is_flask_login_constructor(&qualified)
+                    || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
                     || is_django_signal_constructor(&qualified)
                     || qualified == "django.utils.autoreload.run_with_reloader"
                     || member == "connect" && is_django_signal(module)
             }
             ReceiverKey::Signal(_) => member == "connect",
+            ReceiverKey::TyperApp(_) => matches!(member, "callback" | "__class__"),
             ReceiverKey::FlaskLoginManager(_) => {
                 flask_login_callback(member) || matches!(member, "__class__" | "login_view")
+            }
+            ReceiverKey::FlaskApplication(_) => {
+                matches!(member, "__class__" | "register_blueprint")
+                    || [ObjectKind::FlaskApp, ObjectKind::FlaskBlueprint]
+                        .into_iter()
+                        .any(|kind| {
+                            is_route(kind, member, true) || is_imperative_registration(kind, member)
+                        })
             }
             ReceiverKey::Fastapi(_) => {
                 is_route(ObjectKind::App, member, true)
@@ -252,8 +279,12 @@ impl Graph<'_> {
                 Some(ReceiverKey::Module(module.clone()))
             }
             Value::DjangoSignal(site) => Some(ReceiverKey::Signal(*site)),
+            Value::Object(site, ObjectKind::TyperApp) => Some(ReceiverKey::TyperApp(*site)),
             Value::Object(site, ObjectKind::FlaskLoginManager) => {
                 Some(ReceiverKey::FlaskLoginManager(*site))
+            }
+            Value::Object(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint) => {
+                Some(ReceiverKey::FlaskApplication(*site))
             }
             Value::Object(site, ObjectKind::App | ObjectKind::Router) => {
                 Some(ReceiverKey::Fastapi(*site))
@@ -311,22 +342,39 @@ impl Graph<'_> {
         self.member_write(&ReceiverKey::Module(module.into()), name, access)
     }
 
-    pub(super) fn flask_login_member(
+    pub(super) fn typer_callback_member(&self, site: Object, access: (ScopeId, Location)) -> Value {
+        let receiver = ReceiverKey::TyperApp(site);
+        if self.member_write(&receiver, "__class__", access).is_some() {
+            return Value::Unknown;
+        }
+        match self.member_write(&receiver, "callback", access) {
+            Some(MemberWriteValue::Replacement(value)) => value,
+            Some(MemberWriteValue::Ambiguous) => Value::Unknown,
+            Some(MemberWriteValue::Deleted) | None => {
+                Value::Method(site, ObjectKind::TyperApp, "callback".into())
+            }
+        }
+    }
+
+    pub(super) fn flask_member(
         &self,
         site: Object,
+        kind: ObjectKind,
         name: &str,
         access: (ScopeId, Location),
     ) -> Value {
-        let receiver = ReceiverKey::FlaskLoginManager(site);
+        let receiver = if matches!(kind, ObjectKind::FlaskLoginManager) {
+            ReceiverKey::FlaskLoginManager(site)
+        } else {
+            ReceiverKey::FlaskApplication(site)
+        };
         if self.member_write(&receiver, "__class__", access).is_some() {
             return Value::Unknown;
         }
         match self.member_write(&receiver, name, access) {
             Some(MemberWriteValue::Replacement(value)) => value,
             Some(MemberWriteValue::Ambiguous) => Value::Unknown,
-            Some(MemberWriteValue::Deleted) | None => {
-                Value::Method(site, ObjectKind::FlaskLoginManager, name.into())
-            }
+            Some(MemberWriteValue::Deleted) | None => Value::Method(site, kind, name.into()),
         }
     }
 
@@ -371,7 +419,9 @@ impl Graph<'_> {
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
-            | ReceiverKey::Fastapi(site) => Some(site.0),
+            | ReceiverKey::FlaskApplication(site)
+            | ReceiverKey::Fastapi(site)
+            | ReceiverKey::TyperApp(site) => Some(site.0),
         };
         self.write_value(
             self.mutations.members.get(receiver)?.get(name)?,
@@ -442,6 +492,8 @@ fn provider_module(name: &str) -> bool {
             | "django.db.models.signals"
             | "flask_login"
             | "flask_login.login_manager"
+            | "typer"
+            | "typer.main"
             | "django.utils.autoreload"
     )
 }

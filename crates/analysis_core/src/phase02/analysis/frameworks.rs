@@ -75,8 +75,120 @@ pub(super) fn is_django_signal_edge(kind: &str) -> bool {
 }
 
 impl Graph<'_> {
+    pub(super) fn register_attrs_fields(&mut self, class: SymbolId) -> bool {
+        let Binding::Definition(definition, class_scope) = self.symbols[class].binding else {
+            return false;
+        };
+        if definition.kind != DefinitionKind::Class
+            || definition.decorators.len() != 1
+            || !definition.bases.is_empty()
+        {
+            return false;
+        }
+        let mut fields = BTreeSet::new();
+        for statement in body_without_docstring(definition) {
+            let StatementKind::Assign {
+                names,
+                value,
+                annotation: Some(annotation),
+            } = &statement.kind
+            else {
+                return false;
+            };
+            let [name] = names.as_slice() else {
+                return false;
+            };
+            if !matches!(self.probe_identity(class_scope, annotation, statement.at),
+                Value::Provider(provider) if matches!(provider.as_str(), "builtins.str" | "builtins.int" | "builtins.bool"))
+                || value.as_ref().is_some_and(|value| {
+                    !self
+                        .probe_identity(class_scope, value, statement.at)
+                        .is_builtin_scalar()
+                })
+            {
+                return false;
+            }
+            let field = self.by_location[&(class_scope, name.at.line, name.at.column)];
+            if self.local(class_scope, &name.text, END) != Some(field) {
+                return false;
+            }
+            fields.insert(field);
+        }
+        for field in fields {
+            self.edge(class_scope, field, "attrs_field", "certain");
+        }
+        true
+    }
+
+    fn retain_django_configured_class_declarations(&mut self) {
+        for file in 0..self.files.len() {
+            let Some(package) = self.files[file].module.strip_suffix(".settings") else {
+                continue;
+            };
+            if !self
+                .modules
+                .get(package)
+                .is_some_and(|&package| self.files[package].is_package)
+                || !self
+                    .local(file, "INSTALLED_APPS", END)
+                    .is_some_and(|binding| {
+                        matches!(self.binding(binding, END, 0), Value::Sequence(_))
+                    })
+                || !self
+                    .local(file, "SECRET_KEY", END)
+                    .is_some_and(|binding| matches!(self.binding(binding, END, 0), Value::Text(_)))
+            {
+                continue;
+            }
+            for statement in self.scopes[file].body {
+                let StatementKind::Assign {
+                    names,
+                    value: Some(value),
+                    ..
+                } = &statement.kind
+                else {
+                    continue;
+                };
+                let [setting] = names.as_slice() else {
+                    continue;
+                };
+                let entries: Vec<_> = match setting.text.as_str() {
+                    "LOGGING" => literal_settings_entries(value)
+                        .filter(|(name, _)| matches!(*name, "filters" | "formatters" | "handlers"))
+                        .flat_map(|(_, group)| literal_settings_entries(group))
+                        .map(|(_, entry)| (entry, "()"))
+                        .collect(),
+                    "STORAGES" => literal_settings_entries(value)
+                        .map(|(_, entry)| (entry, "BACKEND"))
+                        .collect(),
+                    _ => continue,
+                };
+                for (entry, key) in entries {
+                    if let Some((_, provider)) =
+                        literal_settings_entries(entry).find(|(name, _)| *name == key)
+                        && let ExpressionKind::Text(target) = &provider.kind
+                        && let Some((module, name)) = target.rsplit_once('.')
+                        && let Some(&source) = self.modules.get(module)
+                        && let Some(binding) = self.local(source, name, END)
+                        && self.is_class(binding)
+                    {
+                        // A settings declaration can name a class even when a later
+                        // assignment replaces the setting. Do not run protocol methods.
+                        self.edge(
+                            file,
+                            binding,
+                            "django_configured_class_declaration",
+                            "possible",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
+        self.retain_django_configured_class_declarations();
         self.collect_flask_cli_factory();
 
         let classes: Vec<_> = (0..self.symbols.len())
@@ -86,6 +198,10 @@ impl Graph<'_> {
             let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
                 continue;
             };
+            if role == FrameworkClassRole::DjangoAdmin {
+                self.framework_class_whitelists
+                    .insert(class, "Django framework class");
+            }
             let (root, lifecycle, fields) = match role {
                 FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync
@@ -105,7 +221,9 @@ impl Graph<'_> {
                     (None, &[][..], false)
                 }
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
-                FrameworkClassRole::CeleryTask => (None, &[][..], false),
+                FrameworkClassRole::CeleryTask | FrameworkClassRole::MarshmallowSchema => {
+                    (None, &[][..], false)
+                }
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
                     &["__declare_first__", "__declare_last__"][..],
@@ -138,6 +256,9 @@ impl Graph<'_> {
             if role == FrameworkClassRole::PydanticModel {
                 self.collect_pydantic_schema_build(class, class_scope);
             }
+            if role == FrameworkClassRole::MarshmallowSchema {
+                self.collect_marshmallow_registration(class, class_scope);
+            }
             for name in lifecycle {
                 if let Some(target) = self.local(class_scope, name, END)
                     && matches!(self.symbols[target].binding, Binding::Definition(_, _))
@@ -158,6 +279,95 @@ impl Graph<'_> {
         }
 
         self.collect_test_frameworks();
+    }
+
+    fn collect_marshmallow_registration(&mut self, class: SymbolId, class_scope: ScopeId) {
+        let (lineage, _) = self.class_lineage(class);
+        match self.marshmallow_register_option(&lineage, class_scope) {
+            Some(true) => self.edge(class_scope, class, "marshmallow_schema_registry", "certain"),
+            Some(false) => {}
+            None => self.scope_issue(
+                class_scope,
+                self.symbols[class].name.at,
+                "unresolved_registration",
+                "Marshmallow SchemaMeta registration options could not be resolved",
+            ),
+        }
+    }
+
+    fn marshmallow_register_option(
+        &mut self,
+        lineage: &[ScopeId],
+        class_scope: ScopeId,
+    ) -> Option<bool> {
+        // A custom OPTIONS_CLASS can determine registration independently of Meta.
+        if lineage
+            .iter()
+            .any(|&scope| self.local(scope, "OPTIONS_CLASS", END).is_some())
+        {
+            return None;
+        }
+        let Some(meta) = lineage
+            .iter()
+            .find_map(|&scope| self.local(scope, "Meta", END))
+        else {
+            return Some(true);
+        };
+        let Value::Callable(meta) = self.binding(meta, END, 0) else {
+            return None;
+        };
+        if !self.is_class(meta.target) {
+            return None;
+        }
+        self.edge(
+            class_scope,
+            meta.target,
+            "marshmallow_schema_options",
+            "certain",
+        );
+        let (meta_lineage, complete) = self.class_lineage(meta.target);
+        for &scope in &meta_lineage {
+            if let Some(option) = self.local(scope, "register", END) {
+                if self.binding_depends_on_branch(option, END) {
+                    return None;
+                }
+                self.edge(class_scope, option, "marshmallow_schema_options", "certain");
+                return match self.binding_value(option, 0) {
+                    Value::Bool(register) => Some(register),
+                    _ => None,
+                };
+            }
+        }
+        complete.then_some(true)
+    }
+
+    pub(super) fn record_marshmallow_hook(&mut self, scope: ScopeId, target: SymbolId) -> bool {
+        let Binding::Definition(definition, _) = self.symbols[target].binding else {
+            return false;
+        };
+        if definition.kind != DefinitionKind::Function || definition.decorators.len() != 1 {
+            return false;
+        }
+        if self.scopes[scope].owner.is_some_and(|class| {
+            self.is_class(class)
+                && self.framework_class_role(class, &mut BTreeSet::new(), 0)
+                    == Some(FrameworkClassRole::MarshmallowSchema)
+        }) && self.local(scope, &definition.name.text, END) == Some(target)
+        {
+            if self.binding_depends_on_branch(target, END) {
+                self.scope_issue(
+                    scope,
+                    definition.name.at,
+                    "unresolved_registration",
+                    "Marshmallow schema hook depends on an unresolved branch",
+                );
+            } else {
+                // SchemaMeta stores the marked method in its hooks table without
+                // executing it. Load/dump dispatch is a separate operation.
+                self.edge(scope, target, "marshmallow_hook_declaration", "certain");
+            }
+        }
+        true
     }
 
     fn collect_pydantic_schema_build(&mut self, class: SymbolId, class_scope: ScopeId) {
@@ -2317,6 +2527,45 @@ impl Graph<'_> {
         self.django_signal_sources(&value, (scope, before))
     }
 
+    pub(super) fn django_receiver_rejects_definition(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &decorator.kind
+        else {
+            return false;
+        };
+        let [signal] = arguments.as_slice() else {
+            return false;
+        };
+        if !matches!(self.probe_identity(scope, function, before),
+            Value::Provider(provider) if is_django_receiver(&provider))
+            || keywords.iter().any(|(name, _)| name.is_empty())
+        {
+            return false;
+        }
+        // A duplicate signal fails at the receiver call itself. Other
+        // arguments are forwarded to connect, which only has a known signature
+        // when the actual signal member resolves to Django's implementation.
+        if keywords.iter().any(|(name, _)| name == "signal") {
+            return true;
+        }
+        if !keywords
+            .iter()
+            .any(|(name, _)| !matches!(name.as_str(), "sender" | "weak" | "dispatch_uid" | "apps"))
+        {
+            return false;
+        }
+        let value = self.probe_identity(scope, signal, before);
+        self.django_signal_source(&value, (scope, before)) == DjangoReceiver::Certain
+    }
+
     fn django_signal_sources(
         &mut self,
         value: &Value,
@@ -2549,4 +2798,18 @@ fn has_django_pattern(value: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+fn literal_settings_entries(value: &Expression) -> impl Iterator<Item = (&str, &Expression)> {
+    let items = match &value.kind {
+        ExpressionKind::Dictionary(items) => items.as_slice(),
+        _ => &[],
+    };
+    items.chunks_exact(2).filter_map(|pair| {
+        let [key, value] = pair else { return None };
+        match &key.kind {
+            ExpressionKind::Text(name) => Some((name.as_str(), value)),
+            _ => None,
+        }
+    })
 }

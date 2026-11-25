@@ -354,6 +354,119 @@ impl<'a> Graph<'a> {
         self.record_fastapi_route(object, Some(target), call, method, false);
     }
 
+    pub(super) fn fastapi_conditional_app_result(
+        &mut self,
+        invocation: Invocation,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        depth: usize,
+    ) -> Value {
+        let Binding::Definition(definition, scope) = self.symbols[invocation.target].binding else {
+            return Value::Unknown;
+        };
+        if depth >= MAX_BINDING_CHAIN
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || definition.kind != DefinitionKind::Function
+            || !definition.decorators.is_empty()
+            || !definition.simple_positional_parameters
+            || definition.parameters.len() != 1
+            || arguments.len() != 1
+            || !keywords.is_empty()
+        {
+            return Value::Unknown;
+        }
+        // Bound the alternatives to a single branch with two returns and, at
+        // most, one preceding assignment for a shared application instance.
+        let body = match body_without_docstring(definition) {
+            [branch] => branch,
+            [
+                Statement {
+                    kind: StatementKind::Assign { names, .. },
+                    ..
+                },
+                branch,
+            ] if names.len() == 1 => branch,
+            _ => return Value::Unknown,
+        };
+        let StatementKind::If {
+            test,
+            body,
+            otherwise,
+        } = &body.kind
+        else {
+            return Value::Unknown;
+        };
+        if !matches!(&test.kind, ExpressionKind::Name(name) if *name == definition.parameters[0].text)
+        {
+            return Value::Unknown;
+        }
+        let mut values = Vec::new();
+        for branch in [body, otherwise] {
+            let [
+                Statement {
+                    kind: StatementKind::Return(Some(result)),
+                    at,
+                },
+            ] = branch.as_slice()
+            else {
+                return Value::Unknown;
+            };
+            let value = self.identity(scope, result, *at, depth + 1);
+            if !matches!(value, Value::Object(_, ObjectKind::App)) {
+                return Value::Unknown;
+            }
+            values.push(value);
+        }
+        Value::alternatives(values)
+    }
+
+    pub(super) fn fastapi_exception_handlers(
+        &mut self,
+        objects: impl IntoIterator<Item = Object>,
+        call: CallArguments<'_>,
+        possible: bool,
+    ) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        let target = callback_argument(
+            ObjectKind::App,
+            "add_exception_handler",
+            positional,
+            keywords,
+        )
+        .map(|expression| self.identity(scope, expression, before, 0))
+        .and_then(|value| self.fastapi_hook_target(value));
+        if let Some(target) = target {
+            for object in objects {
+                self.record_fastapi_route(
+                    object,
+                    Some(target),
+                    CallArguments {
+                        scope,
+                        before,
+                        at,
+                        positional,
+                        keywords,
+                    },
+                    "add_exception_handler",
+                    possible,
+                );
+            }
+        } else {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_registration",
+                "FastAPI exception handler could not be resolved",
+            );
+        }
+    }
+
     pub(super) fn record_fastapi_parameter_route(
         &mut self,
         scope: ScopeId,

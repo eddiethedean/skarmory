@@ -82,6 +82,54 @@ fn unreachable_functions(report: &Value) -> Vec<&str> {
 }
 
 #[test]
+fn sanic_worker_listener_requires_resolved_registration_and_app_selection() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        r#"from sanic import Sanic
+
+def helper(): return 1
+async def active(application, loop): return helper()
+async def dormant(application): return None
+async def unregistered(application): return None
+
+app = Sanic('serving')
+unused_app = Sanic('unused')
+app.register_listener(active, 'before_server_start')
+unused_app.register_listener(dormant, 'before_server_start')
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("worker.py"),
+        r#"from sanic.app import Sanic as SanicApp
+
+async def explicit(application): return None
+worker = SanicApp(name='worker')
+worker.register_listener(listener=explicit, event='after_server_stop')
+worker.run()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.dormant", "app.unregistered"]
+    );
+    let unused_parameters = findings(&report, "unused_parameters");
+    assert!(!unused_parameters.contains(&"app.active.application"));
+    assert!(!unused_parameters.contains(&"app.active.loop"));
+    assert!(!unused_parameters.contains(&"worker.explicit.application"));
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for name in ["app.active", "worker.explicit"] {
+        assert!(symbols.iter().any(|row| row["qualified_name"] == name
+            && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                edge["kind"] == "sanic_listener" && edge["certainty"] == "possible"
+            })));
+    }
+}
+
+#[test]
 fn pydantic_computed_fields_follow_dump_and_property_access() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -160,6 +208,203 @@ fn formatted_string_retains_known_special_methods_and_reports_unresolved_dispatc
             .unwrap()
             .iter()
             .any(|issue| issue["kind"] == "unresolved_formatting"),
+        "{incomplete}"
+    );
+}
+
+#[test]
+fn attrs_field_declarations_require_a_resolved_class_transform() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("models.py"),
+        r#"from attrs import define as declare
+
+@declare
+class User:
+    user_id: int
+    label: str = 'user'
+
+def define(cls): return cls
+
+@define
+class Draft:
+    label: str = 'draft'
+"#,
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_variables"),
+        ["models.Draft.label"],
+        "{report}"
+    );
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "models.User.label"
+                    && row["evidence"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|edge| edge["kind"] == "attrs_field" && edge["certainty"] == "certain")
+            }),
+        "{report}"
+    );
+}
+
+#[test]
+fn pluggy_marker_retains_metadata_without_executing_an_unregistered_hook() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("hooks.py");
+    let source = r#"import pluggy
+
+marker = pluggy.HookimplMarker('demo')
+
+@marker
+def hook(config): return handle(config)
+
+def handle(config): return config
+
+def hookimpl(callback): return callback
+
+@hookimpl
+def lookalike(config): return config
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["hooks.handle", "hooks.lookalike"],
+        "{report}"
+    );
+    assert!(
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["qualified_name"] == "hooks.hook"
+                    && row["evidence"].as_array().unwrap().iter().any(|edge| {
+                        edge["kind"] == "pluggy_hook_declaration" && edge["certainty"] == "certain"
+                    })
+            }),
+        "{report}"
+    );
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(path, format!("{source}\nhook('selected')\n")).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["hooks.lookalike"],
+        "{report}"
+    );
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+}
+
+#[test]
+fn marshmallow_schema_creation_records_registry_and_hook_metadata() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("schemas.py");
+    let source = r#"from marshmallow import Schema as BaseSchema, post_load, validates_schema
+
+class Active(BaseSchema):
+    @post_load
+    def make_record(self, data, **kwargs): return convert(data)
+
+    @validates_schema()
+    def validate_record(self, data, **kwargs): return None
+
+class Private(BaseSchema):
+    class Meta:
+        register = False
+
+    @post_load
+    def private_load(self, data, **kwargs): return data
+
+class Lookalike:
+    @post_load
+    def make_record(self, data, **kwargs): return data
+
+def convert(data): return data
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["schemas.Lookalike", "schemas.Private"],
+        "{report}"
+    );
+    assert_eq!(
+        unreachable_functions(&report),
+        ["schemas.Lookalike.make_record", "schemas.convert"],
+        "{report}"
+    );
+    for (name, kind) in [
+        ("schemas.Active", "marshmallow_schema_registry"),
+        ("schemas.Active.make_record", "marshmallow_hook_declaration"),
+        (
+            "schemas.Active.validate_record",
+            "marshmallow_hook_declaration",
+        ),
+        (
+            "schemas.Private.private_load",
+            "marshmallow_hook_declaration",
+        ),
+    ] {
+        assert!(
+            report["dead_code_evidence"]["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["qualified_name"] == name
+                        && row["evidence"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|edge| edge["kind"] == kind && edge["certainty"] == "certain")
+                }),
+            "{report}"
+        );
+    }
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        path,
+        source.replace(
+            "register = False",
+            "from config import enabled\n        register = enabled",
+        ),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_registration"),
         "{incomplete}"
     );
 }
@@ -422,6 +667,77 @@ fn flask_blueprint_child_reads_the_initialized_package_prefix() {
 }
 
 #[test]
+fn flask_registration_observes_ordered_writes_through_instance_aliases() {
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from flask import Blueprint, Flask
+from flask_login import LoginManager
+
+app = Flask(__name__)
+blueprint = Blueprint('shop', __name__)
+login = LoginManager()
+
+@app.shell_context_processor
+def original(): return {}
+
+app_alias = app
+blueprint_alias = blueprint
+login_alias = login
+app_alias.shell_context_processor = lambda callback: callback
+setattr(blueprint_alias, 'before_app_request', lambda callback: callback)
+login_alias.user_loader = lambda callback: callback
+
+@app.shell_context_processor
+def replaced(): return {}
+
+@blueprint.before_app_request
+def detached(): return None
+
+@login.user_loader
+def detached_login(user_id): return None
+
+app.register_blueprint(blueprint)
+"#;
+    fs::write(&file, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.detached", "web.detached_login", "web.replaced"]
+    );
+
+    fs::write(
+        &file,
+        source.replace(
+            "app_alias.shell_context_processor = lambda callback: callback",
+            "app_alias.shell_context_processor = opaque",
+        ),
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_attribute_write" })
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "web.original")
+    );
+    assert!(!symbols.iter().any(|row| {
+        row["qualified_name"] == "web.replaced"
+            && row["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "flask_registration")
+    }));
+}
+
+#[test]
 fn fastapi_startup_keeps_callbacks_with_proven_identity_decorators() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -472,6 +788,78 @@ if os.getenv('USE_HANDLER'):
             && row["evidence"].as_array().unwrap().iter().any(|edge| {
                 edge["kind"] == "fastapi_exception_handler" && edge["certainty"] == "possible"
             })
+    }));
+}
+
+#[test]
+fn fastapi_conditional_factory_keeps_handler_and_signature_as_possible() {
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    for (setup, returned) in [("", "FastAPI()"), ("    shared = FastAPI()\n", "shared")] {
+        fs::write(
+            &file,
+            format!(
+                r#"import os
+from fastapi import FastAPI
+
+def helper(): return 1
+def handle_error(request, exc): return helper()
+
+def create_app(flag):
+{setup}    if flag:
+        return {returned}
+    else:
+        return {returned}
+
+app = create_app(os.getenv('APP_CHOICE'))
+app.add_exception_handler(Exception, handle_error)
+"#
+            ),
+        )
+        .unwrap();
+        let report = scan(project.path());
+        assert!(findings(&report, "unused_functions").is_empty());
+        assert!(findings(&report, "unused_parameters").is_empty());
+        let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+        let handler = symbols
+            .iter()
+            .find(|entry| entry["qualified_name"] == "web.handle_error")
+            .unwrap();
+        let effects = handler["evidence"].as_array().unwrap();
+        assert!(
+            effects
+                .iter()
+                .any(|edge| edge["kind"] == "fastapi_exception_handler")
+        );
+        assert!(
+            effects
+                .iter()
+                .filter(|edge| edge["kind"] == "fastapi_exception_handler")
+                .all(|edge| edge["certainty"] == "possible")
+        );
+    }
+
+    fs::write(
+        project.path().join("fake.py"),
+        r#"class Sanic:
+    def register_listener(self, listener, event): pass
+
+async def unregistered(application): return None
+
+fake = Sanic()
+fake.register_listener(unregistered, 'before_server_start')
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(!symbols.iter().any(|row| {
+        row["qualified_name"] == "fake.unregistered"
+            && row["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "sanic_listener")
     }));
 }
 
@@ -2632,7 +3020,7 @@ install(Active)
     fs::write(&source, src).unwrap();
     let report = scan(root);
     assert_eq!(
-        findings(&report, "unused_functions"),
+        unreachable_functions(&report),
         [
             "routes.Inactive.to_python",
             "routes.Inactive.to_url",
@@ -2650,6 +3038,7 @@ install(Active)
             "dead_code_evidence",
             "unused_functions",
             "unused_variables",
+            "suppressed",
         ] {
             assert_eq!(report[field], cached[field], "{field}");
         }
@@ -3547,6 +3936,57 @@ False and post_save.connect(inactive)
 }
 
 #[test]
+fn django_signals_keep_coverage_for_proven_object_base_factories() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let src = r#"from django.dispatch import receiver
+from django.db.models.signals import post_save
+from external import dynamic_base
+
+def base_factory():
+    return object
+
+class Other(base_factory()):
+    pass
+
+instance = Other()
+
+@receiver(post_save)
+def registered(sender, instance, **kwargs):
+    return helper()
+
+def helper():
+    return 1
+"#;
+    django_signal_project(root, src);
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.registered", "certain")]
+    );
+    assert!(!findings(&report, "unused_functions").contains(&"inventory.signals.helper"));
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in ["coverage", "dead_code_evidence", "unused_functions"] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+
+    fs::write(
+        root.join("inventory/signals.py"),
+        src.replace("    return object", "    return dynamic_base"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.registered", "certain")]
+    );
+}
+
+#[test]
 fn django_receiver_decorator_factory_can_be_a_local_identity() {
     let project = tempfile::tempdir().unwrap();
     django_signal_project(
@@ -3856,7 +4296,7 @@ deferred_install()
 }
 
 #[test]
-fn django_reports_opaque_or_malformed_signal_registrations_only_when_loaded() {
+fn django_preserves_opaque_signal_diagnostics_when_loaded() {
     let project = tempfile::tempdir().unwrap();
     django_signal_project(
         project.path(),
@@ -3876,10 +4316,10 @@ def malformed(sender, **kwargs):
 
     let report = scan_with_exit(project.path(), None, None, 2);
     let issues = report["analysis_errors"].as_array().unwrap();
-    assert_eq!(issues.len(), 2, "{report}");
-    assert!(issues.iter().all(|issue| {
-        issue["file"] == "inventory/signals.py" && issue["kind"] == "unresolved_registration"
-    }));
+    assert_eq!(issues.len(), 1, "{report}");
+    assert_eq!(issues[0]["file"], "inventory/signals.py");
+    assert_eq!(issues[0]["kind"], "unresolved_registration");
+    assert_eq!(issues[0]["line"], 5);
     assert_eq!(
         django_signal_evidence(&report),
         [("inventory.signals.opaque", "possible")],
@@ -3890,6 +4330,29 @@ def malformed(sender, **kwargs):
     let unused = findings(&inactive, "unused_functions");
     for name in ["inventory.signals.opaque", "inventory.signals.malformed"] {
         assert!(unused.contains(&name), "{unused:?}");
+    }
+}
+
+#[test]
+fn django_known_receiver_rejection_stops_following_registration() {
+    for keyword in ["signal=post_save", "invalid=True"] {
+        let project = tempfile::tempdir().unwrap();
+        django_signal_project(
+            project.path(),
+            &format!(
+                "from django.db.models.signals import post_save\nfrom django.dispatch import receiver\n\n@receiver(post_save)\ndef before(sender, **kwargs):\n    return 1\n\n@receiver(post_save, {keyword})\ndef rejected(sender, **kwargs):\n    return 2\n\n@receiver(post_save)\ndef after(sender, **kwargs):\n    return 3\n"
+            ),
+        );
+        let report = scan(project.path());
+        assert_eq!(
+            django_signal_evidence(&report),
+            [("inventory.signals.before", "certain")],
+            "{keyword}: {report}"
+        );
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["inventory.signals.after", "inventory.signals.rejected"]
+        );
     }
 }
 
@@ -4406,4 +4869,120 @@ fn phase03_reports_the_dead_class_without_duplicate_method_findings() {
         row["full_name"] == "model.Dormant.clean"
             && row["reason"] == "covered by the unused class finding"
     }));
+}
+
+#[test]
+fn typer_callback_discovery_requires_the_real_reached_owner() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("commands.py"),
+        concat!(
+            "from typer import Typer as CommandLine\n",
+            "app = CommandLine()\n",
+            "@app.callback()\ndef main(verbose=False): return prepare(verbose)\n",
+            "def prepare(value): return value\n",
+            "def independent(): return 0\n",
+            "def dormant():\n",
+            "    local = CommandLine()\n",
+            "    @local.callback()\n",
+            "    def nested(): return dormant_helper()\n",
+            "def dormant_helper(): return 0\n",
+            "def identity_factory():\n",
+            "    def identity(function): return function\n",
+            "    return identity\n",
+            "alias = app\n",
+            "alias.callback = identity_factory\n",
+            "@app.callback()\ndef replaced(): return 0\n",
+        ),
+    )
+    .unwrap();
+
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    for name in ["commands.main", "commands.prepare"] {
+        assert!(!unused.contains(&name), "{report}");
+    }
+    for name in [
+        "commands.independent",
+        "commands.dormant",
+        "commands.dormant_helper",
+        "commands.replaced",
+    ] {
+        assert!(unused.contains(&name), "{report}");
+    }
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|symbol| {
+        symbol["qualified_name"] == "commands.main"
+            && symbol["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["kind"] == "typer_callback" && event["certainty"] == "certain")
+    }));
+    assert!(
+        !symbols
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "commands.dormant.nested")
+    );
+}
+
+#[test]
+fn django_setting_class_declaration_does_not_activate_replaced_protocol_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let package = project.path().join("service");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        package.join("settings.py"),
+        concat!(
+            "INSTALLED_APPS = []\n",
+            "SECRET_KEY = 'fixture'\n",
+            "LOGGING = {'filters': {'selected': {'()': 'service.backend.Filter'}}}\n",
+            "LOGGING = {}\n",
+            "STORAGES = {'default': {'BACKEND': 'service.backend.Declared'}}\n",
+            "NOTE = 'service.backend.Unrelated'\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        package.join("backend.py"),
+        concat!(
+            "from pydantic import BaseModel\n",
+            "class Filter:\n",
+            "    def filter(self, record): return helper()\n",
+            "class Declared(BaseModel):\n",
+            "    def model_post_init(self, context): return other_helper()\n",
+            "class Unrelated: pass\n",
+            "def helper(): return True\n",
+            "def other_helper(): return True\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["service.backend.Unrelated"]
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "service.backend.Declared.model_post_init",
+            "service.backend.Filter.filter",
+            "service.backend.helper",
+            "service.backend.other_helper",
+        ]
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(symbols.iter().any(|symbol| {
+        symbol["qualified_name"] == "service.backend.Filter"
+            && symbol["evidence"].as_array().unwrap().iter().any(|event| {
+                event["kind"] == "django_configured_class_declaration"
+                    && event["certainty"] == "possible"
+            })
+    }));
+    assert!(
+        !symbols
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "service.backend.Filter.filter")
+    );
 }

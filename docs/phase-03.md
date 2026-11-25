@@ -335,7 +335,11 @@ model declaration can execute its core-schema hook during class creation.
 A resolved model dump can invoke the selected Pydantic serializers and computed
 fields, including a bounded wrapping serializer that delegates through its
 handler argument. A definite instance access also reaches the selected
-computed field.
+computed field. Ordinary formatted strings preserve operand evaluation and
+resolve supported local formatting methods. Typer callbacks and supported Sanic
+worker listeners use genuine application objects and reached registration.
+The analyzer also records attrs field capture, Pluggy hook declarations, and
+Marshmallow schema and hook metadata at their verified declaration sites.
 These are bounded models under
 [#43](https://github.com/eddiethedean/skarmory/issues/43). The complete pinned
 suite mapping and qualification are tracked by the [upstream gate](#required-upstream-test-gate).
@@ -348,7 +352,9 @@ omit startup and a qualifying settings/URLconf pair, leaving coverage incomplete
 The standalone `django-class-based-view`, `django-management-command`, and
 `django-appconfig-ready` fixtures expect retention without a selected
 registration or launcher. The `celery-task-class` fixture declares a task
-without registering it. The `python-unittest-lifecycle` fixture expects hooks
+without registering it. The pinned `starlette-add-route` fixture supplies an
+`endpoint` keyword to Starlette 1.3.1's `add_route`, which takes `route`.
+The installed framework raises before registering the handler. The `python-unittest-lifecycle` fixture expects hooks
 to be retained without a discovered test method and an unrelated helper to be
 whitelisted by path. These expectations remain required differences in the
 reviewed inventory and do not receive pass credit.

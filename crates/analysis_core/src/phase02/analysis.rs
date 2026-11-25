@@ -24,6 +24,7 @@ mod flask;
 mod frameworks;
 mod mutations;
 mod pydantic;
+mod sanic;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -64,6 +65,7 @@ enum Value {
     FastapiFieldMarker,
     FastapiMiddleware(Option<SymbolId>),
     PydanticDump(SymbolId),
+    PluggyHookMarker,
     CeleryConfig(Object),
     CeleryBackend(Object),
     DeferredComprehension,
@@ -88,6 +90,7 @@ enum Value {
     Scalar,
     ConstantFunction,
     NullaryConstantFunction,
+    IdentityFunction,
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     MissingFrameworkMember,
@@ -206,6 +209,8 @@ enum ObjectKind {
     FlaskApp,
     FlaskBlueprint,
     FlaskLoginManager,
+    TyperApp,
+    SanicApp,
     CeleryApp,
 }
 
@@ -225,6 +230,7 @@ enum FrameworkClassRole {
     SqlAlchemyModel,
     SqlModel,
     PydanticModel,
+    MarshmallowSchema,
 }
 
 impl FrameworkClassRole {
@@ -492,6 +498,7 @@ pub(super) fn analyze_with_verification(
         phase03,
         mutations: mutations::Mutations::default(),
         framework_lifecycle: Vec::new(),
+        framework_class_whitelists: BTreeMap::new(),
         framework_roots: Vec::new(),
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
@@ -501,6 +508,7 @@ pub(super) fn analyze_with_verification(
         flask_hooks: Vec::new(),
         flask_context_writes: None,
         django_roots: BTreeSet::new(),
+        rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
         django_configured_settings: None,
@@ -566,6 +574,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
         graph.index_fastapi_mounts();
+        graph.collect_sanic_cli_app();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_celery_backends();
@@ -662,6 +671,7 @@ struct Graph<'a> {
     phase03: bool,
     mutations: mutations::Mutations,
     framework_lifecycle: Vec<(SymbolId, SymbolId, &'static str)>,
+    framework_class_whitelists: BTreeMap<SymbolId, &'static str>,
     framework_roots: Vec<Edge>,
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
@@ -671,6 +681,7 @@ struct Graph<'a> {
     flask_hooks: Vec<flask::ParameterHook>,
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
+    rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
     django_configured_settings: Option<usize>,
@@ -1817,6 +1828,9 @@ impl<'a> Graph<'a> {
     }
 
     fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
+        if self.rejected_django_callbacks.contains(&id) {
+            return Value::Unknown;
+        }
         let symbol = &self.symbols[id];
         let scope = symbol.scope;
         let file = self.scopes[scope].file;
@@ -2498,9 +2512,15 @@ impl<'a> Graph<'a> {
                     Some(mutations::MemberWriteValue::Ambiguous) => Value::Unknown,
                 }
             }
-            Value::Object(object, ObjectKind::FlaskLoginManager) => {
-                self.flask_login_member(object, name, access)
+            Value::Object(object, ObjectKind::TyperApp) if name == "callback" => {
+                self.typer_callback_member(object, access)
             }
+            Value::Object(
+                object,
+                kind @ (ObjectKind::FlaskApp
+                | ObjectKind::FlaskBlueprint
+                | ObjectKind::FlaskLoginManager),
+            ) if self.phase03 => self.flask_member(object, kind, name, access),
             Value::Object(object, ObjectKind::CeleryApp) if name == "conf" => {
                 Value::CeleryConfig(object)
             }
@@ -2704,7 +2724,7 @@ impl<'a> Graph<'a> {
         }
         let inherited = match definition.bases.as_slice() {
             [] => None,
-            [base] => match self.identity(symbol.scope, base, definition.name.at, depth + 1) {
+            [base] => match self.class_base(symbol.scope, base, definition.name.at, depth + 1) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
@@ -2769,6 +2789,48 @@ impl<'a> Graph<'a> {
         } else {
             inherited
         }
+    }
+
+    fn class_base(
+        &mut self,
+        scope: ScopeId,
+        base: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Value {
+        let value = self.identity(scope, base, before, depth);
+        if !self.phase03 || !matches!(value, Value::Unknown) || depth >= MAX_BINDING_CHAIN {
+            return value;
+        }
+        if let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &base.kind
+            && arguments.is_empty()
+            && keywords.is_empty()
+            && let Value::Callable(invocation) = self.probe_identity(scope, function, before)
+            && !invocation.verified
+            && matches!(invocation.receiver, Receiver::Ordinary)
+            && let Binding::Definition(definition, body) = self.symbols[invocation.target].binding
+            && definition.kind == DefinitionKind::Function
+            && !definition.is_generator
+            && definition.decorators.is_empty()
+            && definition.parameters.is_empty()
+            && let [
+                Statement {
+                    kind: StatementKind::Return(Some(result)),
+                    at,
+                },
+            ] = definition.body.as_slice()
+            && matches!(self.probe_identity(body, result, *at),
+                Value::Provider(provider) if provider == "builtins.object")
+        {
+            // The factory body still executes normally. Only the base value
+            // is recovered from its sole statically resolved return.
+            return Value::Provider("builtins.object".into());
+        }
+        value
     }
 
     fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, single_base: bool) {
@@ -3126,9 +3188,15 @@ impl<'a> Graph<'a> {
                         self.with_explicit_receiver(invocation, arguments, keywords, recurse),
                     )
                 }
+                Value::Callable(invocation) if self.phase03 => {
+                    self.fastapi_conditional_app_result(invocation, arguments, keywords, depth + 1)
+                }
                 Value::ConstantFunction => Value::Scalar,
                 Value::NullaryConstantFunction if arguments.is_empty() && keywords.is_empty() => {
                     Value::Scalar
+                }
+                Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {
+                    recurse(self, &arguments[0])
                 }
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
@@ -3378,6 +3446,21 @@ impl<'a> Graph<'a> {
                         ObjectKind::FlaskLoginManager,
                     )
                 }
+                Value::Provider(name)
+                    if self.phase03
+                        && is_typer_constructor(&name)
+                        && arguments.is_empty()
+                        && keywords.is_empty() =>
+                {
+                    Value::Object(
+                        (
+                            self.scopes[scope].file,
+                            expression.at.line,
+                            expression.at.column,
+                        ),
+                        ObjectKind::TyperApp,
+                    )
+                }
                 Value::Provider(name) if self.phase03 && name == "celery.Celery" => Value::Object(
                     (
                         self.scopes[scope].file,
@@ -3386,6 +3469,17 @@ impl<'a> Graph<'a> {
                     ),
                     ObjectKind::CeleryApp,
                 ),
+                Value::Provider(name) if self.phase03 && name == "pluggy.HookimplMarker" => {
+                    match (arguments.as_slice(), keywords.as_slice()) {
+                        ([project], []) if matches!(recurse(self, project), Value::Text(name) if !name.is_empty()) => {
+                            Value::PluggyHookMarker
+                        }
+                        _ => Value::Unknown,
+                    }
+                }
+                Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
+                    self.sanic_constructor(scope, expression.at, before, arguments, keywords)
+                }
                 Value::Provider(name) if self.phase03 && is_django_signal_constructor(&name) => {
                     if registration_arguments(arguments, keywords, ["use_caching"]).is_some() {
                         Value::DjangoSignal((
@@ -4377,6 +4471,7 @@ impl<'a> Graph<'a> {
                     Value::DeferredLambda => {
                         self.report_unmodeled_deferred_value(scope, expr.at, &callee)
                     }
+                    Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
                     Value::PydanticDump(class) => self.record_pydantic_dump(
                         class,
                         scope,
@@ -4409,6 +4504,21 @@ impl<'a> Graph<'a> {
                             },
                             "certain",
                         );
+                    }
+                    Value::Alternatives(values)
+                        if self.phase03 && !values.is_empty() && values.iter().all(|value| {
+                            matches!(value, Value::Method(_, ObjectKind::App, name) if name == "add_exception_handler")
+                        }) =>
+                    {
+                        let objects: BTreeSet<_> = values.into_iter().filter_map(|value| {
+                            match value {
+                                Value::Method(object, ..) => Some(object),
+                                _ => None,
+                            }
+                        }).collect();
+                        self.fastapi_exception_handlers(objects, CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        }, true);
                     }
                     Value::Alternatives(values) => {
                         let mut resolved = false;
@@ -4505,6 +4615,13 @@ impl<'a> Graph<'a> {
                             expr.at,
                         );
                     }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "pluggy.HookimplMarker"
+                            && matches!(
+                                self.identity(scope, expr, before, 0),
+                                Value::PluggyHookMarker
+                            ) => {}
                     Value::Provider(name)
                         if self.phase03
                             && name == "types.SimpleNamespace"
@@ -4613,6 +4730,16 @@ impl<'a> Graph<'a> {
                             .map_or(Value::Unknown, |task| self.identity(scope, task, before, 0));
                         self.register_celery_task(scope, parent, value, expr.at);
                     }
+                    Value::Method(object, ObjectKind::SanicApp, method) if method == "register_listener" => {
+                        self.register_sanic_listener(object, CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
+                    Value::Method(object, ObjectKind::SanicApp, method)
+                        if method == "run" && arguments.is_empty() && keywords.is_empty() =>
+                    {
+                        self.scopes[scope].activated_apps.push(object);
+                    }
                     Value::Method(object, ObjectKind::CeleryApp, method)
                         if self.phase03
                             && matches!(method.as_str(), "conf.update" | "config_from_object") =>
@@ -4646,34 +4773,14 @@ impl<'a> Graph<'a> {
                     Value::Method(parent, kind, method)
                         if self.phase03 && is_imperative_registration(kind, &method) =>
                     {
-                        let target = callback_argument(kind, &method, arguments, keywords);
-                        let value = target.map(|target| self.identity(scope, target, before, 0));
                         if method == "add_exception_handler" {
-                            if let Some(target) =
-                                value.and_then(|value| self.fastapi_hook_target(value))
-                            {
-                                self.fastapi_route(
-                                    parent,
-                                    target,
-                                    CallArguments {
-                                        scope,
-                                        before,
-                                        at: expr.at,
-                                        positional: arguments,
-                                        keywords,
-                                    },
-                                    &method,
-                                );
-                            } else {
-                                self.scope_issue(
-                                    scope,
-                                    expr.at,
-                                    "unresolved_registration",
-                                    "FastAPI exception handler could not be resolved",
-                                );
-                            }
+                            self.fastapi_exception_handlers([parent], CallArguments {
+                                scope, before, at: expr.at, positional: arguments, keywords,
+                            }, false);
                             return;
                         }
+                        let target = callback_argument(kind, &method, arguments, keywords);
+                        let value = target.map(|target| self.identity(scope, target, before, 0));
                         match value {
                             Some(Value::Callable(invocation)) => {
                                 if matches!(kind, ObjectKind::App | ObjectKind::Router) {
@@ -4997,6 +5104,11 @@ impl<'a> Graph<'a> {
                     {
                         // Exact built-in scalars cannot call user-defined numeric conversions.
                     }
+                    Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
+                        if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
+                        }
+                    }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         let row = &mut self.scopes[scope];
                         if name == "builtins.dict"
@@ -5013,6 +5125,7 @@ impl<'a> Graph<'a> {
                                 ObjectKind::App
                                     | ObjectKind::FlaskApp
                                     | ObjectKind::FlaskLoginManager
+                                    | ObjectKind::TyperApp
                                     | ObjectKind::CeleryApp
                             )
                         {
@@ -5797,6 +5910,17 @@ impl<'a> Graph<'a> {
                     else {
                         unreachable!()
                     };
+                    if self.phase03
+                        && definition.kind != DefinitionKind::Class
+                        && definition.defaults.is_empty()
+                        && definition.annotations.is_empty()
+                        && let [decorator] = definition.decorators.as_slice()
+                        && self.django_receiver_rejects_definition(scope, decorator, at)
+                    {
+                        self.walk(scope, decorator, at);
+                        self.rejected_django_callbacks.insert(target);
+                        return true;
+                    }
                     for (index, annotation) in definition.annotations.iter().enumerate() {
                         self.annotation(scope, annotation, at, true);
                         if self.phase03
@@ -5819,7 +5943,7 @@ impl<'a> Graph<'a> {
                     let mut valid_bases = true;
                     for base in &definition.bases {
                         self.walk(scope, base, at);
-                        let value = self.identity(scope, base, at, 0);
+                        let value = self.class_base(scope, base, at, 0);
                         valid_bases &= !matches!(value, Value::MissingFrameworkMember);
                         if let Value::Callable(Invocation { target: id, .. }) = value {
                             self.edge(scope, id, "base_class", "certain");
@@ -6179,6 +6303,17 @@ impl<'a> Graph<'a> {
                     );
                 }
             }
+            Value::Method(object, ObjectKind::TyperApp, name)
+                if name == "callback"
+                    && matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && args.is_empty()
+                    && keywords.is_empty() =>
+            {
+                self.scopes[scope]
+                    .routes
+                    .push((object, target, "typer_callback"));
+                return true;
+            }
             Value::Method(object, ObjectKind::FlaskLoginManager, name)
                 if !matches!(decorator.kind, ExpressionKind::Call { .. })
                     && flask_login_callback(&name) =>
@@ -6280,6 +6415,40 @@ impl<'a> Graph<'a> {
                 );
             }
             Value::Provider(name) if self.phase03 && name == "pytest.hookimpl" => {}
+            Value::Provider(name)
+                if self.phase03
+                    && args.is_empty()
+                    && keywords.is_empty()
+                    && matches!(
+                        name.as_str(),
+                        "marshmallow.post_load"
+                            | "marshmallow.decorators.post_load"
+                            | "marshmallow.validates_schema"
+                            | "marshmallow.decorators.validates_schema"
+                    )
+                    && self.record_marshmallow_hook(scope, target) =>
+            {
+                return true;
+            }
+            Value::Provider(name)
+                if self.phase03
+                    && name == "attrs.define"
+                    && args.is_empty()
+                    && keywords.is_empty()
+                    && self.register_attrs_fields(target) => {}
+            Value::PluggyHookMarker
+                if self.phase03
+                    && args.is_empty()
+                    && keywords.is_empty()
+                    && !self.is_class(target)
+                    && matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                        if definition.decorators.len() == 1) =>
+            {
+                // Marking a function stores its HookimplOpts. Execution still
+                // requires registration and a hook call, or a direct caller.
+                self.edge(scope, target, "pluggy_hook_declaration", "certain");
+                return true;
+            }
             Value::Provider(name)
                 if self.phase03
                     && name == "contextlib.asynccontextmanager"
@@ -6435,6 +6604,11 @@ impl<'a> Graph<'a> {
                 return true;
             }
             Value::ConstantFunction => {}
+            Value::IdentityFunction
+                if self.phase03 && !matches!(decorator.kind, ExpressionKind::Call { .. }) =>
+            {
+                return true;
+            }
             Value::Provider(name)
                 if matches!(
                     name.as_str(),
@@ -6577,7 +6751,7 @@ impl<'a> Graph<'a> {
                 [base] => base,
                 _ => break,
             };
-            match self.identity(symbol.scope, base, definition.name.at, 0) {
+            match self.class_base(symbol.scope, base, definition.name.at, 0) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     current = parent
                 }
@@ -8044,6 +8218,7 @@ impl<'a> Graph<'a> {
             while let Some(edge) = pending.pop_front() {
                 if !verification && is_verification_edge(edge.kind)
                     || !possible && is_atexit_edge(edge.kind)
+                    || self.rejected_django_callbacks.contains(&edge.target)
                 {
                     continue;
                 }
@@ -8065,12 +8240,19 @@ impl<'a> Graph<'a> {
                     self.open_fastapi_effects(effects, reach, &mut pending);
                 }
                 reach.evidence.insert((edge.target, edge.kind, certainty));
+                if edge.kind == "django_configured_class_declaration" {
+                    continue;
+                }
                 reach.symbols.insert(edge.target);
                 if matches!(
                     edge.kind,
                     "type_reference"
                         | "generator_creation"
                         | "sqlalchemy_hybrid_descriptor"
+                        | "pluggy_hook_declaration"
+                        | "marshmallow_schema_registry"
+                        | "marshmallow_schema_options"
+                        | "marshmallow_hook_declaration"
                         | "celery_backend_default"
                 ) {
                     continue;
@@ -8133,7 +8315,11 @@ impl<'a> Graph<'a> {
                         pending.push_back(Edge {
                             target,
                             kind,
-                            certainty: "certain",
+                            certainty: if kind == "sanic_listener" {
+                                "possible"
+                            } else {
+                                "certain"
+                            },
                         });
                     }
                 }
@@ -8394,6 +8580,12 @@ impl<'a> Graph<'a> {
             evidence,
             ..
         } = reach;
+        let django_class_declarations: BTreeSet<_> = evidence
+            .iter()
+            .filter_map(|&(target, kind, _)| {
+                (kind == "django_configured_class_declaration").then_some(target)
+            })
+            .collect();
         let independently_retained: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
@@ -8450,11 +8642,12 @@ impl<'a> Graph<'a> {
 
         let mut findings = Vec::new();
         let mut retained = Vec::new();
-        let fastapi_callback_contracts: BTreeSet<_> = evidence
+        let registered_callback_contracts: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
-                self.retain_fastapi_callback_parameters(target, kind)
-                    .then_some(target)
+                (self.retain_sanic_listener_parameters(target, kind)
+                    || self.retain_fastapi_callback_parameters(target, kind))
+                .then_some(target)
             })
             .collect();
         let django_callback_contracts: BTreeSet<_> = evidence
@@ -8480,7 +8673,9 @@ impl<'a> Graph<'a> {
             }
             if matches!(
                 kind,
-                "django_setting"
+                "attrs_field"
+                    | "marshmallow_schema_options"
+                    | "django_setting"
                     | "django_application"
                     | "django_converter_regex"
                     | "fastapi_parameter"
@@ -8535,7 +8730,9 @@ impl<'a> Graph<'a> {
             let public = !name.starts_with('_');
             let (category, rule_id, confidence, reason) = match symbol.binding {
                 Binding::Definition(def, _)
-                    if !reachable_symbols.contains(&id) && def.kind == DefinitionKind::Class =>
+                    if !reachable_symbols.contains(&id)
+                        && !django_class_declarations.contains(&id)
+                        && def.kind == DefinitionKind::Class =>
                 {
                     (Category::Class, "SKY-U004", 90, "unreachable_class")
                 }
@@ -8586,7 +8783,7 @@ impl<'a> Graph<'a> {
                             self.fixtures.contains_key(&owner)
                                 || reachable_symbols.contains(&owner)
                                     && !self.direct.contains(&owner)
-                                    && !fastapi_callback_contracts.contains(&owner)
+                                    && !registered_callback_contracts.contains(&owner)
                                     && !fastapi_route_contracts.contains(&owner)
                                 || django_callback_contracts.contains(&owner)
                         }) =>
@@ -8637,6 +8834,7 @@ impl<'a> Graph<'a> {
                     .owner
                     .filter(|&owner| category == Category::Function && self.is_class(owner))
                     .map(|owner| position(self.symbols[owner].name.at)),
+                declaration_whitelist: self.framework_class_whitelists.get(&id).copied(),
                 confidence,
                 rule_id,
                 reason,
@@ -8656,6 +8854,7 @@ impl<'a> Graph<'a> {
                     line: 1,
                     column: 1,
                     method_owner: None,
+                    declaration_whitelist: None,
                     confidence: 100,
                     rule_id: "SKY-E002",
                     reason: "empty_or_docstring_only",
@@ -9083,7 +9282,7 @@ fn is_route(kind: ObjectKind, name: &str, phase03: bool) -> bool {
                 || flask_callback_method(kind, name)
                 || matches!(kind, ObjectKind::FlaskBlueprint) && name == "app_errorhandler"
         }
-        ObjectKind::FlaskLoginManager => false,
+        ObjectKind::FlaskLoginManager | ObjectKind::TyperApp | ObjectKind::SanicApp => false,
         ObjectKind::CeleryApp => name == "task",
     }
 }
@@ -9101,6 +9300,7 @@ fn is_imperative_registration(kind: ObjectKind, method: &str) -> bool {
                 || flask_callback_method(kind, method)
         }
         ObjectKind::FlaskLoginManager => flask_login_callback(method),
+        ObjectKind::TyperApp | ObjectKind::SanicApp => false,
         ObjectKind::CeleryApp => method == "task",
     }
 }
@@ -9157,6 +9357,10 @@ fn is_fastapi_field_marker(name: &str) -> bool {
     })
 }
 
+fn is_typer_constructor(name: &str) -> bool {
+    matches!(name, "typer.Typer" | "typer.main.Typer")
+}
+
 fn is_known_call(name: &str, phase03: bool) -> bool {
     name.starts_with("builtins.")
         || phase03
@@ -9164,6 +9368,7 @@ fn is_known_call(name: &str, phase03: bool) -> bool {
                 || is_fastapi_field_marker(name)
                 || is_django_signal_constructor(name)
                 || is_flask_login_constructor(name)
+                || is_typer_constructor(name)
                 || is_django_receiver(name)
                 || matches!(
                     name,
@@ -9299,6 +9504,8 @@ fn framework_registration_kind(kind: ObjectKind) -> &'static str {
         ObjectKind::App | ObjectKind::Router => "fastapi_registration",
         ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint => "flask_registration",
         ObjectKind::FlaskLoginManager => "flask_login_registration",
+        ObjectKind::TyperApp => "typer_callback",
+        ObjectKind::SanicApp => "sanic_listener",
         ObjectKind::CeleryApp => "celery_task",
     }
 }
@@ -9436,6 +9643,9 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         | "pydantic.main.BaseModel"
         | "pydantic_settings.BaseSettings"
         | "pydantic_settings.main.BaseSettings" => Some(FrameworkClassRole::PydanticModel),
+        "marshmallow.Schema" | "marshmallow.schema.Schema" => {
+            Some(FrameworkClassRole::MarshmallowSchema)
+        }
         _ => None,
     }
 }
