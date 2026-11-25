@@ -118,6 +118,15 @@ impl<'a> Python<'a> {
                 Stmt::DeleteName(name) => {
                     bindings.insert(&name.text, None);
                 }
+                Stmt::ForwardSuperInit {
+                    super_name,
+                    positional,
+                    keywords,
+                } => {
+                    self.expression(super_name, &bindings);
+                    self.expression(positional, &bindings);
+                    self.expression(keywords, &bindings);
+                }
                 Stmt::SetGlobalName { value, .. } => {
                     self.expression(value, &bindings);
                 }

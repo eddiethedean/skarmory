@@ -6714,9 +6714,12 @@ impl<'a> Graph<'a> {
                         && self.record_celery_backend_write(scope, at, &statement.kind);
                     let fresh_field_write =
                         self.phase03 && self.is_fresh_field_initializer(scope, statement);
+                    let form_field_write =
+                        self.phase03 && self.modeled_django_instance_field_write(scope, statement);
                     if !flask_write
                         && !celery_write
                         && !fresh_field_write
+                        && !form_field_write
                         && !self.modeled_framework_write(scope, at)
                     {
                         self.scope_issue(
@@ -6724,6 +6727,32 @@ impl<'a> Graph<'a> {
                             at,
                             "unresolved_attribute_write",
                             "attribute mutation is outside the bounded framework model",
+                        );
+                    }
+                }
+                StatementKind::ForwardSuperInit {
+                    super_name,
+                    positional,
+                    keywords,
+                } => {
+                    if !self.phase03 {
+                        self.issue(
+                            self.scopes[scope].file,
+                            at,
+                            "unsupported_construct",
+                            "forwarded super initializer is outside the compatibility subset",
+                        );
+                        continue;
+                    }
+                    self.walk(scope, super_name, at);
+                    self.walk(scope, positional, at);
+                    self.walk(scope, keywords, at);
+                    if !self.modeled_django_form_super_init(scope) {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "forwarded super initializer is outside the bounded Django form model",
                         );
                     }
                 }
@@ -9805,6 +9834,13 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 statements.extend(body);
             }
             StatementKind::Return(value) | StatementKind::Raise(value) => expressions.extend(value),
+            StatementKind::ForwardSuperInit {
+                super_name,
+                positional,
+                keywords,
+            } => {
+                expressions.extend([super_name, positional, keywords]);
+            }
             StatementKind::DeleteName(name) => {
                 assigned.insert(name.text.as_str());
             }
@@ -13691,6 +13727,50 @@ class Contact(forms.Form):\n    def clean_phone(self):\n        return 'ok'\n";
                 }),
                 retained,
                 "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_form_initializer_preserves_literal_instance_fields() {
+        for (prefix, base, meta, expected) in [
+            ("", "Form", "", true),
+            (
+                "",
+                "ModelForm",
+                "    class Meta:\n        model = Person\n        fields = ['name']\n",
+                true,
+            ),
+            ("super = object\n", "Form", "", false),
+        ] {
+            let source = format!(
+                concat!(
+                    "from django import forms\nfrom django.db import models\n{}",
+                    "class Person(models.Model):\n    name = models.CharField(max_length=20)\n",
+                    "class Contact(forms.{}):\n{}",
+                    "    def __init__(self, *args, **kwargs):\n",
+                    "        super().__init__(*args, **kwargs)\n",
+                    "        self.fields['phone'] = forms.CharField()\n",
+                    "    def clean_phone(self):\n        return 'ok'\n",
+                    "Contact({{'name': 'Jane', 'phone': '123'}}).is_valid()\n"
+                ),
+                prefix, base, meta
+            );
+            let result = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+            assert_eq!(
+                result.issues.is_empty(),
+                expected,
+                "{base}: {:?}",
+                result.issues
+            );
+            assert_eq!(
+                result.evidence.iter().any(|entry| {
+                    entry.kind == django_forms::VALIDATION_HOOK
+                        && entry.full_name == "app.Contact.clean_phone"
+                        && entry.certainty == "possible"
+                }),
+                expected,
+                "{base}"
             );
         }
     }

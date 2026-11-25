@@ -130,6 +130,11 @@ pub enum StatementKind {
         module: String,
         value: Option<Expression>,
     },
+    ForwardSuperInit {
+        super_name: Expression,
+        positional: Expression,
+        keywords: Expression,
+    },
     If {
         test: Expression,
         body: Vec<Statement>,
@@ -1046,7 +1051,25 @@ impl Lowering<'_> {
                     StatementKind::Assert(expression(&node.test)?)
                 }
                 Stmt::Expr(node) => {
-                    if let Some(iterable) = discarded_comprehension_iterable(&node.value) {
+                    if let Expr::Call(call) = node.value.as_ref()
+                        && let Expr::Attribute(method) = call.func.as_ref()
+                        && method.attr.as_str() == "__init__"
+                        && let Expr::Call(super_call) = method.value.as_ref()
+                        && matches!(super_call.func.as_ref(), Expr::Name(name) if name.id.as_str() == "super")
+                        && super_call.arguments.args.is_empty()
+                        && super_call.arguments.keywords.is_empty()
+                        && let [Expr::Starred(args)] = call.arguments.args.as_ref()
+                        && matches!(args.value.as_ref(), Expr::Name(_))
+                        && let [kwargs] = call.arguments.keywords.as_slice()
+                        && kwargs.arg.is_none()
+                        && matches!(kwargs.value, Expr::Name(_))
+                    {
+                        StatementKind::ForwardSuperInit {
+                            super_name: expression(&super_call.func)?,
+                            positional: expression(&args.value)?,
+                            keywords: expression(&kwargs.value)?,
+                        }
+                    } else if let Some(iterable) = discarded_comprehension_iterable(&node.value) {
                         StatementKind::DiscardedComprehension(expression(iterable)?)
                     } else if let Expr::Yield(yielded) = &*node.value
                         && self.1 != SyntaxScope::ModuleOrClass

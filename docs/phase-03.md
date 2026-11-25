@@ -378,8 +378,10 @@ A supported Django form validation call retains possible `clean` and
 `clean_<field>` callbacks from its effective field table. The preview
 follows supported inherited fields, `None` masks, and literal ModelForm
 field selections. Plain `Form` instances use literal edits to `base_fields`
-or `declared_fields` made before the instance copies its field table.
-Dynamic field tables or validation dispatch produce
+or `declared_fields` made before the instance copies its field table. A
+resolved Form or ModelForm initializer can add literal fields to its own
+instance after forwarding its arguments to the framework initializer.
+Other dynamic field tables or validation dispatch produce
 coverage diagnostics.
 
 Django admin discovery follows installed apps when `django.contrib.admin` or
