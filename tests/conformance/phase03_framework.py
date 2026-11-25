@@ -226,5 +226,9 @@ def patch_framework_analysis(patch, module, analyze):
     patch.setattr(reference_analyzer.Skylos, "analyze", analyze_instance)
     if hasattr(module, "_scan"):
         patch.setattr(web_framework_fixtures, "analyze", analyze)
+    if module.__name__ == "test.test_django_historical_consumer_controls":
+        from test import test_django_app_repro_liveness
+
+        patch.setattr(test_django_app_repro_liveness, "analyze", analyze)
     if hasattr(module, "analyze"):
         patch.setattr(module, "analyze", analyze)

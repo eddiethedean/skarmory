@@ -10,6 +10,8 @@ import tomllib
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
+from phase03_review_assertions import parse_assertion
+
 BASELINE = (
     Path(__file__).resolve().parents[1]
     / "tests/conformance/baselines/skylos-5.7.0.toml"
@@ -19,6 +21,9 @@ MILESTONE = "0.3"
 RESULT_STATUSES = {
     "passed", "failed", "xfailed", "xpassed", "skipped", "blocked", "error",
 }
+REVIEW_PORT = "tests/conformance/run_phase03_seed.py"
+FRAMEWORK_CORPUS_SOURCE = "corpus/manifest.json"
+REVIEW_COVERAGE_ASSERTION = "test/web_framework_fixtures.py:16"
 
 
 def sha256(path):
@@ -154,6 +159,23 @@ def read_inventory(path):
             raise ValueError(f"{case_id}: port must be a string")
         if "blocker" in case:
             require_string(case, "blocker")
+        if "runtime_review" in case:
+            review = case["runtime_review"]
+            if not isinstance(review, dict) or set(review) != {"reason", "evidence", "assertions"}:
+                raise ValueError(f"{case_id}: invalid reviewed runtime control")
+            require_string(review, "reason")
+            require_string(review, "evidence")
+            checks = [
+                parse_assertion(value)
+                for value in string_list(review, "assertions", required=True, unique=True)
+            ]
+            coverage = [parts[0] for kind, parts in checks if kind == "coverage"]
+            if len(coverage) != 1 or len(checks) < 2 or (
+                coverage == ["incomplete"] and not any(kind == "issue" for kind, _ in checks)
+            ):
+                raise ValueError(f"{case_id}: reviewed runtime coverage requires explicit controls")
+            if milestone != MILESTONE or case["port"] != REVIEW_PORT or "blocker" in case:
+                raise ValueError(f"{case_id}: reviewed runtime control requires a mapped Phase 0.3 SDK case")
         assertions = string_list(case, "assertions", required=True, unique=True)
         if (
             "reference_xfail" in case
@@ -169,6 +191,8 @@ def read_inventory(path):
         for variant in string_list(case, "variants", required=True, unique=True):
             if variant not in variants:
                 raise ValueError(f"{case_id}: unknown variant {variant!r}")
+            if "runtime_review" in case and variants[variant]["layer"] != "sdk":
+                raise ValueError(f"{case_id}: reviewed runtime controls require the installed SDK")
             by_variant[variant][case_id] = case
     if unused := [variant for variant, mapped in by_variant.items() if not mapped]:
         raise ValueError(f"variants without inventory cases: {', '.join(unused)}")
@@ -232,21 +256,99 @@ def verify_result(result, case):
     reference_assertions = string_list(result, "reference_assertions", unique=True)
     if reference_assertions != required_reference:
         reasons.append("completed reference assertions do not match the inventory")
-    if status != "passed":
+    review = case.get("runtime_review")
+    if not review and status != "passed":
         if status not in RESULT_STATUSES:
             reasons.append(f"unknown Skarmory outcome {status!r}")
         else:
             reasons.append(f"Skarmory outcome {status!r} is not an ordinary pass")
 
     assertions = set(string_list(result, "assertions", unique=True))
-    if assertions != set(mapped):
+    if (not review or status == "passed") and assertions != set(mapped):
         reasons.append("executed assertions do not match the inventory")
+    if review:
+        if status not in {"passed", "failed"} or not assertions <= set(mapped):
+            reasons.append("the original candidate case did not execute on the reviewed fixture")
+        if (
+            status == "failed" and case["source"] != FRAMEWORK_CORPUS_SOURCE
+            and not matches_reviewed_failure(case, result.get("candidate_failed_assertion"))
+        ):
+            reasons.append("original candidate failure does not identify a mapped assertion")
+        reasons.extend(verify_runtime_result(result.get("reviewed_runtime"), review))
+    elif "reviewed_runtime" in result:
+        reasons.append("unexpected reviewed runtime result for an ordinary parity case")
     prerequisites = result.get("prerequisites")
     if not isinstance(prerequisites, dict) or (
         set(prerequisites) != set(case["prerequisites"])
         or any(status != "passed" for status in prerequisites.values())
     ):
         reasons.append("required prerequisites were not all verified")
+    return reasons
+
+
+def matches_reviewed_failure(case, assertion):
+    return assertion in case["assertions"] or (
+        assertion == REVIEW_COVERAGE_ASSERTION
+        and "coverage:incomplete" in case.get("runtime_review", {}).get("assertions", ())
+    )
+
+
+def read_runtime_coverage(result, expected):
+    paths = string_list(result, "selected_paths", required=True, unique=True)
+    coverage = result.get("coverage")
+    if not isinstance(coverage, dict) or (
+        coverage.get("status") != expected
+        or type(coverage.get("selected_files")) is not int
+        or type(coverage.get("extracted_files")) is not int
+        or coverage.get("selected_files") != len(paths)
+        or coverage.get("extracted_files") != len(paths)
+        or not isinstance(coverage.get("issues"), list)
+        or bool(coverage["issues"]) != (expected == "incomplete")
+    ):
+        return paths, None
+    return paths, coverage["issues"]
+
+
+def verify_runtime_result(result, review):
+    if not isinstance(result, dict):
+        return ["reviewed runtime result is missing"]
+    reasons = []
+    if result.get("status") != "passed":
+        reasons.append("reviewed runtime control did not pass")
+    if string_list(result, "assertions", unique=True) != review["assertions"]:
+        reasons.append("executed reviewed runtime assertions do not match the inventory")
+    expected = "complete" if "coverage:complete" in review["assertions"] else "incomplete"
+    paths, issues = read_runtime_coverage(result, expected)
+    checks = [parse_assertion(value) for value in review["assertions"]]
+    if issues is None:
+        reasons.append("reviewed runtime coverage does not match the inventory")
+    elif expected == "incomplete":
+        for kind, parts in checks:
+            if kind != "issue":
+                continue
+            category, path, line = parts
+            if not any(
+                isinstance(issue, dict) and issue.get("kind") == category
+                and issue.get("path") == path and (line == "0" or issue.get("line") == int(line))
+                for issue in issues
+            ):
+                reasons.append(f"reviewed runtime diagnostic is missing: {':'.join(parts)}")
+    scopes = result.get("scopes", {})
+    expected_scopes = {parts[0] for kind, parts in checks if kind == "scoped-unused"}
+    if not isinstance(scopes, dict) or scopes.keys() != expected_scopes:
+        reasons.append("reviewed runtime scopes do not match the inventory")
+    else:
+        for scope, observed in scopes.items():
+            prefix = scope + "/"
+            selected = {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
+            if scope in paths:
+                selected.add(PurePosixPath(scope).name)
+            if not isinstance(observed, dict):
+                reasons.append(f"reviewed runtime scope is missing: {scope}")
+                continue
+            scoped_paths, scoped_issues = read_runtime_coverage(observed, "complete")
+            if scoped_issues is None or set(scoped_paths) != selected:
+                reasons.append(f"reviewed runtime scope did not extract the same fixture sources: {scope}")
     return reasons
 
 
@@ -392,13 +494,27 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
                             reasons.append("receipt fixture hashes do not match the reviewed originals")
                 except ValueError as error:
                     reasons.append(str(error))
-            report["cases"].append({
+            decision = {
                 "case_id": case_id,
                 "variant": variant_id,
                 "status": "blocked" if reasons else "passed",
+                "qualification": "reviewed_runtime" if "runtime_review" in case else "skylos_parity",
                 "reasons": reasons,
-            })
+            }
+            if "runtime_review" in case:
+                decision["runtime_review"] = case["runtime_review"]
+                decision["original_candidate_status"] = results.get(case_id, {}).get("status")
+                decision["original_candidate_failed_assertion"] = results.get(case_id, {}).get(
+                    "candidate_failed_assertion"
+                )
+            report["cases"].append(decision)
 
+    qualified_counts = Counter(
+        case["qualification"] for case in report["cases"] if case["status"] == "passed"
+    )
+    report["qualified_counts"] = {
+        kind: qualified_counts[kind] for kind in ("skylos_parity", "reviewed_runtime")
+    }
     if not errors and all(case["status"] == "passed" for case in report["cases"]):
         report["status"] = "passed"
     return report
@@ -420,7 +536,12 @@ def main():
     blocked = [case for case in report["cases"] if case["status"] != "passed"]
     for error in report["errors"]:
         print(error, file=sys.stderr)
-    print(f"Dead-code release gate {report['status']} ({len(blocked)} blocked case variants)")
+    counts = report.get("qualified_counts", {})
+    print(
+        f"Dead-code release gate {report['status']} "
+        f"({counts.get('skylos_parity', 0)} parity, {counts.get('reviewed_runtime', 0)} "
+        f"reviewed runtime, {len(blocked)} blocked case variants)"
+    )
     return 0 if report["status"] == "passed" else 1
 
 

@@ -150,6 +150,113 @@ port = "crates/analysis_core/tests/resolve.rs"
         self.assertEqual(report["ledgers"][1]["results"][0]["reference_status"], "xfailed")
         self.assertEqual(report["artifacts"]["candidate"]["sha256"], digest(self.artifact))
 
+    def reviewed_receipt(self, checks=None):
+        if checks is None:
+            checks = ["coverage:incomplete", "issue:unresolved_import:app.py:2"]
+        self.write_inventory(extra_case=(
+            'runtime_review = { reason = "import stops", evidence = "verified exact fixture", '
+            f'assertions = {json.dumps(checks)} }}'
+        ))
+        self.inventory.write_text(
+            self.inventory.read_text().replace(
+                'port = "tests/python/test_sdk.py"',
+                'port = "tests/conformance/run_phase03_seed.py"',
+            ),
+            encoding="utf-8",
+        )
+        receipt = self.receipt("python-sdk")
+        receipt["results"][0].update(
+            status="failed", assertions=[EARLIER_ASSERTION],
+            candidate_failed_assertion=ASSERTION,
+            reviewed_runtime={
+                "status": "passed", "assertions": checks, "selected_paths": ["app.py"],
+                "coverage": {
+                    "status": "incomplete", "selected_files": 1, "extracted_files": 1,
+                    "issues": [{"kind": "unresolved_import", "path": "app.py", "line": 2}],
+                },
+            },
+        )
+        return receipt
+
+    def test_reviewed_runtime_qualifies_and_preserves_the_original_verdict(self):
+        sdk = self.reviewed_receipt()
+        run, report = self.run_gate(self.receipt("python-engine"), sdk)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(report["qualified_counts"], {"skylos_parity": 1, "reviewed_runtime": 1})
+        decision = next(row for row in report["cases"] if row["case_id"] == CASE_ID)
+        self.assertEqual(decision["qualification"], "reviewed_runtime")
+        self.assertEqual(decision["original_candidate_status"], "failed")
+        self.assertEqual(decision["original_candidate_failed_assertion"], ASSERTION)
+        self.assertEqual(decision["runtime_review"]["reason"], "import stops")
+
+    def test_reviewed_runtime_still_requires_fixture_coverage_and_original_execution(self):
+        sdk = self.reviewed_receipt()
+        row = sdk["results"][0]
+        runtime = row["reviewed_runtime"]
+        engine = self.receipt("python-engine")
+        changed = (
+            ({"status": "skipped"}, "original candidate case did not execute"),
+            ({"candidate_failed_assertion": None}, "does not identify a mapped assertion"),
+            ({"reference_status": "error"}, "reference outcome"),
+            ({"prerequisites": {PREREQUISITE: "blocked"}}, "required prerequisites"),
+            ({"reviewed_runtime": None}, "reviewed runtime result is missing"),
+            ({"reviewed_runtime": {**runtime, "assertions": []}}, "assertions do not match"),
+            ({"reviewed_runtime": {
+                **runtime, "coverage": {**runtime["coverage"], "extracted_files": 0},
+            }}, "coverage does not match"),
+            ({"reviewed_runtime": {
+                **runtime, "coverage": {**runtime["coverage"], "issues": [
+                    {"kind": "unresolved_import", "path": "other.py", "line": 2},
+                ]},
+            }}, "reviewed runtime diagnostic is missing"),
+        )
+        for update, reason in changed:
+            with self.subTest(reason=reason):
+                self.assert_blocked([engine, {**sdk, "results": [{**row, **update}]}], reason)
+
+    def test_reviewed_scope_must_extract_the_matching_fixture_sources(self):
+        sdk = self.reviewed_receipt([
+            "coverage:incomplete", "issue:unresolved_import:app.py:2",
+            "scoped-unused:shop:unused_files:placeholder.py",
+        ])
+        engine = self.receipt("python-engine")
+        runtime = sdk["results"][0]["reviewed_runtime"]
+        runtime["selected_paths"].append("shop/placeholder.py")
+        runtime["coverage"].update(selected_files=2, extracted_files=2)
+        self.assert_blocked([engine, sdk], "scopes do not match")
+        scope = {
+            "selected_paths": ["some-other.py"],
+            "coverage": {"status": "complete", "selected_files": 1, "extracted_files": 1, "issues": []},
+        }
+        runtime["scopes"] = {"shop": scope}
+        self.assert_blocked([engine, sdk], "did not extract the same fixture sources")
+        scope["selected_paths"] = ["placeholder.py"]
+        run, _ = self.run_gate(engine, sdk)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_reviewed_incomplete_fixture_can_fail_its_pinned_coverage_check(self):
+        sdk = self.reviewed_receipt()
+        row = sdk["results"][0]
+        row["candidate_failed_assertion"] = "test/web_framework_fixtures.py:16"
+        run, _ = self.run_gate(self.receipt("python-engine"), sdk)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+        sdk = self.reviewed_receipt(["coverage:complete", "definition:app.main"])
+        row = sdk["results"][0]
+        row["candidate_failed_assertion"] = "test/web_framework_fixtures.py:16"
+        row["reviewed_runtime"]["coverage"].update(status="complete", issues=[])
+        self.assert_blocked(
+            [self.receipt("python-engine"), sdk], "does not identify a mapped assertion",
+        )
+
+    def test_parity_result_cannot_use_an_unreviewed_runtime_control(self):
+        self.write_inventory()
+        sdk = self.receipt("python-sdk")
+        sdk["results"][0]["reviewed_runtime"] = {}
+        self.assert_blocked(
+            [self.receipt("python-engine"), sdk], "unexpected reviewed runtime result",
+        )
+
     def test_deferred_fixtures_and_results_do_not_affect_release(self):
         self.write_inventory(
             fixtures='[[fixtures]]\npath = "manual/mixed_repo/missing.ts"',

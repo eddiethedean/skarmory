@@ -316,6 +316,7 @@ def run_basic_benchmark(args, case):
 
 def run_framework_corpus_cases(args, cases):
     from check_dead_code_gate import sha256
+    from phase03_review_assertions import observe_review
     from skylos.benchmarks import corpus_ci
 
     manifest = args.upstream / CORPUS_SOURCE
@@ -334,11 +335,19 @@ def run_framework_corpus_cases(args, cases):
         fixtures = {name: args.upstream / name for name in case["fixtures"]}
         fixture_hashes = {name: sha256(path) for name, path in fixtures.items()}
         scanned = 0
+        review = case.get("runtime_review")
+        runtime_results = []
 
         def scan(path, options):
             nonlocal scanned
             scanned += 1
-            return json.loads(scan_candidate(args.sdk_python, path, options))
+            def read(scope):
+                return json.loads(scan_candidate(args.sdk_python, scope, options))
+
+            report = read(path)
+            if review:
+                runtime_results.append(observe_review(report, path, review["assertions"], read))
+            return report
 
         summary = score_corpus(
             corpus_ci, manifest, {case_id}, scan if args.mode == "candidate" else None,
@@ -372,10 +381,15 @@ def run_framework_corpus_cases(args, cases):
             "fixture_sha256": fixture_hashes,
             "corpus": outcome,
         }
+        if len(runtime_results) == 1:
+            results[key]["reviewed_runtime"] = runtime_results[0]
     return results
 
 
 def pytest_worker(args):
+    from check_dead_code_gate import matches_reviewed_failure
+    from phase03_review_assertions import observe_review
+
     _, _, variant, cases = port_cases(args)
     if args.mode == "candidate" and variant["layer"] == "engine":
         env = environment()
@@ -431,11 +445,13 @@ def pytest_worker(args):
             self.live_router_receipts = set()
             self.source_edit_cache = set()
             self.import_scope_prerequisites = {}
+            self.runtime_results = {}
 
         @pytest.hookimpl(wrapper=True)
         def pytest_runtest_call(self, item):
             key = item.nodeid
             case = cases[key]
+            review = case.get("runtime_review")
             trace = AssertionTrace(args.upstream, assertion_sources[key])
             old_trace = sys.gettrace()
             cache_path = None
@@ -453,7 +469,14 @@ def pytest_worker(args):
                     options["cache_dir"] = cache_path
                 scanned = scan_candidate(args.sdk_python, path, options)
                 report = json.loads(scanned)
-                if report["coverage"]["status"] != "complete":
+                if review:
+                    def scan_scope(scope):
+                        return json.loads(scan_candidate(args.sdk_python, scope, options))
+
+                    self.runtime_results.setdefault(key, []).append(
+                        observe_review(report, path, review["assertions"], scan_scope),
+                    )
+                elif report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
                 self.scans.add(key)
                 if cache_path is not None:
@@ -593,8 +616,7 @@ def pytest_worker(args):
 
         def pytest_runtest_makereport(self, item, call):
             if (
-                args.mode == "reference"
-                and call.when == "call"
+                call.when == "call"
                 and call.excinfo
                 and call.excinfo.errisinstance(AssertionError)
             ):
@@ -604,7 +626,9 @@ def pytest_worker(args):
                 if path.is_relative_to(args.upstream):
                     source = path.relative_to(args.upstream).as_posix()
                     assertion = f"{source}:{failure.lineno + 1}"
-                    if assertion in case["assertions"]:
+                    if assertion in case["assertions"] or (
+                        args.mode == "candidate" and matches_reviewed_failure(case, assertion)
+                    ):
                         self.failed_assertions[item.nodeid] = assertion
 
         def pytest_runtest_logreport(self, report):
@@ -682,6 +706,11 @@ def pytest_worker(args):
             "failed_assertion": capture.failed_assertions.get(key),
             "prerequisites": prerequisites,
         }
+        runtime_results = capture.runtime_results.get(key, ())
+        if len(runtime_results) == 1 and (
+            outcome == "passed" or outcome == "failed" and key in capture.failed_assertions
+        ):
+            report[key]["reviewed_runtime"] = runtime_results[0]
     if benchmark is not None:
         report[BENCHMARK_CASE] = run_basic_benchmark(args, benchmark)
     corpus_results = run_framework_corpus_cases(args, corpus)
@@ -769,6 +798,10 @@ def write_receipt(args):
                 "prerequisites", dict.fromkeys(case["prerequisites"], "blocked")
             ),
         }
+        if "reviewed_runtime" in candidate:
+            result["reviewed_runtime"] = candidate["reviewed_runtime"]
+            if candidate.get("failed_assertion"):
+                result["candidate_failed_assertion"] = candidate["failed_assertion"]
         if case_id == BENCHMARK_CASE:
             result["benchmark"] = {
                 "reference": reference.get("benchmark"),

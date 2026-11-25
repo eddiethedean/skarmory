@@ -202,6 +202,11 @@ Do not blindly preserve upstream bugs in the native policy. Do not silently
 change the contract of a strict compatibility profile. Keep a documented
 distinction where those goals diverge.
 
+The Phase 0.3 release gate can accept a reviewed runtime correction for a
+specific pinned case. The receipt preserves the original test outcomes and
+separately proves the corrected behavior on the same fixture. Release
+reports count these results separately from Skylos parity.
+
 ## Acceptance gates
 
 For each declared surface:

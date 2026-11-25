@@ -67,6 +67,10 @@ to track implementation:
 - **Port mapping** identifies the Skarmory test or adapter and the fields that
   carry the asserted behavior. Use the engine for semantic facts and the native
   CLI or installed SDK for public interface assertions.
+- **Reviewed runtime correction** records the original disagreement, evidence
+  of the runtime behavior, and corrected assertions on the same fixture.
+  Each correction must identify its case and variant and preserve unaffected
+  controls and fixture prerequisites.
 
 ### Execute and account for every required variant
 
@@ -81,13 +85,16 @@ to track implementation:
    a divergent reference result under the
    [difference policy](compatibility.md#difference-policy).
    [Pinned expected-failure example](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_package_local_exports.py#L60-L81)
-2. Give pass credit when a required case and variant executes against Skarmory
-   and all mapped assertions run and pass. Check fixture prerequisites
+2. Give parity credit when a required case and variant executes against Skarmory
+   and all original assertions run and pass. For an approved runtime correction,
+   record the original results and give separate release credit when every
+   corrected assertion runs and passes with the expected coverage. Check fixture prerequisites
    explicitly and record setup failures or early returns as blocking outcomes.
    For example, verify symlink creation before running the legacy trace symlink
    control. A missing prerequisite, collection error, skip, deselection, xfail,
    xpass, or absent implementation blocks that case. An upstream-only run,
-   mocked analysis result, or reviewed difference earns zero credit.
+   mocked analysis result, or documented discrepancy without a passing
+   runtime control earns zero credit.
    [Pinned symlink control](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_trace_file_analyzer.py#L90-L103)
 3. Require the aggregated Python-scoped suite to pass before publication in
    the [release workflow](../.github/workflows/release.yml). Join expected and
@@ -912,7 +919,8 @@ requires the complete Python-scoped gate.
 
 ## Release gates
 
-- Pass every case in the [required upstream test gate](#required-upstream-test-gate).
+- Qualify every case in the [required upstream test gate](#required-upstream-test-gate)
+  through pinned parity or an approved runtime correction.
 - Run independent live, unused, and incomplete controls for every advertised
   feature. Preserve required detections and must-retain cases from the
   [Phase 0.2 comparator](../tests/conformance/check_phase02.py).
