@@ -226,7 +226,11 @@ impl Graph<'_> {
                     ][..],
                     false,
                 ),
-                FrameworkClassRole::DjangoModel | FrameworkClassRole::DjangoSignal => {
+                FrameworkClassRole::DjangoModel
+                | FrameworkClassRole::DjangoForm
+                | FrameworkClassRole::DjangoModelForm
+                | FrameworkClassRole::DjangoFormField
+                | FrameworkClassRole::DjangoSignal => {
                     (None, &[][..], false)
                 }
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),

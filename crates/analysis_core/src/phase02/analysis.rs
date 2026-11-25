@@ -22,6 +22,7 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 mod aiohttp;
 mod celery;
 mod comprehension;
+mod django_forms;
 mod django_globals;
 mod django_urls;
 mod fastapi;
@@ -66,6 +67,8 @@ enum Value {
     DjangoPattern(Box<Value>),
     DjangoViewFactory(SymbolId),
     DjangoView(SymbolId),
+    DjangoField(django_forms::Field),
+    DjangoFormValidation(Option<SymbolId>),
     DjangoSignal(Object),
     DjangoSignalConnect,
     DjangoReceiver(frameworks::DjangoReceiver),
@@ -241,6 +244,9 @@ enum FrameworkClassRole {
     DjangoCommand,
     DjangoView,
     DjangoModel,
+    DjangoForm,
+    DjangoModelForm,
+    DjangoFormField,
     DjangoSignal,
     DjangoAdmin,
     CeleryTask,
@@ -2584,6 +2590,12 @@ impl<'a> Graph<'a> {
                 {
                     return Value::DjangoViewFactory(class);
                 }
+                if matches!(member, Value::DjangoFormValidation(None)) {
+                    return match base {
+                        Value::Instance(_) => Value::DjangoFormValidation(Some(class)),
+                        _ => Value::Unknown,
+                    };
+                }
                 if matches!(member, Value::DjangoSignalConnect)
                     && matches!(base, Value::Callable(_))
                 {
@@ -2902,7 +2914,10 @@ impl<'a> Graph<'a> {
                             Some(
                                 FrameworkClassRole::PydanticModel
                                 | FrameworkClassRole::CeleryTask
-                                | FrameworkClassRole::DjangoSignal,
+                                | FrameworkClassRole::DjangoSignal
+                                | FrameworkClassRole::DjangoForm
+                                | FrameworkClassRole::DjangoModelForm
+                                | FrameworkClassRole::DjangoFormField,
                             ),
                             "__init__" | "__new__",
                         ) => None,
@@ -2913,6 +2928,13 @@ impl<'a> Graph<'a> {
                         (Some(FrameworkClassRole::DjangoView), "as_view") => {
                             Some(Value::Provider("django.views.View.as_view".into()))
                         }
+                        (
+                            Some(
+                                FrameworkClassRole::DjangoForm
+                                | FrameworkClassRole::DjangoModelForm,
+                            ),
+                            "is_valid" | "full_clean" | "non_field_errors",
+                        ) => Some(Value::DjangoFormValidation(None)),
                         (Some(FrameworkClassRole::DjangoSignal), "connect") => {
                             Some(Value::DjangoSignalConnect)
                         }
@@ -2921,6 +2943,9 @@ impl<'a> Graph<'a> {
                 }
                 _ => Some(Value::Unknown),
             },
+            _ if self.phase03 => self
+                .django_form_multiple_member(id, name, depth, access)
+                .unwrap_or(Some(Value::Unknown)),
             _ => Some(Value::Unknown),
         };
         if matches!(inherited, Some(Value::UnittestComparison))
@@ -3314,6 +3339,19 @@ impl<'a> Graph<'a> {
                     if self.empty_flask_context_pop(&name, arguments, keywords) =>
                 {
                     Value::EmptyFlaskContextEntry
+                }
+                Value::Provider(name) if self.phase03 && django_forms::is_field_provider(&name) => {
+                    self.django_field_value(
+                        &name,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expression.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                    .map_or(Value::Unknown, Value::DjangoField)
                 }
                 Value::DjangoViewFactory(class) if arguments.is_empty() && keywords.is_empty() => {
                     Value::DjangoView(class)
@@ -4694,6 +4732,27 @@ impl<'a> Graph<'a> {
                         self.report_unmodeled_deferred_value(scope, expr.at, &callee)
                     }
                     Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
+                    Value::DjangoFormValidation(Some(class)) => self.record_django_form_validation(
+                        class,
+                        CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        },
+                    ),
+                    Value::Provider(name) if self.phase03 && django_forms::is_field_provider(&name) => {
+                        if self.django_field_value(
+                            &name,
+                            CallArguments {
+                                scope, before, at: expr.at, positional: arguments, keywords,
+                            },
+                        ).is_none() {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_constructor",
+                                "Django field options are outside the bounded model",
+                            );
+                        }
+                    }
                     Value::PydanticDump(class) => self.record_pydantic_dump(
                         class,
                         scope,
@@ -8585,7 +8644,7 @@ impl<'a> Graph<'a> {
             );
             while let Some(edge) = pending.pop_front() {
                 if !verification && is_verification_edge(edge.kind)
-                    || !possible && is_atexit_edge(edge.kind)
+                    || !possible && is_deferred_possible_edge(edge.kind)
                     || self.rejected_django_callbacks.contains(&edge.target)
                 {
                     continue;
@@ -8740,13 +8799,13 @@ impl<'a> Graph<'a> {
         if !self.phase03 {
             return true;
         }
-        // Keep established routes into a callback's body. Shutdown-only
-        // paths and their descendants contribute possible evidence.
+        // Keep established routes into a callback's body. Optional
+        // framework paths and their descendants contribute possible evidence.
         let pending: VecDeque<_> = reach
             .scopes
             .iter()
             .flat_map(|&scope| &self.scopes[scope].edges)
-            .filter(|edge| is_atexit_edge(edge.kind))
+            .filter(|edge| is_deferred_possible_edge(edge.kind))
             .copied()
             .collect();
         (pending.is_empty() && !self.has_reachable_django_signals(reach))
@@ -9741,6 +9800,10 @@ fn flask_callback_method(kind: ObjectKind, name: &str) -> bool {
         })
 }
 
+fn is_deferred_possible_edge(kind: &str) -> bool {
+    is_atexit_edge(kind) || kind == django_forms::VALIDATION_HOOK
+}
+
 fn is_atexit_edge(kind: &str) -> bool {
     matches!(kind, "atexit_registration" | "atexit_argument")
 }
@@ -10033,6 +10096,13 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         | "django.views.generic.edit.DeleteView" => Some(FrameworkClassRole::DjangoView),
         "django.db.models.Model" | "django.db.models.base.Model" => {
             Some(FrameworkClassRole::DjangoModel)
+        }
+        "django.forms.Form" | "django.forms.forms.Form" => Some(FrameworkClassRole::DjangoForm),
+        "django.forms.ModelForm" | "django.forms.models.ModelForm" => {
+            Some(FrameworkClassRole::DjangoModelForm)
+        }
+        name if django_forms::provider_field_role(name).is_some() => {
+            django_forms::provider_field_role(name)
         }
         name if is_django_signal_constructor(name) => Some(FrameworkClassRole::DjangoSignal),
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
@@ -11518,6 +11588,159 @@ print(Status.default)
         assert_eq!(names(&result, Category::Function), ["parked"]);
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "routes.served" && entry.kind == "flask_registration"
+        }));
+    }
+
+    #[test]
+    fn phase03_django_form_validation_retains_only_effective_callbacks() {
+        let source = "
+from django import forms
+from fields import PHONE
+
+def normalize():
+    return 'number'
+
+class Replaced:
+    pass
+
+Form = forms.Form
+forms.Form = Replaced
+
+class Parent(Form):
+    phone = PHONE
+
+class Active(Parent):
+    phone = 0
+    def clean_phone(self):
+        return normalize()
+    def clean_missing(self):
+        return 'unused'
+
+class Removed(Parent):
+    phone = None
+    def clean_phone(self):
+        return 'unused'
+
+class Inactive(Form):
+    def clean(self):
+        return 'unused'
+
+class Lookalike(forms.Form):
+    def clean(self):
+        return 'unused'
+
+Active({'phone': '123'}).is_valid()
+Removed({}).full_clean()
+Inactive()
+Lookalike()
+";
+        let result = analyze_phase03(
+            &[
+                module("forms.py", "forms", source),
+                module(
+                    "fields.py",
+                    "fields",
+                    "from django.forms.fields import CharField\nPHONE = CharField()\n",
+                ),
+            ],
+            &[],
+        );
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(
+            names(&result, Category::Function),
+            ["clean", "clean", "clean_missing", "clean_phone"],
+        );
+        for (target, kind) in [
+            ("forms.Active.clean_phone", django_forms::VALIDATION_HOOK),
+            ("forms.normalize", "direct_call"),
+        ] {
+            assert!(result.evidence.iter().any(|entry| {
+                entry.full_name == target && entry.kind == kind && entry.certainty == "possible"
+            }));
+            assert!(
+                !result
+                    .evidence
+                    .iter()
+                    .any(|entry| { entry.full_name == target && entry.certainty == "certain" })
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_form_validation_uses_c3_field_tables() {
+        for (first, second, dispatched) in [("B", "C", false), ("C", "B", true)] {
+            let source = format!(
+                "
+from django.forms import Form, CharField
+
+class A(Form):
+    phone = CharField()
+
+class B(A):
+    phone = None
+
+class C(A):
+    pass
+
+class Contact({first}, {second}):
+    def clean_phone(self):
+        return 'number'
+
+Contact({{'phone': '123'}}).is_valid()
+"
+            );
+            let result = analyze_phase03(&[module("forms.py", "forms", &source)], &[]);
+            assert!(result.issues.is_empty(), "{source}\n{:?}", result.issues);
+            assert_eq!(
+                result.evidence.iter().any(|entry| {
+                    entry.full_name == "forms.Contact.clean_phone"
+                        && entry.kind == django_forms::VALIDATION_HOOK
+                }),
+                dispatched,
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_django_model_form_validation_keeps_selected_and_declared_fields() {
+        let source = "
+from django.forms import ModelForm, CharField
+from django.db.models import Model, CharField as Column
+
+class Person(Model):
+    phone = Column(max_length=20)
+    private = Column(max_length=20, editable=False)
+
+class Contact(ModelForm):
+    private = CharField()
+    class Meta:
+        model = Person
+        fields = ['phone']
+        exclude = ['private']
+    def clean_phone(self):
+        return 'phone'
+    def clean_private(self):
+        return 'private'
+    def clean_dormant(self):
+        return 'dormant'
+
+Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
+";
+        let result = analyze_phase03(&[module("forms.py", "forms", source)], &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(names(&result, Category::Function), ["clean_dormant"]);
+        for name in ["clean_phone", "clean_private"] {
+            assert!(result.evidence.iter().any(|entry| {
+                entry.full_name == format!("forms.Contact.{name}")
+                    && entry.kind == django_forms::VALIDATION_HOOK
+                    && entry.certainty == "possible"
+            }));
+        }
+        let unresolved = source.replace("fields = ['phone']", "fields = ['unknown']");
+        let result = analyze_phase03(&[module("forms.py", "forms", &unresolved)], &[]);
+        assert!(result.issues.iter().any(|issue| {
+            issue.kind == "unresolved_registration"
+                && issue.message.contains("Django form validation")
         }));
     }
 
