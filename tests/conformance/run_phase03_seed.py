@@ -21,7 +21,7 @@ from phase03_dependencies import (
     UNUSED_DEPENDENCY_SOURCES,
     unused_dependencies,
 )
-from phase03_engine import ENGINE_CASES, engine_case
+from phase03_engine import ENGINE_CASES, INCLUDE_CASES, INCLUDE_SOURCE, engine_case
 from phase03_framework import framework_report, patch_framework_analysis
 from phase03_fastapi import CASES as FASTAPI_CASES
 from phase03_fastapi import (
@@ -207,7 +207,15 @@ def case_assertion_sources(upstream, cases):
                 tree = ast.parse(path.read_text(encoding="utf-8"))
                 assertions_by_source[source] = {
                     f"{source}:{node.lineno}"
-                    for node in ast.walk(tree) if isinstance(node, ast.Assert)
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Assert) or (
+                        source == INCLUDE_SOURCE and isinstance(node, ast.With)
+                        and any(
+                            isinstance(item.context_expr, ast.Call)
+                            and ast.unparse(item.context_expr.func) == "pytest.raises"
+                            for item in node.items
+                        )
+                    )
                 }
             if assertion not in assertions_by_source[source]:
                 raise ValueError(f"{key}: inventory points outside original assertions")
@@ -368,7 +376,13 @@ def pytest_worker(args):
     _, _, variant, cases = port_cases(args)
     if args.mode == "candidate" and variant["layer"] == "engine":
         env = environment()
-        results = {key: engine_case(args, key, case, env) for key, case in cases.items()}
+        results = {
+            key: engine_case(
+                args, key, case, env,
+                AssertionTrace(args.upstream, {case["source"]}) if key in INCLUDE_CASES else None,
+            )
+            for key, case in cases.items()
+        }
         args.output.write_text(json.dumps(results), encoding="utf-8")
         return int(any(result["status"] != "passed" for result in results.values()))
 
