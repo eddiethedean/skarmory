@@ -230,6 +230,10 @@ impl Graph<'_> {
         let Some(&file) = self.modules.get(module.as_str()) else {
             return Value::Unknown;
         };
+        if namespace.is_none() && self.django_closed_view_option_failure(file) {
+            // include() imports the module before returning its URLConf tuple.
+            return Value::DjangoInvalidRegistration;
+        }
         if self.failed_terminal_modules.contains(&file) {
             return Value::Unknown;
         }
@@ -273,6 +277,82 @@ impl Graph<'_> {
             }
         }
         Value::DjangoInclude(framework_module(file))
+    }
+
+    pub(super) fn record_failed_django_include(&mut self, call: CallArguments<'_>) {
+        if call.scope == self.scopes[call.scope].file
+            && self.branch_depth == 0
+            && let Some([Some(module), None]) =
+                registration_arguments(call.positional, call.keywords, ["arg", "namespace"])
+            && let Value::Text(module) = self.identity(call.scope, module, call.before, 0)
+            && let Some(&file) = self.modules.get(module.as_str())
+            && self.django_closed_view_option_failure(file)
+        {
+            self.scopes[call.scope]
+                .activated_apps
+                .push(django_loaded_module(file));
+        }
+    }
+
+    fn django_closed_view_option_failure(&mut self, file: ScopeId) -> bool {
+        if !self.terminal_proofs
+            || self.is_pytest_file(file)
+            || self.files[file].path.rsplit('/').next() == Some("conftest.py")
+        {
+            return false;
+        }
+        let Some((assignment, prefix)) = self.scopes[file].body.split_last() else {
+            return false;
+        };
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } = &assignment.kind
+        else {
+            return false;
+        };
+        if !matches!(names.as_slice(), [name] if name.text == "urlpatterns")
+            || !prefix
+                .iter()
+                .all(|row| matches!(row.kind, StatementKind::Import(_)))
+        {
+            return false;
+        }
+        let ExpressionKind::Sequence { items, .. } = &value.kind else {
+            return false;
+        };
+        let [
+            Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    },
+                ..
+            },
+        ] = items.as_slice()
+        else {
+            return false;
+        };
+        matches!(arguments.as_slice(), [Expression { kind: ExpressionKind::Text(_), .. }, view]
+            if keywords.is_empty()
+                && matches!(&function.kind, ExpressionKind::Name(_))
+                && matches!(self.probe_identity(file, function, assignment.at), Value::Provider(name)
+                    if matches!(name.as_str(), "django.urls.path" | "django.urls.re_path"))
+                && self.django_view_option_failure(file, view, assignment.at))
+    }
+
+    fn django_view_option_failure(
+        &mut self,
+        file: ScopeId,
+        view: &Expression,
+        before: Location,
+    ) -> bool {
+        matches!(&view.kind, ExpressionKind::Call { function, arguments, keywords }
+            if self.django_view_has_missing_option(file, before, arguments, keywords)
+                && matches!(self.probe_identity(file, function, before), Value::DjangoViewFactory(_)))
     }
 
     fn simple_django_url_module(&mut self, file: usize) -> bool {
@@ -670,25 +750,8 @@ impl Graph<'_> {
                     ["route", "view", "kwargs", "name"],
                 )
                 .and_then(|[_, view, _, _]| view);
-                view.and_then(|view| {
-                    let ExpressionKind::Call {
-                        function,
-                        arguments,
-                        keywords,
-                    } = &view.kind
-                    else {
-                        return None;
-                    };
-                    if !self.django_view_has_missing_option(file, statement.at, arguments, keywords)
-                        || !matches!(
-                            self.probe_identity(file, function, statement.at),
-                            Value::DjangoViewFactory(_)
-                        )
-                    {
-                        return None;
-                    }
-                    Some((view.at, "unresolved_call"))
-                })
+                view.filter(|view| self.django_view_option_failure(file, view, statement.at))
+                    .map(|view| (view.at, "unresolved_call"))
             }
             _ => None,
         };

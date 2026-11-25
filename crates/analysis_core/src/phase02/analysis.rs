@@ -5569,6 +5569,11 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::DjangoViewFactory(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
+                        self.record_failed_django_include(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
                     Value::Provider(name) if self.phase03 && name == "django.core.management.call_command" => {
                         self.register_django_programmatic_command(CallArguments {
                             scope, before, at: expr.at, positional: arguments, keywords,
@@ -14001,6 +14006,49 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
                     .iter()
                     .any(|issue| issue.kind == "unresolved_call")
             );
+        }
+    }
+
+    #[test]
+    fn phase03_django_url_include_preserves_terminal_view_option_failure() {
+        let root = "from django.urls import include, path\nfrom views import view\n\
+                    urlpatterns = [path('valid/', view), path('', include('child_urls'))]\n";
+        for (option, terminal) in [("Missing", true), ("external()", false)] {
+            let mut files = django_url_test_files(root, "");
+            files[2] = module(
+                "child_urls.py",
+                "child_urls",
+                &format!(
+                    "from django.urls import path\nfrom views import Page\nimport included_effect\n\
+                     urlpatterns = [path('page/', Page.as_view(model={option}))]\n"
+                ),
+            );
+            files[3] = module(
+                "views.py",
+                "views",
+                "from django.views.generic import DetailView\nclass Page(DetailView): model = None\ndef view(request): return 1\n",
+            );
+            files.push(module(
+                "included_effect.py",
+                "included_effect",
+                "from django.db.models.signals import post_save\ndef received(sender, **kwargs): pass\npost_save.connect(received)\n",
+            ));
+            for _ in 0..2 {
+                let report = analyze_phase03(&files, &[]);
+                assert_eq!(report.issues.is_empty(), terminal, "{:?}", report.issues);
+                assert_eq!(
+                    report.evidence.iter().any(|edge| {
+                        edge.kind == "django_registration" && edge.full_name == "views.view"
+                    }),
+                    !terminal,
+                );
+                assert!(report.evidence.iter().any(|edge| {
+                    edge.kind == "django_signal"
+                        && edge.certainty == "certain"
+                        && edge.full_name == "included_effect.received"
+                }));
+                files.swap(1, 2);
+            }
         }
     }
 
