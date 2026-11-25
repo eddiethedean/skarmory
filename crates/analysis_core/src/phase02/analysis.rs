@@ -10269,6 +10269,39 @@ class Migration(migrations.Migration):
     }
 
     #[test]
+    fn django_runpython_rebinding_preserves_only_the_original_capture() {
+        for (replacement, complete) in [("replace", true), ("install()", false)] {
+            let source = format!(
+                "from django.db import migrations\n\
+                 def replace(callback): return None\n\
+                 def retained(apps, editor): pass\n\
+                 def retired(apps, editor): pass\n\
+                 captured = migrations.RunPython\n\
+                 migrations.RunPython = {replacement}\n\
+                 old = captured(retained)\n\
+                 new = migrations.RunPython(retired)\n"
+            );
+            let report = analyze_phase03(&[module("migration.py", "migration", &source)], &[]);
+            let retained: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_migration_callback_declaration")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(retained, ["migration.retained"], "{replacement}");
+            assert_eq!(report.issues.is_empty(), complete, "{:?}", report.issues);
+            if !complete {
+                assert!(
+                    report
+                        .issues
+                        .iter()
+                        .any(|issue| issue.kind == "unresolved_attribute_write")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn reports_required_categories_and_retains_rooted_definitions() {
         let files = [
             module(

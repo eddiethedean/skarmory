@@ -329,6 +329,7 @@ impl Graph<'_> {
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
                     || is_django_signal_constructor(&qualified)
+                    || is_django_runpython(&qualified)
                     || qualified == "django.utils.autoreload.run_with_reloader"
                     || member == "connect" && is_django_signal(module)
             }
@@ -693,6 +694,9 @@ fn provider_module(name: &str) -> bool {
             | "django.forms.models"
             | "django.dispatch.dispatcher"
             | "django.db.models.signals"
+            | "django.db.migrations"
+            | "django.db.migrations.operations"
+            | "django.db.migrations.operations.special"
             | "flask"
             | "flask.app"
             | "flask.blueprints"
