@@ -2383,7 +2383,7 @@ impl Graph<'_> {
                             at,
                         },
                     ] = body_without_docstring(definition)
-                    && matches!(expression.kind, ExpressionKind::Sequence(_))
+                    && matches!(expression.kind, ExpressionKind::Sequence { .. })
                     && name != "actions"
                 {
                     self.identity(body, expression, *at, 0)

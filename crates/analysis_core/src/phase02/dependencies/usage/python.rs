@@ -246,7 +246,7 @@ impl<'a> Python<'a> {
     fn configuration(&mut self, value: &Expression, bindings: &Bindings<'_>) {
         match &value.kind {
             Expr::Text(text) => self.module(value.at.line, text, "python_configuration"),
-            Expr::Sequence(values) => {
+            Expr::Sequence { items: values, .. } => {
                 for value in values {
                     self.configuration(value, bindings);
                 }
@@ -256,7 +256,7 @@ impl<'a> Python<'a> {
                     self.configuration(value, bindings);
                 }
             }
-            Expr::Bool(_) | Expr::Scalar | Expr::IdentityDecoratorLambda => {}
+            Expr::Bool(_) | Expr::Scalar(_) | Expr::IdentityDecoratorLambda => {}
             _ if qualified(value, bindings).is_some_and(|name| name.starts_with("os.environ"))
                 && !self.locals.contains("os") => {}
             _ => self.usage.reasons.push(Reason::new(
@@ -393,7 +393,7 @@ impl<'a> Python<'a> {
                     "deferred callable dependency bindings are outside the bounded model",
                 ));
             }
-            Expr::Sequence(values)
+            Expr::Sequence { items: values, .. }
             | Expr::Dictionary(values)
             | Expr::FormattedString(values)
             | Expr::Boolean { values, .. }

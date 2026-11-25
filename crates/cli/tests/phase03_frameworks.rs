@@ -6432,3 +6432,109 @@ fn phase03_preserves_an_importable_package_named_src() {
     assert_eq!(report["unused_functions"], cached["unused_functions"]);
     assert_eq!(report["dead_code_evidence"], cached["dead_code_evidence"]);
 }
+
+#[test]
+fn django_setting_collections_follow_initializer_call_and_reassignment_order() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let package = root.join("service");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        package.join("backends.py"),
+        "class Backend:\n    def get_user(self, user_id): return user(user_id)\n\
+         class Store:\n    def save(self, name, content): return name\n\
+         def user(user_id): return user_id\n",
+    )
+    .unwrap();
+    let settings = package.join("settings.py");
+    let cache = tempfile::tempdir().unwrap();
+    let roots = |report: &Value, name: &str| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == name
+                    && symbol["evidence"].as_array().unwrap().iter().any(|event| {
+                        matches!(
+                            event["kind"].as_str().unwrap(),
+                            "django_auth_backend" | "django_storage_backend"
+                        ) && event["certainty"] == "possible"
+                    })
+            })
+    };
+    for (tail, symbol, active) in [
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             def setup():\n    AUTHENTICATION_BACKENDS.append('service.backends.Backend')\n\
+             AUTHENTICATION_BACKENDS = []\nactivate = setup\nactivate()\n",
+            "service.backends.Backend.get_user",
+            true,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             def setup():\n    AUTHENTICATION_BACKENDS.append('service.backends.Backend')\n\
+             setup()\nAUTHENTICATION_BACKENDS = []\n",
+            "service.backends.Backend.get_user",
+            false,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             def setup(AUTHENTICATION_BACKENDS):\n    AUTHENTICATION_BACKENDS.append('service.backends.Backend')\n\
+             setup([])\n",
+            "service.backends.Backend.get_user",
+            false,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             if enabled:\n    AUTHENTICATION_BACKENDS.insert(0, 'service.backends.Backend')\n",
+            "service.backends.Backend.get_user",
+            true,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = ['service.backends.Backend']\n\
+             AUTHENTICATION_BACKENDS.remove('service.backends.Backend')\n",
+            "service.backends.Backend.get_user",
+            false,
+        ),
+        (
+            "AUTHENTICATION_BACKENDS = []\n\
+             AUTHENTICATION_BACKENDS.clear()\n\
+             AUTHENTICATION_BACKENDS = ('service.backends.Backend',)\n",
+            "service.backends.Backend.get_user",
+            true,
+        ),
+        (
+            "STORAGES = {}\n\
+             def modify():\n    STORAGES.update({'default': {'BACKEND': 'service.backends.Store'}})\n\
+             STORAGES = {}\nmodify()\n",
+            "service.backends.Store.save",
+            true,
+        ),
+    ] {
+        fs::write(
+            &settings,
+            format!("INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n{tail}"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(roots(&report, symbol), active, "{tail}: {report}");
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    for tail in [
+        "AUTHENTICATION_BACKENDS = ('service.backends.Backend',)\nAUTHENTICATION_BACKENDS.clear()\n",
+        "AUTHENTICATION_BACKENDS = ['service.backends.Backend']\nalias = AUTHENTICATION_BACKENDS\nalias.pop()\n",
+    ] {
+        fs::write(
+            &settings,
+            format!("INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n{tail}"),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(!roots(&report, "service.backends.Backend.get_user"));
+    }
+}

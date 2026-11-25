@@ -302,8 +302,10 @@ context processors contribute possible-use evidence. The model follows named
 imports, locally defined class inheritance, and finite setting alternatives.
 A unique conventional settings package with literal application and secret-key
 settings can describe an externally selected configuration. Storage and logging
-entries use their effective dictionary keys, and incomplete configuration
-writes retain their coverage diagnostics.
+entries use their effective dictionary keys. Bounded literal list and
+dictionary edits follow initializer order, including directly called local
+helpers, reassignments, and finite conditional branches. Unresolved mutations
+retain their coverage diagnostics.
 
 Django admin discovery follows installed apps when `django.contrib.admin` or
 `AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules

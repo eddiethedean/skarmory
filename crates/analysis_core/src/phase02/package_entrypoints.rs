@@ -556,11 +556,13 @@ fn setup_expression_is_static(
     match &expression.kind {
         ExpressionKind::Name(_)
         | ExpressionKind::Text(_)
-        | ExpressionKind::Scalar
+        | ExpressionKind::Scalar(_)
         | ExpressionKind::Bool(_) => true,
-        ExpressionKind::Sequence(values) | ExpressionKind::Dictionary(values) => values
-            .iter()
-            .all(|value| setup_expression_is_static(value, bindings)),
+        ExpressionKind::Sequence { items: values, .. } | ExpressionKind::Dictionary(values) => {
+            values
+                .iter()
+                .all(|value| setup_expression_is_static(value, bindings))
+        }
         ExpressionKind::Call {
             function,
             arguments,
@@ -612,7 +614,7 @@ fn setup_value<'a>(
             _ => SetupValue::Unknown,
         },
         ExpressionKind::Text(text) => SetupValue::Text(text, expression.at.line),
-        ExpressionKind::Sequence(values) => SetupValue::Sequence(
+        ExpressionKind::Sequence { items: values, .. } => SetupValue::Sequence(
             values
                 .iter()
                 .map(|value| match setup_value(value, bindings) {

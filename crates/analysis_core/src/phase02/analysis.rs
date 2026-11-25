@@ -2406,7 +2406,7 @@ impl<'a> Graph<'a> {
                                 ExpressionKind::Text(_)
                                 | ExpressionKind::Bool(_)
                                 | ExpressionKind::None
-                                | ExpressionKind::Scalar => true,
+                                | ExpressionKind::Scalar(_) => true,
                                 ExpressionKind::Name(name) => name == &parameter.text,
                                 _ => false,
                             })) =>
@@ -3511,7 +3511,10 @@ impl<'a> Graph<'a> {
                             Value::BuiltinIterable if !has_element_hooks => Value::BuiltinIterable,
                             Value::Sequence(items)
                                 if (!has_element_hooks
-                                    || matches!(argument.kind, ExpressionKind::Sequence(_)))
+                                    || matches!(
+                                        argument.kind,
+                                        ExpressionKind::Sequence { .. }
+                                    ))
                                     && items.iter().all(Value::is_builtin_scalar) =>
                             {
                                 Value::BuiltinIterable
@@ -3791,7 +3794,7 @@ impl<'a> Graph<'a> {
             },
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
-            ExpressionKind::Scalar | ExpressionKind::None => Value::Scalar,
+            ExpressionKind::Scalar(_) | ExpressionKind::None => Value::Scalar,
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
@@ -3809,7 +3812,7 @@ impl<'a> Graph<'a> {
                     Value::OperatorResult
                 }
             }
-            ExpressionKind::Sequence(items) => {
+            ExpressionKind::Sequence { items, .. } => {
                 Value::Sequence(items.iter().map(|expr| recurse(self, expr)).collect())
             }
             ExpressionKind::Dictionary(items) => {
@@ -3819,7 +3822,9 @@ impl<'a> Graph<'a> {
                 let value = recurse(self, value);
                 if self.phase03
                     && is_typing_annotated(&value)
-                    && let ExpressionKind::Sequence(arguments) = &index.kind
+                    && let ExpressionKind::Sequence {
+                        items: arguments, ..
+                    } = &index.kind
                     && let Some((annotation, metadata)) = arguments.split_first()
                 {
                     return self.fastapi_selected_metadata(
@@ -5507,7 +5512,7 @@ impl<'a> Graph<'a> {
                     );
                 }
             }
-            ExpressionKind::Sequence(values)
+            ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => {
@@ -6112,7 +6117,7 @@ impl<'a> Graph<'a> {
         match &expr.kind {
             ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values)
-            | ExpressionKind::Sequence(values) => {
+            | ExpressionKind::Sequence { items: values, .. } => {
                 for reference in values {
                     self.annotation(scope, reference, before, evaluated);
                 }
@@ -6984,7 +6989,7 @@ impl<'a> Graph<'a> {
                         kind: ExpressionKind::None
                             | ExpressionKind::Bool(_)
                             | ExpressionKind::Text(_)
-                            | ExpressionKind::Scalar,
+                            | ExpressionKind::Scalar(_),
                         ..
                     })
                 ),
@@ -7149,7 +7154,7 @@ impl<'a> Graph<'a> {
                 && matches!(
                     definition.body.as_slice(),
                     [Statement { kind: StatementKind::Return(Some(result)), .. }]
-                        if matches!(result.kind, ExpressionKind::Text(_) | ExpressionKind::Scalar | ExpressionKind::Bool(_))
+                        if matches!(result.kind, ExpressionKind::Text(_) | ExpressionKind::Scalar(_) | ExpressionKind::Bool(_))
                 )
         })
     }
@@ -9358,7 +9363,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             ExpressionKind::KeywordMappingCall { function, mapping } => {
                 expressions.extend([function.as_ref(), mapping.as_ref()]);
             }
-            ExpressionKind::Sequence(values)
+            ExpressionKind::Sequence { items: values, .. }
             | ExpressionKind::Dictionary(values)
             | ExpressionKind::FormattedString(values)
             | ExpressionKind::Boolean { values, .. }
@@ -9393,7 +9398,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             ExpressionKind::Text(_)
             | ExpressionKind::IterationVariable(_)
             | ExpressionKind::Bool(_)
-            | ExpressionKind::Scalar
+            | ExpressionKind::Scalar(_)
             | ExpressionKind::None
             | ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda

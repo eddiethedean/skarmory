@@ -194,14 +194,17 @@ pub enum ExpressionKind {
     FormattedString(Vec<Expression>),
     Bool(bool),
     None,
-    Scalar,
+    Scalar(Option<i64>),
     ConstantLambda,
     NullaryConstantLambda,
     IdentityLambda,
     IdentityDecoratorLambda,
     DeferredLambda(Box<Expression>),
     EmptyListComprehension,
-    Sequence(Vec<Expression>),
+    Sequence {
+        items: Vec<Expression>,
+        list: bool,
+    },
     Dictionary(Vec<Expression>),
     Comprehension {
         form: ComprehensionForm,
@@ -1012,11 +1015,13 @@ impl Lowering<'_> {
                 // any subsequent iterator or filter.
                 ExpressionKind::EmptyListComprehension
             }
-            Expr::NumberLiteral(_) | Expr::BytesLiteral(_) | Expr::EllipsisLiteral(_) => {
-                ExpressionKind::Scalar
-            }
-            Expr::Tuple(node) => ExpressionKind::Sequence(self.expressions(&node.elts, next)?),
-            Expr::List(node) => ExpressionKind::Sequence(self.expressions(&node.elts, next)?),
+            Expr::NumberLiteral(node) => ExpressionKind::Scalar(match &node.value {
+                ruff_python_ast::Number::Int(value) => value.as_u64().and_then(|v| i64::try_from(v).ok()),
+                _ => None,
+            }),
+            Expr::BytesLiteral(_) | Expr::EllipsisLiteral(_) => ExpressionKind::Scalar(None),
+            Expr::Tuple(node) => ExpressionKind::Sequence { items: self.expressions(&node.elts, next)?, list: false },
+            Expr::List(node) => ExpressionKind::Sequence { items: self.expressions(&node.elts, next)?, list: true },
             Expr::Dict(node) if node.items.iter().all(|item| item.key.is_some()) => {
                 let values = node
                     .items

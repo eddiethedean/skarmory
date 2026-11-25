@@ -127,7 +127,7 @@ impl Graph<'_> {
         let iterable = self.comprehension_iterable(evaluation, &iterator.iterable);
         let items = match iterable {
             Value::Sequence(items)
-                if matches!(iterator.iterable.kind, ExpressionKind::Sequence(_)) =>
+                if matches!(iterator.iterable.kind, ExpressionKind::Sequence { .. }) =>
             {
                 items
             }
@@ -183,7 +183,7 @@ impl Graph<'_> {
             let value = value.or_else(|| {
                 match self.identity(evaluation.scope, filter, evaluation.before, 0) {
                     Value::Sequence(items)
-                        if matches!(filter.kind, ExpressionKind::Sequence(_)) =>
+                        if matches!(filter.kind, ExpressionKind::Sequence { .. }) =>
                     {
                         Some(!items.is_empty())
                     }

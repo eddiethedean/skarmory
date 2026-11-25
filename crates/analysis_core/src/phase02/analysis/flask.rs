@@ -470,7 +470,7 @@ impl Graph<'_> {
                 ExpressionKind::Text(_)
                 | ExpressionKind::Bool(_)
                 | ExpressionKind::None
-                | ExpressionKind::Scalar => {}
+                | ExpressionKind::Scalar(_) => {}
                 _ => return false,
             }
         }
