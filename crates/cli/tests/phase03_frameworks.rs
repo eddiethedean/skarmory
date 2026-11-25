@@ -5973,6 +5973,37 @@ else:
 }
 
 #[test]
+fn str_uses_the_instance_string_hook_with_repr_as_a_fallback() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("entry.py"),
+        r#"class Explicit:
+    def __format__(self, specification): return formatted()
+    def __str__(self): return selected()
+    def __repr__(self): return bypassed()
+
+class Fallback:
+    def __repr__(self): return fallback()
+
+def selected(): return 'explicit'
+def fallback(): return 'fallback'
+def formatted(): return 'format'
+def bypassed(): return 'repr'
+
+str(Explicit())
+str(Fallback())
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        unreachable_functions(&report),
+        ["entry.bypassed", "entry.formatted"]
+    );
+}
+
+#[test]
 fn constructor_proves_plain_field_writes_without_bypassing_setattr() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

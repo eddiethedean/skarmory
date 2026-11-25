@@ -4835,26 +4835,28 @@ impl<'a> Graph<'a> {
             .is_some_and(|owner| !self.is_class(owner))
     }
 
-    fn record_formatting(&mut self, scope: ScopeId, value: Value, at: Location) {
+    fn record_formatting(&mut self, scope: ScopeId, value: Value, at: Location, use_format: bool) {
         if value.is_builtin_scalar() {
             return;
         }
         match value {
             Value::Alternatives(values) => {
                 for value in values {
-                    self.record_formatting(scope, value, at);
+                    self.record_formatting(scope, value, at, use_format);
                 }
                 return;
             }
             Value::Instance(class) => {
-                // With an empty format specification, object's default
-                // formatter uses str(value), which can fall back to repr.
-                let hook = [("__format__", 2), ("__str__", 1), ("__repr__", 1)]
-                    .into_iter()
-                    .find_map(|(name, arity)| {
-                        self.class_member_at(class, name, 0, Some((scope, at)))
-                            .map(|value| (value, arity))
-                    });
+                // Object's default formatter uses str(value), which can fall back to repr.
+                let hooks = [("__format__", 2), ("__str__", 1), ("__repr__", 1)];
+                let hook =
+                    hooks[usize::from(!use_format)..]
+                        .iter()
+                        .copied()
+                        .find_map(|(name, arity)| {
+                            self.class_member_at(class, name, 0, Some((scope, at)))
+                                .map(|value| (value, arity))
+                        });
                 match hook {
                     None => return,
                     Some((Value::Callable(invocation), arity))
@@ -4873,15 +4875,15 @@ impl<'a> Graph<'a> {
                     _ => {}
                 }
             }
-            _ if !self.has_format_hooks => return,
+            _ if !use_format || !self.has_format_hooks => return,
             _ => {}
         }
-        self.scope_issue(
-            scope,
-            at,
-            "unresolved_formatting",
-            "formatted string dispatch is outside the bounded model",
-        );
+        let message = if use_format {
+            "formatted string dispatch is outside the bounded model"
+        } else {
+            "str() dispatch is outside the bounded model"
+        };
+        self.scope_issue(scope, at, "unresolved_formatting", message);
     }
 
     fn namespace_is_nonempty(&self, owner: ScopeId, first: [usize; 2]) -> bool {
@@ -5317,6 +5319,14 @@ impl<'a> Graph<'a> {
                             "unresolved_call",
                             format!("{name} can execute code outside the bounded model"),
                         );
+                    }
+                    Value::Provider(name) if self.phase03 && name == "builtins.str" => {
+                        if let [argument] = arguments.as_slice()
+                            && keywords.is_empty()
+                        {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.record_formatting(scope, value, expr.at, false);
+                        }
                     }
                     Value::Provider(name) if name == "builtins.len" => {
                         if let [argument] = arguments.as_slice()
@@ -6077,7 +6087,7 @@ impl<'a> Graph<'a> {
                     self.walk(scope, value, before);
                     if self.phase03 {
                         let formatted = self.identity(scope, value, before, 0);
-                        self.record_formatting(scope, formatted, value.at);
+                        self.record_formatting(scope, formatted, value.at, true);
                     }
                 }
                 if !self.phase03 {
