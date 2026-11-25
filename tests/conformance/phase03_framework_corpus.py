@@ -100,6 +100,15 @@ def framework_cases(manifest):
     }
 
 
+def corpus_assertions(case):
+    return [
+        f"{mode}:{category}:{symbol if isinstance(symbol, str) else json.dumps(symbol, sort_keys=True)}"
+        for mode in ("absent", "present")
+        for category, symbols in case["expect"].get(mode, {}).items()
+        for symbol in symbols
+    ]
+
+
 def score_corpus(corpus_ci, manifest, selected, scan=None):
     if scan is None:
         return corpus_ci.run_manifest(manifest, selected_cases=selected)
