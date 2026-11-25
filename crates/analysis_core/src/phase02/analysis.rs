@@ -2450,6 +2450,23 @@ impl<'a> Graph<'a> {
             Value::CeleryConfig(object) if name == "update" => {
                 Value::Method(object, ObjectKind::CeleryApp, "conf.update".into())
             }
+            Value::Object(site, kind @ (ObjectKind::App | ObjectKind::Router)) if self.phase03 => {
+                match self.fastapi_member_write(site, name, access) {
+                    Some(mutations::MemberWriteValue::Replacement(value)) => value,
+                    Some(mutations::MemberWriteValue::Deleted) | None => {
+                        Value::Method(site, kind, name.into())
+                    }
+                    Some(mutations::MemberWriteValue::Ambiguous) => {
+                        self.scope_issue(
+                            access.0,
+                            access.1,
+                            "unresolved_attribute_write",
+                            "FastAPI registration method depends on an unresolved write",
+                        );
+                        Value::Unknown
+                    }
+                }
+            }
             Value::Object(object, kind) => Value::Method(object, kind, name.into()),
             Value::Executor if name == "submit" => Value::Submit,
             Value::Process(target) if name == "start" => Value::Start(target),

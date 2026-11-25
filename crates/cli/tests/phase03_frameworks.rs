@@ -342,6 +342,38 @@ if os.getenv('USE_HANDLER'):
 }
 
 #[test]
+fn fastapi_registration_tracks_ordered_method_replacement() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import FastAPI
+
+app = FastAPI()
+@app.get('/live')
+def live(): return 1
+
+app.get = lambda path: lambda callback: callback
+@app.get('/dormant')
+def dormant(): return 2
+
+app.add_exception_handler = lambda *args: None
+def unused_handler(request, exc): return 3
+app.add_exception_handler(Exception, unused_handler)
+
+app.middleware = lambda category: lambda callback: callback
+@app.middleware('http')
+def unused_middleware(request, call_next): return 4
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.dormant", "web.unused_handler", "web.unused_middleware"]
+    );
+}
+
+#[test]
 fn fastapi_mounted_asgi_callback_does_not_activate_api_dependencies() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
