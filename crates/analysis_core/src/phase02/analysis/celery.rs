@@ -244,10 +244,54 @@ impl Graph<'_> {
             } => (mapping, module, value),
             _ => return false,
         };
-        let (object, setting) = match self.identity(scope, receiver, at, 0) {
+        let receiver = self.identity(scope, receiver, at, 0);
+        self.record_celery_config_entry(scope, at, receiver, member, value.as_ref())
+    }
+
+    pub(super) fn record_celery_config_key(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        mapping: &Expression,
+        key: &Expression,
+        value: &Option<Expression>,
+    ) -> bool {
+        let Value::CeleryConfig(object) = self.identity(scope, mapping, at, 0) else {
+            return false;
+        };
+        let receiver = Value::CeleryConfig(object);
+        let value = value.as_ref();
+        if let Value::Text(key) = self.identity(scope, key, at, 0) {
+            return self.record_celery_config_entry(scope, at, receiver, &key, value);
+        }
+        // The unknown key can leave both settings unchanged or replace one.
+        self.branch_depth += 1;
+        for name in ["task_routes", "result_backend"] {
+            self.record_celery_config_entry(scope, at, receiver.clone(), name, value);
+        }
+        self.branch_depth -= 1;
+        self.record_celery_route_event(object, scope, at, RouteOperation::OpaqueUpdate);
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_registration",
+            "Celery configuration write has an unresolved key",
+        );
+        true
+    }
+
+    fn record_celery_config_entry(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        receiver: Value,
+        member: &str,
+        value: Option<&Expression>,
+    ) -> bool {
+        let (object, setting) = match receiver {
             Value::CeleryConfig(object) => {
                 if member == "task_routes" {
-                    let routes = value.as_ref().map_or(Value::None, |value| {
+                    let routes = value.map_or(Value::None, |value| {
                         self.celery_route_setting(scope, value, at)
                     });
                     self.record_celery_route_event(
@@ -263,16 +307,15 @@ impl Graph<'_> {
                 (
                     object,
                     (member == "result_backend").then(|| {
-                        value.as_ref().map_or(Setting::Builtin, |value| {
+                        value.map_or(Setting::Builtin, |value| {
                             self.celery_setting(scope, value, at)
                         })
                     }),
                 )
             }
             Value::Object(object, ObjectKind::CeleryApp) if member == "conf" => {
-                let plain_object = value
-                    .as_ref()
-                    .is_some_and(|value| self.celery_plain_object(scope, value, at));
+                let plain_object =
+                    value.is_some_and(|value| self.celery_plain_object(scope, value, at));
                 self.record_celery_route_event(
                     object,
                     scope,

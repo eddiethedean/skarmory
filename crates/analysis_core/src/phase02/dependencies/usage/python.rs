@@ -228,8 +228,16 @@ impl<'a> Python<'a> {
                     mapping: receiver,
                     value,
                     ..
+                }
+                | Stmt::WriteCeleryConfigEntry {
+                    mapping: receiver,
+                    value,
+                    ..
                 } => {
                     self.expression(receiver, &bindings);
+                    if let Stmt::WriteCeleryConfigEntry { key, .. } = &statement.kind {
+                        self.expression(key, &bindings);
+                    }
                     if let Some(value) = value {
                         self.expression(value, &bindings);
                     }

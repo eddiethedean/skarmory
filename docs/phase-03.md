@@ -426,8 +426,9 @@ configuration tracks the effective provider per app and honors the first
 reached backend read. Bounded task routing follows per-app `task_routes`
 settings from constructors and updates. Callable entries and resolved import
 paths retain possible-use evidence and the supported router argument slots.
-Literal routing map keys are task selectors. Opaque changes can leave routing
-coverage incomplete.
+Literal routing map keys are task selectors. A configuration subscript write
+uses the key resolved at that statement. An opaque key leaves both the earlier
+and proposed settings possible and coverage incomplete.
 [Celery task routing](https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-routes)
 
 The profile models SQLAlchemy listeners

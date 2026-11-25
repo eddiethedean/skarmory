@@ -142,6 +142,19 @@ impl Graph<'_> {
             {
                 Some((None, None))
             }
+            StatementKind::WriteCeleryConfigEntry {
+                mapping,
+                value: Some(value),
+                ..
+            } if self.unbound_module_name(scope, value, at)
+                && matches!(
+                    self.probe_identity(scope, mapping, at),
+                    Value::CeleryConfig(_)
+                )
+                && self.closed_celery_config_prefix(scope, statement) =>
+            {
+                Some((None, None))
+            }
             StatementKind::WriteAttribute {
                 receiver,
                 member,
@@ -204,6 +217,34 @@ impl Graph<'_> {
             );
         }
         false
+    }
+
+    fn closed_celery_config_prefix(&mut self, scope: ScopeId, failing: &Statement) -> bool {
+        let body = self.scopes[scope].body;
+        let Some(index) = body.iter().position(|item| std::ptr::eq(item, failing)) else {
+            return false;
+        };
+        body[..index].iter().all(|statement| match &statement.kind {
+            StatementKind::Import(import) => import.level == 0 && import.module == "celery"
+                && !self.modules.contains_key("celery"),
+            StatementKind::Assign {
+                value: Some(Expression {kind: ExpressionKind::Call { function, arguments, keywords }, ..}),
+                annotation: None, ..
+            } => matches!(arguments.as_slice(), [arg] if matches!(arg.kind, ExpressionKind::Text(_)))
+                && keywords.is_empty()
+                && matches!(self.probe_identity(scope, function, statement.at),
+                    Value::Provider(provider) if provider == "celery.Celery"),
+            StatementKind::WriteAttribute { receiver, member, value: Some(value) }
+                if matches!(member.as_str(), "task_routes" | "result_backend") =>
+            {
+                matches!(self.probe_identity(scope, receiver, statement.at), Value::CeleryConfig(_))
+                    && (matches!(&value.kind, ExpressionKind::Text(_) | ExpressionKind::None)
+                        || matches!(&value.kind, ExpressionKind::Sequence { items, .. }
+                            if items.iter().all(|item| matches!(item.kind, ExpressionKind::Text(_)))))
+            }
+            StatementKind::Evaluate(Expression { kind: ExpressionKind::Text(_), .. }) => true,
+            _ => false,
+        })
     }
 
     pub(super) fn collect_celery_routes(&mut self) {

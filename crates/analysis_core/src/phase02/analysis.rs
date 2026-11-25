@@ -6815,6 +6815,27 @@ impl<'a> Graph<'a> {
                         );
                     }
                 }
+                StatementKind::WriteCeleryConfigEntry {
+                    mapping,
+                    key,
+                    value,
+                } => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, mapping, at);
+                    self.walk(scope, key, at);
+                    if !self.phase03
+                        || !self.record_celery_config_key(scope, at, mapping, key, value)
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "a computed configuration key requires a resolved Celery settings object",
+                        );
+                    }
+                }
                 StatementKind::Return(value) => {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
@@ -9900,6 +9921,14 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.push(receiver);
                 expressions.extend(value);
             }
+            StatementKind::WriteCeleryConfigEntry {
+                mapping,
+                key,
+                value,
+            } => {
+                expressions.extend([mapping, key]);
+                expressions.extend(value);
+            }
             StatementKind::If {
                 test,
                 body,
@@ -11398,6 +11427,51 @@ server.apply()
                 .iter()
                 .any(|edge| edge.full_name == "routers.route" && edge.certainty == "possible")
         );
+    }
+
+    #[test]
+    fn celery_configuration_subscript_keys_follow_evaluation_order() {
+        let prefix = "from celery import Celery\napp = Celery('demo')\napp.conf.task_routes = ('routers.old',)\n";
+        for (tail, roots, complete) in [
+            ("app.conf[unset] = replacement\n", vec![], true),
+            (
+                "key = 'task_routes'\napp.conf[key] = ('routers.new',)\n",
+                vec!["routers.new"],
+                true,
+            ),
+            (
+                "from provider import route_key\napp.conf[route_key] = ('routers.new',)\n",
+                vec!["routers.old", "routers.new"],
+                false,
+            ),
+        ] {
+            let source = format!("{prefix}{tail}");
+            let report = analyze_phase03(
+                &[
+                    module("app.py", "app", &source),
+                    module(
+                        "routers.py",
+                        "routers",
+                        "def old(*args, **kwargs): pass\ndef new(*args, **kwargs): pass\n",
+                    ),
+                ],
+                &[],
+            );
+            assert_eq!(
+                report.issues.is_empty(),
+                complete,
+                "{tail}: {:?}",
+                report.issues
+            );
+            let routed: Vec<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == celery_routes::ROUTER).then_some(row.full_name.as_str())
+                })
+                .collect();
+            assert_eq!(routed, roots, "{tail}");
+        }
     }
 
     #[test]
