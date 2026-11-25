@@ -36,7 +36,7 @@ impl<'a> Graph<'a> {
         };
         let body = body_without_docstring(definition);
         if definition.kind != DefinitionKind::Class
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
             || !definition.decorators.is_empty()
             || body.is_empty()
             || body.len() > MAX_ENUM_MEMBERS

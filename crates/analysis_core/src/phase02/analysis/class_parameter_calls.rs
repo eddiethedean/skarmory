@@ -255,7 +255,7 @@ impl Graph<'_> {
         };
         if definition.kind != DefinitionKind::Class
             || !definition.bases.is_empty()
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
             || !definition.decorators.is_empty()
             || !self.scopes[symbol.scope]
                 .class_bodies

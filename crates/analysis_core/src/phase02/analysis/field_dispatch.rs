@@ -315,7 +315,7 @@ impl Graph<'_> {
         };
         (definition.kind == DefinitionKind::Class
             && definition.bases.is_empty()
-            && definition.table_keyword.is_none()
+            && !definition.has_class_keywords()
             && definition.decorators.is_empty()
             && !self.subclassed.contains(&class))
         .then_some(definition)
@@ -573,7 +573,7 @@ impl Graph<'_> {
         };
         if depth >= MAX_BINDING_CHAIN
             || definition.kind != DefinitionKind::Class
-            || definition.table_keyword.is_some()
+            || definition.has_class_keywords()
             || !definition.decorators.is_empty()
             || !self.class_discovery_writes(class, caller).is_empty()
         {
