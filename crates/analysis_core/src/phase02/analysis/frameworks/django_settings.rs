@@ -166,7 +166,7 @@ impl Graph<'_> {
                 }
                 let value = effective_collections.remove(name).unwrap_or_else(|| {
                     let value = self.binding(binding, END, 0);
-                    self.exact_settings_collection_version(name, binding, value)
+                    self.exact_settings_collection_version(name, binding, Some(END), value)
                 });
                 let mut paths = Vec::new();
                 if name == "LOGGING" && opaque_logging_version(&value) {
@@ -205,6 +205,7 @@ impl Graph<'_> {
         &self,
         name: &str,
         binding: SymbolId,
+        before: Option<Location>,
         mut value: Value,
     ) -> Value {
         if name == "LOGGING"
@@ -216,24 +217,33 @@ impl Graph<'_> {
                 .rev()
                 .find(|[key, _]| matches!(key, Value::Text(key) if key == "version"))
             && matches!(pair[1], Value::Scalar)
-            && let Some(version) = self.literal_logging_version(binding, 0)
+            && let Some(version) = self.literal_logging_version(binding, before, 0)
         {
             pair[1] = Value::Integer(version);
         }
         value
     }
 
-    fn literal_logging_version(&self, binding: SymbolId, depth: usize) -> Option<i64> {
-        if depth >= MAX_BINDING_CHAIN || self.binding_depends_on_branch(binding, END) {
+    fn literal_logging_version(
+        &self,
+        binding: SymbolId,
+        access: Option<Location>,
+        depth: usize,
+    ) -> Option<i64> {
+        if depth >= MAX_BINDING_CHAIN
+            || access.is_some_and(|at| self.binding_depends_on_branch(binding, at))
+        {
             return None;
         }
         let row = &self.symbols[binding];
         match row.binding {
             Binding::Variable(Some(value), before) => match &value.kind {
                 ExpressionKind::Scalar(Some(version)) => Some(*version),
-                ExpressionKind::Name(name) => {
-                    self.literal_logging_version(self.lexical(row.scope, name, before)?, depth + 1)
-                }
+                ExpressionKind::Name(name) => self.literal_logging_version(
+                    self.lexical(row.scope, name, before)?,
+                    Some(before),
+                    depth + 1,
+                ),
                 ExpressionKind::Dictionary(items) => {
                     let [_, version] = items.as_chunks::<2>().0.iter().rev().find(
                         |[key, _]| matches!(&key.kind, ExpressionKind::Text(key) if key == "version"),
@@ -242,6 +252,7 @@ impl Graph<'_> {
                         ExpressionKind::Scalar(Some(version)) => Some(*version),
                         ExpressionKind::Name(name) => self.literal_logging_version(
                             self.lexical(row.scope, name, before)?,
+                            Some(before),
                             depth + 1,
                         ),
                         _ => None,
@@ -271,7 +282,7 @@ impl Graph<'_> {
                 ) else {
                     return None;
                 };
-                self.literal_logging_version(source, depth + 1)
+                self.literal_logging_version(source, Some(before), depth + 1)
             }
             _ => None,
         }
