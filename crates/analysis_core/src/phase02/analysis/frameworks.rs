@@ -311,6 +311,7 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoForm
                 | FrameworkClassRole::DjangoModelForm
                 | FrameworkClassRole::DjangoFormField
+                | FrameworkClassRole::DjangoRelationshipField
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask
@@ -2903,6 +2904,9 @@ impl Graph<'_> {
             return false;
         };
         let slots: &[&str] = match role {
+            FrameworkClassRole::DjangoRelationshipField => {
+                return self.record_django_relationship_field(class, call);
+            }
             FrameworkClassRole::DjangoCommand => {
                 &["stdout", "stderr", "style", "requires_system_checks"]
             }

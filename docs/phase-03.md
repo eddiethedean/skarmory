@@ -297,8 +297,10 @@ directory and an import before any executable initializer work. Consumers of
 the failed module retain incomplete coverage.
 
 Django model relationship field subclasses have no class-creation callback
-for rendering choices. The preview recognizes these declarations and keeps
-constructor or rendering effects outside this declaration proof.
+for rendering choices. A bounded relationship field assignment can construct
+the default lazy choices with `queryset=None` and retain a public form's
+label override as a protocol declaration. Rendering still needs a separate
+execution path.
 [Django relationship fields](https://docs.djangoproject.com/en/5.2/ref/forms/fields/#fields-which-handle-relationships)
 
 FastMCP records possible-use evidence for tool decorators applied through a

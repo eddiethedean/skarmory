@@ -270,6 +270,7 @@ enum FrameworkClassRole {
     DjangoForm,
     DjangoModelForm,
     DjangoFormField,
+    DjangoRelationshipField,
     DjangoSignal,
     DjangoAdmin,
     ClickCommand,
@@ -3039,10 +3040,7 @@ impl<'a> Graph<'a> {
                     }
                 }
                 Value::Provider(base)
-                    if name == "__init_subclass__"
-                        && (builtin_noop_subclass_hook(&base)
-                            || self.phase03
-                                && django_forms::is_relationship_field_class(&base)) =>
+                    if name == "__init_subclass__" && builtin_noop_subclass_hook(&base) =>
                 {
                     None
                 }
@@ -3055,7 +3053,8 @@ impl<'a> Graph<'a> {
                             Some(
                                 FrameworkClassRole::DjangoCommand
                                 | FrameworkClassRole::DjangoManager
-                                | FrameworkClassRole::DjangoQuerySet,
+                                | FrameworkClassRole::DjangoQuerySet
+                                | FrameworkClassRole::DjangoRelationshipField,
                             ),
                             "__new__",
                         ) => None,
@@ -3179,7 +3178,6 @@ impl<'a> Graph<'a> {
                     || self.phase03
                         && (name == "builtins.type"
                             || framework_managed_base(&name)
-                            || django_forms::is_relationship_field_class(&name)
                             || fastapi::is_app_constructor(&name)) =>
             {
                 None
@@ -9281,6 +9279,7 @@ impl<'a> Graph<'a> {
                         | mcp_tools::DECORATOR_APPLICATION
                         | "click_command_declaration"
                         | "celery_task_declaration"
+                        | "django_relationship_field_declaration"
                 ) {
                     continue;
                 }
@@ -10793,6 +10792,9 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.forms.Form" | "django.forms.forms.Form" => Some(FrameworkClassRole::DjangoForm),
         "django.forms.ModelForm" | "django.forms.models.ModelForm" => {
             Some(FrameworkClassRole::DjangoModelForm)
+        }
+        name if django_forms::is_relationship_field_class(name) => {
+            Some(FrameworkClassRole::DjangoRelationshipField)
         }
         name if django_forms::provider_field_role(name).is_some() => {
             django_forms::provider_field_role(name)
@@ -14539,6 +14541,27 @@ class AnotherField(RelatedField): pass\n";
                 .iter()
                 .any(|row| row.full_name == "fields.RelatedField.label_from_instance")
         );
+        let form = format!(
+            "{definition}class Contact(forms.Form):\n    related = RelatedField(queryset=None, required=True)\n"
+        );
+        let installed = analyze_phase03(&[module("fields.py", "fields", &form)], &[]);
+        assert!(installed.issues.is_empty(), "{:?}", installed.issues);
+        assert!(installed.evidence.iter().any(|row| {
+            row.full_name == "fields.RelatedField.label_from_instance"
+                && row.kind == "django_relationship_field_declaration"
+                && row.certainty == "possible"
+        }));
+        let dynamic = form.replace("queryset=None", "queryset=external_query");
+        let dynamic = analyze_phase03(&[module("fields.py", "fields", &dynamic)], &[]);
+        assert!(
+            dynamic
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_constructor"),
+            "{:?}",
+            dynamic.issues
+        );
+
         let constructed = analyze_phase03(
             &[module(
                 "fields.py",
