@@ -1,6 +1,6 @@
 //! Serializable source facts for the bounded Python 3.11 compatibility profile.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ruff_python_ast::{Alias, BoolOp, CmpOp, ElifElseClause, Expr, Mod, Stmt, UnaryOp};
 use ruff_python_ast::{
@@ -172,6 +172,7 @@ pub struct Expression {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ExpressionKind {
     Name(String),
+    IterationVariable(Location),
     Member(Box<Expression>, String),
     Call {
         function: Box<Expression>,
@@ -188,6 +189,11 @@ pub enum ExpressionKind {
     EmptyListComprehension,
     Sequence(Vec<Expression>),
     Dictionary(Vec<Expression>),
+    Comprehension {
+        form: ComprehensionForm,
+        iterators: Vec<ComprehensionIterator>,
+        elements: Vec<Expression>,
+    },
     Subscript {
         value: Box<Expression>,
         index: Box<Expression>,
@@ -220,6 +226,21 @@ pub enum ExpressionKind {
     Await(Box<Expression>),
     Addition(Vec<Expression>),
     Operands(Vec<Expression>),
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum ComprehensionForm {
+    Generator,
+    List,
+    Set,
+    Dictionary,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ComprehensionIterator {
+    pub target: Location,
+    pub iterable: Expression,
+    pub filters: Vec<Expression>,
 }
 
 /// Extract Rust-owned facts and comment locations from the same parsed snapshot.
@@ -272,7 +293,7 @@ pub fn extract(source: &str) -> Result<ModuleFacts, FrontendError> {
         || (syntax.body.len() == 1
             && matches!(&syntax.body[0], Stmt::Expr(node) if node.value.is_string_literal_expr()));
     Ok(ModuleFacts {
-        body: Lowering(&lines, SyntaxScope::ModuleOrClass).suite(&syntax.body, 0)?,
+        body: Lowering(&lines, SyntaxScope::ModuleOrClass, BTreeMap::new()).suite(&syntax.body, 0)?,
         empty,
         inline_ignores,
         postponed_annotations: syntax.body.iter().any(|statement|
@@ -337,7 +358,7 @@ enum SyntaxScope {
     AsyncFunction,
 }
 
-struct Lowering<'a>(&'a Lines, SyntaxScope);
+struct Lowering<'a>(&'a Lines, SyntaxScope, BTreeMap<String, Location>);
 
 struct BodyCoverage<'a> {
     source: &'a Lines,
@@ -606,6 +627,7 @@ impl Lowering<'_> {
                         } else {
                             SyntaxScope::Function
                         },
+                        BTreeMap::new(),
                     )
                     .suite(&node.body, next)?;
                     let mut coverage = BodyCoverage {
@@ -671,7 +693,7 @@ impl Lowering<'_> {
                             }
                         }),
                         is_generator: false,
-                        body: Lowering(self.0, SyntaxScope::ModuleOrClass)
+                        body: Lowering(self.0, SyntaxScope::ModuleOrClass, BTreeMap::new())
                             .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
                         decorators: node
@@ -853,7 +875,10 @@ impl Lowering<'_> {
         let next = depth + 1;
         let lower = |expr: &Expr| self.expression(expr, next);
         let kind = match expression {
-            Expr::Name(node) => ExpressionKind::Name(node.id.to_string()),
+            Expr::Name(node) => self.2.get(node.id.as_str()).map_or_else(
+                || ExpressionKind::Name(node.id.to_string()),
+                |&target| ExpressionKind::IterationVariable(target),
+            ),
             Expr::Attribute(node) => {
                 ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
             }
@@ -934,6 +959,27 @@ impl Lowering<'_> {
                     .flat_map(|item| item.key.iter().chain(std::iter::once(&item.value)));
                 ExpressionKind::Dictionary(values.map(lower).collect::<Result<_, _>>()?)
             }
+            Expr::Generator(node) => self.comprehension(
+                &node.generators,
+                &[&node.elt],
+                ComprehensionForm::Generator,
+                next,
+            )?,
+            Expr::ListComp(node) => self.comprehension(
+                &node.generators,
+                &[&node.elt],
+                ComprehensionForm::List,
+                next,
+            )?,
+            Expr::SetComp(node) => {
+                self.comprehension(&node.generators, &[&node.elt], ComprehensionForm::Set, next)?
+            }
+            Expr::DictComp(node) if let Some(key) = node.key.as_deref() => self.comprehension(
+                &node.generators,
+                &[key, &node.value],
+                ComprehensionForm::Dictionary,
+                next,
+            )?,
             Expr::Subscript(node) => ExpressionKind::Subscript {
                 value: Box::new(lower(&node.value)?),
                 index: Box::new(lower(&node.slice)?),
@@ -1008,6 +1054,62 @@ impl Lowering<'_> {
         Ok(Expression {
             at: self.0.locate(expression.start()),
             kind,
+        })
+    }
+
+    fn comprehension(
+        &self,
+        generators: &[ruff_python_ast::Comprehension],
+        elements: &[&Expr],
+        form: ComprehensionForm,
+        depth: usize,
+    ) -> Result<ExpressionKind, FrontendError> {
+        let mut local_targets = BTreeMap::new();
+        let mut targets = Vec::new();
+        for (index, generator) in generators.iter().enumerate() {
+            let depth = depth + index;
+            self.check(generator, depth)?;
+            let Expr::Name(target) = &generator.target else {
+                return Err(self.0.unsupported(
+                    generator,
+                    "comprehension iterator target is not a simple name",
+                ));
+            };
+            if generator.is_async {
+                return Err(self.0.unsupported(
+                    generator,
+                    "asynchronous comprehension is outside the compatibility subset",
+                ));
+            }
+            let target = *local_targets
+                .entry(target.id.to_string())
+                .or_insert_with(|| self.0.locate(target.start()));
+            targets.push(target);
+        }
+        let mut child = Self(self.0, self.1, self.2.clone());
+        child.2.extend(local_targets);
+        let iterators = generators
+            .iter()
+            .zip(targets)
+            .enumerate()
+            .map(|(index, (generator, target))| {
+                let depth = depth + index;
+                // Only the first iterable is evaluated in the enclosing scope.
+                let enclosing = if index == 0 { self } else { &child };
+                Ok(ComprehensionIterator {
+                    target,
+                    iterable: enclosing.expression(&generator.iter, depth)?,
+                    filters: child.expressions(&generator.ifs, depth)?,
+                })
+            })
+            .collect::<Result<_, FrontendError>>()?;
+        Ok(ExpressionKind::Comprehension {
+            form,
+            iterators,
+            elements: elements
+                .iter()
+                .map(|element| child.expression(element, depth + generators.len()))
+                .collect::<Result<_, _>>()?,
         })
     }
 }

@@ -7,7 +7,8 @@ use std::ops::RangeInclusive;
 
 use skarmory_python::Location;
 use skarmory_python::phase02::{
-    Definition, DefinitionKind, Expression, ExpressionKind, Import, Name, Statement, StatementKind,
+    ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, Expression,
+    ExpressionKind, Import, Name, Statement, StatementKind,
 };
 
 use super::config::Entrypoint;
@@ -17,6 +18,7 @@ use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
 mod celery;
+mod comprehension;
 mod fastapi;
 mod flask;
 mod frameworks;
@@ -64,6 +66,8 @@ enum Value {
     PydanticDump(SymbolId),
     CeleryConfig(Object),
     CeleryBackend(Object),
+    DeferredComprehension,
+    ComprehensionResult,
     Executor,
     Submit,
     Process(Box<Value>),
@@ -473,6 +477,8 @@ pub(super) fn analyze_with_verification(
         has_hash_hooks: false,
         has_bool_hooks: false,
         has_length_hooks: false,
+        has_iteration_hooks: false,
+        iteration_locals: Vec::new(),
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
         phase03,
@@ -529,6 +535,7 @@ pub(super) fn analyze_with_verification(
                 "__hash__" => graph.has_hash_hooks = true,
                 "__bool__" => graph.has_bool_hooks = true,
                 "__len__" => graph.has_length_hooks = true,
+                "__iter__" | "__next__" | "__getitem__" => graph.has_iteration_hooks = true,
                 _ => {}
             }
         }
@@ -635,6 +642,8 @@ struct Graph<'a> {
     has_hash_hooks: bool,
     has_bool_hooks: bool,
     has_length_hooks: bool,
+    has_iteration_hooks: bool,
+    iteration_locals: Vec<([usize; 2], Value)>,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
     phase03: bool,
@@ -2817,6 +2826,7 @@ impl<'a> Graph<'a> {
             && matches!(
                 expression.kind,
                 ExpressionKind::Await(_)
+                    | ExpressionKind::Comprehension { .. }
                     | ExpressionKind::OrderingComparison { .. }
                     | ExpressionKind::Addition(_)
                     | ExpressionKind::Operands(_)
@@ -2834,6 +2844,30 @@ impl<'a> Graph<'a> {
             this.expression_value(scope, expression, before, depth + 1, evaluation)
         };
         match &expression.kind {
+            ExpressionKind::IterationVariable(binding) => {
+                let binding = position(*binding);
+                if let Some((_, value)) = self
+                    .iteration_locals
+                    .iter()
+                    .rev()
+                    .find(|(target, _)| *target == binding)
+                {
+                    value.clone()
+                } else {
+                    self.scope_issue(
+                        scope,
+                        expression.at,
+                        "unbound_local",
+                        "comprehension variable has not been bound by its iterator",
+                    );
+                    Value::Unknown
+                }
+            }
+            ExpressionKind::Comprehension {
+                form: ComprehensionForm::Generator,
+                ..
+            } => Value::DeferredComprehension,
+            ExpressionKind::Comprehension { .. } => Value::ComprehensionResult,
             ExpressionKind::Name(name) => {
                 let lazy = matches!(evaluation, ValueEvaluation::Lazy { .. });
                 let binding = self.lexical_binding(
@@ -3757,6 +3791,10 @@ impl<'a> Graph<'a> {
                 );
                 return;
             }
+            Value::DeferredComprehension | Value::ComprehensionResult => {
+                self.unresolved_comprehension_use(scope, at, &value);
+                return;
+            }
             Value::LocalNamespace(..) | Value::NamespaceCopy(_) => {
                 let row = &mut self.scopes[scope];
                 row.namespace_escape_exclusions
@@ -4190,6 +4228,14 @@ impl<'a> Graph<'a> {
                     .chain(keywords.iter().map(|(_, value)| value))
                 {
                     self.walk(scope, expr, before);
+                    if let ExpressionKind::Comprehension { form, .. } = expr.kind {
+                        let value = if matches!(form, ComprehensionForm::Generator) {
+                            Value::DeferredComprehension
+                        } else {
+                            Value::ComprehensionResult
+                        };
+                        self.unresolved_comprehension_use(scope, expr.at, &value);
+                    }
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
                 match callee {
@@ -4323,6 +4369,16 @@ impl<'a> Graph<'a> {
                             "scheduled_coroutine",
                             expr.at,
                         );
+                    }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "types.SimpleNamespace"
+                            && arguments.is_empty() =>
+                    {
+                        for (_, argument) in keywords {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.expose(scope, value, "passed_callable", argument.at);
+                        }
                     }
                     Value::Provider(name)
                         if self.phase03
@@ -4947,6 +5003,13 @@ impl<'a> Graph<'a> {
                     self.walk(scope, item, before);
                 }
             }
+            ExpressionKind::Comprehension {
+                form,
+                iterators,
+                elements,
+            } => {
+                self.walk_comprehension(scope, before, expr.at, *form, iterators, elements);
+            }
             ExpressionKind::Subscript { value, index } => {
                 self.walk(scope, value, before);
                 self.walk(scope, index, before);
@@ -5011,8 +5074,9 @@ impl<'a> Graph<'a> {
                     }
                 }
             }
-            ExpressionKind::Name(_) => {
+            ExpressionKind::Name(_) | ExpressionKind::IterationVariable(_) => {
                 let value = self.identity(scope, expr, before, 0);
+                self.unresolved_comprehension_use(scope, expr.at, &value);
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::ConstantLambda
@@ -7773,7 +7837,10 @@ impl<'a> Graph<'a> {
                 reach.symbols.insert(edge.target);
                 if matches!(
                     edge.kind,
-                    "type_reference" | "generator_creation" | "sqlalchemy_hybrid_descriptor"
+                    "type_reference"
+                        | "generator_creation"
+                        | "sqlalchemy_hybrid_descriptor"
+                        | "celery_backend_default"
                 ) {
                     continue;
                 }
@@ -8541,6 +8608,17 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::Boolean { values, .. }
             | ExpressionKind::Addition(values)
             | ExpressionKind::Operands(values) => expressions.extend(values),
+            ExpressionKind::Comprehension {
+                iterators,
+                elements,
+                ..
+            } => {
+                expressions.extend(elements);
+                for iterator in iterators {
+                    expressions.push(&iterator.iterable);
+                    expressions.extend(&iterator.filters);
+                }
+            }
             ExpressionKind::Compare { left, right, .. }
             | ExpressionKind::OrderingComparison { left, right } => {
                 expressions.extend([left.as_ref(), right.as_ref()]);
@@ -8557,6 +8635,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 element, container, ..
             } => expressions.extend([element.as_ref(), container.as_ref()]),
             ExpressionKind::Text(_)
+            | ExpressionKind::IterationVariable(_)
             | ExpressionKind::Bool(_)
             | ExpressionKind::Scalar
             | ExpressionKind::None

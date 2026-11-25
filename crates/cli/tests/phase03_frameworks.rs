@@ -1286,6 +1286,132 @@ del other.conf['result_backend']
 }
 
 #[test]
+fn celery_backend_reads_follow_comprehension_execution() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        "class Prior: pass\nclass Current: pass\n",
+    )
+    .unwrap();
+    let path = root.join("jobs.py");
+    let write = |expression| {
+        fs::write(&path, format!(
+            "from celery import Celery\nfrom settings import enabled\nfrom types import SimpleNamespace\napp = Celery('jobs', backend='providers:Prior')\npending = {expression}\napp.conf.result_backend = 'providers:Current'\n"
+        )).unwrap();
+    };
+    let evidence = |report: &Value, name: &str, kind: &str, certainty: &str| {
+        report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["qualified_name"] == name)
+            .flat_map(|row| row["evidence"].as_array().unwrap())
+            .any(|edge| edge["kind"] == kind && edge["certainty"] == certainty)
+    };
+
+    for (expression, active) in [
+        (
+            "{key: app.backend for key in ['worker'] if not False}",
+            "Prior",
+        ),
+        ("(key for key in [app.backend])", "Prior"),
+        ("(app.backend for key in ['worker'])", "Current"),
+        ("[app.backend for key in [1] if []]", "Current"),
+        (
+            "[key for app in [SimpleNamespace(backend=1)] for key in [app.backend]]",
+            "Current",
+        ),
+    ] {
+        write(expression);
+        let report = scan(root);
+        let inactive = if active == "Prior" {
+            "Current"
+        } else {
+            "Prior"
+        };
+        assert!(
+            evidence(
+                &report,
+                &format!("providers.{active}"),
+                "celery_backend",
+                "certain"
+            ),
+            "{report}"
+        );
+        assert_eq!(
+            findings(&report, "unused_classes"),
+            [format!("providers.{inactive}")]
+        );
+    }
+
+    write("[app.backend for key in [1] if enabled]");
+    let report = scan(root);
+    assert!(
+        evidence(&report, "providers.Prior", "celery_backend", "possible"),
+        "{report}"
+    );
+    assert!(
+        !evidence(&report, "providers.Prior", "celery_backend", "certain"),
+        "{report}"
+    );
+    assert!(
+        evidence(
+            &report,
+            "providers.Current",
+            "celery_backend_default",
+            "certain"
+        ),
+        "{report}"
+    );
+    assert!(
+        evidence(&report, "providers.Current", "celery_backend", "possible"),
+        "{report}"
+    );
+    assert!(
+        !evidence(&report, "providers.Current", "celery_backend", "certain"),
+        "{report}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    write("(app.backend for key in [1])");
+    let mut source = fs::read_to_string(&path).unwrap();
+    source.push_str("list(pending)\n");
+    fs::write(&path, source).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_generator_execution"),
+        "{incomplete}"
+    );
+
+    write("[key for key in [1] if app.backend for app in [SimpleNamespace(backend=1)]]");
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unbound_local"),
+        "{incomplete}"
+    );
+    assert!(!evidence(
+        &incomplete,
+        "providers.Prior",
+        "celery_backend",
+        "certain"
+    ));
+}
+
+#[test]
 fn celery_task_class_needs_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
