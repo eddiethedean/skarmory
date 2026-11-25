@@ -2388,6 +2388,77 @@ register_converter(Lookalike, 'lookalike')
 }
 
 #[test]
+fn django_converter_wrappers_resolve_reached_arguments_only() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("configure.py"),
+        "from django.urls import register_converter\ndef install(converter):\n    register_converter(converter=converter, type_name='custom')\n",
+    )
+    .unwrap();
+    let src = r#"from configure import install
+from external import opaque
+
+class Active:
+    regex = r'[a-z]+'
+    def to_python(self, value):
+        return value.lower()
+    def to_url(self, value):
+        return value
+
+class Inactive:
+    regex = r'[a-z]+'
+    def to_python(self, value):
+        return value
+    def to_url(self, value):
+        return value
+
+def dormant():
+    install(Inactive)
+
+install(Active)
+"#;
+    let source = root.join("routes.py");
+    fs::write(&source, src).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "routes.Inactive.to_python",
+            "routes.Inactive.to_url",
+            "routes.dormant"
+        ]
+    );
+    assert_eq!(
+        findings(&report, "unused_variables"),
+        ["routes.Inactive.regex"]
+    );
+    for _ in 0..2 {
+        let cached = scan_with_settings(root, None, Some(cache.path()));
+        for field in [
+            "coverage",
+            "dead_code_evidence",
+            "unused_functions",
+            "unused_variables",
+        ] {
+            assert_eq!(report[field], cached[field], "{field}");
+        }
+    }
+    fs::write(source, format!("{src}\ninstall(opaque)\n")).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_registration" && issue["path"] == "configure.py"
+            })
+    );
+}
+
+#[test]
 fn django_converter_protocol_requires_a_reached_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

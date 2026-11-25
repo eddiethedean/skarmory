@@ -39,6 +39,7 @@ struct DjangoSignalCallback {
 pub(super) struct DjangoConverter {
     inputs: BTreeMap<SymbolId, Vec<(ScopeId, Option<SymbolId>)>>,
     pub(super) string_calls: Vec<ParameterCall>,
+    wrappers: Vec<DjangoParameterRegistration>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -56,7 +57,7 @@ enum ConverterRegex {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct DjangoAutoreloadWrapper {
+pub(super) struct DjangoParameterRegistration {
     site: ScopeId,
     parameter: SymbolId,
     owner: SymbolId,
@@ -623,37 +624,150 @@ impl Graph<'_> {
         });
     }
 
-    pub(super) fn register_protocol_class(
+    pub(super) fn record_django_converter(&mut self, call: CallArguments<'_>) {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        if let Some([Some(target), Some(_)]) =
+            registration_arguments(positional, keywords, ["converter", "type_name"])
+        {
+            let conditional = self.branch_depth != 0
+                || self.scopes[scope]
+                    .owner
+                    .is_some_and(|owner| self.conditional.contains_key(&owner));
+            let value = self.identity_with_dormant_declarations(scope, target, before, 0);
+            if let Some(class) = self.django_converter_class(&value) {
+                self.register_django_converter(scope, class, at, conditional);
+                return;
+            }
+            if let Some(wrapper) =
+                self.django_parameter_registration(scope, target, before, at, conditional)
+                && self.bounded_framework_function(wrapper.owner)
+            {
+                self.django_converter.wrappers.push(wrapper);
+                return;
+            }
+        }
+        self.scope_issue(
+            scope,
+            at,
+            "unresolved_registration",
+            "Django converter registration requires a resolved class and a converter name",
+        );
+    }
+
+    fn django_converter_class(&self, value: &Value) -> Option<SymbolId> {
+        let Value::Callable(invocation) = value else {
+            return None;
+        };
+        (!invocation.verified && self.is_class(invocation.target)).then_some(invocation.target)
+    }
+
+    fn django_parameter_registration(
+        &self,
+        site: ScopeId,
+        target: &Expression,
+        before: Location,
+        at: Location,
+        conditional: bool,
+    ) -> Option<DjangoParameterRegistration> {
+        let parameter = self.parameter_binding(site, target, before)?;
+        (self.symbols[parameter].scope == site).then_some(())?;
+        let owner = self.scopes[site].owner?;
+        Some(DjangoParameterRegistration {
+            site,
+            parameter,
+            owner,
+            at,
+            conditional,
+        })
+    }
+
+    fn django_converter_wrapper_class(
+        &self,
+        wrapper: DjangoParameterRegistration,
+        call: &DirectArguments,
+    ) -> Option<SymbolId> {
+        call.arguments_bound.then_some(())?;
+        let value = call
+            .values
+            .get(&self.symbols[wrapper.parameter].name.text)?;
+        self.django_converter_class(value)
+    }
+
+    pub(super) fn collect_django_converter_wrappers(&mut self) {
+        for index in 0..self.django_converter.wrappers.len() {
+            let wrapper = self.django_converter.wrappers[index];
+            let registrations: Vec<_> = self
+                .direct_arguments
+                .get(&wrapper.owner)
+                .into_iter()
+                .flatten()
+                .filter_map(|call| {
+                    let class = self.django_converter_wrapper_class(wrapper, call)?;
+                    let conditional = wrapper.conditional
+                        || call.conditional
+                        || self.scopes[call.caller].owner.is_some();
+                    Some((call.caller, class, call.at, conditional))
+                })
+                .collect();
+            for (caller, class, at, conditional) in registrations {
+                // The call-site scope gates the effects even if another
+                // caller makes the wrapper body independently reachable.
+                self.register_django_converter(caller, class, at, conditional);
+            }
+        }
+    }
+
+    pub(super) fn report_django_converter_wrappers(&mut self, reach: &Reachability) {
+        for wrapper in &self.django_converter.wrappers {
+            if !reach.scopes.contains(&wrapper.site) {
+                continue;
+            }
+            let mut callers = self
+                .direct_arguments
+                .get(&wrapper.owner)
+                .into_iter()
+                .flatten()
+                .filter(|call| reach.scopes.contains(&call.caller))
+                .peekable();
+            let independent = reach
+                .evidence
+                .range((wrapper.owner, "", "")..)
+                .take_while(|&&(owner, _, _)| owner == wrapper.owner)
+                .any(|&(_, kind, _)| !matches!(kind, "direct_call" | "type_reference"));
+            if independent
+                || callers.peek().is_none()
+                || !callers.all(|call| {
+                    self.django_converter_wrapper_class(*wrapper, call)
+                        .is_some()
+                })
+            {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_registration",
+                        &self.files[self.scopes[wrapper.site].file].path,
+                        "Django converter wrapper has an unresolved class argument",
+                    )
+                    .at(wrapper.at),
+                );
+            }
+        }
+    }
+
+    fn register_django_converter(
         &mut self,
         scope: ScopeId,
-        value: Value,
-        methods: &[&str],
-        kind: &'static str,
+        class: SymbolId,
         at: Location,
+        conditional: bool,
     ) {
-        let Value::Callable(Invocation { target: class, .. }) = value else {
-            self.scope_issue(
-                scope,
-                at,
-                "unresolved_registration",
-                "framework protocol class identity could not be resolved",
-            );
-            return;
-        };
-        if !self.is_class(class) {
-            self.scope_issue(
-                scope,
-                at,
-                "unresolved_registration",
-                "framework protocol registration did not select a class",
-            );
-            return;
-        }
-        let certainty = if self.branch_depth == 0 {
-            "certain"
-        } else {
-            "possible"
-        };
+        let kind = "django_path_converter";
+        let certainty = if conditional { "possible" } else { "certain" };
         self.edge(scope, class, kind, certainty);
         match self.converter_regex(class) {
             ConverterRegex::Source(target) => {
@@ -673,14 +787,14 @@ impl Graph<'_> {
                 return;
             }
         }
-        for name in methods {
+        for name in ["to_python", "to_url"] {
             match self.class_member_at(class, name, 0, Some((scope, at))) {
                 Some(Value::Callable(invocation))
                     if let Some(descriptor) = self.converter_descriptor(invocation.target) =>
                 {
                     let descriptor_arguments =
                         usize::from(descriptor != ConverterDescriptor::Static);
-                    let input = if *name == "to_python"
+                    let input = if name == "to_python"
                         && let Binding::Definition(definition, body) =
                             self.symbols[invocation.target].binding
                         && definition.simple_positional_parameters
@@ -708,7 +822,7 @@ impl Graph<'_> {
                 Some(Value::ConstantFunction) | None => {}
                 Some(Value::Provider(provider))
                     if provider.rsplit_once('.').is_some_and(|(base, method)| {
-                        is_django_string_converter(base) && method == *name
+                        is_django_string_converter(base) && method == name
                     }) => {}
                 _ => self.scope_issue(
                     scope,
@@ -908,18 +1022,10 @@ impl Graph<'_> {
                 self.invoke(scope, invocation, "django_autoreload", certainty, at);
                 return;
             }
-            if let Some(parameter) = self.parameter_binding(scope, callback, before)
-                && self.symbols[parameter].scope == scope
-                && let Some(owner) = self.scopes[scope].owner
+            if let Some(wrapper) =
+                self.django_parameter_registration(scope, callback, before, at, conditional)
             {
-                self.django_autoreload_wrappers
-                    .push(DjangoAutoreloadWrapper {
-                        site: scope,
-                        parameter,
-                        owner,
-                        at,
-                        conditional,
-                    });
+                self.django_autoreload_wrappers.push(wrapper);
                 return;
             }
         }
@@ -943,7 +1049,7 @@ impl Graph<'_> {
 
     fn django_autoreload_wrapper_targets(
         &mut self,
-        hook: DjangoAutoreloadWrapper,
+        hook: DjangoParameterRegistration,
         reach: &Reachability,
     ) -> (Vec<(Invocation, bool)>, bool) {
         let parameter = &self.symbols[hook.parameter].name.text;

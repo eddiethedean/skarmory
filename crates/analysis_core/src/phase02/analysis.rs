@@ -327,6 +327,7 @@ struct DirectArguments {
     arguments_bound: bool,
 }
 
+#[derive(Clone, Copy)]
 struct CallArguments<'a> {
     scope: ScopeId,
     before: Location,
@@ -558,6 +559,7 @@ pub(super) fn analyze_with_verification(
         graph.suite(scope, body);
     }
     if phase03 {
+        graph.collect_django_converter_wrappers();
         graph.index_fastapi_mounts();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
@@ -664,7 +666,7 @@ struct Graph<'a> {
     flask_context_writes: Option<BTreeSet<String>>,
     django_roots: BTreeSet<Object>,
     django_converter: frameworks::DjangoConverter,
-    django_autoreload_wrappers: Vec<frameworks::DjangoAutoreloadWrapper>,
+    django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
     django_registration_issues: Vec<(Object, Issue)>,
@@ -4864,24 +4866,20 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name)
-                        if self.phase03 && name == "django.urls.register_converter" =>
+                        if self.phase03
+                            && matches!(
+                                name.as_str(),
+                                "django.urls.register_converter"
+                                    | "django.urls.converters.register_converter"
+                            ) =>
                     {
-                        let target = arguments.first().or_else(|| {
-                            keywords
-                                .iter()
-                                .find(|(name, _)| name == "converter")
-                                .map(|(_, value)| value)
-                        });
-                        let value = target.map_or(Value::Unknown, |target| {
-                            self.identity(scope, target, before, 0)
-                        });
-                        self.register_protocol_class(
+                        self.record_django_converter(CallArguments {
                             scope,
-                            value,
-                            &["to_python", "to_url"],
-                            "django_path_converter",
-                            expr.at,
-                        );
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        });
                     }
                     Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => {
                         match self.verification_member(scope, arguments, keywords, before, 0) {
@@ -5187,7 +5185,7 @@ impl<'a> Graph<'a> {
         if !invocation.verified {
             self.direct.insert(id);
         }
-        self.record_direct_arguments(scope, id, before, at, positional, keywords);
+        self.record_direct_arguments(invocation, call, certainty);
         if !matches!(self.symbols[id].binding, Binding::Definition(def, _) if def.kind == DefinitionKind::Coroutine)
         {
             let invocation =
@@ -5217,15 +5215,22 @@ impl<'a> Graph<'a> {
 
     fn record_direct_arguments(
         &mut self,
-        caller: ScopeId,
-        callee: SymbolId,
-        before: Location,
-        at: Location,
-        args: &[Expression],
-        keywords: &[(String, Expression)],
+        invocation: Invocation,
+        call: CallArguments<'_>,
+        certainty: &'static str,
     ) {
+        let callee = invocation.target;
+        let CallArguments {
+            scope: caller,
+            before,
+            at,
+            positional: args,
+            keywords,
+        } = call;
         if let Some(values) = self.call_argument_values(caller, callee, before, args, keywords) {
-            let conditional = self.branch_depth != 0
+            let conditional = invocation.verified
+                || certainty != "certain"
+                || self.branch_depth != 0
                 || self.scopes[caller]
                     .owner
                     .is_some_and(|owner| self.conditional.contains_key(&owner));
@@ -8240,6 +8245,7 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
             self.report_flask_parameter_hooks(&reach);
