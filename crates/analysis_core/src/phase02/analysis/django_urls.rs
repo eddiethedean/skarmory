@@ -546,7 +546,15 @@ impl Graph<'_> {
     }
 
     pub(super) fn index_failed_django_view_initializers(&mut self) {
-        if !self.terminal_proofs {
+        // Django settings can run before the URLconf and install a name in
+        // builtins. Keep ordinary import analysis when the project can reach
+        // that namespace and we cannot prove its ordering here.
+        if !self.terminal_proofs
+            || self.symbols.iter().any(|symbol| {
+                matches!(symbol.binding, Binding::Import(import)
+                    if import.level == 0 && import.module == "builtins")
+            })
+        {
             return;
         }
         for file in 0..self.files.len() {
