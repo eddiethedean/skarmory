@@ -326,6 +326,8 @@ def pytest_worker(args):
                     self.trace_rejections.add(key)
                 if "native-framework-evidence" in case["prerequisites"]:
                     self.framework_evidence.add(key)
+                    if "native-unittest-evidence" in case["prerequisites"]:
+                        self.unittest_evidence.add(key)
                     return json.dumps(framework_report(report))
                 if "native-unittest-evidence" in case["prerequisites"]:
                     from phase03_framework import unittest_report
