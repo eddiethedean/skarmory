@@ -13,6 +13,7 @@ from run_phase03_seed import (
     ROOT,
     AssertionTrace,
     benchmark_assertions,
+    case_assertion_sources,
     check_candidate_wheel,
     environment,
     scan_candidate,
@@ -30,14 +31,15 @@ def original_assertions(stop, value):
 class AssertionTraceTests(unittest.TestCase):
     def test_unreached_and_failed_assertions_earn_no_credit(self):
         start = original_assertions.__code__.co_firstlineno
-        first, last = start + 1, start + 4
+        source = Path(__file__).name
+        first, last = f"{source}:{start + 1}", f"{source}:{start + 4}"
         for stop, value, expected in [
             (True, 1, {first}),
             (False, -1, {first}),
             (False, 1, {first, last}),
         ]:
             with self.subTest(stop=stop, value=value):
-                trace = AssertionTrace(Path(__file__))
+                trace = AssertionTrace(Path(__file__).resolve().parent, [source])
                 previous = sys.gettrace()
                 try:
                     sys.settrace(trace)
@@ -49,6 +51,35 @@ class AssertionTraceTests(unittest.TestCase):
                 finally:
                     sys.settrace(previous)
                 self.assertEqual(trace.completed & {first, last}, expected)
+
+
+    def test_tracks_shared_fixture_assertions(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            helper = root / "fixture.py"
+            helper.write_text(
+                "def prove(value):\n    assert isinstance(value, int)\n    assert value > 0\n",
+                encoding="utf-8",
+            )
+            scope = {}
+            exec(compile(helper.read_bytes(), str(helper), "exec"), scope)
+            cases = {
+                "test_example.py::test_assert": {
+                    "source": "test_example.py",
+                    "assertions": ["fixture.py:2", "fixture.py:3"],
+                },
+            }
+            sources = case_assertion_sources(root, cases)
+            trace = AssertionTrace(root, sources["test_example.py::test_assert"])
+            previous = sys.gettrace()
+            try:
+                sys.settrace(trace)
+                with self.assertRaises(AssertionError):
+                    scope["prove"](-1)
+            finally:
+                sys.settrace(previous)
+            self.assertIn("fixture.py:2", trace.completed)
+            self.assertNotIn("fixture.py:3", trace.completed)
 
 
 class BenchmarkEvidenceTests(unittest.TestCase):

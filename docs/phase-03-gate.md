@@ -4,8 +4,8 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 996 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 810 have port mappings. The reported release
+inventory assigns 1,247 cases to Phase 0.3 and defers six to later language
+milestones. Of the required cases, 888 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -75,15 +75,27 @@ The framework audit now includes the FastAPI dependency-parameter tests and
 all 40 nested-project route variants. Thirty-two route variants have SDK
 ports. The remaining eight lack a resolved router. The audit also records
 eight import-scope cases where a project-local package has no such submodule.
-Those cases still expect a complete report. The direct
-`PythonImportRoots.aliases` test needs a resolution-layer review.
-Outstanding collections include Django URL callbacks and view providers,
-authentication backends, named settings, Python template liveness, model and
-form hooks, and the remaining FastAPI import-scope evidence. Review their assertions and
-backend requirements before concluding the framework inventory.
-The separate Django converter probes for Skylos's private parser and index
-hooks are implementation tests. Their exact call-count checks are outside
-the native report assertions.
+Those cases still expect a complete report. Three additional engine cases
+cover import-root aliases, graph limits, and cycle handling. They need
+ports for the original inputs and assertions.
+
+The reviewed Django collection contains 248 original variants. Its mapped
+SDK cases also verify assertions in the pinned shared fixture helper.
+
+| Django family | Mapped | Blocked |
+| --- | ---: | ---: |
+| URL function callbacks and view providers | 0 | 51 |
+| Authentication backend selection and hooks | 27 | 44 |
+| Named settings imports and overrides | 10 | 18 |
+| Model, command, and form hook provenance | 4 | 43 |
+| Python template liveness | 37 | 12 |
+| Form hook evidence after source edits | 0 | 2 |
+
+The Django hook cache cases require an installed SDK port that
+actually reuses a cache across the original edits. The separate Django
+converter probes for Skylos's private parser and index hooks exercise
+implementation call counts outside the native report contract. The broader
+framework inventory remains under review.
 
 The SDK shard also executes the pinned basic dead-code benchmark with
 the original scorer and staged fixtures. Both score reports are included in
