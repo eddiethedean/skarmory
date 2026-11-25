@@ -4569,6 +4569,17 @@ impl<'a> Graph<'a> {
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
             Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
+            Value::Provider(provider)
+                if self.phase03 && wagtail::is_snippet_base_provider(&provider) =>
+            {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_attribute_write",
+                    "Wagtail snippet base escapes to an unmodeled consumer",
+                );
+                return;
+            }
             Value::Sequence(values) | Value::Mapping(values) | Value::Alternatives(values) => {
                 for value in values {
                     self.expose(scope, value, kind, at);
@@ -11803,6 +11814,28 @@ configure()
                 concat!(
                     "from wagtail.snippets.views.snippets import SnippetViewSet\n",
                     "SnippetViewSet.__init_subclass__ = lambda cls: None\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "def replacement(cls): pass\n",
+                    "def patch(parent):\n",
+                    "    setattr(parent, '__init_subclass__', classmethod(replacement))\n",
+                    "patch(SnippetViewSet)\n",
+                    "class Child(SnippetViewSet): pass\n",
+                ),
+                "unresolved_attribute_write",
+            ),
+            (
+                concat!(
+                    "from wagtail.snippets.views.snippets import SnippetViewSet\n",
+                    "def replacement(cls): pass\n",
+                    "def patch(parent=SnippetViewSet):\n",
+                    "    setattr(parent, '__init_subclass__', classmethod(replacement))\n",
+                    "patch()\n",
                     "class Child(SnippetViewSet): pass\n",
                 ),
                 "unresolved_attribute_write",

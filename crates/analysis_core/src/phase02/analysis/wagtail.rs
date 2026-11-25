@@ -90,12 +90,13 @@ impl Graph<'_> {
         before: Location,
     ) -> bool {
         matches!(self.probe_identity(scope, receiver, before), Value::Provider(provider)
-            if matches!(provider.as_str(),
-                SNIPPET_VIEWSET
-                    | "wagtail.admin.viewsets.model.ModelViewSet"
-                    | "wagtail.admin.viewsets.base.ViewSet"
-                    | "wagtail.admin.menu.WagtailMenuRegisterable"
-                    | "wagtail.snippets.views.snippets"))
+            if is_snippet_base_provider(&provider))
+            || self
+                .parameter_binding(scope, receiver, before)
+                .and_then(|parameter| self.namespace_parameter_default(parameter))
+                .is_some_and(|value| {
+                    matches!(value, Value::Provider(provider) if is_snippet_base_provider(&provider))
+                })
     }
 
     fn wagtail_declaration(&mut self, class: SymbolId) -> Option<(Declaration, ScopeId)> {
@@ -475,6 +476,17 @@ impl Graph<'_> {
             _ => false,
         }
     }
+}
+
+pub(super) fn is_snippet_base_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        SNIPPET_VIEWSET
+            | "wagtail.admin.viewsets.model.ModelViewSet"
+            | "wagtail.admin.viewsets.base.ViewSet"
+            | "wagtail.admin.menu.WagtailMenuRegisterable"
+            | "wagtail.snippets.views.snippets"
+    )
 }
 
 fn is_snippet_literal(value: &Expression) -> bool {
