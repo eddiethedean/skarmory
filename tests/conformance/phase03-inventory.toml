@@ -3207,9 +3207,8 @@ assertions = ["test/test_web_framework_liveness.py:197", "test/test_web_framewor
 prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
 provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_web_framework_liveness.py::test_settings_and_wsgi_names_do_not_establish_framework_provenance[from local_framework import get_wsgi_application\\napplication = get_wsgi_application()]"
@@ -3232,9 +3231,8 @@ assertions = ["test/test_web_framework_liveness.py:197", "test/test_web_framewor
 prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
 provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_web_framework_liveness.py::test_settings_and_wsgi_names_do_not_establish_framework_provenance[import django\\ndjango = replacement\\ndjango.setup()\\napplication = factory()]"
@@ -3245,9 +3243,8 @@ assertions = ["test/test_web_framework_liveness.py:197", "test/test_web_framewor
 prerequisites = ["installed-sdk", "grep-verification-disabled", "shared-framework-fixture"]
 provenance = "Static framework projects declared by the pinned node and written by test/web_framework_fixtures.py:10-16"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Native scan is incomplete (unresolved_call): call target is outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_web_framework_liveness.py::test_settings_file_lookalike_and_shadowed_django_module"
@@ -7148,7 +7145,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original plugin module is absent; the callback and helper retain possible-use evidence with incomplete coverage (#43)"
+blocker = "The fixture leaves the plugin module unspecified. The callback and helper retain possible-use evidence with incomplete coverage (#43)"
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_actual_constructor_callbacks_and_required_parameters_are_live[exception_handlers]"
@@ -9328,7 +9325,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_blueprint_exports.py::test_unregistered_replaced_or_fake_blueprint_does_not_rescue_hook[options2]"
@@ -9655,7 +9652,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nLoginManager.__new__ = replacement\\nlogin = LoginManager()\\n]"
@@ -9668,7 +9665,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nLoginManager.user_loader = replacement\\nlogin = LoginManager()\\n]"
@@ -9681,7 +9678,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nLoginManager.user_loader.__code__ = replacement.__code__\\n]"
@@ -9694,7 +9691,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\ndef replace():\\n    global login\\n    login = replacement\\nreplace()\\n]"
@@ -9707,7 +9704,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\ndef replace():\\n    login.user_loader = replacement\\nopaque(replace)\\n]"
@@ -9720,7 +9717,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'opaque' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'opaque') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nfrom unittest.mock import patch\\npatch('providers.login.user_loader', replacement).start()\\n]"
@@ -9733,7 +9730,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nfrom unittest.mock import patch\\npatch.object(LoginManager, 'user_loader', replacement).start()\\n]"
@@ -9746,7 +9743,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nglobals().update({'login': replacement})\\n]"
@@ -9759,7 +9756,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin = replacement\\n]"
@@ -9772,7 +9769,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin.__class__ = replacement\\n]"
@@ -9785,7 +9782,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin.__dict__['user_loader'] = replacement\\n]"
@@ -9798,7 +9795,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nlogin.user_loader = replacement\\n]"
@@ -9811,7 +9808,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nopaque(LoginManager)\\n]"
@@ -9824,7 +9821,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'opaque' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'opaque') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nopaque(login)\\n]"
@@ -9837,7 +9834,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'opaque' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'opaque') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[from flask_login import LoginManager\\nlogin = LoginManager()\\nsetattr(login, 'user_loader', replacement)\\n]"
@@ -9850,7 +9847,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks[import flask_login\\nflask_login.LoginManager = replacement\\nlogin = flask_login.LoginManager()\\n]"
@@ -9863,7 +9860,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_mutated_or_escaped_factory_objects_do_not_prove_shell_hooks[alias = app; alias.shell_context_processor = replacement]"
@@ -9972,7 +9969,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'decorator' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'decorator') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks[from flask import Flask\\nasync def create_app():\\n    app = Flask(__name__)\\n    return app\\n]"
@@ -9997,7 +9994,7 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original consuming initializer fails with NameError before publishing a callback (name 'replacement' is not defined) (#43)"
+blocker = "The original consuming initializer fails with NameError before publishing a callback (unbound name 'replacement') (#43)"
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks[from flask import Flask\\ndef create_app():\\n    app = Flask(__name__)\\n    yield 1\\n    return app\\n]"
@@ -12212,7 +12209,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
+blocker = "The selected service fails to import other. Adding the sibling worker root exposes router=None and fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-requirements_service_package]"
@@ -12261,7 +12258,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root. The tool-only manifest leaves the source root unspecified (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-0-uv_member_included]"
@@ -12334,7 +12331,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
+blocker = "The selected service fails to import other. Adding the sibling worker root exposes router=None and fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-requirements_service_package]"
@@ -12383,7 +12380,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root. The tool-only manifest leaves the source root unspecified (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[False-80-uv_member_included]"
@@ -12456,7 +12453,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
+blocker = "The selected service fails to import other. Adding the sibling worker root exposes router=None and fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-requirements_service_package]"
@@ -12505,7 +12502,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root. The tool-only manifest leaves the source root unspecified (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-0-uv_member_included]"
@@ -12578,7 +12575,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The selected service fails to import other; adding the sibling worker root exposes router=None and still fails at inclusion (#43)"
+blocker = "The selected service fails to import other. Adding the sibling worker root exposes router=None and fails at inclusion (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-requirements_service_package]"
@@ -12627,7 +12624,7 @@ provenance = "Unmodified Python project fixture constructed by the pinned test i
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The route serves with backend on sys.path and fails to import from the repository root; the tool-only manifest does not select a source root (#43)"
+blocker = "The route serves with backend on sys.path and fails to import from the repository root. The tool-only manifest leaves the source root unspecified (#43)"
 
 [[cases]]
 id = "test/test_fastapi_nested_projects.py::test_nested_project_routes_follow_their_own_imports[True-80-uv_member_included]"
@@ -13168,7 +13165,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Django supports the mounted async function view and can dispatch its provider; the original test expects dormant evidence (#43)"
+blocker = "Django can dispatch the mounted async function view and its provider. The original test expects dormant evidence (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[async_view-80]"
@@ -13181,7 +13178,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Django supports the mounted async function view and can dispatch its provider; the original test expects dormant evidence (#43)"
+blocker = "Django can dispatch the mounted async function view and its provider. The original test expects dormant evidence (#43)"
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[generator_view-0]"
@@ -15836,7 +15833,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The scan finds both empty files. From the repository root Python can import external django.apps; prepending src selects the inert local django package. The fixture selects neither import path (#43)"
+blocker = "The scan finds both empty files. Python can import external django.apps from the repository root. Prepending src selects the inert local django package. The fixture leaves the import path unspecified (#43)"
 
 [[cases]]
 id = "test/test_django_admin_stubs.py::test_admin_stub_requires_django_package_context[standalone-admin-file]"
@@ -15873,7 +15870,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The exact called fixture runs under CPython; scanner still needs class-valued parameter dispatch, proven text split and enum lookup, and returned-instance flow into str (#43)"
+blocker = "The exact called fixture runs under CPython. The analyzer resolves the first discarded callback. The nested calls still need invocation-specific literal argument, enum lookup, and return-value flow (#43)"
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_04_uncalled_register_converter_wrapper_is_unused"
@@ -15947,7 +15944,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original import calls only NcaaProvider.schedule_dates; the asserted NjcaaProvider method remains a declaration, and native instance-result dispatch is unresolved (#43)"
+blocker = "The original import calls only NcaaProvider.schedule_dates. The asserted NjcaaProvider method remains a declaration, and native instance-result dispatch is unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_18_satellite_logging_factories_are_live"
@@ -16433,7 +16430,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original import calls ConcreteProvider.scoreboard; schedule_dates is declared but never invoked, and native parameter receiver dispatch is unresolved (#43)"
+blocker = "The original import calls ConcreteProvider.scoreboard. The asserted schedule_dates method remains a declaration. Native parameter receiver dispatch is unresolved (#43)"
 
 [[cases]]
 id = "test/test_django_historical_consumer_controls.py::test_original_importlib_processor_contract_remains_live"
@@ -16446,7 +16443,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The source declares a registry and named loader without calling it; no source selects the processor (#43)"
+blocker = "The registry and named loader remain dormant. Every source path leaves the processor unselected (#43)"
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_django_framework_names_are_live_and_real_dead_code_remains"
@@ -16459,7 +16456,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The original selected settings imports with DEV=False and publishes neither SESSION_COOKIE_SECURE nor DEBUG_TOOLBAR_CONFIG; project star imports also remain outside the bounded model (#43)"
+blocker = "The original settings imports with DEV=False, leaving SESSION_COOKIE_SECURE and DEBUG_TOOLBAR_CONFIG unbound. Project star imports remain outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_migration_class_needs_the_migration_base"
@@ -16484,7 +16481,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The method field retains the inherited getter with complete analysis. The dormant Plain class is reported as a whole; the original expects its method as an independent finding (#43)"
+blocker = "The method field retains the inherited getter with complete analysis. The report identifies the entire dormant Plain class. The original expects its method as an independent finding (#43)"
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_settings_module_found_without_a_launcher"
@@ -16497,7 +16494,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "The fixture supplies no DJANGO_SETTINGS_MODULE value to select one of its two settings modules; project star imports are also outside the bounded model (#43)"
+blocker = "The fixture leaves DJANGO_SETTINGS_MODULE unspecified. Project star imports remain outside the bounded model (#43)"
 
 [[cases]]
 id = "test/test_django_wagtail_conventions.py::test_django_signatures_and_format_files"
@@ -16523,7 +16520,7 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
-blocker = "Native Wagtail model and block declarations resolve; PersonViewSet has no model or register_snippet call to consume the asserted options (#43)"
+blocker = "The analyzer resolves Wagtail model and block declarations. Consuming the PersonViewSet options requires a selected model and registration (#43)"
 
 [[cases]]
 id = "test/test_logging_config_liveness.py::test_class_configuration_and_consistent_module_imports"

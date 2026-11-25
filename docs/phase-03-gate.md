@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,353 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 1,248 have port mappings. The reported release
+milestones. Of the required cases, 1,251 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -21,10 +21,10 @@ each original variant.
 | --- | --- |
 | Flask callback providers and blueprint exports | The original source executions failed before publishing a callback. Twenty fixtures raised `NameError` for an unbound replacement, opaque consumer, or decorator. The remaining two raised `ImportError` during a named re-export cycle or `TypeError` while constructing a local blueprint lookalike. The SDK preserves incomplete coverage for the failed consumer and records no registration. |
 | External decorator in the FastAPI evidence suite | The original project supplies no `plugin` module. A real external decorator may invoke the supplied callback. The SDK retains possible callback and helper evidence and reports the unresolved decorator. |
-| FastAPI nested projects | With FastAPI 0.141.1, the tool-only namespace fixture fails to import from the repository root and serves `/namespace_route` with HTTP 200 when `backend` is on the import path. The fixture does not choose between those paths. The sibling-service fixture fails to import `other` from `backend`; including `worker` on the path finds `router = None` and fails at router inclusion. |
+| FastAPI nested projects | With FastAPI 0.141.1, the tool-only namespace fixture fails to import from the repository root and serves `/namespace_route` with HTTP 200 when `backend` is on the import path. The fixture leaves the source root unspecified. The sibling-service fixture fails to import `other` from `backend`. Including `worker` on the path finds `router = None` and fails at router inclusion. |
 | Django function view negatives | Django supports a mounted async function view and can dispatch its provider. A view module that raises while the selected URLconf imports it cannot supply a callback. An unconditional source-proven failure can completely establish that the callback and later URL mappings are unreachable. |
-| Django source-layout admin stubs | The source-root fixture finds both empty files. Adding `src` to the import path selects the inert local `django` package and fails to import `django.apps`. Resolving from the repository root can select the external package. The fixture does not choose an import path. |
-| Django command, autoreload and hook tests | Standalone command modules do not select installed apps or invoke a command. Command construction does not dispatch `handle`, and form and model construction alone do not dispatch validation, saving, or manager query hooks. Escaped callbacks and classes remain unresolved without the external installer's code. |
+| Django source-layout admin stubs | The source-root fixture finds both empty files. Adding `src` to the import path selects the inert local `django` package and fails to import `django.apps`. Resolving from the repository root can select the external package. The fixture leaves the import path unspecified. |
+| Django command, autoreload and hook tests | The standalone fixtures leave installed apps, command selection, and invocation unspecified. Dispatching `handle`, validation, saving, and queries requires separate lifecycle actions. Escaped callbacks and classes remain unresolved without the external installer's code. |
 | Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. |
 | Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. |
 | FastAPI source-layout corpus case | The unannotated `websocket` argument is treated as a query parameter. The original handler cannot receive a WebSocket object through that argument. |
@@ -32,7 +32,7 @@ each original variant.
 | Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. |
 | DRF method-field finding granularity | The inherited method-field getter has possible declaration evidence. The original expects a separate unused-method finding inside `Plain`. The analyzer reports the entire dormant class. |
 | Wagtail snippet settings | The view-set class supplies neither a model nor a `register_snippet` call. The analyzer records the related model and block declarations separately. |
-| unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. The analyzer does not assign test execution evidence to those declarations. |
+| unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. Those declarations remain dormant in the analyzer. |
 
 [Django async views](https://docs.djangoproject.com/en/5.2/topics/async/#async-views) ·
 [Django command dispatch](https://github.com/django/django/blob/stable/5.2.x/django/core/management/base.py) ·
