@@ -323,8 +323,10 @@ A unique conventional settings package with literal application and secret-key
 settings can describe an externally selected configuration. Storage and logging
 entries use their effective dictionary keys. Bounded literal list and
 dictionary edits follow initializer order, including directly called local
-helpers, reassignments, and finite conditional branches. Unresolved mutations
-retain their coverage diagnostics.
+helpers, reassignments, and finite conditional branches. The authentication
+backend list supports literal augmentation, repetition, and item edits in
+the selected settings module. Source importers of a mutated list and
+unresolved mutations retain their coverage diagnostics.
 
 A supported Django form validation call retains possible `clean` and
 `clean_<field>` callbacks from its effective field table. The preview

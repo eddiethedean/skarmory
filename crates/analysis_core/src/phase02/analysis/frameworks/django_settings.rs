@@ -441,7 +441,17 @@ impl Graph<'_> {
                 Some(_) => return None,
                 None => {}
             }
-            if let Some(binding) = self.local(body, name, END) {
+            // Bare class annotations update __annotations__, leaving any
+            // earlier member or inherited descriptor in place.
+            if let Some(binding) = self.scopes[body]
+                .names
+                .get(name)
+                .into_iter()
+                .flatten()
+                .rev()
+                .copied()
+                .find(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+            {
                 if self.binding_depends_on_branch(binding, END) {
                     return None;
                 }

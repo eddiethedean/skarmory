@@ -98,6 +98,47 @@ impl Collection {
             ),
         }
     }
+
+    fn edit_backend_list(&mut self, edit: &DjangoBackendListEdit) -> Option<()> {
+        let Self::List(items) = self else {
+            return None;
+        };
+        match edit {
+            DjangoBackendListEdit::Extend(value) => {
+                self.apply("extend", std::slice::from_ref(value))
+            }
+            DjangoBackendListEdit::Repeat(times) => {
+                if *times <= 0 || items.is_empty() {
+                    items.clear();
+                    return Some(());
+                }
+                let times = usize::try_from(*times).ok()?;
+                let length = items.len();
+                if length.checked_mul(times)? > MAX_ITEMS {
+                    return None;
+                }
+                for _ in 1..times {
+                    items.extend_from_within(..length);
+                }
+                Some(())
+            }
+            DjangoBackendListEdit::Item { index, value } => {
+                let index = if *index < 0 {
+                    index.checked_add(i64::try_from(items.len()).ok()?)?
+                } else {
+                    *index
+                };
+                let index = usize::try_from(index).ok()?;
+                items.get(index)?;
+                if let Some(value) = value {
+                    items[index] = literal(value)?;
+                } else {
+                    items.remove(index);
+                }
+                Some(())
+            }
+        }
+    }
 }
 
 fn text_dictionary(items: Vec<Value>) -> Option<BTreeMap<String, Value>> {
@@ -212,8 +253,26 @@ impl<'a> Replay<'_, 'a> {
                         && definition.defaults.is_empty() => {}
                 StatementKind::Evaluate(value) if matches!(value.kind, ExpressionKind::Text(_)) => {
                 }
-                StatementKind::Evaluate(value) => {
+                StatementKind::Evaluate(value) | StatementKind::DjangoSettingsGlobalCall(value) => {
                     self.call(scope, value, statement.at, &mut states)?;
+                }
+                StatementKind::EditDjangoBackendList { edit, .. }
+                    if scope == self.module && self.name == "AUTHENTICATION_BACKENDS" =>
+                {
+                    if self
+                        .graph
+                        .scopes
+                        .iter()
+                        .any(|row| row.file != self.module && row.imports.contains(&self.module))
+                    {
+                        // Other consumers would still observe the original
+                        // list identity in the general binding graph.
+                        return None;
+                    }
+                    for state in states.iter_mut().filter(|s| !s.stopped) {
+                        state.module.as_mut()?.edit_backend_list(edit)?;
+                    }
+                    self.mutations.insert((scope, position(statement.at)));
                 }
                 StatementKind::If {
                     test,
@@ -379,10 +438,13 @@ impl Graph<'_> {
         // Preserve diagnostics from arguments and every statement the replay
         // did not establish. These exact calls operate on proven builtins.
         replay.graph.scope_issues.retain(|(scope, issue)| {
-            !matches!(issue.kind, "unresolved_call" | "ambiguous_binding")
-                || !issue.line.zip(issue.column).is_some_and(|(line, column)| {
-                    replay.mutations.contains(&(*scope, [line, column]))
-                })
+            !matches!(
+                issue.kind,
+                "unresolved_call" | "ambiguous_binding" | "unresolved_setting_mutation"
+            ) || !issue
+                .line
+                .zip(issue.column)
+                .is_some_and(|(line, column)| replay.mutations.contains(&(*scope, [line, column])))
         });
         Some(Value::alternatives(
             states

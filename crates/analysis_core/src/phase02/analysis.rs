@@ -9,8 +9,8 @@ use std::path::Path;
 
 use skarmory_python::Location;
 use skarmory_python::phase02::{
-    ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, Expression,
-    ExpressionKind, Import, Name, Statement, StatementKind,
+    ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, DjangoBackendListEdit,
+    Expression, ExpressionKind, Import, Name, Statement, StatementKind,
 };
 
 use super::config::{Entrypoint, FastapiRouterMode};
@@ -6435,6 +6435,30 @@ impl<'a> Graph<'a> {
                 StatementKind::SetGlobalName { value, .. } => {
                     self.record_django_global_write(scope, value, at);
                 }
+                StatementKind::DjangoSettingsGlobalCall(call) => {
+                    if self.phase03 {
+                        self.walk(scope, call, at);
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "global declarations are outside the compatibility subset",
+                        );
+                    }
+                }
+                StatementKind::EditDjangoBackendList { receiver, edit } => {
+                    if let Some(value) = edit.value() {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, receiver, at);
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_setting_mutation",
+                        "Django backend list mutation requires a proven list in the selected settings",
+                    );
+                }
                 StatementKind::DeleteName(name) => {
                     if !self.phase03
                         || scope != self.scopes[scope].file
@@ -9453,6 +9477,10 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 expressions.push(environment);
                 expressions.push(value);
             }
+            StatementKind::EditDjangoBackendList { receiver, edit } => {
+                expressions.push(receiver);
+                expressions.extend(edit.value());
+            }
             StatementKind::LiteralRouteLoop {
                 path, registration, ..
             } => {
@@ -9492,6 +9520,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
+            | StatementKind::DjangoSettingsGlobalCall(value)
             | StatementKind::SetGlobalName { value, .. }
             | StatementKind::DiscardedComprehension(value) => expressions.push(value),
         }
@@ -10193,6 +10222,132 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn django_settings_replays_literal_backend_list_edits_and_global_reads() {
+        let cases = [
+            (
+                r#"AUTHENTICATION_BACKENDS = ['shop.backends.Retired']
+AUTHENTICATION_BACKENDS *= 0
+AUTHENTICATION_BACKENDS += ['shop.backends.Removed', 'shop.backends.Retired']
+del AUTHENTICATION_BACKENDS[0]
+AUTHENTICATION_BACKENDS[-1] = 'shop.backends.Active'
+"#,
+                "shop.backends.Active.get_user",
+                "django_auth_backend",
+            ),
+            (
+                r#"STORAGES = {}
+def configure():
+    global STORAGES
+    STORAGES.update({'default': {'BACKEND': 'shop.backends.Active'}})
+configure()
+"#,
+                "shop.backends.Active.save",
+                "django_storage_backend",
+            ),
+        ];
+        for (configuration, hook, kind) in cases {
+            let settings =
+                format!("INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n{configuration}");
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module("shop/settings.py", "shop.settings", &settings),
+                module(
+                    "shop/backends.py",
+                    "shop.backends",
+                    concat!(
+                        "class Active:\n    def get_user(self, user_id): return user_id\n",
+                        "    def save(self, name, value): return name\n",
+                        "class Removed:\n    def get_user(self, user_id): return None\n",
+                        "class Retired:\n    def get_user(self, user_id): return None\n",
+                    ),
+                ),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            let hooks: Vec<_> = report
+                .evidence
+                .iter()
+                .filter_map(|row| {
+                    (row.kind == kind).then_some((row.full_name.as_str(), row.certainty))
+                })
+                .collect();
+            assert_eq!(hooks, [(hook, "possible")]);
+        }
+    }
+
+    #[test]
+    fn django_auth_backend_bare_annotation_preserves_the_effective_member() {
+        for (body, expected) in [
+            (
+                "    get_user: object\n",
+                Some("shop.backends.Parent.get_user"),
+            ),
+            ("    get_user: object = None\n", None),
+            (
+                "    def get_user(self, key): return key\n    get_user: object\n",
+                Some("shop.backends.Selected.get_user"),
+            ),
+        ] {
+            let backends = format!(
+                "class Parent:\n    def get_user(self, key): return None\nclass Selected(Parent):\n{body}"
+            );
+            let files = [
+                module("shop/__init__.py", "shop", ""),
+                module(
+                    "shop/settings.py",
+                    "shop.settings",
+                    "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nAUTHENTICATION_BACKENDS = ['shop.backends.Selected']\n",
+                ),
+                module("shop/backends.py", "shop.backends", &backends),
+            ];
+            let report = analyze_phase03(&files, &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            let hooks: Vec<_> = report
+                .evidence
+                .iter()
+                .filter(|row| row.kind == "django_auth_backend")
+                .map(|row| row.full_name.as_str())
+                .collect();
+            assert_eq!(hooks, expected.into_iter().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn django_backend_list_edit_keeps_coverage_incomplete_for_source_importers() {
+        let files = [
+            module("shop/__init__.py", "shop", ""),
+            module(
+                "shop/settings.py",
+                "shop.settings",
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nAUTHENTICATION_BACKENDS = []\nAUTHENTICATION_BACKENDS += ['shop.backends.Selected']\n",
+            ),
+            module(
+                "shop/backends.py",
+                "shop.backends",
+                "class Selected:\n    def get_user(self, key): return key\n",
+            ),
+            module(
+                "consumer.py",
+                "consumer",
+                "from shop.settings import AUTHENTICATION_BACKENDS\nif AUTHENTICATION_BACKENDS:\n    selected()\ndef selected(): pass\n",
+            ),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_setting_mutation")
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind == "django_auth_backend")
+        );
     }
 
     #[test]

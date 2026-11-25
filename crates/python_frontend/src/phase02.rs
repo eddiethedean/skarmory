@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ruff_python_ast::{
-    Alias, BoolOp, CmpOp, ElifElseClause, Expr, InterpolatedStringElement, Mod, Stmt, UnaryOp,
+    Alias, BoolOp, CmpOp, ElifElseClause, Expr, InterpolatedStringElement, Mod, Operator, Stmt,
+    UnaryOp,
 };
 use ruff_python_ast::{
     token::TokenKind,
@@ -27,6 +28,45 @@ fn lambda_parameter(lambda: &ruff_python_ast::ExprLambda) -> Option<&str> {
         .default
         .is_none()
         .then(|| parameter.name().as_str())
+}
+
+fn signed_integer(expression: &Expr) -> Option<i64> {
+    let (number, negative) = match expression {
+        Expr::UnaryOp(unary) if matches!(unary.op, UnaryOp::UAdd | UnaryOp::USub) => {
+            (unary.operand.as_ref(), unary.op == UnaryOp::USub)
+        }
+        number => (number, false),
+    };
+    let Expr::NumberLiteral(number) = number else {
+        return None;
+    };
+    let ruff_python_ast::Number::Int(integer) = &number.value else {
+        return None;
+    };
+    let value = i64::try_from(integer.as_u64()?).ok()?;
+    Some(if negative { -value } else { value })
+}
+
+fn backend_list_name(expression: &Expr) -> bool {
+    matches!(expression, Expr::Name(name) if name.id.as_str() == "AUTHENTICATION_BACKENDS")
+}
+
+fn django_settings_global_call<'a>(statement: &'a Stmt, name: &str) -> Option<&'a Expr> {
+    if !matches!(
+        name,
+        "AUTHENTICATION_BACKENDS" | "LOGGING" | "STORAGES" | "TEMPLATES"
+    ) {
+        return None;
+    }
+    let Stmt::Expr(statement) = statement else {
+        return None;
+    };
+    let Expr::Call(call) = statement.value.as_ref() else {
+        return None;
+    };
+    matches!(call.func.as_ref(), Expr::Attribute(member)
+        if matches!(member.value.as_ref(), Expr::Name(receiver) if receiver.id.as_str() == name))
+    .then_some(statement.value.as_ref())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -68,6 +108,11 @@ pub enum StatementKind {
         name: Name,
         value: Expression,
     },
+    DjangoSettingsGlobalCall(Expression),
+    EditDjangoBackendList {
+        receiver: Expression,
+        edit: DjangoBackendListEdit,
+    },
     DiscardedComprehension(Expression),
     DeleteName(Name),
     LiteralRouteLoop {
@@ -98,6 +143,26 @@ pub enum StatementKind {
     Raise(Option<Expression>),
     Assert(Expression),
     Evaluate(Expression),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum DjangoBackendListEdit {
+    Extend(Expression),
+    Repeat(i64),
+    Item {
+        index: i64,
+        value: Option<Expression>,
+    },
+}
+
+impl DjangoBackendListEdit {
+    pub fn value(&self) -> Option<&Expression> {
+        match self {
+            Self::Extend(value) => Some(value),
+            Self::Item { value, .. } => value.as_ref(),
+            Self::Repeat(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -471,6 +536,15 @@ impl Lowering<'_> {
                 value,
             }),
             Expr::Subscript(node) => {
+                if depth == 1
+                    && backend_list_name(&node.value)
+                    && let Some(index) = signed_integer(&node.slice)
+                {
+                    return Ok(StatementKind::EditDjangoBackendList {
+                        receiver: self.expression(&node.value, depth)?,
+                        edit: DjangoBackendListEdit::Item { index, value },
+                    });
+                }
                 let Expr::StringLiteral(module) = node.slice.as_ref() else {
                     return Err(self.0.unsupported(target, "mutation key must be literal"));
                 };
@@ -663,6 +737,21 @@ impl Lowering<'_> {
                                 value: lowering.expression(&assign.value, next + 1)?,
                             },
                         }]
+                    } else if depth == 0
+                        && !is_async
+                        && let [Stmt::Global(declare), statement] = node.body.as_slice()
+                        && let [global] = declare.names.as_slice()
+                        && !parameter_names.contains(global.as_str())
+                        && let Some(call) = django_settings_global_call(statement, global.as_str())
+                    {
+                        // This top-level function only reads the declared
+                        // name. There are no enclosing function locals.
+                        vec![Statement {
+                            at: self.0.locate(call.start()),
+                            kind: StatementKind::DjangoSettingsGlobalCall(
+                                lowering.expression(call, next + 1)?,
+                            ),
+                        }]
                     } else {
                         lowering.suite(&node.body, next)?
                     };
@@ -785,6 +874,28 @@ impl Lowering<'_> {
                     value: node.value.as_deref().map(expression).transpose()?,
                     annotation: Some(self.annotation(&node.annotation, next)?),
                 },
+                Stmt::AugAssign(node) if depth == 0 && backend_list_name(&node.target) => {
+                    let edit = match node.op {
+                        Operator::Add => DjangoBackendListEdit::Extend(expression(&node.value)?),
+                        Operator::Mult => DjangoBackendListEdit::Repeat(
+                            signed_integer(&node.value).ok_or_else(|| {
+                                self.0.unsupported(
+                                    node.value.as_ref(),
+                                    "list repetition requires a literal integer",
+                                )
+                            })?,
+                        ),
+                        _ => {
+                            return Err(self
+                                .0
+                                .unsupported(statement, "unsupported list assignment"));
+                        }
+                    };
+                    StatementKind::EditDjangoBackendList {
+                        receiver: expression(&node.target)?,
+                        edit,
+                    }
+                }
                 Stmt::Delete(node) if node.targets.len() == 1 => match &node.targets[0] {
                     Expr::Name(name) => {
                         StatementKind::DeleteName(self.binding_name(name.id.as_str(), name)?)
