@@ -89,6 +89,7 @@ enum Value {
     Scalar,
     ConstantFunction,
     NullaryConstantFunction,
+    IdentityFunction,
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     MissingFrameworkMember,
@@ -2508,9 +2509,12 @@ impl<'a> Graph<'a> {
             Value::Object(object, ObjectKind::TyperApp) if name == "callback" => {
                 self.typer_callback_member(object, access)
             }
-            Value::Object(object, ObjectKind::FlaskLoginManager) => {
-                self.flask_login_member(object, name, access)
-            }
+            Value::Object(
+                object,
+                kind @ (ObjectKind::FlaskApp
+                | ObjectKind::FlaskBlueprint
+                | ObjectKind::FlaskLoginManager),
+            ) if self.phase03 => self.flask_member(object, kind, name, access),
             Value::Object(object, ObjectKind::CeleryApp) if name == "conf" => {
                 Value::CeleryConfig(object)
             }
@@ -3181,6 +3185,9 @@ impl<'a> Graph<'a> {
                 Value::ConstantFunction => Value::Scalar,
                 Value::NullaryConstantFunction if arguments.is_empty() && keywords.is_empty() => {
                     Value::Scalar
+                }
+                Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {
+                    recurse(self, &arguments[0])
                 }
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
@@ -4452,6 +4459,7 @@ impl<'a> Graph<'a> {
                     Value::DeferredLambda => {
                         self.report_unmodeled_deferred_value(scope, expr.at, &callee)
                     }
+                    Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
                     Value::PydanticDump(class) => self.record_pydantic_dump(
                         class,
                         scope,
@@ -6550,6 +6558,11 @@ impl<'a> Graph<'a> {
                 return true;
             }
             Value::ConstantFunction => {}
+            Value::IdentityFunction
+                if self.phase03 && !matches!(decorator.kind, ExpressionKind::Call { .. }) =>
+            {
+                return true;
+            }
             Value::Provider(name)
                 if matches!(
                     name.as_str(),

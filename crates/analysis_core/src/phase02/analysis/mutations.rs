@@ -9,6 +9,7 @@ enum ReceiverKey {
     Signal(Object),
     FlaskLoginManager(Object),
     TyperApp(Object),
+    FlaskApplication(Object),
     Fastapi(Object),
 }
 
@@ -145,7 +146,10 @@ impl Graph<'_> {
             return;
         }
         let deletes_inherited_method = value.is_none()
-            && matches!(receiver, ReceiverKey::Fastapi(_))
+            && matches!(
+                receiver,
+                ReceiverKey::Fastapi(_) | ReceiverKey::FlaskApplication(_)
+            )
             && !matches!(
                 self.member_write(&receiver, member, (file, at)),
                 Some(MemberWriteValue::Replacement(_))
@@ -153,7 +157,19 @@ impl Graph<'_> {
         let value = if conditional || deletes_inherited_method {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
-            let value = self.probe_identity(file, value, at);
+            let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
+                && matches!(
+                    receiver,
+                    ReceiverKey::FlaskApplication(_)
+                        | ReceiverKey::FlaskLoginManager(_)
+                        | ReceiverKey::Fastapi(_)
+                ) {
+                // A direct write to an instance stores the function without
+                // descriptor binding to the instance on later reads.
+                Value::IdentityFunction
+            } else {
+                self.probe_identity(file, value, at)
+            };
             if value.contains_unknown() {
                 MemberWriteValue::Ambiguous
             } else {
@@ -234,6 +250,14 @@ impl Graph<'_> {
             ReceiverKey::FlaskLoginManager(_) => {
                 flask_login_callback(member) || matches!(member, "__class__" | "login_view")
             }
+            ReceiverKey::FlaskApplication(_) => {
+                matches!(member, "__class__" | "register_blueprint")
+                    || [ObjectKind::FlaskApp, ObjectKind::FlaskBlueprint]
+                        .into_iter()
+                        .any(|kind| {
+                            is_route(kind, member, true) || is_imperative_registration(kind, member)
+                        })
+            }
             ReceiverKey::Fastapi(_) => {
                 is_route(ObjectKind::App, member, true)
                     || is_imperative_registration(ObjectKind::App, member)
@@ -258,6 +282,9 @@ impl Graph<'_> {
             Value::Object(site, ObjectKind::TyperApp) => Some(ReceiverKey::TyperApp(*site)),
             Value::Object(site, ObjectKind::FlaskLoginManager) => {
                 Some(ReceiverKey::FlaskLoginManager(*site))
+            }
+            Value::Object(site, ObjectKind::FlaskApp | ObjectKind::FlaskBlueprint) => {
+                Some(ReceiverKey::FlaskApplication(*site))
             }
             Value::Object(site, ObjectKind::App | ObjectKind::Router) => {
                 Some(ReceiverKey::Fastapi(*site))
@@ -329,22 +356,25 @@ impl Graph<'_> {
         }
     }
 
-    pub(super) fn flask_login_member(
+    pub(super) fn flask_member(
         &self,
         site: Object,
+        kind: ObjectKind,
         name: &str,
         access: (ScopeId, Location),
     ) -> Value {
-        let receiver = ReceiverKey::FlaskLoginManager(site);
+        let receiver = if matches!(kind, ObjectKind::FlaskLoginManager) {
+            ReceiverKey::FlaskLoginManager(site)
+        } else {
+            ReceiverKey::FlaskApplication(site)
+        };
         if self.member_write(&receiver, "__class__", access).is_some() {
             return Value::Unknown;
         }
         match self.member_write(&receiver, name, access) {
             Some(MemberWriteValue::Replacement(value)) => value,
             Some(MemberWriteValue::Ambiguous) => Value::Unknown,
-            Some(MemberWriteValue::Deleted) | None => {
-                Value::Method(site, ObjectKind::FlaskLoginManager, name.into())
-            }
+            Some(MemberWriteValue::Deleted) | None => Value::Method(site, kind, name.into()),
         }
     }
 
@@ -389,6 +419,7 @@ impl Graph<'_> {
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
             ReceiverKey::Signal(site)
             | ReceiverKey::FlaskLoginManager(site)
+            | ReceiverKey::FlaskApplication(site)
             | ReceiverKey::Fastapi(site)
             | ReceiverKey::TyperApp(site) => Some(site.0),
         };

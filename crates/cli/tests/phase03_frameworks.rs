@@ -526,6 +526,77 @@ fn flask_blueprint_child_reads_the_initialized_package_prefix() {
 }
 
 #[test]
+fn flask_registration_observes_ordered_writes_through_instance_aliases() {
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = r#"from flask import Blueprint, Flask
+from flask_login import LoginManager
+
+app = Flask(__name__)
+blueprint = Blueprint('shop', __name__)
+login = LoginManager()
+
+@app.shell_context_processor
+def original(): return {}
+
+app_alias = app
+blueprint_alias = blueprint
+login_alias = login
+app_alias.shell_context_processor = lambda callback: callback
+setattr(blueprint_alias, 'before_app_request', lambda callback: callback)
+login_alias.user_loader = lambda callback: callback
+
+@app.shell_context_processor
+def replaced(): return {}
+
+@blueprint.before_app_request
+def detached(): return None
+
+@login.user_loader
+def detached_login(user_id): return None
+
+app.register_blueprint(blueprint)
+"#;
+    fs::write(&file, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["web.detached", "web.detached_login", "web.replaced"]
+    );
+
+    fs::write(
+        &file,
+        source.replace(
+            "app_alias.shell_context_processor = lambda callback: callback",
+            "app_alias.shell_context_processor = opaque",
+        ),
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_attribute_write" })
+    );
+    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|row| row["qualified_name"] == "web.original")
+    );
+    assert!(!symbols.iter().any(|row| {
+        row["qualified_name"] == "web.replaced"
+            && row["evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["kind"] == "flask_registration")
+    }));
+}
+
+#[test]
 fn fastapi_startup_keeps_callbacks_with_proven_identity_decorators() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
