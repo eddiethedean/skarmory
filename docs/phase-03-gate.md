@@ -5,7 +5,7 @@ dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/co
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
 inventory assigns 1,247 cases to Phase 0.3 and defers six to later language
-milestones. Of the required cases, 895 have port mappings. The reported release
+milestones. Of the required cases, 917 have port mappings. The reported release
 decision requires receipts from the same candidate and complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
@@ -88,13 +88,15 @@ provide no FastAPI version. Qualification needs a reviewed version-specific
 contract. [FastAPI router inclusion release notes](https://fastapi.tiangolo.com/release-notes/#01370-2026-06-14)
 
 The reviewed Django collection contains 248 original variants. Its mapped
-SDK cases also verify assertions in the pinned shared fixture helper.
+SDK cases also verify assertions in the pinned shared fixture helper. The
+configuration replacement suite has eight additional ports exercising
+effective Django setting protocols.
 
 | Django family | Mapped | Blocked |
 | --- | ---: | ---: |
 | URL function callbacks and view providers | 0 | 51 |
-| Authentication backend selection and hooks | 27 | 44 |
-| Named settings imports and overrides | 10 | 18 |
+| Authentication backend selection and hooks | 37 | 34 |
+| Named settings imports and overrides | 14 | 14 |
 | Model, command, and form hook provenance | 4 | 43 |
 | Python template liveness | 37 | 12 |
 | Form hook evidence after source edits | 0 | 2 |
