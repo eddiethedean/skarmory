@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 _ROOT_KINDS = {
     "celery_backend",
+    "celery_backend_default",
     "celery_task",
     "django_admin_registration",
     "django_autoreload",
@@ -131,6 +132,9 @@ def framework_definitions(report):
         for evidence in root_evidence:
             if reason := _CLASS_ROOT_REASONS.get(evidence["native_kind"]):
                 refs[reason] = 1.0
+        for evidence in definition["dead_code_evidence"]:
+            if evidence["native_kind"] == "celery_backend" and evidence["certainty"] == "possible":
+                refs["dead_code_liveness:possible_celery_result_backend"] = 1.0
         definitions[name] = SimpleNamespace(
             **definition,
             simple_name=name.rpartition(".")[2],
