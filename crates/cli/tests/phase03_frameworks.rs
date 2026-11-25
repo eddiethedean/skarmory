@@ -305,11 +305,12 @@ fn fastapi_wildcard_imports_require_known_external_provider_identity() {
              def endpoint(value: Annotated[int, Depends(dependency)]): return 1\n",
         ),
     ] {
-        fs::write(project.path().join("web.py"), source).unwrap();
+        // This source sorts before the local provider in source discovery.
+        fs::write(project.path().join("app.py"), source).unwrap();
         let report = scan(project.path());
         assert!(findings(&report, "unused_imports").is_empty());
-        assert!(!findings(&report, "unused_functions").contains(&"web.dependency"));
-        assert!(!findings(&report, "unused_parameters").contains(&"web.endpoint.value"));
+        assert!(!findings(&report, "unused_functions").contains(&"app.dependency"));
+        assert!(!findings(&report, "unused_parameters").contains(&"app.endpoint.value"));
         let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(report, cached);

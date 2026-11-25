@@ -507,6 +507,8 @@ pub(super) fn analyze_with_verification(
                 "multiple selected files have the same module name",
             );
         }
+    }
+    for (file, source) in files.iter().enumerate() {
         graph.index(file, &source.facts.body);
     }
     for symbol in &graph.symbols {
