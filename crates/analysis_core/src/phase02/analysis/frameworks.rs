@@ -2782,7 +2782,8 @@ impl Graph<'_> {
         {
             return;
         }
-        let callback = callback.map(|callback| self.identity(scope, callback, before, 0));
+        let callback = callback
+            .and_then(|callback| self.resolve_untracked_django_callback(scope, callback, before));
         self.record_django_signal(scope, DjangoReceiver::Certain, callback, at);
     }
 

@@ -4641,6 +4641,8 @@ def select():
             "from external import enabled\nif enabled:\n    callbacks.select()",
         ),
         format!("{source}\nobserved = callbacks.callback\n"),
+        "from . import callbacks\nfrom django.db.models.signals import post_save\ncallbacks.select()\npost_save.connect(callbacks.callback)\n".into(),
+        "from . import callbacks\nfrom django.db.models.signals import post_save\ncallbacks.select()\nfrom .callbacks import callback\npost_save.connect(callback)\n".into(),
     ] {
         fs::write(&signals, unsupported).unwrap();
         let report = scan_with_exit(root, None, Some(cache.path()), 2);

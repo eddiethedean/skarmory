@@ -11,6 +11,7 @@ pub(super) struct Globals {
     events: BTreeMap<ScopeId, Vec<Event>>,
     reads: BTreeSet<(ScopeId, SymbolId, [usize; 2])>,
     registration_reads: BTreeSet<(ScopeId, SymbolId, [usize; 2])>,
+    resolving_callback_read: Option<bool>,
     covered: BTreeSet<(ScopeId, SymbolId)>,
     proved_scopes: BTreeMap<SymbolId, BTreeSet<ScopeId>>,
 }
@@ -166,10 +167,27 @@ impl Graph<'_> {
         at: Location,
     ) {
         if !self.probing_identity && self.django_globals.slots.contains(&slot) {
+            if let Some(observed) = &mut self.django_globals.resolving_callback_read {
+                *observed = true;
+            }
             self.django_globals
                 .reads
                 .insert((scope, slot, position(at)));
         }
+    }
+
+    pub(super) fn resolve_untracked_django_callback(
+        &mut self,
+        scope: ScopeId,
+        argument: &Expression,
+        before: Location,
+    ) -> Option<Value> {
+        let outer = self.django_globals.resolving_callback_read.replace(false);
+        let value = self.identity(scope, argument, before, 0);
+        let observed = std::mem::replace(&mut self.django_globals.resolving_callback_read, outer);
+        // Module attributes and imported aliases can read a tracked slot,
+        // but this lookup cannot prove when they capture its value.
+        (observed == Some(false)).then_some(value)
     }
 
     pub(super) fn record_django_global_connect(
