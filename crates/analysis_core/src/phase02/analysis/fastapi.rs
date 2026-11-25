@@ -30,6 +30,7 @@ struct Event {
     site: Site,
     effects: ScopeId,
     included_router: Option<Object>,
+    conditional_include: bool,
     startup_or_shutdown: bool,
     iterated: bool,
     signature_targets: Vec<SymbolId>,
@@ -49,6 +50,8 @@ enum SignatureSite {
 struct Inclusion {
     cutoff: usize,
     outer_mount: usize,
+    legacy_default_reached: bool,
+    conditional: bool,
 }
 
 #[derive(Default)]
@@ -82,6 +85,49 @@ impl Graph<'_> {
             ),
         }
         self.fastapi.lifespans.insert(object, (site, effects));
+    }
+
+    pub(super) fn fastapi_router_lifecycle(
+        &mut self,
+        object: Object,
+        site: Site,
+        expression: &Expression,
+    ) {
+        if matches!(expression.kind, ExpressionKind::None) {
+            return;
+        }
+        let callbacks = self.identity(site.scope, expression, site.before, 0);
+        if matches!(&callbacks, Value::Sequence(values) if values.is_empty()) {
+            return;
+        }
+        let effects = self.fastapi_effect_scope(site);
+        let mut resolved = false;
+        if let Value::Sequence(callbacks) = callbacks {
+            resolved = true;
+            for callback in callbacks {
+                if let Some(target) = self.fastapi_hook_target(callback) {
+                    let certainty = if self.branch_depth == 0 {
+                        "certain"
+                    } else {
+                        "possible"
+                    };
+                    self.edge(effects, target, "fastapi_lifecycle", certainty);
+                } else {
+                    resolved = false;
+                }
+            }
+        }
+        if !resolved {
+            self.scope_issue(
+                effects,
+                expression.at,
+                "unresolved_registration",
+                "FastAPI router lifecycle callbacks require a bounded sequence",
+            );
+        }
+        let mut event = Event::new(site, effects);
+        event.startup_or_shutdown = true;
+        self.fastapi_event(object, event);
     }
 
     pub(super) fn is_fastapi_lifespan(&mut self, target: SymbolId) -> bool {
@@ -429,6 +475,7 @@ impl Graph<'_> {
         let effects = self.fastapi_effect_scope(site);
         let mut event = Event::new(site, effects);
         event.included_router = Some(child);
+        event.conditional_include = self.branch_depth != 0;
         event.signature_targets = self.fastapi_options(effects, site, keywords);
         self.fastapi_event(parent, event);
     }
@@ -709,6 +756,8 @@ impl Graph<'_> {
                         Inclusion {
                             cutoff: mount,
                             outer_mount: mount,
+                            legacy_default_reached: false,
+                            conditional: false,
                         },
                     ));
                 }
@@ -833,6 +882,11 @@ impl Graph<'_> {
         {
             self.open_fastapi_effects(effects, reach, pending);
         }
+        // include_router copies legacy callbacks and merges the included
+        // lifespan context. A default lifespan on either path runs the list.
+        let legacy_default_reached = !self.fastapi.lifespans.contains_key(&object)
+            || inclusion.is_some_and(|inclusion| inclusion.legacy_default_reached);
+        let conditional = inclusion.is_some_and(|inclusion| inclusion.conditional);
         let mut has_routes = false;
         for &id in self.fastapi.by_object.get(&object).into_iter().flatten() {
             let event = &self.fastapi.events[id];
@@ -845,10 +899,7 @@ impl Graph<'_> {
             {
                 continue;
             }
-            if inclusion.is_none()
-                && event.startup_or_shutdown
-                && self.fastapi.lifespans.contains_key(&object)
-            {
+            if event.startup_or_shutdown && !legacy_default_reached {
                 continue;
             }
             if let Some(inclusion) = inclusion
@@ -870,6 +921,8 @@ impl Graph<'_> {
                     Some(Inclusion {
                         cutoff: id,
                         outer_mount,
+                        legacy_default_reached,
+                        conditional: conditional || event.conditional_include,
                     }),
                     reach,
                     pending,
@@ -878,7 +931,11 @@ impl Graph<'_> {
                 )
             }) {
                 has_routes |= event.carries_routes();
-                self.open_fastapi_effects(event.effects, reach, pending);
+                if event.startup_or_shutdown {
+                    self.open_fastapi_lifecycle_effects(event.effects, conditional, reach, pending);
+                } else {
+                    self.open_fastapi_effects(event.effects, reach, pending);
+                }
                 self.open_fastapi_signature(event, inclusion, reach, pending, snapshots);
             }
         }
@@ -943,6 +1000,26 @@ impl Graph<'_> {
         }
     }
 
+    fn open_fastapi_lifecycle_effects(
+        &self,
+        scope: ScopeId,
+        conditional: bool,
+        reach: &mut Reachability,
+        pending: &mut VecDeque<Edge>,
+    ) {
+        if reach.fastapi_lifecycle_effects.insert((scope, conditional)) {
+            reach.scopes.insert(scope);
+            pending.extend(self.scopes[scope].edges.iter().map(|edge| Edge {
+                certainty: if conditional {
+                    "possible"
+                } else {
+                    edge.certainty
+                },
+                ..*edge
+            }));
+        }
+    }
+
     pub(super) fn report_fastapi_coverage(&mut self, reach: &Reachability) {
         if reach.fastapi_limited {
             self.issues.push(Issue::new(
@@ -978,6 +1055,7 @@ impl Event {
             site,
             effects,
             included_router: None,
+            conditional_include: false,
             startup_or_shutdown: false,
             iterated: false,
             signature_targets: Vec::new(),

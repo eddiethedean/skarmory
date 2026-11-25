@@ -1091,6 +1091,100 @@ def replaced_event(): return 1
 }
 
 #[test]
+fn fastapi_router_constructor_hooks_follow_inclusion_and_merged_lifespans() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    for app_custom in [false, true] {
+        for router_custom in [false, true] {
+            for inclusion in [
+                "",
+                "app.include_router(router)\n",
+                "if os.getenv('MOUNT'):\n    app.include_router(router)\n",
+            ] {
+                let app_lifespan = if app_custom { "custom" } else { "None" };
+                let router_lifespan = if router_custom { "custom" } else { "None" };
+                fs::write(
+                    &file,
+                    format!(
+                        r#"import os
+from contextlib import asynccontextmanager
+from fastapi import APIRouter, FastAPI
+
+def setup(): return 1
+def cleanup(): return 2
+def start(): return setup()
+async def stop(): return cleanup()
+starts = (start,)
+
+@asynccontextmanager
+async def custom(app):
+    yield
+
+router = APIRouter(lifespan={router_lifespan}, on_startup=starts, on_shutdown=[stop])
+app = FastAPI(lifespan={app_lifespan})
+{inclusion}"#
+                    ),
+                )
+                .unwrap();
+                let report = scan(project.path());
+                let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+                cached.as_object_mut().unwrap().remove("cache");
+                assert_eq!(cached, report);
+                let live = !inclusion.is_empty() && !(app_custom && router_custom);
+                let certainty = if inclusion.starts_with("if") {
+                    "possible"
+                } else {
+                    "certain"
+                };
+                for name in ["web.start", "web.stop", "web.setup", "web.cleanup"] {
+                    assert_eq!(
+                        !findings(&report, "unused_functions").contains(&name),
+                        live,
+                        "{name} {report}"
+                    );
+                }
+                for name in ["web.start", "web.stop"] {
+                    let symbols = report["dead_code_evidence"]["symbols"].as_array().unwrap();
+                    let lifecycle = symbols
+                        .iter()
+                        .find(|entry| entry["qualified_name"] == name)
+                        .into_iter()
+                        .flat_map(|entry| entry["evidence"].as_array().unwrap())
+                        .find(|entry| entry["kind"] == "fastapi_lifecycle");
+                    assert_eq!(lifecycle.is_some(), live, "{name} {report}");
+                    if let Some(lifecycle) = lifecycle {
+                        assert_eq!(lifecycle["certainty"], certainty);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fastapi_unresolved_router_constructor_hooks_require_reached_inclusion() {
+    let project = tempfile::tempdir().unwrap();
+    let file = project.path().join("web.py");
+    let source = "from external_config import hooks\n\
+                  from fastapi import APIRouter, FastAPI\n\
+                  router = APIRouter(on_startup=hooks)\n\
+                  app = FastAPI()\n";
+    fs::write(&file, source).unwrap();
+    scan(project.path());
+
+    fs::write(&file, format!("{source}app.include_router(router)\n")).unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| { error["kind"] == "unresolved_registration" && error["line"] == 3 })
+    );
+}
+
+#[test]
 fn fastapi_app_dependencies_need_an_api_route_instead_of_lifecycle_hooks() {
     let project = tempfile::tempdir().unwrap();
     let file = project.path().join("web.py");

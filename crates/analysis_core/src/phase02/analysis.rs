@@ -4847,6 +4847,11 @@ impl<'a> Graph<'a> {
                             }) {
                                 self.fastapi_lifespan(object, site, lifespan);
                             }
+                            for (name, callbacks) in keywords {
+                                if matches!(name.as_str(), "on_startup" | "on_shutdown") {
+                                    self.fastapi_router_lifecycle(object, site, callbacks);
+                                }
+                            }
                             self.fastapi_defaults(object, site, keywords);
                         }
                     }
@@ -8539,6 +8544,7 @@ struct Reachability {
     deferred_method_receivers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     resolved_deferred_receiver_calls: BTreeSet<(usize, SymbolId)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
+    fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
     fastapi_limited: bool,
