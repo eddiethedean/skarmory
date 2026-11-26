@@ -53,6 +53,7 @@ mod sanic;
 mod source_provider_calls;
 mod starlette;
 mod terminal;
+mod traitlets;
 mod wagtail;
 
 pub(super) use django_templates::TemplateProject;
@@ -274,6 +275,7 @@ enum FrameworkClassRole {
     StdlibAstVisitor,
     StdlibAsyncProtocol,
     StdlibCtypesStructure,
+    TraitletsConfigurable,
     Unittest,
     UnittestAsync,
     DjangoTestCase,
@@ -2223,6 +2225,12 @@ impl<'a> Graph<'a> {
                         definition.name.at,
                         depth + 1,
                     ) || self.click_command_replaces_function(
+                        scope,
+                        decorator,
+                        id,
+                        definition.name.at,
+                        depth + 1,
+                    ) || self.traitlets_replaces_function(
                         scope,
                         decorator,
                         id,
@@ -6073,6 +6081,10 @@ impl<'a> Graph<'a> {
                     }
                     Value::Provider(name) if self.phase03 && gin::is_stop_after_attempt(&name)
                         && gin::supported_stop_arguments(arguments, keywords) => {}
+                    Value::Provider(name) if self.phase03 && traitlets::is_text_trait(&name)
+                        && self.traitlets_text_declaration(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        }) => {}
                     Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
                         if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
@@ -7821,6 +7833,10 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && !reads_rebound_global
                     && self.record_gin_decorator(scope, decorator, target, before, &name) => {}
+            Value::Provider(name)
+                if self.phase03
+                    && !reads_rebound_global
+                    && self.record_traitlets_decorator(scope, decorator, target, &name) => {}
             Value::Provider(name)
                 if self.phase03
                     && !reads_rebound_global
@@ -11650,6 +11666,12 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
             Some(FrameworkClassRole::StdlibAsyncProtocol)
         }
         "ctypes.Structure" => Some(FrameworkClassRole::StdlibCtypesStructure),
+        "traitlets.config.LoggingConfigurable"
+        | "traitlets.config.configurable.LoggingConfigurable"
+        | "traitlets.config.Configurable"
+        | "traitlets.config.configurable.Configurable" => {
+            Some(FrameworkClassRole::TraitletsConfigurable)
+        }
         "unittest.TestCase" | "unittest.case.TestCase" => Some(FrameworkClassRole::Unittest),
         "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
             Some(FrameworkClassRole::UnittestAsync)

@@ -481,6 +481,12 @@ and unrelated options retain their existing evidence and coverage rules.
 [DRF throttling](https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle) ·
 [Django Guardian admin](https://django-guardian.readthedocs.io/en/stable/api/admin/)
 
+Resolved Traitlets configurable classes support zero-argument text trait
+declarations and their named default, validation, and observation hooks.
+The analyzer records possible declarations when a named trait resolves.
+An ambiguous default and unmodeled construction keep coverage incomplete.
+[Traitlets callbacks](https://traitlets.readthedocs.io/en/stable/api.html)
+
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
 Django template directories, literal inheritance and includes, and supported
