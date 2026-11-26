@@ -4154,7 +4154,19 @@ impl<'a> Graph<'a> {
                         )
                         .is_some() =>
                 {
-                    self.flask_instance(scope, expression.at, before, ObjectKind::FlaskLoginManager)
+                    if arguments.is_empty()
+                        && keywords.is_empty()
+                        && let Some((_, class)) = self.flask_login_allocation(scope, before)
+                    {
+                        Value::Instance(class)
+                    } else {
+                        self.flask_instance(
+                            scope,
+                            expression.at,
+                            before,
+                            ObjectKind::FlaskLoginManager,
+                        )
+                    }
                 }
                 Value::Provider(name)
                     if self.phase03
@@ -6165,6 +6177,22 @@ impl<'a> Graph<'a> {
                     Value::Provider(name) if self.phase03 && name == "json.dumps"
                         && arguments.len() == 1 && keywords.is_empty()
                         && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
+                    Value::Provider(name) if self.phase03 && is_flask_login_constructor(&name)
+                        && self.flask_constructor_changed(ObjectKind::FlaskLoginManager, (scope, before)) =>
+                    {
+                        if arguments.is_empty() && keywords.is_empty()
+                            && let Some((allocator, _)) = self.flask_login_allocation(scope, before)
+                        {
+                            self.invoke(scope, allocator, "flask_login_allocator", "certain", expr.at);
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_constructor",
+                                "Flask-Login allocator cannot be resolved",
+                            );
+                        }
+                    }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         if self.phase03 && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && let Some(receiver) = arguments.first()
