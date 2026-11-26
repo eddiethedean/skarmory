@@ -8006,6 +8006,14 @@ impl<'a> Graph<'a> {
                 );
             }
             Value::Callable(invocation) => {
+                if self.phase03
+                    && !reads_rebound_global
+                    && self.apply_immediate_callback_decorator(
+                        scope, decorator, target, before, invocation,
+                    )
+                {
+                    return true;
+                }
                 self.invoke(scope, invocation, "decorator", "certain", decorator.at);
                 let Binding::Definition(definition, body) = self.symbols[invocation.target].binding
                 else {
@@ -8161,6 +8169,88 @@ impl<'a> Graph<'a> {
         {
             return false;
         }
+        self.decorator_receives_function(scope, decorator, target, before)
+    }
+
+    fn apply_immediate_callback_decorator(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+        invocation: Invocation,
+    ) -> bool {
+        if scope != self.scopes[scope].file
+            || self.branch_depth != 0
+            || invocation.verified
+            || !matches!(
+                decorator.kind,
+                ExpressionKind::Name(_) | ExpressionKind::Member(..)
+            )
+            || !self.decorator_receives_function(scope, decorator, target, before)
+        {
+            return false;
+        }
+        let Some((definition, _)) = self.bounded_replacement_function(invocation) else {
+            return false;
+        };
+        let [
+            Statement {
+                kind: StatementKind::Evaluate(call),
+                ..
+            },
+            Statement {
+                kind: StatementKind::Return(Some(result)),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &call.kind
+        else {
+            return false;
+        };
+        let callback = &definition.parameters[0].text;
+        if definition.is_generator
+            || !arguments.is_empty()
+            || !keywords.is_empty()
+            || !matches!(&function.kind, ExpressionKind::Name(name) if name == callback)
+            || !matches!(&result.kind, ExpressionKind::Name(name) if name == callback)
+            || !matches!(self.symbols[target].binding, Binding::Definition(callback, _)
+                if callback.kind == DefinitionKind::Function
+                    && !callback.is_generator && callback.parameters.is_empty())
+        {
+            return false;
+        }
+        // Account for the decorator's complete body with the argument bound.
+        self.edge(
+            scope,
+            invocation.target,
+            mcp_tools::DECORATOR_APPLICATION,
+            "certain",
+        );
+        self.invoke(
+            scope,
+            Invocation::ordinary(target),
+            "decorator_callback",
+            "certain",
+            decorator.at,
+        );
+        true
+    }
+
+    fn decorator_receives_function(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+    ) -> bool {
         let Binding::Definition(definition, _) = self.symbols[target].binding else {
             return false;
         };
