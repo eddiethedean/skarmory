@@ -2382,6 +2382,61 @@ fn flask_failed_class_patches_leave_independent_receivers_unchanged() {
 }
 
 #[test]
+fn flask_login_class_replacement_binds_the_local_identity_decorator() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef callback(value): return value\n",
+    )
+    .unwrap();
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    let patch = "LoginManager.user_loader = prepare\n";
+    fs::write(
+        &provider,
+        format!("{setup}def prepare(self, callback): return callback\n{patch}"),
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.prepare", "decorator"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.callback", "flask_login_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.callback"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &provider,
+        format!("{setup}def prepare(self, callback): return callback(1)\n{patch}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write")
+    );
+    assert!(evidence_certainties(&report, "app.callback", "flask_login_registration").is_empty());
+
+    fs::write(&provider, setup).unwrap();
+    let report = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        evidence_certainties(&report, "app.callback", "flask_login_registration"),
+        ["certain"]
+    );
+}
+
+#[test]
 fn flask_failed_provider_import_cannot_supply_a_callback() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

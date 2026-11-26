@@ -8019,6 +8019,13 @@ impl<'a> Graph<'a> {
                 else {
                     unreachable!()
                 };
+                if invocation.implicit_descriptor_receiver
+                    && !matches!(decorator.kind, ExpressionKind::Call { .. })
+                    && field_dispatch::plain_method(definition, 2)
+                    && returns_parameter(definition, &definition.parameters[1])
+                {
+                    return true;
+                }
                 if is_identity_decorator(definition) {
                     return self.local_identity_decorator(Value::Callable(invocation), decorator);
                 } else if self.phase03
@@ -11130,6 +11137,10 @@ fn is_identity_decorator(definition: &Definition) -> bool {
     let [parameter] = definition.parameters.as_slice() else {
         return false;
     };
+    returns_parameter(definition, parameter)
+}
+
+fn returns_parameter(definition: &Definition, parameter: &Name) -> bool {
     matches!(body_without_docstring(definition), [Statement { kind: StatementKind::Return(Some(Expression {
         kind: ExpressionKind::Name(name), ..
     })), .. }] if name == &parameter.text)
