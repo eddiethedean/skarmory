@@ -288,7 +288,7 @@ jobs:
     name: Verify pinned dead-code compatibility
     needs: [release-metadata, build-wheels]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       DEAD_CODE_GATE_REQUIRED: ${{ needs.release-metadata.outputs.dead-code-gate-required }}
       DEAD_CODE_GATE_ENABLED: >-

@@ -40,6 +40,8 @@ from phase03_framework_corpus import MANIFEST as CORPUS_SOURCE
 from phase03_framework_corpus import corpus_assertions, framework_cases, score_corpus
 
 PORT = "tests/conformance/run_phase03_seed.py"
+WORKER_TIMEOUT_SECONDS = 180
+SDK_REFERENCE_TIMEOUT_SECONDS = 300
 BENCHMARK_SOURCE = "benchmarks/dead_code/manifest.json"
 BENCHMARK_ID = "basic-unused-symbols"
 BENCHMARK_CASE = f"{BENCHMARK_SOURCE}::{BENCHMARK_ID}"
@@ -813,7 +815,12 @@ def write_receipt(args):
                         check_candidate_wheel(
                             args.sdk_python, args.artifact, variant["platform"], work, env,
                         )
-                    run = subprocess.run(command, cwd=args.upstream, env=env, timeout=180, check=False)
+                    timeout = (
+                        SDK_REFERENCE_TIMEOUT_SECONDS
+                        if mode == "reference" and variant["layer"] == "sdk" and args.fastapi_wheels is None
+                        else WORKER_TIMEOUT_SECONDS
+                    )
+                    run = subprocess.run(command, cwd=args.upstream, env=env, timeout=timeout, check=False)
                     if run.returncode not in {0, 1}:
                         raise ValueError(f"{mode} conformance runner exited {run.returncode}")
                     reports[mode] = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
