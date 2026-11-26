@@ -455,7 +455,7 @@ jobs:
               }
               passed = {
                   case["case_id"]
-                  for case in report["cases"]
+                  for case in report["cases"] + report["reviewed_exceptions"]
                   if case["variant"] == variant and case["preview_status"] == "passed"
               }
               if not expected:

@@ -85,8 +85,17 @@ BUDGET_PREREQUISITES = [
     "Reference abstract analysis-step and call-event limits",
     "Native engine call-work evidence",
 ]
+CLICK_FUNCTION = "test_non_fastapi_click_scan_survives_reassigned_truth_alias"
+CLICK_CASE = f"{TRUTH_SOURCE}::{CLICK_FUNCTION}"
+CLICK_CONTROL = "phase02::analysis::tests::pinned_click_dead_code_control"
+LEGACY_FALLBACK = "test_incomplete_fastapi_proofs_preserve_all_legacy_hints"
+LEGACY_CASE = f"{BUDGET_SOURCE}::{LEGACY_FALLBACK}"
+EXCEPTION_CONTROLS = {
+    CLICK_CASE: (TRUTH_SOURCE, CLICK_FUNCTION, CLICK_CONTROL),
+    LEGACY_CASE: (BUDGET_SOURCE, LEGACY_FALLBACK, BUDGET_TEST),
+}
 TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES, BUDGET_CASE}
-ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES}
+ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES, *EXCEPTION_CONTROLS}
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -339,6 +348,58 @@ def replay_initializer_budget(source, fixture, argv, env, trace):
     return outcome, fixtures, {"initializer_budget": result, "assertion_error": failure}
 
 
+def replay_exception_control(key, source, fixture, argv, env):
+    import pytest
+    from skylos.deadcode import fastapi_liveness
+
+    class FixtureStaged(Exception):
+        pass
+
+    _, function, _ = EXCEPTION_CONTROLS[key]
+    original = source[function]
+    input_path = fixture / "app.py"
+    report_path = fixture / "exception-control.json"
+
+    def stage(path, **options):
+        if Path(path) != fixture or not input_path.is_file():
+            raise ValueError("approved exception did not stage the original app.py")
+        if key == CLICK_CASE:
+            if options != {"thr": 0, "grep_verify": False, "enable_danger": True,
+                           "enable_secrets": True, "enable_quality": True}:
+                raise ValueError("the original Click fixture must request the reviewed combined scan")
+        elif options != {"thr": 80, "grep_verify": False} or fastapi_liveness._MAX_ANALYSIS_STEPS != 200:
+            raise ValueError("the original FastAPI fixture must set the reviewed analysis-step limit")
+        raise FixtureStaged
+
+    try:
+        with patch.dict(original.__globals__, {"Skylos": lambda: SimpleNamespace(analyze=stage)}):
+            with pytest.MonkeyPatch.context() as monkeypatch:
+                if key == CLICK_CASE:
+                    original(fixture)
+                else:
+                    original(fixture, monkeypatch)
+    except FixtureStaged:
+        pass
+    else:
+        raise ValueError("approved exception did not reach the original scan boundary")
+    if key == CLICK_CASE:
+        fixture_env = {
+            "SKARMORY_PHASE03_CLICK_CONTROL_FIXTURE": str(input_path),
+            "SKARMORY_PHASE03_CLICK_CONTROL_REPORT": str(report_path),
+        }
+    else:
+        fixture_env = {
+            "SKARMORY_PHASE03_FASTAPI_BUDGET_FIXTURE": str(input_path),
+            "SKARMORY_PHASE03_FASTAPI_BUDGET_REPORT": str(report_path),
+            "SKARMORY_PHASE03_FASTAPI_CALL_LIMIT": "200",
+        }
+    fixtures = {input_path.name: hashlib.sha256(input_path.read_bytes()).hexdigest()}
+    outcome = subprocess.run(argv, env={**env, **fixture_env}, capture_output=True,
+                             text=True, timeout=60, check=False)
+    observations = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else None
+    return outcome, fixtures, {"exception_control": observations}
+
+
 def engine_case(args, key, case, env, trace=None):
     if key == IMPORT_ROOT_CASE:
         source_file = IMPORT_ROOT_SOURCE
@@ -358,6 +419,9 @@ def engine_case(args, key, case, env, trace=None):
         source_file, assertions, prerequisites, test = (
             BUDGET_SOURCE, BUDGET_ASSERTIONS, BUDGET_PREREQUISITES, BUDGET_TEST,
         )
+    elif key in EXCEPTION_CONTROLS:
+        source_file, _, test = EXCEPTION_CONTROLS[key]
+        assertions, prerequisites = case["assertions"], case["prerequisites"]
     else:
         raise ValueError(f"missing native engine port for {key}")
     if (case["source"], case["assertions"], case["prerequisites"]) != (
@@ -380,6 +444,8 @@ def engine_case(args, key, case, env, trace=None):
             outcome, fixtures, details = replay_truth_chain(key, source, fixture, argv, env, trace)
         elif key == BUDGET_CASE:
             outcome, fixtures, details = replay_initializer_budget(source, fixture, argv, env, trace)
+        elif key in EXCEPTION_CONTROLS:
+            outcome, fixtures, details = replay_exception_control(key, source, fixture, argv, env)
         elif key == CASE:
             # Keep the source inputs and the real pytest command from the
             # upstream fixture. Rust generates its own cleanup findings.
@@ -392,7 +458,7 @@ def engine_case(args, key, case, env, trace=None):
         else:
             stage_import_roots(source, fixture)
             fixture_env = {"SKARMORY_PHASE03_IMPORT_ROOT_FIXTURE": str(fixture)}
-        if key not in TRACED_ENGINE_CASES:
+        if key not in TRACED_ENGINE_CASES and key not in EXCEPTION_CONTROLS:
             fixtures = {
                 path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in sorted(fixture.rglob("*")) if path.is_file()
@@ -407,8 +473,8 @@ def engine_case(args, key, case, env, trace=None):
     sys.stdout.write(outcome.stdout)
     sys.stderr.write(outcome.stderr)
     return {
-        "status": "passed" if passed else "failed",
-        "assertions": assertions if passed else [],
+        "status": "blocked" if passed and key in EXCEPTION_CONTROLS else ("passed" if passed else "failed"),
+        "assertions": assertions if passed and key not in EXCEPTION_CONTROLS else [],
         "prerequisites": {
             prerequisite: "passed" if passed or key == CASE and index == 0 else "blocked"
             for index, prerequisite in enumerate(prerequisites)

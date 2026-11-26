@@ -17518,12 +17518,12 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_truth_cycles.py"
 assertions = ["test/test_fastapi_truth_cycles.py:88", "test/test_fastapi_truth_cycles.py:90", "test/test_fastapi_truth_cycles.py:91", "test/test_fastapi_truth_cycles.py:93"]
-prerequisites = ["Installed SDK", "Original Click fixture", "Review of the original combined scan options"]
+prerequisites = ["Original Click fixture", "Original combined scan options", "Native Click declaration and dormant-call control"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:69 writes the Click fixture and verifies the public report and framework evidence."
-variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+variants = ["linux-x86_64-cp311-python-engine"]
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The Click report and framework-root assertions require an installed-SDK port."
+reviewed_exception = { reason = "The pinned case requires danger and secrets analysis alongside dead code. The Phase 0.3 native control keeps the original Click declaration, short-circuited invocation, and unused neighbor visible.", approval = "approved in the issue 43 implementation request", tracking_issue = "https://github.com/eddiethedean/skarmory/issues/41", fixture_sha256 = "9d8c60e2c4884f5098b9b59b46a7f8b68db9049c63bb4955d8e6e0173c19f6df" }
 
 # Framework attribute controls exercise the native report through the pinned
 # public SDK entry point, including genuine providers and local shadows.
@@ -18179,9 +18179,9 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_fastapi_route_precision.py"
 assertions = ["test/test_fastapi_route_precision.py:349", "test/test_fastapi_route_precision.py:351", "test/test_fastapi_route_precision.py:352", "test/test_fastapi_route_precision.py:353", "test/test_fastapi_route_precision.py:357", "test/test_fastapi_route_precision.py:358", "test/test_fastapi_route_precision.py:359"]
-prerequisites = ["Original generated wrapper chain", "Reference abstract analysis-step limit", "Installed SDK with bounded FastAPI evidence"]
+prerequisites = ["Original generated wrapper chain", "Reference abstract analysis-step limit", "Native incomplete-coverage and route-evidence control"]
 provenance = "The frozen test forces an exhausted FastAPI proof and checks the public report and private legacy root flags."
-variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+variants = ["linux-x86_64-cp311-python-engine"]
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original expects an empty analysis_errors list alongside an incomplete proof and legacy framework-root flags on unmounted routes. Native work-limit coverage and liveness evidence must remain explicit."
+reviewed_exception = { reason = "The original expects an empty error list and legacy root flags after its proof is exhausted. The native control requires explicit incomplete coverage and withholds unproved activation and parameter evidence.", approval = "approved in the issue 43 implementation request", tracking_issue = "https://github.com/eddiethedean/skarmory/issues/41", fixture_sha256 = "2f3d499042471d2b6e69235c68d3cbd6d70832c1d64dd088f6122e58df122e21" }

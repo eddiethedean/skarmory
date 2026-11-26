@@ -93,8 +93,8 @@ The derived baseline supplies a runtime seed for the six reassignment
 cases, preserving each reassignment chain, pytest ID, and assertion. The
 engine port checks the route declaration and possible registration
 independently. The native Click control checks the declaration and dormant
-callback after reassignment. The original combined Click SDK case also
-enables the unported danger and secrets analyzers and remains required.
+callback after reassignment on the pinned fixture. The original combined
+Click case still runs on Skylos with the danger and secrets analyzers enabled.
 
 The native engine adapter replays the original acyclic initializer fixture
 with its 40-call-event budget. It measures the bounded native expansion and
@@ -103,13 +103,17 @@ sets. The separate legacy fallback test requires no public analysis error
 even when its internal proof is incomplete. Native coverage records an
 exhausted budget explicitly and preserves unresolved route evidence.
 
-Two cases need a release-scope decision under [#41](https://github.com/eddiethedean/skarmory/issues/41).
-The Click case runs danger and secrets analysis in addition to dead-code
-analysis. Its original assertion and required options remain in the
-inventory. The FastAPI fallback case requires legacy framework roots for
-unmounted routes and an empty public error list after its proof is exhausted.
-The native release profile keeps that analysis incomplete. Its separate
-engine control verifies bounded call work and the absence of unproved roots.
+Two cases have approved release-scope exceptions tracked under
+[#41](https://github.com/eddiethedean/skarmory/issues/41). The gate executes
+their original assertions on Skylos and keeps the original candidate outcomes
+visible without awarding ordinary pass credit. The installed SDK lacks the
+combined Click analyzer options. The legacy FastAPI case requires root
+evidence and a clean error list after its proof is exhausted. The native
+engine controls use the original staged sources from the same release
+candidate. They verify the Click declaration, dormant call, and unused
+neighbor, and require an explicit FastAPI work-limit diagnostic with no
+unproved activation or parameter evidence. A missing or failed control
+blocks qualification.
 
 The class-attribute provider suite contributes 19 original Python cases.
 The SDK ports use genuine Celery, Django admin, and django-storages providers
