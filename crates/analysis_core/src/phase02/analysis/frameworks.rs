@@ -2624,7 +2624,9 @@ impl Graph<'_> {
     }
 
     fn django_setting_bindings(&self, settings: ScopeId) -> Option<BTreeMap<SymbolId, bool>> {
-        if self.django_setting_initializer_fails(settings) {
+        // Other terminal proofs already govern their framework effects. In
+        // particular, an inferred settings namespace does not start Django.
+        if self.django_setting_initializer_raises(settings) {
             return None;
         }
         let mut selected = BTreeMap::new();
@@ -2655,12 +2657,11 @@ impl Graph<'_> {
         Some(selected)
     }
 
-    fn django_setting_initializer_fails(&self, file: ScopeId) -> bool {
-        self.failed_terminal_modules.contains(&file)
-            || self.scopes[file]
-                .body
-                .iter()
-                .any(|statement| matches!(statement.kind, StatementKind::Raise(_)))
+    fn django_setting_initializer_raises(&self, file: ScopeId) -> bool {
+        self.scopes[file]
+            .body
+            .iter()
+            .any(|statement| matches!(statement.kind, StatementKind::Raise(_)))
     }
 
     fn django_setting_alias_chain(
@@ -2690,7 +2691,9 @@ impl Graph<'_> {
                     if self.imported_module_write(&module, access).is_some() {
                         return Err(Unresolved);
                     }
-                    if self.django_setting_initializer_fails(source) {
+                    if self.failed_terminal_modules.contains(&source)
+                        || self.django_setting_initializer_raises(source)
+                    {
                         return Err(FailedInitializer);
                     }
                     if self.scopes[source].open_wildcard

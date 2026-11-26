@@ -13092,6 +13092,43 @@ fn django_settings_retain_only_the_selected_uppercase_aliases() {
 }
 
 #[test]
+fn django_settings_keep_launcher_free_backend_negatives_complete() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (name, text) in [
+        ("shop/__init__.py", ""),
+        (
+            "shop/settings.py",
+            concat!(
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nROOT_URLCONF = 'shop.urls'\n",
+                "AUTHENTICATION_BACKENDS = ['shop.backends.Configured']\n",
+                "AUTHENTICATION_BACKENDS.unknown_mutation()\n",
+            ),
+        ),
+        (
+            "shop/urls.py",
+            "from django.urls import path\nurlpatterns = []\n",
+        ),
+        (
+            "shop/backends.py",
+            "class Configured:\n    def get_user(self, user_id): return None\n",
+        ),
+    ] {
+        fs::write(root.join(name), text).unwrap();
+    }
+    let report = scan(root);
+    assert!(
+        evidence_certainties(
+            &report,
+            "shop.backends.Configured.get_user",
+            "django_auth_backend",
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn django_settings_cannot_read_aliases_from_a_failed_initializer() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
