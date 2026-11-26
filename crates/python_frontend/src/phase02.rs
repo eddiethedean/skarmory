@@ -1358,6 +1358,34 @@ impl Lowering<'_> {
                         fallback: self.suite(fallback, next)?,
                     }
                 }
+                Stmt::Try(node)
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && !node.is_star
+                        && node.handlers.is_empty()
+                        && node.orelse.is_empty()
+                        && !node.finalbody.is_empty()
+                        && node.body.iter().all(|stmt| match stmt {
+                            Stmt::Pass(_) => true,
+                            Stmt::Assign(assign) => {
+                                matches!(assign.targets.as_slice(), [Expr::Name(_)])
+                                    && matches!(
+                                        assign.value.as_ref(),
+                                        Expr::NoneLiteral(_)
+                                            | Expr::BooleanLiteral(_)
+                                            | Expr::NumberLiteral(_)
+                                            | Expr::StringLiteral(_)
+                                    )
+                            }
+                            _ => false,
+                        }) =>
+                {
+                    // Literal name assignments cannot transfer control away
+                    // from the following finally suite.
+                    result.extend(self.suite(&node.body, next)?);
+                    result.extend(self.suite(&node.finalbody, next)?);
+                    continue;
+                }
                 Stmt::Return(node) => {
                     if matches!(self.1, SyntaxScope::Module | SyntaxScope::Class) {
                         return Err(self

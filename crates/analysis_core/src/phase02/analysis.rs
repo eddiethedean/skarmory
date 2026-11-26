@@ -117,6 +117,7 @@ enum Value {
     CeleryLogging(Object),
     CeleryBackend(Object),
     DeferredComprehension,
+    CallbackGenerator(Vec<Invocation>),
     ComprehensionResult,
     DeferredLambda,
     Executor,
@@ -4004,6 +4005,16 @@ impl<'a> Graph<'a> {
                 form: ComprehensionForm::Generator,
                 ..
             } => Value::DeferredComprehension,
+            ExpressionKind::Comprehension {
+                form: ComprehensionForm::List,
+                ..
+            } if self.phase03
+                && self
+                    .scalar_callback_comprehension(scope, expression, before, depth)
+                    .is_some() =>
+            {
+                Value::BuiltinIterable
+            }
             ExpressionKind::Comprehension { .. } => Value::ComprehensionResult,
             ExpressionKind::FormattedString(_) => Value::Scalar,
             ExpressionKind::Name(name) => {
@@ -4313,6 +4324,12 @@ impl<'a> Graph<'a> {
                     {
                         return callback;
                     }
+                    if arguments.is_empty()
+                        && keywords.is_empty()
+                        && let Some(calls) = self.callback_generator_return(invocation, depth)
+                    {
+                        return Value::CallbackGenerator(calls);
+                    }
                     if let Some(app) = self.fastapi_subclass_app(
                         invocation,
                         CallArguments {
@@ -4484,7 +4501,9 @@ impl<'a> Graph<'a> {
                         [] => Value::Sequence(Vec::new()),
                         [argument] => match recurse(self, argument) {
                             value @ (Value::Sequence(_) | Value::BuiltinIterable) => value,
-                            Value::Range | Value::Text(_) => Value::BuiltinIterable,
+                            Value::Range | Value::Text(_) | Value::CallbackGenerator(_) => {
+                                Value::BuiltinIterable
+                            }
                             _ => Value::Unknown,
                         },
                         _ => Value::Unknown,
@@ -5212,7 +5231,10 @@ impl<'a> Graph<'a> {
                 );
                 return;
             }
-            Value::DeferredComprehension | Value::ComprehensionResult | Value::DeferredLambda => {
+            Value::DeferredComprehension
+            | Value::CallbackGenerator(_)
+            | Value::ComprehensionResult
+            | Value::DeferredLambda => {
                 self.report_unmodeled_deferred_value(scope, at, &value);
                 return;
             }
@@ -5810,7 +5832,14 @@ impl<'a> Graph<'a> {
                         } else {
                             Value::ComprehensionResult
                         };
-                        self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                        if !self.phase03
+                            || !matches!(
+                                self.identity(scope, expr, before, 0),
+                                Value::BuiltinIterable
+                            )
+                        {
+                            self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                        }
                     } else if matches!(
                         expr.kind,
                         ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda
@@ -6704,6 +6733,21 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
+                        if self.phase03 {
+                            for arg in arguments.iter().chain(keywords.iter().map(|(_, expr)| expr)) {
+                                if let Value::CallbackGenerator(calls) = self.probe_identity(scope, arg, before) {
+                                    if matches!(name.as_str(), "builtins.list" | "builtins.tuple")
+                                        && arguments.len() == 1 && keywords.is_empty()
+                                    {
+                                        for invocation in calls {
+                                            self.invoke(scope, invocation, "direct_call", "possible", expr.at);
+                                        }
+                                    } else {
+                                        self.report_unmodeled_deferred_value(scope, arg.at, &Value::DeferredComprehension);
+                                    }
+                                }
+                            }
+                        }
                         if self.phase03 && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && let Some(receiver) = arguments.first()
                         {
@@ -7027,7 +7071,9 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Name(_) | ExpressionKind::IterationVariable(_) => {
                 let value = self.identity(scope, expr, before, 0);
-                self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                if !matches!(value, Value::CallbackGenerator(_)) {
+                    self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                }
                 self.record_class_reference(scope, &value);
             }
             ExpressionKind::ConstantLambda
@@ -8131,7 +8177,15 @@ impl<'a> Graph<'a> {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
                         let result = self.identity(scope, value, at, 0);
-                        self.expose(scope, result, "returned_callable", value.at);
+                        if !matches!(result, Value::DeferredComprehension)
+                            || !self.phase03
+                            || !self.scopes[scope].owner.is_some_and(|owner| {
+                                self.callback_generator_return(Invocation::ordinary(owner), 0)
+                                    .is_some()
+                            })
+                        {
+                            self.expose(scope, result, "returned_callable", value.at);
+                        }
                     }
                     return true;
                 }
