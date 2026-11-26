@@ -492,65 +492,6 @@ S3 backends receive possible declaration evidence for their documented class
 attributes. The declaration leaves constructor and callback execution to the
 call analysis. The generic django-storages base supports a zero-argument call
 when the inherited empty defaults and ordinary attribute lookup are preserved.
-
-The selected Django `STORAGES` mapping can name a direct, uncustomized
-`ManifestStaticFilesStorage` subclass. A selected DRF
-`DEFAULT_PAGINATION_CLASS` can retain stock `PageNumberPagination` options
-for a literal page-size query parameter and limit. Calls to a direct
-`APIException` subclass retain literal defaults used by the inherited
-constructor when the corresponding arguments are omitted or `None`.
-Related controls cover project-local lookalikes, provider aliases, and unknown
-constructor behavior.
-[Celery Redis backend](https://docs.celeryq.dev/en/v5.5.3/_modules/celery/backends/redis.html) ·
-[Django admin list filters](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/filters/) ·
-[django-storages base and S3 settings](https://github.com/jschneier/django-storages/blob/1.14.6/storages/base.py)
-
-The native analyzer also records possible declarations for selected standard
-library visitor and protocol overrides, literal integer `ctypes.Structure`
-layouts, DRF field error tables and view options, and Guardian model admin
-options. The DRF token-view scope declaration requires a resolved
-`ScopedRateThrottle` on the class. Calls, unsupported layout expressions,
-and unrelated options retain their existing evidence and coverage rules.
-[DRF throttling](https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle) ·
-[Django Guardian admin](https://django-guardian.readthedocs.io/en/stable/api/admin/)
-
-The Phase 0.3 profile can index bounded external class declarations from
-dependency source. For a directory scan, the first project virtual environment
-with a supported site-packages layout supplies dependency roots. Otherwise
-the CLI accepts ordered `--dependency-root` site-packages or dist-packages paths,
-and the SDK forwards matching entries from its interpreter search path.
-Selected local packages keep precedence. Vendored directories inside the
-project remain outside the dependency index.
-
-The index follows supported imports, re-exports, aliases, and single-base
-inheritance without executing package code. It records matched project
-overrides as possible declarations. Ordinary inherited construction can
-complete when the source metadata resolves the default lifecycle. Opaque
-initializers, class creation, and constructor behavior remain incomplete.
-The optional `external_dependency_roots` report field lists roots whose
-source was read. Dependency files stay outside project findings.
-
-Resolved Traitlets configurable classes support zero-argument text trait
-declarations and their named default, validation, and observation hooks.
-The analyzer records possible declarations when a named trait resolves.
-Zero-argument construction is supported for a bounded configurable
-lineage with the provider's empty config and known declarations. Construction
-registers hooks. A trait operation or independent call can activate their bodies.
-An ambiguous default or unmodeled setup keeps coverage incomplete.
-[Traitlets callbacks](https://traitlets.readthedocs.io/en/stable/api.html)
-
-A module-level optional import can select a plain class from an
-`except ImportError` handler when source discovery proves the requested
-member is absent from an inert, selected regular package. This proof
-uses the verified directory snapshot, including opaque import candidates.
-An unresolved package, an active initializer, or a present member keeps
-coverage incomplete.
-
-Resolved Celery Redis backends, Django admin list filters, and django-storages
-S3 backends receive possible declaration evidence for their documented class
-attributes. The declaration leaves constructor and callback execution to the
-call analysis. The generic django-storages base supports a zero-argument call
-when the inherited empty defaults and ordinary attribute lookup are preserved.
 Related controls cover project-local lookalikes, provider aliases, and unknown
 constructor behavior.
 [Celery Redis backend](https://docs.celeryq.dev/en/v5.5.3/_modules/celery/backends/redis.html) ·
