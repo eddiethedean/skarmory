@@ -1550,8 +1550,10 @@ impl<'a> Graph<'a> {
         }
         let replacement = self.probe_identity(file, value, at);
         let value = if conditional
-            || !matches!(replacement, Value::DjangoField(django_forms::Field::Form))
-        {
+            || !matches!(
+                replacement,
+                Value::DjangoField(django_forms::Field::Form { widget: None })
+            ) {
             MemberWriteValue::Ambiguous
         } else {
             self.mutations.modeled.insert((file, position(at)));

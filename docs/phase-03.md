@@ -545,8 +545,15 @@ field selections. Plain `Form` instances use literal edits to `base_fields`
 or `declared_fields` made before the instance copies its field table. A
 resolved Form or ModelForm initializer can add literal fields to its own
 instance after forwarding its arguments to the framework initializer.
-Other dynamic field tables or validation dispatch produce
+A direct source Widget selected by an effective field table can receive
+possible validation evidence for its value-from-data method and the arguments
+Django supplies. Other dynamic field tables or validation dispatch produce
 coverage diagnostics.
+
+A literal CharField constructor with a direct source converter can register
+the converter as part of a source model's field declaration. Its contract
+retains the parameters Django supplies when adapting database results.
+Declaration evidence does not imply that a query ran.
 
 Selected Django startup accepts the standard auth, content types, and session
 apps and their explicit default AppConfig classes. Discovery continues through

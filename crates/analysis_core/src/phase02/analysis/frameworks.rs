@@ -3269,6 +3269,16 @@ impl Graph<'_> {
         call: CallArguments<'_>,
         certainty: &'static str,
     ) -> bool {
+        if let Some((_, hook)) = self.django_model_field_converter(class, call) {
+            self.edge(
+                call.scope,
+                hook,
+                "django_model_field_converter_declaration",
+                "possible",
+            );
+            self.record_django_field_parameters(call.scope, hook);
+            return true;
+        }
         let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
             return false;
         };
