@@ -4669,6 +4669,7 @@ impl<'a> Graph<'a> {
                 let same = match (&left, &right) {
                     (Value::Text(left), Value::Text(right)) if !identity => left == right,
                     (Value::Bool(left), Value::Bool(right)) => left == right,
+                    (Value::None, Value::None) if *identity => true,
                     _ if *identity
                         || (left.is_builtin_scalar_or_iterable()
                             && right.is_builtin_scalar_or_iterable()) =>
@@ -12441,6 +12442,55 @@ configure()
                 .collect();
             assert_eq!(hooks, expected.into_iter().collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn django_auth_backend_retains_both_methods_when_an_earlier_base_is_conditional() {
+        let files = [
+            module("shop/__init__.py", "shop", ""),
+            module(
+                "shop/settings.py",
+                "shop.settings",
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nAUTHENTICATION_BACKENDS = ['shop.backends.Selected']\n",
+            ),
+            module(
+                "external.py",
+                "external",
+                "import os\nclass Provider:\n    if os.environ.get('SELECT_BACKEND'):\n        def get_user(self, user_id): return 1\n",
+            ),
+            module(
+                "shop/backends.py",
+                "shop.backends",
+                "from external import Provider\nclass Later:\n    def get_user(self, user_id): return 2\n    def unused(self): return 3\nclass Selected(Provider, Later): pass\n",
+            ),
+        ];
+        let report = analyze_phase03(&files, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let alternatives: Vec<_> = report
+            .evidence
+            .iter()
+            .filter_map(|row| {
+                (row.kind == "django_auth_possible_dispatch")
+                    .then_some((row.full_name.as_str(), row.certainty))
+            })
+            .collect();
+        assert_eq!(
+            alternatives,
+            [
+                ("external.Provider.get_user", "possible"),
+                ("shop.backends.Later.get_user", "possible"),
+            ]
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|row| row.kind == "django_auth_backend")
+        );
+        assert!(report.findings.iter().any(|finding| {
+            finding.category == Category::Function
+                && finding.full_name == "shop.backends.Later.unused"
+        }));
     }
 
     #[test]

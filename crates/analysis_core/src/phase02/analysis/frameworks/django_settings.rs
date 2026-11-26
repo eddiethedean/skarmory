@@ -610,6 +610,21 @@ impl Graph<'_> {
         for name in protocol.methods() {
             let Some(Some(method)) = self.django_protocol_member(&mro, name, settings, &writes)
             else {
+                if matches!(protocol, Protocol::Auth)
+                    && let Some(methods) =
+                        self.conditional_auth_methods(&mro, class, name, settings, &writes)
+                    && methods
+                        .iter()
+                        .all(|&method| !modified_callback_body(method, &writes, replaced_bodies))
+                {
+                    for method in methods {
+                        self.method_receivers
+                            .entry(method)
+                            .or_default()
+                            .insert(class);
+                        roots.push(possible_edge(method, "django_auth_possible_dispatch"));
+                    }
+                }
                 continue;
             };
             let Some(target) = self.probe_callable_binding(method) else {
@@ -648,6 +663,66 @@ impl Graph<'_> {
             self.read.extend(target.bindings);
             roots.push(possible_edge(target.target, protocol.evidence()));
         }
+    }
+
+    fn conditional_auth_methods(
+        &self,
+        mro: &[ConverterBase],
+        receiver: SymbolId,
+        name: &str,
+        settings: ScopeId,
+        writes: &[&SettingsWrites],
+    ) -> Option<Vec<SymbolId>> {
+        for (index, base) in mro.iter().enumerate() {
+            let ConverterBase::Source(class) = *base else {
+                return None;
+            };
+            if writes.iter().any(|writes| {
+                writes
+                    .classes
+                    .get(&class)
+                    .is_some_and(|members| members.contains(name))
+            }) || self.class_discovery_write(class, name, settings).is_some()
+                || self.metaclass_member(class, name).is_some()
+            {
+                return None;
+            }
+            let Binding::Definition(_, body) = self.symbols[class].binding else {
+                return None;
+            };
+            let Some(bindings) = self.scopes[body].names.get(name) else {
+                continue;
+            };
+            let methods = self.effective_bindings(bindings);
+            if class == receiver
+                || !methods
+                    .last()
+                    .is_some_and(|&last| self.binding_depends_on_branch(last, END))
+            {
+                return None;
+            }
+            let mut candidates = methods.to_vec();
+            if methods
+                .iter()
+                .all(|method| self.conditional.contains_key(method))
+            {
+                candidates.extend(self.django_protocol_member(
+                    &mro[index + 1..],
+                    name,
+                    settings,
+                    writes,
+                )?);
+            }
+            if !candidates.iter().all(|&id| {
+                matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+                    if definition.kind == DefinitionKind::Function
+                        && !definition.is_generator && definition.decorators.is_empty())
+            }) {
+                return None;
+            }
+            return Some(candidates);
+        }
+        None
     }
 
     // The inner option denotes an absent member. The outer option denotes a
