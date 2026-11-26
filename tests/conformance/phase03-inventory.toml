@@ -15931,11 +15931,10 @@ languages = ["python"]
 source = "test/test_django_celery_entrypoints.py"
 assertions = ["test/test_django_celery_entrypoints.py:230", "test/test_django_celery_entrypoints.py:233"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed fixture selects ShopConfig through Django startup and supplies an actual post_save receiver. Django 5.2.1 imports signals from the active ready hook and dispatches the registered receiver."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Importing the config class does not populate Django's app registry or invoke ready. The config also lacks the app name required by explicit selection.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty and did not call ready. Explicitly selecting the nameless ShopConfig in a separate Django diagnostic raised ImproperlyConfigured before ready. https://docs.djangoproject.com/en/5.2/ref/applications/#django.apps.AppConfig.ready", assertions = ["coverage:complete", "unused:unused_classes:shop.apps.ShopConfig", "unused:suppressed:shop.apps.ShopConfig.ready", "unused:unused_imports:shop.signals", "no-evidence:django_app_config:*:shop.apps.ShopConfig.ready", "unused:unused_imports:shop.helpers"] }
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_celery_fake_private_and_stale_configuration_does_not_rescue[class Celery:\\n    def __init__(self):\\n        self.task_routes = (\"routers.route_task\",)\\napp = Celery()]"
@@ -16112,11 +16111,10 @@ languages = ["python"]
 source = "test/test_django_celery_entrypoints.py"
 assertions = ["test/test_django_celery_entrypoints.py:307"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed fixture selects ShopConfig through Django startup and supplies an actual post_save receiver. Django 5.2.1 imports signals from the active ready hook and dispatches the registered receiver."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Importing the config class does not populate Django's app registry or invoke ready. The config also lacks the app name required by explicit selection.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty and did not call ready. Explicitly selecting the nameless ShopConfig in a separate Django diagnostic raised ImproperlyConfigured before ready. https://docs.djangoproject.com/en/5.2/ref/applications/#django.apps.AppConfig.ready", assertions = ["coverage:complete", "unused:unused_classes:shop.apps.ShopConfig", "unused:suppressed:shop.apps.ShopConfig.ready", "unused:unused_imports:shop.signals", "no-evidence:django_app_config:*:shop.apps.ShopConfig.ready"] }
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_ready_literal_branch_exit_prevents_signal_import[raise RuntimeError('not ready')]"
