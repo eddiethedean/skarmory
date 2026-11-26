@@ -79,6 +79,161 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn gin_bindings_keep_only_selected_registrations_and_leave_wrappers_unused() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("app")).unwrap();
+    fs::write(root.join("app/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("app/components.py"),
+        r#"from gin import configurable as register
+from functools import lru_cache
+from pydantic import validate_call
+from tenacity import retry, stop_after_attempt
+
+def helper():
+    return 1
+
+@register("optimizer")
+def optimizer(rate=0.1):
+    return helper()
+
+@register("network", denylist=["inputs"])
+def network(inputs, layers=2):
+    return layers
+
+@register("retired")
+def retired(value=0):
+    return value
+
+@retry(stop=stop_after_attempt(3))
+def retry_wrapper():
+    return 1
+
+@lru_cache(maxsize=4)
+def cache_wrapper():
+    return 1
+
+@validate_call()
+def validate_wrapper():
+    return 1
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("main.py"),
+        "import gin as registry\nfrom app import components\nregistry.parse_config_file('config.gin')\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("dormant.py"),
+        "def launch():\n    import gin\n    gin.parse_config_file('missing.gin')\n",
+    )
+    .unwrap();
+    let config = root.join("config.gin");
+    fs::write(
+        &config,
+        "optimizer.rate = 0.05 # comment\nnetwork.layers = 3\n",
+    )
+    .unwrap();
+
+    let cache = tempfile::tempdir().unwrap();
+    let compare = || {
+        let report = scan(root);
+        let mut warm = scan_with_settings(root, None, Some(cache.path()));
+        warm.as_object_mut().unwrap().remove("cache");
+        assert_eq!(warm, report);
+        report
+    };
+
+    let report = compare();
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "app.components.cache_wrapper",
+            "app.components.helper",
+            "app.components.retired",
+            "app.components.retry_wrapper",
+            "app.components.validate_wrapper",
+            "dormant.launch",
+        ],
+        "{report}"
+    );
+    for symbol in ["app.components.optimizer", "app.components.network"] {
+        assert_eq!(
+            evidence_certainties(&report, symbol, "gin_config_binding"),
+            ["possible"]
+        );
+    }
+
+    fs::write(&config, "retired.value = 4\n").unwrap();
+    let report = compare();
+    assert_eq!(
+        evidence_certainties(&report, "app.components.retired", "gin_config_binding"),
+        ["possible"]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"app.components.optimizer"));
+    assert!(findings(&report, "unused_functions").contains(&"app.components.network"));
+
+    for text in [
+        "network.inputs = 'denied'\n",
+        "include 'external.gin'\n",
+        "optimizer.rate = @unknown()\n",
+        "missing.param = 2\n",
+    ] {
+        fs::write(&config, text).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+    }
+    fs::remove_file(&config).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+}
+
+#[test]
+fn gin_registry_and_wrapper_lookalikes_need_resolved_providers() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("gin.py"),
+        "def configurable(name):\n    return lambda function: function\ndef parse_config_file(path): return None\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from gin import configurable, parse_config_file\n@configurable('optimizer')\ndef optimizer(rate=1): return rate\nparse_config_file('config.gin')\n",
+    )
+    .unwrap();
+    fs::write(root.join("config.gin"), "optimizer.rate = 2\n").unwrap();
+    let report = scan(root);
+    assert!(evidence_certainties(&report, "app.optimizer", "gin_config_binding").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.optimizer"));
+    fs::remove_file(root.join("gin.py")).unwrap();
+
+    fs::write(
+        root.join("app.py"),
+        "import gin\ngin.parse_config_file('config.gin')\n@gin.configurable('optimizer')\ndef optimizer(rate=1): return rate\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&report, "app.optimizer", "gin_config_binding").is_empty());
+
+    fs::write(
+        root.join("app.py"),
+        "from tenacity import retry\n@retry(stop=unresolved_stop)\ndef wrapped(): return 1\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
 fn reached_stdlib_logging_binds_os_before_a_local_pathlike_stub() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

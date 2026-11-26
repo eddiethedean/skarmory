@@ -531,6 +531,21 @@ uses the key resolved at that statement. An opaque key leaves both the earlier
 and proposed settings possible and coverage incomplete.
 [Celery task routing](https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-routes)
 
+A reached module initializer can load a literal project-root `.gin` file
+through the resolved `gin.parse_config_file` API. The profile follows scalar
+`selector.parameter` assignments to uniquely resolved `@gin.configurable`
+functions declared before the call or initialized by earlier imports. It honors
+literal parameter denylists and records possible declaration evidence without
+entering the function body. A registration by itself leaves the definition
+eligible for unused findings. Missing files, unsupported configuration syntax,
+and unresolved or ambiguous bindings leave coverage incomplete.
+
+The profile models passive construction of a single Tenacity decorator with a
+literal `stop_after_attempt` argument and an empty `pydantic.validate_call()`
+decorator on an unannotated nullary function. Applying these wrappers leaves the
+function eligible for unused findings. Calls through the replaced function
+require separate execution evidence.
+
 The profile models SQLAlchemy listeners
 and declared fields through a resolved SQLAlchemy or SQLModel base, including
 SQLModel's literal `table` class option. It recognizes Pydantic model hooks,

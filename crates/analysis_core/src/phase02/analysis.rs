@@ -41,6 +41,7 @@ mod fastapi;
 mod field_dispatch;
 mod flask;
 mod frameworks;
+mod gin;
 mod gunicorn;
 mod literal_text;
 mod logging_config;
@@ -55,6 +56,7 @@ mod terminal;
 mod wagtail;
 
 pub(super) use django_templates::TemplateProject;
+pub(super) use gin::GinProject;
 
 const MAX_BINDING_CHAIN: usize = 64;
 const MAX_FRAMEWORK_PASSES: usize = 64;
@@ -581,6 +583,7 @@ impl<'a> NestedPackages<'a> {
 pub(super) struct FrameworkInputs<'a> {
     pub(super) settings: Option<&'a OsStr>,
     pub(super) templates: Option<&'a TemplateProject<'a>>,
+    pub(super) gin: Option<&'a GinProject<'a>>,
     pub(super) discovery: Option<&'a crate::preview_source::Project>,
     pub(super) unresolved_project_wildcards: bool,
 }
@@ -668,6 +671,8 @@ pub(super) fn analyze_with_verification(
         framework_fields: BTreeSet::new(),
         pydantic_serialization: pydantic::Serialization::default(),
         mcp_registrations: BTreeMap::new(),
+        gin_registrations: BTreeMap::new(),
+        gin_config_calls: Vec::new(),
         celery_backends: celery::Backends::default(),
         celery_routes: celery_routes::Routes::default(),
         fastapi_dependency_issues: Vec::new(),
@@ -797,6 +802,9 @@ pub(super) fn analyze_with_verification(
             ..Analysis::default()
         };
     };
+    if phase03 {
+        graph.collect_gin_bindings(framework.gin);
+    }
     let mut roots = graph.external_roots(entrypoints, &initialization_edges);
     if let Some(package_entrypoints) = package_entrypoints {
         graph.retain_package_entrypoints(package_entrypoints, &initialization_edges);
@@ -899,6 +907,8 @@ struct Graph<'a> {
     framework_fields: BTreeSet<SymbolId>,
     pydantic_serialization: pydantic::Serialization,
     mcp_registrations: BTreeMap<(Object, String), Vec<mcp_tools::Registration>>,
+    gin_registrations: BTreeMap<String, Vec<gin::Registration>>,
+    gin_config_calls: Vec<gin::ConfigCall>,
     celery_backends: celery::Backends,
     celery_routes: celery_routes::Routes,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
@@ -2174,13 +2184,19 @@ impl<'a> Graph<'a> {
                 }
                 if self.phase03
                     && let [decorator] = definition.decorators.as_slice()
-                    && self.bounded_decorator_replaces_function(
+                    && (self.bounded_decorator_replaces_function(
                         scope,
                         decorator,
                         id,
                         definition.name.at,
                         depth + 1,
-                    )
+                    ) || self.gin_decorator_replaces_function(
+                        scope,
+                        decorator,
+                        id,
+                        definition.name.at,
+                        depth + 1,
+                    ))
                 {
                     return Value::Unknown;
                 }
@@ -6001,6 +6017,11 @@ impl<'a> Graph<'a> {
                     {
                         // Exact built-in scalars cannot call user-defined numeric conversions.
                     }
+                    Value::Provider(name) if self.phase03 && gin::is_config_loader(&name) => {
+                        self.gin_config_call(CallArguments { scope, at: expr.at, before, positional: arguments, keywords });
+                    }
+                    Value::Provider(name) if self.phase03 && gin::is_stop_after_attempt(&name)
+                        && gin::supported_stop_arguments(arguments, keywords) => {}
                     Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
                         if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
@@ -7742,6 +7763,10 @@ impl<'a> Graph<'a> {
                     ));
                 }
             }
+            Value::Provider(name)
+                if self.phase03
+                    && !reads_rebound_global
+                    && self.record_gin_decorator(scope, decorator, target, before, &name) => {}
             Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
                 let signal = self.django_receiver(scope, args, keywords, before, 0);
                 self.record_django_signal(
@@ -9828,6 +9853,7 @@ impl<'a> Graph<'a> {
                         | wagtail::MODEL_OPTION
                         | wagtail::CALLBACK_PARAMETER
                         | mcp_tools::DECORATOR_APPLICATION
+                        | gin::CONFIG_BINDING
                         | "click_command_declaration"
                         | "celery_task_declaration"
                         | "django_relationship_field_declaration"

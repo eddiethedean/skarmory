@@ -787,6 +787,7 @@ impl Graph<'_> {
                         | "flask.blueprints.Blueprint"
                         | "celery.Celery"
                 ) || is_flask_login_constructor(&qualified)
+                    || gin::tracks_provider_member(&qualified)
                     || mcp_tools::is_server_provider(&qualified)
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
@@ -1206,6 +1207,12 @@ fn provider_module(name: &str) -> bool {
             | "mcp.server.fastmcp"
             | "mcp.server.fastmcp.server"
             | "celery"
+            | "gin"
+            | "gin.config"
+            | "pydantic"
+            | "pydantic.validate_call_decorator"
+            | "tenacity"
+            | "tenacity.stop"
             | "typer"
             | "typer.main"
             | "django.utils.autoreload"
