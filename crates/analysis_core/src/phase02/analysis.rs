@@ -4057,6 +4057,17 @@ impl<'a> Graph<'a> {
                         return Value::Text(text.to_owned());
                     }
                     let binding_scope = self.symbols[id].scope;
+                    if !lazy && let Some(write) = self.closure_cell_read(scope, expression) {
+                        self.read.insert(id);
+                        let replacement =
+                            self.identity(write.setter, write.value, write.value.at, depth + 1);
+                        return if write.possible {
+                            let initial = self.binding(id, END, depth + 1);
+                            Value::alternatives(vec![initial, replacement])
+                        } else {
+                            replacement
+                        };
+                    }
                     let binding_before = if binding_scope == scope
                         || self.immediately_encloses_class_body(scope, binding_scope)
                     {
@@ -4066,14 +4077,6 @@ impl<'a> Graph<'a> {
                         before
                     } else if let Some(call) = self.final_direct_closure_call(scope, binding_scope)
                     {
-                        if let Some(write) = call.write
-                            && self.lexical_binding_key(write.setter, &write.name.text)
-                                == self.lexical_binding_key(scope, name)
-                            && position(self.symbols[id].name.at) < position(write.at)
-                        {
-                            self.read.insert(id);
-                            return self.identity(binding_scope, write.value, write.at, depth + 1);
-                        }
                         call.at
                     } else {
                         let names = &self.scopes[binding_scope].names;
@@ -8009,12 +8012,15 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::SetGlobalName { value, .. } => {
-                    self.record_django_global_write(scope, value, at);
+                    if self.proved_closure_cell_write(scope) {
+                        self.walk(scope, value, at);
+                    } else {
+                        self.record_django_global_write(scope, value, at);
+                    }
                 }
                 StatementKind::SetNonlocalName { value, .. } => {
-                    if let Some(write) = self.proved_closure_cell_write(scope) {
-                        let outer = self.scopes[scope].parent.expect("known enclosing function");
-                        self.walk(outer, value, write.at);
+                    if self.proved_closure_cell_write(scope) {
+                        self.walk(scope, value, at);
                     } else {
                         self.scope_issue(
                             scope,
@@ -15901,6 +15907,133 @@ configure()
                 "{:?}",
                 report.issues
             );
+        }
+    }
+
+    #[test]
+    fn phase03_closure_reads_the_rebound_receiver_at_the_terminal_call() {
+        let classes = "\
+class First:
+    def work(self): return 1
+class Second:
+    def work(self): return 2
+";
+        for (source, possible) in [
+            (
+                "
+def run():
+    selected = First()
+    def install():
+        nonlocal selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+def run():
+    selected = First()
+    def install():
+        def write():
+            nonlocal selected
+            selected = Second()
+        write()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+selected = First()
+def run():
+    def install():
+        global selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+from external import dispatch
+def run():
+    selected = First()
+    def install():
+        nonlocal selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    dispatch(install)
+    return execute()
+run()
+",
+                true,
+            ),
+            (
+                "
+from external import choose
+def run():
+    if choose():
+        selected = First()
+    else:
+        selected = Second()
+    def execute():
+        return selected.work()
+    return execute()
+run()
+",
+                true,
+            ),
+        ] {
+            let source = format!("{classes}{source}");
+            let main = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(&source).unwrap(),
+            };
+            let external = module(
+                "external.py",
+                "external",
+                "def dispatch(callback):\n    if __debug__:\n        callback()\n\ndef choose():\n    return __debug__\n",
+            );
+            let files = if possible {
+                vec![main, external]
+            } else {
+                vec![main]
+            };
+            let result = analyze_phase03(&files, &[]);
+            assert!(result.issues.is_empty(), "{source}\n{:?}", result.issues);
+            let called = |name, certainty| {
+                result.evidence.iter().any(|edge| {
+                    edge.full_name == name
+                        && edge.kind == "direct_call"
+                        && edge.certainty == certainty
+                })
+            };
+            assert!(
+                called(
+                    "main.Second.work",
+                    if possible { "possible" } else { "certain" }
+                ),
+                "{source}"
+            );
+            assert_eq!(called("main.First.work", "possible"), possible, "{source}");
+            assert!(!called("main.First.work", "certain"), "{source}");
         }
     }
 
