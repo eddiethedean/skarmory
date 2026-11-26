@@ -19303,6 +19303,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Instance attribute reassignment through a constructor alias reports unresolved_attribute_write."
 
@@ -19316,6 +19317,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Instance attribute reassignment through a constructor alias reports unresolved_attribute_write."
 
@@ -19353,6 +19355,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The complete SDK scan reports Service.run and Service.finish unused even though the exported factory returns Service instances."
 
@@ -19366,6 +19369,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The complete SDK scan reports Service.run and Service.finish unused even though the exported factory returns Service instances."
 
@@ -19379,6 +19383,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.register provider and the callback's receiver dispatch remains unresolved."
 
@@ -19392,6 +19397,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.register provider and the callback's receiver dispatch remains unresolved."
 
@@ -19405,6 +19411,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Positional receiver expansion reports unsupported_construct during expression extraction."
 
@@ -19418,6 +19425,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Positional receiver expansion reports unsupported_construct during expression extraction."
 
@@ -19431,6 +19439,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Keyword receiver expansion reports unsupported_construct for an unbounded keyword expansion."
 
@@ -19444,6 +19453,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Keyword receiver expansion reports unsupported_construct for an unbounded keyword expansion."
 
@@ -19469,6 +19479,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The property decorator and the returned receiver's dispatch report unresolved coverage."
 
@@ -19494,6 +19505,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Iterating over a tuple of known receivers reports unsupported_construct."
 
@@ -19507,6 +19519,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "An explicit method call with a receiver from an unrelated local class reports unresolved_call."
 
@@ -19520,6 +19533,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.accept provider, and consumption of the comprehension result is unsupported."
 
@@ -19533,6 +19547,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.accept provider, and the escaped generator reports unresolved_generator_execution."
 
@@ -19546,6 +19561,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The complete SDK scan reports Worker.start and Worker.finish unused even though an exported factory can return Worker instances."
 
@@ -19559,6 +19575,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies neither external.accept nor external.choose, and both calls are unresolved."
 
@@ -19572,6 +19589,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.accept provider and the escaped receiver call is unresolved."
 
@@ -19585,6 +19603,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Use of the returned comprehension result reports unsupported_construct."
 
@@ -19598,6 +19617,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.invoke provider and class mutation reports unresolved_attribute_write."
 
@@ -19611,6 +19631,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.Descriptor provider; creation, class mutation, and dispatch remain unresolved."
 
@@ -19660,6 +19681,7 @@ prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", 
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.register provider for the escaped class and the call reports unresolved_call."
 
@@ -19985,6 +20007,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
@@ -19998,6 +20021,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
@@ -20011,6 +20035,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
@@ -20024,6 +20049,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
@@ -20049,6 +20075,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.choose provider for the receiver branch."
 
@@ -20062,6 +20089,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.choose provider for the conditional receiver expression."
 
@@ -20087,6 +20115,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The callable returned from a project-local descriptor is unresolved."
 
@@ -20100,6 +20129,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.register provider and class construction reports unresolved_metaclass."
 
@@ -20113,6 +20143,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "Instance method replacement reports unresolved_attribute_write."
 
@@ -20126,6 +20157,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.register provider for the escaped receiver."
 
@@ -20139,6 +20171,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The fixture supplies no external.register provider for the escaped bound method."
 
@@ -20152,6 +20185,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "A complete file-only SDK scan reports both methods unused while the unselected consumer calls the group."
 
@@ -20178,6 +20212,7 @@ prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtim
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "A complete SDK scan reports both methods unused while the excluded consumer calls the group."
 
@@ -20215,5 +20250,6 @@ prerequisites = ["test/test_method_reachability.py:19", "native-cli-control-pair
 provenance = "The pinned test/test_method_reachability.py:292-341 fixture creates both control states and runs the source CLI."
 variants = ["linux-x86_64-cp311-python-cli"]
 port = ""
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 blocker = "The native CLI lacks the pinned per-symbol no_reachable_callers decision evidence for both unreachable methods."

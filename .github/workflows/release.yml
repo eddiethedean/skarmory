@@ -373,6 +373,14 @@ jobs:
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/sdk.receipt.json
+          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
+            --upstream phase03-skylos \
+            --inventory tests/conformance/phase03-inventory.toml \
+            --variant "$DEAD_CODE_SDK_VARIANT" \
+            --sdk-python "$sdk_python" \
+            --artifact "${wheels[0]}" \
+            --candidate-revision "$(git rev-parse HEAD)" \
+            --diagnostics --output phase03-evidence/sdk-method-diagnostics.json
       - name: Record frozen Python reachability reference results
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         working-directory: phase03-skylos-frozen
@@ -397,7 +405,7 @@ jobs:
           from pathlib import Path
           from xml.etree import ElementTree
 
-          from check_dead_code_gate import read_inventory
+          from check_dead_code_gate import passed_pytest_ids, read_inventory
 
           _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
           sdk = required[os.environ["DEAD_CODE_SDK_VARIANT"]]
@@ -405,15 +413,10 @@ jobs:
           frozen = ElementTree.parse(Path("phase03-evidence/methods-frozen-reference.xml"))
           for module in ("test_method_reachability", "test_method_reachability_safety"):
               source = f"test/{module}.py"
-              records = [
-                  case for case in frozen.iter("testcase")
-                  if case.attrib["classname"] == f"test.{module}"
-              ]
-              frozen_ids = {f"{source}::{case.attrib['name']}" for case in records}
+              frozen_ids = passed_pytest_ids(frozen, source)
               sdk_ids = {case_id for case_id, case in sdk.items() if case["source"] == source}
               cli_ids = {case_id for case_id, case in cli.items() if case["source"] == source}
-              if (not frozen_ids or len(records) != len(frozen_ids)
-                      or sdk_ids & cli_ids or sdk_ids | cli_ids != frozen_ids):
+              if not frozen_ids or sdk_ids & cli_ids or sdk_ids | cli_ids != frozen_ids:
                   raise SystemExit(f"Required SDK and CLI cases must match the frozen suite: {source}")
               print(f"{source}: {len(sdk_ids)} SDK cases and {len(cli_ids)} CLI cases")
           PY
@@ -476,6 +479,13 @@ jobs:
             --artifact target/release/skarmory \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/cli.receipt.json
+          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
+            --upstream phase03-skylos \
+            --inventory tests/conformance/phase03-inventory.toml \
+            --variant "$DEAD_CODE_CLI_VARIANT" \
+            --artifact target/release/skarmory \
+            --candidate-revision "$(git rev-parse HEAD)" \
+            --diagnostics --output phase03-evidence/cli-method-diagnostics.json
       - name: Run the native engine conformance shard
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |

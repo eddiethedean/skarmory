@@ -154,6 +154,14 @@ port = "crates/analysis_core/tests/resolve.rs"
         self.assertEqual(report["ledgers"][1]["results"][0]["reference_status"], "xfailed")
         self.assertEqual(report["artifacts"]["candidate"]["sha256"], digest(self.artifact))
 
+    def test_a_passing_diagnostic_receipt_cannot_qualify_a_release_case(self):
+        self.write_inventory()
+        sdk = self.receipt("python-sdk")
+        sdk["diagnostic_only"] = True
+        self.assert_blocked(
+            [self.receipt("python-engine"), sdk], "diagnostic receipts cannot qualify release cases",
+        )
+
     def approved_click_receipt(self):
         case = "test/test_fastapi_truth_cycles.py::test_non_fastapi_click_scan_survives_reassigned_truth_alias"
         test = "phase02::analysis::tests::pinned_click_dead_code_control"

@@ -58,6 +58,22 @@ def validate_revision(value, label):
         raise ValueError(f"{label} must be a full lowercase Git SHA")
 
 
+def passed_pytest_ids(report, source):
+    module = source.removesuffix(".py").replace("/", ".")
+    passed = set()
+    for record in report.iter("testcase"):
+        if record.attrib["classname"] != module:
+            continue
+        case_id = f"{source}::{record.attrib['name']}"
+        for outcome in ("skipped", "failure", "error"):
+            if record.find(outcome) is not None:
+                raise ValueError(f"{case_id}: frozen reference did not pass ({outcome})")
+        if case_id in passed:
+            raise ValueError(f"{case_id}: duplicate frozen reference result")
+        passed.add(case_id)
+    return passed
+
+
 def require_string(record, field):
     value = record.get(field)
     if not isinstance(value, str) or not value.strip():
@@ -182,6 +198,10 @@ def read_inventory(path):
             raise ValueError(f"{case_id}: port must be a string")
         if "blocker" in case:
             require_string(case, "blocker")
+        if "diagnostic_port" in case:
+            require_string(case, "diagnostic_port")
+            if milestone != MILESTONE or case["port"] or "blocker" not in case:
+                raise ValueError(f"{case_id}: a diagnostic port requires a release blocker and no release port")
         if "reviewed_exception" in case:
             exception = case["reviewed_exception"]
             sdk_exception = case_id in DJANGO_ASYNC_EXCEPTIONS
@@ -472,6 +492,9 @@ def verify_runtime_result(result, review):
 
 def verify_ledger(ledger, identity, cases, deferred_ids, errors):
     variant = ledger["variant"]
+    if ledger.get("diagnostic_only"):
+        errors.append(f"{variant}: diagnostic receipts cannot qualify release cases")
+        return {}
     for field, expected in identity.items():
         if ledger.get(field) != expected:
             errors.append(f"{variant}: {field} does not match the release input")

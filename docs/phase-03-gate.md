@@ -250,8 +250,10 @@ fixtures that import an absent external provider. Three exported-factory
 variants and two partial-scan variants produce complete candidate reports with
 incorrect unused-method findings. The changed-file fixture still needs an
 SDK port for its scan selector. The CLI cycle fixture finds the dead
-methods but fails its per-symbol decision evidence assertion. These
-results do not qualify for release credit.
+methods but fails its per-symbol decision evidence assertion. The release
+workflow publishes separate SDK and CLI diagnostic receipts for the 36
+replayable blockers. The changed-file case remains without a candidate
+receipt. Diagnostic outcomes carry no release credit.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

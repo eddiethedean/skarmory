@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
+from xml.etree import ElementTree
 
 from phase03_fastapi import import_scope_report, verify_wheels
 from run_phase03_seed import (
@@ -19,9 +20,46 @@ from run_phase03_seed import (
     case_assertion_sources,
     check_candidate_wheel,
     environment,
+    port_cases,
     scan_candidate,
     write_receipt,
 )
+
+
+class FrozenReferenceTests(unittest.TestCase):
+    def test_required_frozen_result_must_be_an_ordinary_pass(self):
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            from check_dead_code_gate import passed_pytest_ids
+
+        report = ElementTree.fromstring(
+            '<testsuite><testcase classname="test.test_methods" name="test_alias[local]" /></testsuite>'
+        )
+        source = "test/test_methods.py"
+        self.assertEqual(passed_pytest_ids(report, source), {f"{source}::test_alias[local]"})
+        testcase = report.find("testcase")
+        for outcome in ("skipped", "failure", "error"):
+            with self.subTest(outcome=outcome):
+                marker = ElementTree.SubElement(testcase, outcome)
+                with self.assertRaisesRegex(ValueError, f"frozen reference did not pass \\({outcome}\\)"):
+                    passed_pytest_ids(report, source)
+                testcase.remove(marker)
+
+
+class DiagnosticPortTests(unittest.TestCase):
+    def test_method_diagnostics_and_release_ports_are_separate(self):
+        args = SimpleNamespace(
+            inventory=ROOT / "tests/conformance/phase03-inventory.toml",
+            sdk_python=None, variant="linux-x86_64-cp311-python-cli", diagnostics=False,
+        )
+        method = "test/test_method_reachability.py::test_default_cli_reports_methods_and_explains_unreachable_groups"
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            _, _, _, release = port_cases(args)
+            args.diagnostics = True
+            _, _, _, diagnostics = port_cases(args)
+
+        self.assertIn(f"{method}[same-name]", release)
+        self.assertIn(f"{method}[cycle]", diagnostics)
+        self.assertFalse(release.keys() & diagnostics.keys())
 
 
 class MethodRootCacheReplayTests(unittest.TestCase):
@@ -277,7 +315,7 @@ class CorpusReceiptTests(unittest.TestCase):
                 args = SimpleNamespace(
                     artifact=artifact, candidate_revision=revision, inventory=root / "inventory.toml",
                     output=root / "receipt.json", sdk_python=Path(sys.executable), upstream=root,
-                    variant=variant["id"], fastapi_wheels=None,
+                    variant=variant["id"], fastapi_wheels=None, diagnostics=False,
                 )
 
                 def run_worker(command, *, timeout, **_kwargs):

@@ -163,7 +163,8 @@ def port_cases(args):
     layer = variant["layer"]
     if layer not in {"sdk", "cli", "engine"} or variant["backend"] != "python":
         raise ValueError("the seed runner requires a Python backend SDK, CLI, or engine variant")
-    cases = {key: case for key, case in expected[args.variant].items() if case["port"] == PORT}
+    port = "diagnostic_port" if args.diagnostics else "port"
+    cases = {key: case for key, case in expected[args.variant].items() if case.get(port) == PORT}
     if not cases:
         raise ValueError(f"no seed port mappings for {args.variant}")
     if (layer == "engine" and not cases.keys() <= ENGINE_CASES) or (
@@ -501,6 +502,7 @@ def pytest_worker(args):
             self.outcomes = {}
             self.lines = {}
             self.failed_assertions = {}
+            self.diagnostic_failures = {}
             self.scans = set()
             self.dependency_declarations = set()
             self.grep_scans = set()
@@ -720,6 +722,8 @@ def pytest_worker(args):
                     self.lines[key] = trace.completed
 
         def pytest_runtest_makereport(self, item, call):
+            if args.diagnostics and call.excinfo is not None:
+                self.diagnostic_failures[item.nodeid] = call.excinfo.exconly()
             if (
                 call.when == "call"
                 and call.excinfo
@@ -813,6 +817,8 @@ def pytest_worker(args):
             "failed_assertion": capture.failed_assertions.get(key),
             "prerequisites": prerequisites,
         }
+        if key in capture.diagnostic_failures:
+            report[key]["diagnostic_failure"] = capture.diagnostic_failures[key]
         runtime_results = capture.runtime_results.get(key, ())
         if len(runtime_results) == 1 and (
             outcome == "passed" or outcome == "failed" and key in capture.failed_assertions
@@ -854,6 +860,8 @@ def write_receipt(args):
             common.extend(("--sdk-python", str(args.sdk_python)))
         if args.fastapi_wheels is not None:
             common.extend(("--fastapi-wheels", str(args.fastapi_wheels)))
+        if args.diagnostics:
+            common.append("--diagnostics")
         for mode in ("reference", "candidate"):
             output = work / (mode + ".json")
             commands[mode] = [*common, "--mode", mode, "--output", str(output)]
@@ -910,6 +918,13 @@ def write_receipt(args):
                 "prerequisites", dict.fromkeys(case["prerequisites"], "blocked")
             ),
         }
+        if args.diagnostics:
+            expected_reference = "xfailed" if "reference_xfail" in case else "passed"
+            if (result["reference_status"] != expected_reference
+                    or result["status"] not in {"failed", "blocked", "passed"}):
+                errors.append(f"{case_id}: missing or non-executed diagnostic result")
+            if "diagnostic_failure" in candidate:
+                result["candidate_failure"] = candidate["diagnostic_failure"]
         if "reviewed_runtime" in candidate:
             result["reviewed_runtime"] = candidate["reviewed_runtime"]
             if candidate.get("failed_assertion"):
@@ -946,11 +961,13 @@ def write_receipt(args):
         "candidate_command": commands["candidate"],
         "results": results,
     }
+    if args.diagnostics:
+        receipt["diagnostic_only"] = True
     args.output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     for error in errors:
         print(error, file=sys.stderr)
     # Leave reconciliation and the publication verdict to the gate.
-    return 0
+    return int(args.diagnostics and bool(errors))
 
 
 def main():
@@ -964,6 +981,7 @@ def main():
     parser.add_argument("--artifact", required=True, type=Path)
     parser.add_argument("--candidate-revision")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--diagnostics", action="store_true", help="Replay diagnostic ports without release credit")
     parser.add_argument("--mode", choices=("reference", "candidate"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.upstream = args.upstream.resolve()
