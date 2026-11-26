@@ -1085,12 +1085,6 @@ fn scan_selected(
         .then(|| analysis::TemplateProject::new(&project, &config.selection));
     let gin = (include_dead_code && phase03 && path.is_dir())
         .then(|| analysis::GinProject::new(&project, &config.selection));
-    let external_classes = (phase03 && include_dead_code && path.is_dir()).then(|| {
-        external_classes::ExternalClassIndex::new(external_classes::search_roots(
-            path,
-            &options.dependency_search_paths,
-        ))
-    });
     let framework = analysis::FrameworkInputs {
         external_classes: external_classes.as_ref(),
         settings: django_settings.as_deref(),

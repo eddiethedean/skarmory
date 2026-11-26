@@ -844,10 +844,6 @@ pub(super) fn analyze_with_verification(
     };
     if phase03 {
         graph.collect_gin_bindings(framework.gin);
-        let limit = fastapi::MAX_INITIALIZER_CALL_EVENTS;
-        #[cfg(test)]
-        let limit = framework.fastapi_call_event_limit.unwrap_or(limit);
-        graph.bound_fastapi_initializers(limit);
     }
     let mut roots = graph.external_roots(entrypoints, &initialization_edges);
     if let Some(package_entrypoints) = package_entrypoints {
@@ -2362,18 +2358,6 @@ impl<'a> Graph<'a> {
                         definition.name.at,
                         depth + 1,
                     ) || self.gin_decorator_replaces_function(
-                        scope,
-                        decorator,
-                        id,
-                        definition.name.at,
-                        depth + 1,
-                    ) || self.click_command_replaces_function(
-                        scope,
-                        decorator,
-                        id,
-                        definition.name.at,
-                        depth + 1,
-                    ) || self.traitlets_replaces_function(
                         scope,
                         decorator,
                         id,
@@ -6419,6 +6403,11 @@ impl<'a> Graph<'a> {
                     {
                         // Exact built-in scalars cannot call user-defined numeric conversions.
                     }
+                    Value::Provider(name) if self.phase03 && gin::is_config_loader(&name) => {
+                        self.gin_config_call(CallArguments { scope, at: expr.at, before, positional: arguments, keywords });
+                    }
+                    Value::Provider(name) if self.phase03 && gin::is_stop_after_attempt(&name)
+                        && gin::supported_stop_arguments(arguments, keywords) => {}
                     Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
                         if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
@@ -8051,43 +8040,6 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && !reads_rebound_global
                     && self.record_gin_decorator(scope, decorator, target, before, &name) => {}
-            Value::Provider(name)
-                if self.phase03
-                    && !reads_rebound_global
-                    && self.record_traitlets_decorator(scope, decorator, target, &name) => {}
-            Value::Provider(name)
-                if self.phase03
-                    && !reads_rebound_global
-                    && self.is_click_command_declaration(scope, decorator, target, &name) =>
-            {
-                self.edge(scope, target, "click_command_declaration", "possible");
-            }
-            Value::Provider(name)
-                if self.phase03 && !reads_rebound_global && name == celery::LOGGING_CONNECT =>
-            {
-                if self.register_celery_logging(scope, target, decorator) {
-                    return true;
-                }
-                self.scope_issue(
-                    scope,
-                    decorator.at,
-                    "unresolved_registration",
-                    "Celery setup_logging decorator requires a plain synchronous keyword receiver",
-                );
-            }
-            Value::Provider(name)
-                if self.phase03 && !reads_rebound_global && django_checks::is_register(&name) =>
-            {
-                if self.record_django_system_check_decorator(scope, target, decorator, before) {
-                    return true;
-                }
-                self.scope_issue(
-                    scope,
-                    decorator.at,
-                    "unresolved_registration",
-                    "Django system check decorator is outside the bounded model",
-                );
-            }
             Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
                 let signal = self.django_receiver(scope, args, keywords, before, 0);
                 self.record_django_signal(
