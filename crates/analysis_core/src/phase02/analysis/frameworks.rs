@@ -2476,15 +2476,7 @@ impl Graph<'_> {
             django_loaded_module(settings),
             django_loaded_module(row.file),
         ]);
-        let settings_bindings: Vec<_> = self.scopes[settings]
-            .names
-            .iter()
-            .filter(|(name, _)| {
-                name.chars().any(char::is_uppercase) && !name.chars().any(char::is_lowercase)
-            })
-            .flat_map(|(_, bindings)| self.effective_bindings(bindings).iter().copied())
-            .filter(|&binding| matches!(self.symbols[binding].binding, Binding::Variable(..)))
-            .collect();
+        let settings_bindings: Vec<_> = self.django_setting_bindings(settings).collect();
         for binding in settings_bindings {
             self.edge(scope, binding, "django_setting", "certain");
         }
@@ -2506,6 +2498,17 @@ impl Graph<'_> {
                 );
             }
         }
+    }
+
+    fn django_setting_bindings(&self, settings: ScopeId) -> impl Iterator<Item = SymbolId> + '_ {
+        self.scopes[settings]
+            .names
+            .iter()
+            .filter(|(name, _)| {
+                name.chars().any(char::is_uppercase) && !name.chars().any(char::is_lowercase)
+            })
+            .flat_map(|(_, bindings)| self.effective_bindings(bindings).iter().copied())
+            .filter(|&binding| matches!(self.symbols[binding].binding, Binding::Variable(..)))
     }
 
     pub(super) fn report_django_startup_coverage(&mut self, reach: &Reachability) {

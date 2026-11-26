@@ -10454,6 +10454,7 @@ impl<'a> Graph<'a> {
         }
         if self.phase03 && converged {
             let mut protocols = self.django_settings_protocol_roots(&reach);
+            protocols.extend(self.external_django_setting_declarations(&reach));
             protocols.extend(self.standalone_django_converter_roots(&reach));
             if let Some(templates) = templates {
                 protocols.extend(self.django_template_roots(&reach, templates));
