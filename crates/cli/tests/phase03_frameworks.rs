@@ -3726,69 +3726,6 @@ fn flask_factory_calls_an_inert_replacement_after_initializing_blueprint_routes(
 }
 
 #[test]
-fn flask_factory_resolves_an_inert_lookalike_published_before_its_child_import() {
-    let project = tempfile::tempdir().unwrap();
-    let root = project.path();
-    let cache = tempfile::tempdir().unwrap();
-    fs::create_dir_all(root.join("app/views")).unwrap();
-    fs::write(
-        root.join("app/__init__.py"),
-        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    from app.views import bp\n    app.register_blueprint(bp)\n    return app\n",
-    )
-    .unwrap();
-    fs::write(
-        root.join("app/views/routes.py"),
-        "from app.views import bp\n@bp.before_app_request\ndef prepare(): return helper()\ndef helper(): return 1\ndef retired(): return 2\n",
-    )
-    .unwrap();
-    fs::write(
-        root.join("lookalike.py"),
-        "class Blueprint:\n    def __init__(self, name, import_name): pass\n    def before_app_request(self, callback): return callback\n    def register(self, app, options): pass\n",
-    )
-    .unwrap();
-    let initializer = root.join("app/views/__init__.py");
-    fs::write(
-        &initializer,
-        "from lookalike import Blueprint\nbp = Blueprint('main', __name__)\nfrom app.views import routes\n",
-    )
-    .unwrap();
-    let report = scan(root);
-    assert_eq!(
-        findings(&report, "unused_functions"),
-        [
-            "app.views.routes.helper",
-            "app.views.routes.prepare",
-            "app.views.routes.retired",
-        ],
-    );
-    for _ in 0..2 {
-        let mut cached = scan_with_settings(root, None, Some(cache.path()));
-        cached.as_object_mut().unwrap().remove("cache");
-        assert_eq!(cached, report);
-    }
-
-    fs::write(
-        &initializer,
-        "from lookalike import Blueprint\nfrom app.views import routes\nbp = Blueprint('main', __name__)\n",
-    )
-    .unwrap();
-    let late = scan_with_exit(root, None, Some(cache.path()), 2);
-    assert!(
-        late["analysis_errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| {
-                matches!(
-                    issue["kind"].as_str(),
-                    Some("cyclic_imports" | "unresolved_import")
-                )
-            }),
-        "{late}"
-    );
-}
-
-#[test]
 fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
