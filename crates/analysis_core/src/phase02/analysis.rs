@@ -6840,6 +6840,10 @@ impl<'a> Graph<'a> {
         if self.modeled_django_command_installer(scope, at) {
             return;
         }
+        if let Some(writer) = self.flask_login_mutator_dispatch(id, call) {
+            self.invoke(scope, writer, "direct_call", certainty, at);
+            return;
+        }
         // Callback parameter substitution is bounded by retaining the finite
         // supplied values even if the callee dispatches dynamically.
         for argument in positional
@@ -10860,6 +10864,7 @@ impl<'a> Graph<'a> {
         self.report_fresh_field_calls(&reach);
         self.report_constructor_hook_stores(&reach);
         self.report_source_provider_calls(&reach);
+        self.report_escaped_flask_login_mutators(&reach);
         self.issues
             .extend(
                 self.fastapi_dependency_issues

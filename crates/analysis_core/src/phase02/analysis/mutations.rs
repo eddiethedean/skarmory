@@ -30,6 +30,11 @@ struct Write {
     value: MemberWriteValue,
 }
 
+struct FlaskLoginEffectCall {
+    callee: SymbolId,
+    forwarded: Option<Invocation>,
+}
+
 #[derive(Default)]
 pub(super) struct Mutations {
     members: BTreeMap<ReceiverKey, BTreeMap<String, Vec<Write>>>,
@@ -40,13 +45,15 @@ pub(super) struct Mutations {
     command_code: BTreeMap<SymbolId, Vec<Write>>,
     django_command_installers: BTreeSet<(ScopeId, [usize; 2])>,
     flask_login_code: BTreeMap<String, Vec<Write>>,
+    flask_login_writers: BTreeMap<SymbolId, Location>,
+    flask_login_effect_calls: BTreeMap<(ScopeId, [usize; 2]), FlaskLoginEffectCall>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     unmodeled_class_writes: BTreeSet<SymbolId>,
     framework_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
 
-impl Graph<'_> {
+impl<'a> Graph<'a> {
     pub(super) fn index_framework_mutations(&mut self) {
         let track_framework_escapes = self.symbols.iter().any(|symbol| {
             matches!(symbol.binding, Binding::Import(import) if import.level == 0
@@ -238,7 +245,8 @@ impl Graph<'_> {
                             expression,
                             conditional,
                         ) || !conditional
-                            && self.index_flask_global_setter(file, at, expression)) => {}
+                            && (self.index_flask_global_setter(file, at, expression)
+                                || self.index_flask_login_effect_call(file, at, expression))) => {}
                 StatementKind::Evaluate(
                     expression @ Expression {
                         kind:
@@ -887,6 +895,195 @@ impl Graph<'_> {
 
     pub(super) fn modeled_flask_global_setter(&self, scope: ScopeId) -> bool {
         self.mutations.flask_global_setters.contains(&scope)
+    }
+
+    fn index_flask_login_effect_call(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &expression.kind
+        else {
+            return false;
+        };
+        if !keywords.is_empty() {
+            return false;
+        }
+        let Some((callee, call_scope, function)) =
+            self.flask_login_effect_function(file, at, function)
+        else {
+            return false;
+        };
+        let (writer, scope, definition, arguments) = if let (
+            [parameter],
+            [argument],
+            [
+                Statement {
+                    kind:
+                        StatementKind::Evaluate(Expression {
+                            kind:
+                                ExpressionKind::Call {
+                                    function: forwarded,
+                                    arguments: forwarded_args,
+                                    keywords: forwarded_keywords,
+                                },
+                            ..
+                        }),
+                    ..
+                },
+            ],
+        ) = (
+            function.parameters.as_slice(),
+            arguments.as_slice(),
+            body_without_docstring(function),
+        ) && matches!(&forwarded.kind, ExpressionKind::Name(name) if *name == parameter.text)
+            && forwarded_args.is_empty()
+            && forwarded_keywords.is_empty()
+        {
+            let Some((writer, scope, definition)) =
+                self.flask_login_effect_function(file, at, argument)
+            else {
+                return false;
+            };
+            (writer, scope, definition, &[][..])
+        } else {
+            (callee, call_scope, function, arguments.as_slice())
+        };
+        let [
+            Statement {
+                at: write_at,
+                kind:
+                    StatementKind::WriteAttribute {
+                        receiver,
+                        member,
+                        value: Some(value),
+                    },
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return false;
+        };
+        let ExpressionKind::Name(name) = &receiver.kind else {
+            return false;
+        };
+        let receiver = match (definition.parameters.as_slice(), arguments) {
+            ([], []) => receiver,
+            ([parameter], [argument]) if parameter.text == *name => argument,
+            _ => return false,
+        };
+        if !flask_login_callback(member)
+            || !matches!(&value.kind, ExpressionKind::Name(replacement)
+                if definition.parameters.iter().all(|parameter| parameter.text != *replacement))
+        {
+            return false;
+        }
+        let resolved = self.probe_identity(file, receiver, at);
+        if !match resolved {
+            Value::Provider(provider) if is_flask_login_constructor(&provider) => self
+                .flask_login_identity_replacement(file, at, value)
+                .is_some(),
+            Value::Object(_, ObjectKind::FlaskLoginManager) => matches!(
+                self.flask_login_effect_function(file, at, value),
+                Some((_, _, replacement)) if replacement.parameters.len() == 1
+                    && returns_parameter(replacement, &replacement.parameters[0])
+            ),
+            _ => false,
+        } {
+            return false;
+        }
+
+        self.index_member_write(file, at, receiver, member, Some(value), false);
+        if !self.modeled_framework_write(file, at) {
+            return false;
+        }
+        self.mutations.modeled.insert((scope, position(*write_at)));
+        self.mutations
+            .flask_login_writers
+            .insert(writer.target, *write_at);
+        self.mutations.flask_login_effect_calls.insert(
+            (file, position(at)),
+            FlaskLoginEffectCall {
+                callee: callee.target,
+                forwarded: (writer.target != callee.target).then_some(writer),
+            },
+        );
+        true
+    }
+
+    fn flask_login_effect_function(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+    ) -> Option<(Invocation, ScopeId, &'a Definition)> {
+        if !matches!(expression.kind, ExpressionKind::Name(_)) {
+            return None;
+        }
+        let Value::Callable(invocation) = self.probe_identity(file, expression, at) else {
+            return None;
+        };
+        let symbol = &self.symbols[invocation.target];
+        let Binding::Definition(function, scope) = symbol.binding else {
+            return None;
+        };
+        (symbol.scope == file
+            && !invocation.verified
+            && matches!(invocation.receiver, Receiver::Ordinary)
+            && !invocation.implicit_descriptor_receiver
+            && function.annotations.is_empty()
+            && field_dispatch::plain_method(function, function.parameters.len()))
+        .then_some((invocation, scope, function))
+    }
+
+    pub(super) fn flask_login_mutator_dispatch(
+        &mut self,
+        callee: SymbolId,
+        call: CallArguments<'_>,
+    ) -> Option<Invocation> {
+        let modeled = self
+            .mutations
+            .flask_login_effect_calls
+            .get(&(call.scope, position(call.at)))
+            .filter(|effect| effect.callee == callee);
+        let forwarded = modeled.and_then(|effect| effect.forwarded);
+        if modeled.is_none() && self.mutations.flask_login_writers.contains_key(&callee) {
+            self.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_attribute_write",
+                "Flask callback mutation is outside the bounded initializer",
+            );
+        }
+        forwarded
+    }
+
+    pub(super) fn report_escaped_flask_login_mutators(&mut self, reach: &Reachability) {
+        self.issues
+            .extend(
+                self.mutations
+                    .flask_login_writers
+                    .iter()
+                    .filter_map(|(&target, &at)| {
+                        reach
+                            .evidence
+                            .range((target, "", "")..)
+                            .take_while(|(id, _, _)| *id == target)
+                            .any(|(_, kind, _)| !matches!(*kind, "direct_call" | "type_reference"))
+                            .then(|| {
+                                Issue::new(
+                                    "unresolved_attribute_write",
+                                    &self.files[self.symbols[target].scope].path,
+                                    "Flask callback mutation can escape the bounded initializer",
+                                )
+                                .at(at)
+                            })
+                    }),
+            );
     }
 
     pub(super) fn walk_flask_globals_update(
