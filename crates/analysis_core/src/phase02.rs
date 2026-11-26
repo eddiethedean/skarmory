@@ -1107,6 +1107,7 @@ fn scan_selected(
         gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
+        wildcard_guards: Some(&wildcard_resolution.guards),
         #[cfg(test)]
         fastapi_call_event_limit: None,
     };
