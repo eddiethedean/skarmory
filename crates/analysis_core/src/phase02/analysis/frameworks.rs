@@ -620,6 +620,7 @@ impl Graph<'_> {
     fn collect_test_frameworks(&mut self) {
         let mut plugins = BTreeSet::new();
         let mut declarations = Vec::new();
+        let mut unittest_fixture_modules = BTreeMap::new();
         for file in 0..self.files.len() {
             let path = &self.files[file].path;
             if let Some(prefix) = pytest_conftest_prefix(path)
@@ -640,7 +641,10 @@ impl Graph<'_> {
             {
                 continue;
             }
-            self.collect_unittest_module(file);
+            self.collect_unittest_module(file, &mut unittest_fixture_modules);
+        }
+        for (file, certain) in unittest_fixture_modules {
+            self.collect_module_test_fixtures(file, "unittest_discovery", certain);
         }
         while let Some(file) = declarations.pop() {
             let Some(binding) = self.local(file, "pytest_plugins", END) else {
@@ -687,8 +691,12 @@ impl Graph<'_> {
         }
     }
 
-    fn collect_unittest_module(&mut self, file: ScopeId) {
-        let mut runnable = None;
+    fn collect_unittest_module(
+        &mut self,
+        file: ScopeId,
+        unittest_fixture_modules: &mut BTreeMap<ScopeId, bool>,
+    ) {
+        let mut pytest_module_fixtures = None;
         for (class, certain) in self.pytest_registrations(&self.scopes[file].names, "") {
             let Some(&role) = self.unittest_classes.get(&class.target) else {
                 continue;
@@ -761,8 +769,40 @@ impl Graph<'_> {
             }
             let certain_case =
                 certain && (opaque_test || tests.iter().any(|(_, selected)| *selected));
-            runnable = Some(runnable.unwrap_or(false) || certain_case);
+            let symbol = &self.symbols[class.target];
+            let defining_file = self.scopes[symbol.scope].file;
+            let Binding::Definition(_, class_scope) = symbol.binding else {
+                unreachable!("discovery requires a class definition");
+            };
+            let module_overridden = self.scopes[class_scope]
+                .names
+                .get("__module__")
+                .is_some_and(|bindings| {
+                    bindings
+                        .iter()
+                        .any(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+                })
+                || self
+                    .class_discovery_write(class.target, "__module__", file)
+                    .is_some();
+            if module_overridden {
+                self.scope_issue(
+                    defining_file,
+                    symbol.name.at,
+                    "unresolved_unittest_fixture_module",
+                    "unittest module fixtures depend on an overridden class __module__",
+                );
+            } else {
+                // unittest uses the concrete test class's __module__, even
+                // when the loader finds the class in another module.
+                *unittest_fixture_modules.entry(defining_file).or_default() |= certain_case;
+            }
             if self.is_pytest_file(file) {
+                if defining_file != file || module_overridden {
+                    // pytest's xUnit fixtures belong to its collection module.
+                    pytest_module_fixtures =
+                        Some(pytest_module_fixtures.unwrap_or(false) || certain_case);
+                }
                 self.pytest_unittest_cases
                     .entry(file)
                     .or_default()
@@ -796,32 +836,36 @@ impl Graph<'_> {
                 }
             }
         }
-        if let Some(certain) = runnable {
-            for name in ["setUpModule", "tearDownModule"] {
-                let Some(bindings) = self.scopes[file].names.get(name) else {
+        if let Some(certain) = pytest_module_fixtures {
+            self.collect_module_test_fixtures(file, "pytest_xunit_fixture", certain);
+        }
+    }
+
+    fn collect_module_test_fixtures(&mut self, file: ScopeId, kind: &'static str, certain: bool) {
+        for name in ["setUpModule", "tearDownModule"] {
+            let Some(bindings) = self.scopes[file].names.get(name) else {
+                continue;
+            };
+            let bindings: Vec<_> = bindings
+                .iter()
+                .copied()
+                .filter(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+                .collect();
+            for (method, selected) in self.callable_candidates(&bindings) {
+                let target = method.target;
+                if !self.unittest_callable(target) || self.is_coroutine(target) {
                     continue;
-                };
-                let bindings: Vec<_> = bindings
-                    .iter()
-                    .copied()
-                    .filter(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
-                    .collect();
-                for (method, selected) in self.callable_candidates(&bindings) {
-                    let target = method.target;
-                    if !self.unittest_callable(target) || self.is_coroutine(target) {
-                        continue;
-                    }
-                    self.read.extend(method.bindings);
-                    self.framework_root(
-                        target,
-                        if self.is_generator(target) {
-                            "generator_creation"
-                        } else {
-                            "unittest_discovery"
-                        },
-                        certain && selected,
-                    );
                 }
+                self.read.extend(method.bindings);
+                self.framework_root(
+                    target,
+                    if self.is_generator(target) {
+                        "generator_creation"
+                    } else {
+                        kind
+                    },
+                    certain && selected,
+                );
             }
         }
     }
