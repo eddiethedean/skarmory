@@ -17776,9 +17776,8 @@ assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framew
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22"]
 provenance = "Pinned test/test_framework_class_attr_liveness.py:73."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The fixture imports the unavailable notinstalled_celery base. The native scan reports unresolved_subclass_hook at backend.py:9 and cannot prove the original unread-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_liveness.py::test_unrelated_django_name_keeps_filter_attributes_reported"
@@ -17789,9 +17788,8 @@ assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framew
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22"]
 provenance = "Pinned test/test_framework_class_attr_liveness.py:102."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The fixture imports the unavailable notinstalled_django base. The native scan reports unresolved_subclass_hook at filters.py:4 and cannot prove the original unread-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_liveness.py::test_unrelated_storages_name_keeps_bucket_name_reported"
@@ -17802,9 +17800,8 @@ assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framew
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22"]
 provenance = "Pinned test/test_framework_class_attr_liveness.py:129."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The fixture imports the unavailable notinstalled_storages base. The native scan reports unresolved_subclass_hook at storage.py:4 and cannot prove the original unread-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_liveness.py::test_project_venv_site_packages_are_external_search_dirs"
@@ -17868,9 +17865,8 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:148."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The base source is absent. The native scan reports unresolved subclass and constructor dispatch and cannot prove the original unused override assertions."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_site_packages_inside_the_scan_root_is_not_external"
