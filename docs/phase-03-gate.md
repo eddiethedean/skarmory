@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,478 cases to Phase 0.3 and defers 42 to later language
+inventory assigns 1,574 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -227,6 +227,31 @@ generator expressions and models materialization by resolved built-in
 consumers and escaping generator values can still make coverage incomplete.
 Skarmory follows a `finally` suite after straight-line literal assignments
 to fresh local names. An overwrite can release an object and run its finalizer.
+
+### Method reachability audit
+
+The inventory accounts for all 80 cases in the pinned
+`test_method_reachability.py` and `test_method_reachability_safety.py` suites.
+All 80 pass on frozen Skylos. The unchanged assertions qualify 42 cases on
+the installed Skarmory SDK and one on the native CLI in the local macOS
+ARM64 CPython 3.11 replay. CI checks that the frozen pytest IDs match the
+SDK and CLI inventory entries and replays the mapped cases on Linux.
+
+The receiver-alias, import-alias, and recursion controls keep their original
+grep settings. The method-root edit case runs uncached with one worker and
+repeats each source state with the native fact cache and two workers. The
+receipt requires cache misses for changed bytes and cache hits on the
+repeated and restored source. It compares findings, evidence, and coverage
+with the uncached report for each state.
+
+The remaining 37 cases are required blockers. The inventory records the
+coverage diagnostics for unsupported receiver operations, and identifies
+fixtures that import an absent external provider. Three exported-factory
+variants and two partial-scan variants produce complete candidate reports with
+incorrect unused-method findings. The changed-file fixture still needs an
+SDK port for its scan selector. The CLI cycle fixture finds the dead
+methods but fails its per-symbol decision evidence assertion. These
+results do not qualify for release credit.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

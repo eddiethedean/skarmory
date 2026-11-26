@@ -14,6 +14,7 @@ from run_phase03_seed import (
     CORPUS_SOURCE,
     ROOT,
     AssertionTrace,
+    MethodRootCacheReplay,
     benchmark_assertions,
     case_assertion_sources,
     check_candidate_wheel,
@@ -21,6 +22,41 @@ from run_phase03_seed import (
     scan_candidate,
     write_receipt,
 )
+
+
+class MethodRootCacheReplayTests(unittest.TestCase):
+    def test_fact_cache_replay_requires_every_original_scan(self):
+        cache_dir = Path("candidate-cache")
+        replay = MethodRootCacheReplay(cache_dir)
+        for root_present, hits in (
+            (False, None), (False, 0), (False, 1),
+            (True, None), (True, 0), (True, 1),
+            (False, None), (False, 1), (False, 1),
+        ):
+            with self.subTest(index=replay.observed):
+                self.assertFalse(replay.proved)
+                options = replay.options({"grep_cache": hits is not None})
+                report = {"unused_functions": [] if root_present else ["worker.Task.run"]}
+                if hits is not None:
+                    self.assertEqual(options["cache_dir"], cache_dir)
+                    self.assertEqual(options["workers"], 2)
+                    report["cache"] = {
+                        "hits": hits, "misses": 1 - hits, "writes": 1 - hits, "write_failures": 0,
+                    }
+                else:
+                    self.assertNotIn("cache_dir", options)
+                replay.observe(report)
+        self.assertTrue(replay.proved)
+
+    def test_fact_cache_replay_rejects_different_coverage(self):
+        replay = MethodRootCacheReplay(Path("candidate-cache"))
+        replay.observe({"coverage": {"status": "complete"}})
+        with self.assertRaisesRegex(ValueError, "differs from the uncached control"):
+            replay.observe({
+                "coverage": {"status": "incomplete"},
+                "cache": {"hits": 0, "misses": 1, "writes": 1, "write_failures": 0},
+            })
+        self.assertFalse(replay.proved)
 
 
 class FastapiImportScopeTests(unittest.TestCase):

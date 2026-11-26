@@ -13,8 +13,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
-from phase03_cli import CASE as CLI_CASE
-from phase03_cli import CLEANUP_CASES, WORKFLOW_SOURCES, CleanupCaseCli, RecursiveCaseCli, WorkflowCaseCli
+from phase03_cli import (
+    CLEANUP_CASES,
+    CONTROL_PAIR_CASES,
+    METHOD_SOURCE,
+    WORKFLOW_SOURCES,
+    CleanupCaseCli,
+    PairedSourceCli,
+    WorkflowCaseCli,
+)
 from phase03_cleanup_execution import CLEANUP_EXECUTION_CASES, CleanupExecutionCli
 from phase03_dependencies import (
     DECLARATION_CASE,
@@ -48,6 +55,8 @@ BENCHMARK_CASE = f"{BENCHMARK_SOURCE}::{BENCHMARK_ID}"
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
 SOURCE_EDIT_CACHE = "installed-sdk-source-edit-cache-reuse"
+METHOD_CACHE_CASE = f"{METHOD_SOURCE}::test_cache_tracks_adding_and_removing_method_roots"
+METHOD_CACHE = "installed-sdk-method-root-cache-equivalence"
 PROJECT_VENV_CASE = (
     "test/test_framework_class_attr_liveness.py::test_project_venv_site_packages_are_external_search_dirs"
 )
@@ -162,7 +171,7 @@ def port_cases(args):
     ):
         raise ValueError("a mapped engine case requires a registered native port and engine variant")
     if layer == "cli" and any(
-        key != CLI_CASE and key not in CLEANUP_CASES and key not in CLEANUP_EXECUTION_CASES
+        key not in CONTROL_PAIR_CASES and key not in CLEANUP_CASES and key not in CLEANUP_EXECUTION_CASES
         and case["source"] not in WORKFLOW_SOURCES
         for key, case in cases.items()
     ):
@@ -212,6 +221,47 @@ class AssertionTrace:
             if event == "line":
                 self.pending[frame] = f"{source}:{frame.f_lineno}"
         return self
+
+
+class MethodRootCacheReplay:
+    """Use the native fact cache for the pinned method-root edit sequence."""
+
+    # Each source state gets an uncached run and two cache-enabled runs.
+    # The third state restores the first state's bytes and can reuse its facts.
+    EXPECTED_HITS = (None, 0, 1, None, 0, 1, None, 1, 1)
+
+    def __init__(self, cache_path):
+        self.cache_path = cache_path
+        self.observed = 0
+        self.uncached_report = None
+
+    def options(self, options):
+        if self.observed >= len(self.EXPECTED_HITS):
+            raise ValueError("method-root case made extra scans")
+        cache_enabled = self.EXPECTED_HITS[self.observed] is not None
+        if options.get("grep_cache") is not cache_enabled:
+            raise ValueError("the pinned method-root cache sequence changed")
+        if cache_enabled:
+            return {**options, "cache_dir": self.cache_path, "workers": 2}
+        return options
+
+    def observe(self, report):
+        hits = self.EXPECTED_HITS[self.observed]
+        cache = report.get("cache")
+        normalized = {key: value for key, value in report.items() if key != "cache"}
+        if hits is None:
+            if cache is not None:
+                raise ValueError("the uncached method-root scan returned cache statistics")
+            self.uncached_report = normalized
+        else:
+            expected = {"hits": hits, "misses": 1 - hits, "writes": 1 - hits, "write_failures": 0}
+            if cache != expected or normalized != self.uncached_report:
+                raise ValueError("method-root cache state or report differs from the uncached control")
+        self.observed += 1
+
+    @property
+    def proved(self):
+        return self.observed == len(self.EXPECTED_HITS)
 
 
 def case_assertion_sources(upstream, cases):
@@ -462,6 +512,7 @@ def pytest_worker(args):
             self.framework_evidence = set()
             self.live_router_receipts = set()
             self.source_edit_cache = set()
+            self.method_root_cache = set()
             self.import_scope_prerequisites = {}
             self.runtime_results = {}
 
@@ -474,8 +525,11 @@ def pytest_worker(args):
             old_trace = sys.gettrace()
             cache_path = None
             scans_with_cache = []
+            method_cache = None
 
             def analyze(path, **options):
+                if method_cache is not None:
+                    options = method_cache.options(options)
                 if router_policy is not None:
                     if options.get("config_file") is not None:
                         pytest.fail("the original case already supplies a configuration")
@@ -515,6 +569,8 @@ def pytest_worker(args):
                 elif report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
                 self.scans.add(key)
+                if method_cache is not None:
+                    method_cache.observe(report)
                 if cache_path is not None:
                     cache = report.get("cache")
                     if not cache or cache["write_failures"] or cache["writes"] != cache["misses"]:
@@ -574,6 +630,10 @@ def pytest_worker(args):
             with ExitStack() as stack:
                 patch = stack.enter_context(pytest.MonkeyPatch.context())
                 if args.mode == "candidate":
+                    if key == METHOD_CACHE_CASE:
+                        method_cache = MethodRootCacheReplay(stack.enter_context(TemporaryDirectory(
+                            prefix="skarmory-pinned-method-root-cache-",
+                        )))
                     if SOURCE_EDIT_CACHE in case["prerequisites"]:
                         cache_path = stack.enter_context(TemporaryDirectory(
                             prefix="skarmory-pinned-source-edit-cache-",
@@ -586,8 +646,8 @@ def pytest_worker(args):
 
                         patch.setattr(item.module, "default_search_dirs", project_venv_roots)
                     if variant["layer"] == "cli":
-                        if key == CLI_CASE:
-                            cli = RecursiveCaseCli(args.artifact)
+                        if key in CONTROL_PAIR_CASES:
+                            cli = PairedSourceCli(args.artifact)
                             patch.setattr(item.module, "subprocess", cli)
                         elif key in CLEANUP_CASES:
                             cli = CleanupCaseCli(
@@ -655,6 +715,8 @@ def pytest_worker(args):
                         self.scans.add(key)
                     if len(scans_with_cache) == 2:
                         self.source_edit_cache.add(key)
+                    if method_cache is not None and method_cache.proved:
+                        self.method_root_cache.add(key)
                     self.lines[key] = trace.completed
 
         def pytest_runtest_makereport(self, item, call):
@@ -731,6 +793,8 @@ def pytest_worker(args):
                 proven = key in capture.trace_disables
             elif required == SOURCE_EDIT_CACHE:
                 proven = key in capture.source_edit_cache
+            elif required == METHOD_CACHE:
+                proven = key in capture.method_root_cache
             elif required == "runtime-trace-rejected":
                 proven = key in capture.trace_rejections
             prerequisites[required] = "passed" if proven else "blocked"

@@ -13,6 +13,11 @@ CASE = (
     "test/test_reachability_integration_qa.py"
     "::test_real_cli_reports_dead_cycle_and_keeps_live_variant"
 )
+METHOD_SOURCE = "test/test_method_reachability.py"
+CONTROL_PAIR_CASES = {
+    CASE,
+    f"{METHOD_SOURCE}::test_default_cli_reports_methods_and_explains_unreachable_groups[same-name]",
+}
 WORKFLOW_SOURCES = {"test/test_pr_impact.py", "test/test_cli_json_ci_format.py"}
 CLEANUP_SOURCE = "test/test_cleanup_workflow.py"
 CLEANUP_CASES = {
@@ -36,7 +41,7 @@ INVALID_IMPACT_ARGS = {
 }
 
 
-class RecursiveCaseCli:
+class PairedSourceCli:
     def __init__(self, binary):
         self.binary = binary
         self.completed_sources = []

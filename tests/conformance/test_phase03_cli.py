@@ -9,11 +9,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from phase03_cli import CLEANUP_SOURCE, INVALID_IMPACT, CleanupCaseCli, RecursiveCaseCli, WorkflowCaseCli
+from phase03_cli import CLEANUP_SOURCE, INVALID_IMPACT, CleanupCaseCli, PairedSourceCli, WorkflowCaseCli
 from phase03_cleanup_execution import EXECUTION_SOURCE, CleanupExecutionCli
 
 
-class RecursiveCaseCliTests(unittest.TestCase):
+class PairedSourceCliTests(unittest.TestCase):
     def setUp(self):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -21,7 +21,7 @@ class RecursiveCaseCliTests(unittest.TestCase):
         self.source = self.project / "worker.py"
         self.source.write_text("print('inactive')\n", encoding="utf-8")
         self.binary = self.project / "skarmory"
-        self.cli = RecursiveCaseCli(self.binary)
+        self.cli = PairedSourceCli(self.binary)
         self.command = [
             sys.executable, "-c", "from skylos.cli import main; main()",
             str(self.project), "--format", "json", "--no-upload",

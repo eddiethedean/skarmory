@@ -373,7 +373,7 @@ jobs:
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/sdk.receipt.json
-      - name: Record frozen closure reference results
+      - name: Record frozen Python reachability reference results
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         working-directory: phase03-skylos-frozen
         env:
@@ -386,6 +386,37 @@ jobs:
           "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
             test/test_closure_reachability_safety.py \
             --junitxml="$GITHUB_WORKSPACE/phase03-evidence/closure-safety-frozen-reference.xml"
+          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
+            test/test_method_reachability.py test/test_method_reachability_safety.py \
+            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/methods-frozen-reference.xml"
+      - name: Verify the frozen method reachability inventory
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          from check_dead_code_gate import read_inventory
+
+          _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
+          sdk = required[os.environ["DEAD_CODE_SDK_VARIANT"]]
+          cli = required[os.environ["DEAD_CODE_CLI_VARIANT"]]
+          frozen = ElementTree.parse(Path("phase03-evidence/methods-frozen-reference.xml"))
+          for module in ("test_method_reachability", "test_method_reachability_safety"):
+              source = f"test/{module}.py"
+              records = [
+                  case for case in frozen.iter("testcase")
+                  if case.attrib["classname"] == f"test.{module}"
+              ]
+              frozen_ids = {f"{source}::{case.attrib['name']}" for case in records}
+              sdk_ids = {case_id for case_id, case in sdk.items() if case["source"] == source}
+              cli_ids = {case_id for case_id, case in cli.items() if case["source"] == source}
+              if (not frozen_ids or len(records) != len(frozen_ids)
+                      or sdk_ids & cli_ids or sdk_ids | cli_ids != frozen_ids):
+                  raise SystemExit(f"Required SDK and CLI cases must match the frozen suite: {source}")
+              print(f"{source}: {len(sdk_ids)} SDK cases and {len(cli_ids)} CLI cases")
+          PY
       - name: Verify coverage of the frozen closure safety suite
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |
