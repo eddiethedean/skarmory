@@ -720,6 +720,7 @@ pub(super) fn analyze_with_verification(
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
+        django_checks: django_checks::Checks::default(),
         django_command_dispatches: Vec::new(),
         django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
@@ -962,6 +963,7 @@ struct Graph<'a> {
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
+    django_checks: django_checks::Checks,
     django_command_dispatches: Vec<frameworks::DjangoCommandDispatch>,
     django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
@@ -8227,6 +8229,19 @@ impl<'a> Graph<'a> {
             {
                 self.edge(scope, target, "click_command_declaration", "possible");
             }
+            Value::Provider(name)
+                if self.phase03 && !reads_rebound_global && django_checks::is_register(&name) =>
+            {
+                if self.record_django_system_check_decorator(scope, target, decorator, before) {
+                    return true;
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_registration",
+                    "Django system check decorator is outside the bounded model",
+                );
+            }
             Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
                 let signal = self.django_receiver(scope, args, keywords, before, 0);
                 self.record_django_signal(
@@ -11010,6 +11025,7 @@ impl<'a> Graph<'a> {
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
+            self.report_django_system_check_order(&reach);
             self.remove_proven_django_command_option_diagnostics(&reach);
             self.report_django_middleware_calls(&reach);
             self.report_log_record_calls(&reach);
@@ -11865,7 +11881,6 @@ fn is_deferred_possible_edge(kind: &str) -> bool {
         || matches!(
             kind,
             django_checks::CALLBACK
-                | celery::LOGGING_CALLBACK
                 | django_forms::VALIDATION_HOOK
                 | "logging_factory"
                 | celery_routes::ROUTER

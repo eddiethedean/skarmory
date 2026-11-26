@@ -6,7 +6,6 @@ pub(super) const CALLBACK: &str = "django_system_check";
 pub(super) struct Checks {
     registrations: BTreeMap<ScopeId, Vec<Registration>>,
     runs: Vec<Run>,
-    management_checks: Vec<(ScopeId, Location)>,
 }
 
 struct Registration {
@@ -162,7 +161,6 @@ impl Graph<'_> {
                         "admin"
                             | "async_support"
                             | "caches"
-                            | "commands"
                             | "compatibility"
                             | "database"
                             | "files"
@@ -212,30 +210,14 @@ impl Graph<'_> {
         let mut edges = BTreeSet::new();
         let mut imports = BTreeSet::new();
         for run in &self.django_checks.runs {
-            let mut effective = BTreeMap::new();
             for (&scope, registrations) in &self.django_checks.registrations {
-                for registration in registrations {
-                    let Some(import) =
+                for registration in registrations.iter().filter(|site| run.selects(site)) {
+                    if let Some(import) =
                         self.django_check_registration_order(run, scope, registration)
-                    else {
-                        continue;
-                    };
-                    // Django stores one function object and replaces its tags
-                    // on every registration.
-                    let entered = import.map_or(registration.at, |id| self.symbols[id].name.at);
-                    let order = (position(entered), position(registration.at));
-                    if effective
-                        .get(&registration.target)
-                        .is_none_or(|(previous, _, _)| *previous < order)
                     {
-                        effective.insert(registration.target, (order, registration, import));
+                        edges.insert((run.scope, registration.target));
+                        imports.extend(import);
                     }
-                }
-            }
-            for (_, registration, import) in effective.into_values() {
-                if run.selects(registration) {
-                    edges.insert((run.scope, registration.target));
-                    imports.extend(import);
                 }
             }
         }
@@ -245,28 +227,7 @@ impl Graph<'_> {
         }
     }
 
-    pub(super) fn record_django_management_check(&mut self, scope: ScopeId, at: Location) {
-        self.django_checks.management_checks.push((scope, at));
-    }
-
     pub(super) fn report_django_system_check_order(&mut self, reach: &Reachability) {
-        if self.django_checks.registrations.keys().any(|&scope| {
-            let file = self.scopes[scope].file;
-            reach.scopes.contains(&scope)
-                && (reach.active_objects.contains(&django_loaded_module(file))
-                    || reach.django_signal_modules.contains(&file))
-        }) {
-            for (scope, at) in std::mem::take(&mut self.django_checks.management_checks) {
-                if reach.scopes.contains(&scope) {
-                    self.scope_issue(
-                        scope,
-                        at,
-                        "unresolved_registration",
-                        "Django management dispatch of project system checks is outside the bounded model",
-                    );
-                }
-            }
-        }
         let mut unresolved = Vec::new();
         for run in &self.django_checks.runs {
             if !reach.scopes.contains(&run.scope) {

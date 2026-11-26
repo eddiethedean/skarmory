@@ -642,9 +642,6 @@ with the default `run_checks` arguments and literal tag selections. Matching
 checks receive possible-use evidence and retain their framework-supplied
 `app_configs` and keyword arguments. Unsupported registration or dispatch
 forms and unresolved registration order produce coverage diagnostics.
-A selected management `check` command or unresolved command selection reports
-incomplete coverage when it can reach project checks outside the bounded
-dispatch model.
 
 The profile also recognizes selected Celery task registrations, including
 reached `register_task` calls on a resolved app. Bounded Celery backend
