@@ -1720,6 +1720,8 @@ impl<'a> Graph<'a> {
                         | "flask.Blueprint"
                         | "flask.blueprints.Blueprint"
                         | "celery.Celery"
+                        | "celery.signals.setup_logging"
+                        | celery::LOGGING_CONNECT
                 ) || is_flask_login_constructor(&qualified)
                     || gin::tracks_provider_member(&qualified)
                     || traitlets::tracks_provider_member(&qualified)
@@ -1808,7 +1810,11 @@ impl<'a> Graph<'a> {
             Value::Provider(provider) if flask::provider_kind(provider).is_some() => {
                 flask::provider_kind(provider).map(ReceiverKey::FlaskBase)
             }
-            Value::Provider(module) if provider_module(module) || is_django_signal(module) => {
+            Value::Provider(module)
+                if provider_module(module)
+                    || is_django_signal(module)
+                    || module == "celery.signals.setup_logging" =>
+            {
                 Some(ReceiverKey::Module(module.clone()))
             }
             Value::DjangoSignal(site) => Some(ReceiverKey::Signal(*site)),

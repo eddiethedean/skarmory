@@ -113,6 +113,7 @@ enum Value {
     McpServer(Object),
     PluggyHookMarker,
     CeleryConfig(Object),
+    CeleryLogging(Object),
     CeleryBackend(Object),
     DeferredComprehension,
     ComprehensionResult,
@@ -353,6 +354,8 @@ struct Scope<'a> {
     routes: Vec<(Object, SymbolId, &'static str)>,
     optional_flask_routes: Vec<(Object, SymbolId, &'static str)>,
     django_settings: DjangoSettings,
+    celery_logging_receivers: Vec<(SymbolId, SymbolId)>,
+    started_celery_logging: bool,
     starts_django: Vec<frameworks::DjangoStartup>,
     django_formats: Vec<frameworks::DjangoFormatLookup>,
     django_signals: Vec<frameworks::DjangoSignalRegistration>,
@@ -702,6 +705,7 @@ pub(super) fn analyze_with_verification(
         gin_registrations: BTreeMap::new(),
         gin_config_calls: Vec::new(),
         celery_backends: celery::Backends::default(),
+        stock_celery_logging: BTreeSet::new(),
         celery_routes: celery_routes::Routes::default(),
         fastapi_dependency_issues: Vec::new(),
         fastapi: fastapi::Fastapi::default(),
@@ -950,6 +954,7 @@ struct Graph<'a> {
     gin_registrations: BTreeMap<String, Vec<gin::Registration>>,
     gin_config_calls: Vec<gin::ConfigCall>,
     celery_backends: celery::Backends,
+    stock_celery_logging: BTreeSet<Object>,
     celery_routes: celery_routes::Routes,
     fastapi_dependency_issues: Vec<(SymbolId, Issue)>,
     fastapi: fastapi::Fastapi,
@@ -1015,6 +1020,8 @@ impl<'a> Graph<'a> {
             routes: Vec::new(),
             optional_flask_routes: Vec::new(),
             django_settings: self.initial_django_settings.clone(),
+            celery_logging_receivers: Vec::new(),
+            started_celery_logging: false,
             starts_django: Vec::new(),
             django_formats: Vec::new(),
             django_signals: Vec::new(),
@@ -3154,6 +3161,14 @@ impl<'a> Graph<'a> {
             Value::Object(object, ObjectKind::CeleryApp) if name == "conf" => {
                 self.celery_config_member(object, access)
             }
+            Value::Object(object, ObjectKind::CeleryApp) if name == "log" => {
+                Value::CeleryLogging(object)
+            }
+            Value::CeleryLogging(object) if name == "setup_logging_subsystem" => Value::Method(
+                object,
+                ObjectKind::CeleryApp,
+                "log.setup_logging_subsystem".into(),
+            ),
             Value::Object(object, ObjectKind::CeleryApp) if name == "backend" => {
                 Value::CeleryBackend(object)
             }
@@ -5956,6 +5971,13 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
+                    Value::Method(object, ObjectKind::CeleryApp, method)
+                        if self.phase03 && method == "log.setup_logging_subsystem" =>
+                    {
+                        self.dispatch_celery_logging(object, CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
                     Value::Method(parent, ObjectKind::CeleryApp, method)
                         if self.phase03 && method == "register_task" =>
                     {
@@ -8233,6 +8255,19 @@ impl<'a> Graph<'a> {
                     && self.is_click_command_declaration(scope, decorator, target, &name) =>
             {
                 self.edge(scope, target, "click_command_declaration", "possible");
+            }
+            Value::Provider(name)
+                if self.phase03 && !reads_rebound_global && name == celery::LOGGING_CONNECT =>
+            {
+                if self.register_celery_logging(scope, target, decorator) {
+                    return true;
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_registration",
+                    "Celery setup_logging decorator requires a plain synchronous keyword receiver",
+                );
             }
             Value::Provider(name)
                 if self.phase03 && !reads_rebound_global && django_checks::is_register(&name) =>
@@ -11110,7 +11145,7 @@ impl<'a> Graph<'a> {
             .filter_map(|&(target, kind, _)| {
                 (self.retain_sanic_listener_parameters(target, kind)
                     || self.retain_fastapi_callback_parameters(target, kind)
-                    || kind == celery_routes::ROUTER
+                    || matches!(kind, celery_routes::ROUTER | celery::LOGGING_CALLBACK)
                     || kind == "django_migration_callback_declaration")
                     .then_some(target)
             })
@@ -11152,6 +11187,7 @@ impl<'a> Graph<'a> {
                     | "django_field_parameter"
                     | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
+                    | celery::LOGGING_PARAMETER
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
                     | drf::FIELD_DECLARATION
@@ -11910,6 +11946,7 @@ fn is_deferred_possible_edge(kind: &str) -> bool {
         || matches!(
             kind,
             django_checks::CALLBACK
+                | celery::LOGGING_CALLBACK
                 | django_forms::VALIDATION_HOOK
                 | "logging_factory"
                 | celery_routes::ROUTER

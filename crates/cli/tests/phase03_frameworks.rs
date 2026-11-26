@@ -5522,6 +5522,58 @@ fn django_date_format_uses_only_the_selected_source_locale() {
 }
 
 #[test]
+fn celery_logging_dispatch_uses_only_receivers_registered_before_stock_setup() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let provider = "from celery import Celery\nfrom celery.signals import setup_logging\n";
+    let register = "@setup_logging.connect\ndef configure_logging(*args, **kwargs):\n    return formatter()\ndef formatter(): return 'formatted'\n";
+    let setup = "app = Celery('shop')\napp.log.setup_logging_subsystem()\n";
+    let after = "@setup_logging.connect\ndef too_late(**kwargs):\n    return 2\n";
+    let launcher = root.join("entry.py");
+    fs::write(
+        &launcher,
+        format!("{provider}{register}{setup}{after}app.log.setup_logging_subsystem()\n"),
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "entry.configure_logging", "celery_setup_logging"),
+        ["possible"]
+    );
+    assert!(!unreachable_functions(&report).contains(&"entry.formatter"));
+    assert!(unreachable_functions(&report).contains(&"entry.too_late"));
+    let parameters = findings(&report, "unused_parameters");
+    assert!(!parameters.contains(&"entry.configure_logging.kwargs"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&launcher, format!("{provider}{register}app = Celery('shop', log='custom')\napp.log.setup_logging_subsystem()\n")).unwrap();
+    let custom = scan_with_exit(root, None, None, 2);
+    assert!(
+        evidence_certainties(&custom, "entry.configure_logging", "celery_setup_logging").is_empty()
+    );
+
+    fs::write(
+        &launcher,
+        format!("{provider}{register}app = Celery('shop')\napp.log = object()\napp.log.setup_logging_subsystem()\n"),
+    )
+    .unwrap();
+    let replaced = scan_with_exit(root, None, None, 2);
+    assert!(
+        evidence_certainties(&replaced, "entry.configure_logging", "celery_setup_logging")
+            .is_empty()
+    );
+
+    fs::write(&launcher, format!("{provider}{register}")).unwrap();
+    assert!(unreachable_functions(&scan(root)).contains(&"entry.configure_logging"));
+}
+
+#[test]
 fn django_standard_contrib_apps_allow_source_startup() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
