@@ -8649,15 +8649,30 @@ impl<'a> Graph<'a> {
         let ExpressionKind::Name(registrar) = &function.kind else {
             return false;
         };
+        let [callback_argument, forwarded @ ..] = arguments.as_slice() else {
+            return false;
+        };
         if definition.is_generator
             || registrar == callback
             || !keywords.is_empty()
-            || !matches!(arguments.as_slice(), [argument]
-                if matches!(&argument.kind, ExpressionKind::Name(name) if name == callback))
+            || !matches!(&callback_argument.kind, ExpressionKind::Name(name) if name == callback)
             || !matches!(&result.kind, ExpressionKind::Name(name) if name == callback)
+            || !forwarded.iter().all(|argument| {
+                matches!(
+                    argument.kind,
+                    ExpressionKind::None
+                        | ExpressionKind::Bool(_)
+                        | ExpressionKind::Text(_)
+                        | ExpressionKind::Scalar(_)
+                )
+            })
             || !matches!(self.symbols[target].binding, Binding::Definition(callback, _)
-                if callback.kind == DefinitionKind::Function && !callback.is_generator
-                    && callback.parameters.is_empty())
+                if callback.kind == DefinitionKind::Function
+                    && !callback.is_generator
+                    && callback.required_positional_parameter_count <= forwarded.len()
+                    && callback.required_keyword_only_parameters.is_empty()
+                    && (callback.has_variadic_positional_parameter
+                        || forwarded.len() <= callback.positional_parameter_count))
         {
             return false;
         }
