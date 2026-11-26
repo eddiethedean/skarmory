@@ -11154,6 +11154,7 @@ impl<'a> Graph<'a> {
                     | "django_converter_regex"
                     | "django_migration_parameter"
                     | django_migrations::DECLARATION
+                    | "django_admin_parameter"
                     | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
