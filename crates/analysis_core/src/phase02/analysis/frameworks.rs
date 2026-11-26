@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) const CLASS_ATTRIBUTE_DECLARATION: &str = "framework_class_attribute_declaration";
+pub(super) const BUILTIN_OVERRIDE_DECLARATION: &str = "builtin_override_declaration";
 
 fn django_unconditionally_raises(body: &[Statement]) -> bool {
     body.iter()
@@ -339,10 +340,6 @@ impl Graph<'_> {
             }
             let (root, lifecycle, fields) = match role {
                 FrameworkClassRole::BuiltinDict
-                | FrameworkClassRole::StdlibAstVisitor
-                | FrameworkClassRole::StdlibAsyncProtocol
-                | FrameworkClassRole::StdlibCtypesStructure
-                | FrameworkClassRole::TraitletsConfigurable
                 | FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync
                 | FrameworkClassRole::DjangoTestCase
@@ -463,23 +460,31 @@ impl Graph<'_> {
         body: ScopeId,
         role: FrameworkClassRole,
     ) {
-        let names: &[&str] = match role {
-            FrameworkClassRole::CeleryRedisBackend => &["ResultConsumer"],
-            FrameworkClassRole::DjangoSimpleListFilter => &["parameter_name", "title"],
-            FrameworkClassRole::DjangoS3Storage => &[
-                "bucket_name",
-                "location",
-                "custom_domain",
-                "default_acl",
-                "file_overwrite",
-                "object_parameters",
-                "querystring_auth",
-                "gzip",
-                "region_name",
-                "endpoint_url",
-                "addressing_style",
-                "signature_version",
-            ],
+        let (names, kind): (&[&str], _) = match role {
+            FrameworkClassRole::BuiltinDict => (&["get", "keys"], BUILTIN_OVERRIDE_DECLARATION),
+            FrameworkClassRole::CeleryRedisBackend => {
+                (&["ResultConsumer"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoSimpleListFilter => {
+                (&["parameter_name", "title"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoS3Storage => (
+                &[
+                    "bucket_name",
+                    "location",
+                    "custom_domain",
+                    "default_acl",
+                    "file_overwrite",
+                    "object_parameters",
+                    "querystring_auth",
+                    "gzip",
+                    "region_name",
+                    "endpoint_url",
+                    "addressing_style",
+                    "signature_version",
+                ],
+                CLASS_ATTRIBUTE_DECLARATION,
+            ),
             _ => return,
         };
         if self.has_unmodeled_class_write(class) {
@@ -494,8 +499,11 @@ impl Graph<'_> {
                     self.symbols[target].binding,
                     Binding::Variable(..) | Binding::Definition(..)
                 )
+                && (role != FrameworkClassRole::BuiltinDict
+                    || matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function && !definition.is_generator))
             {
-                self.edge(body, target, CLASS_ATTRIBUTE_DECLARATION, "possible");
+                self.edge(body, target, kind, "possible");
             }
         }
     }
@@ -3504,163 +3512,6 @@ impl Graph<'_> {
                 == Some(FrameworkClassRole::DjangoCommand)
     }
 
-    fn direct_framework_protocol_body(
-        &mut self,
-        class: SymbolId,
-        role: FrameworkClassRole,
-        access: (ScopeId, Location),
-    ) -> Option<ScopeId> {
-        let symbol = &self.symbols[class];
-        let Binding::Definition(definition, body) = symbol.binding else {
-            return None;
-        };
-        let [base] = definition.bases.as_slice() else {
-            return None;
-        };
-        let scope = symbol.scope;
-        let Value::Provider(provider) = self.probe_identity(scope, base, definition.name.at) else {
-            return None;
-        };
-        let methods: &[&str] = if role == FrameworkClassRole::DrfPageNumberPagination {
-            &["paginate_queryset", "get_page_size"]
-        } else {
-            &[]
-        };
-        (framework_class_provider(&provider) == Some(role)
-            && !definition.has_class_keywords()
-            && definition.decorators.is_empty()
-            && !self.has_unmodeled_class_write(class)
-            && self
-                .class_discovery_writes(class, self.scopes[access.0].file)
-                .is_empty()
-            && [
-                "__new__",
-                "__init__",
-                "__getattribute__",
-                "__getattr__",
-                "__setattr__",
-                "__slots__",
-                "__dict__",
-            ]
-            .into_iter()
-            .chain(methods.iter().copied())
-            .all(|name| {
-                self.local(body, name, END).is_none()
-                    && self.module_member_write(&provider, name, access).is_none()
-            }))
-        .then_some(body)
-    }
-
-    fn retain_django_model_form_help_texts(&mut self, class: SymbolId) {
-        let symbol = &self.symbols[class];
-        let access = (symbol.scope, symbol.name.at);
-        let Binding::Definition(form, _) = symbol.binding else {
-            return;
-        };
-        if !matches!(body_without_docstring(form), [Statement { kind: StatementKind::Define(meta), .. }]
-            if meta.name.text == "Meta")
-        {
-            return;
-        }
-        let Some(body) =
-            self.direct_framework_protocol_body(class, FrameworkClassRole::DjangoModelForm, access)
-        else {
-            return;
-        };
-        let Some(meta) = self.local(body, "Meta", END) else {
-            return;
-        };
-        let Binding::Definition(definition, options) = self.symbols[meta].binding else {
-            return;
-        };
-        if definition.kind != DefinitionKind::Class
-            || !definition.bases.is_empty()
-            || !definition.decorators.is_empty()
-            || definition.has_class_keywords()
-            || self.binding_depends_on_branch(meta, END)
-            || self.has_unmodeled_class_write(meta)
-            || !body_without_docstring(definition).iter().all(|statement| {
-                matches!(
-                    statement.kind,
-                    StatementKind::Assign {
-                        value: Some(_),
-                        annotation: None,
-                        ..
-                    }
-                )
-            })
-        {
-            return;
-        }
-        let Some(target) = self.local(options, "help_texts", END) else {
-            return;
-        };
-        let Some(model) = self.local(options, "model", END) else {
-            return;
-        };
-        let Value::Callable(model) = self.binding(model, END, 0) else {
-            return;
-        };
-        if self.framework_class_role(model.target, &mut BTreeSet::new(), 0)
-            != Some(FrameworkClassRole::DjangoModel)
-            || self.binding_depends_on_branch(target, END)
-            || !matches!(self.symbols[target].binding,
-            Binding::Variable(Some(Expression { kind: ExpressionKind::Dictionary(items), .. }), _)
-                if {
-                    let (pairs, rest) = items.as_chunks::<2>();
-                    rest.is_empty() && pairs.iter().all(|[key, value]|
-                        matches!((&key.kind, &value.kind),
-                            (ExpressionKind::Text(_), ExpressionKind::Text(_))))
-                })
-        {
-            return;
-        }
-        // Django's stock ModelFormMetaclass reads ModelFormOptions while
-        // creating this class, before any form instance or validation.
-        self.edge(body, target, "django_model_form_help_texts", "certain");
-    }
-
-    fn drf_exception_defaults(&mut self, class: SymbolId, call: CallArguments<'_>) -> bool {
-        let Some(body) = self.direct_framework_protocol_body(
-            class,
-            FrameworkClassRole::DrfApiException,
-            (call.scope, call.before),
-        ) else {
-            return false;
-        };
-        let Some(arguments) =
-            registration_arguments(call.positional, call.keywords, ["detail", "code"])
-        else {
-            return false;
-        };
-        let mut defaults = Vec::new();
-        for (argument, name) in arguments
-            .into_iter()
-            .zip(["default_detail", "default_code"])
-        {
-            if let Some(argument) = argument {
-                match self.identity(call.scope, argument, call.before, 0) {
-                    Value::Text(_) => continue,
-                    Value::None => {}
-                    _ => return false,
-                }
-            }
-            if let Some(binding) = self.local(body, name, END) {
-                if self.binding_depends_on_branch(binding, END)
-                    || !matches!(self.symbols[binding].binding, Binding::Variable(Some(value), _)
-                        if matches!(value.kind, ExpressionKind::Text(_)))
-                {
-                    return false;
-                }
-                defaults.push(binding);
-            }
-        }
-        for binding in defaults {
-            self.edge(call.scope, binding, "drf_exception_default", "possible");
-        }
-        true
-    }
-
     pub(super) fn framework_default_constructor(
         &mut self,
         class: SymbolId,
@@ -3696,7 +3547,7 @@ impl Graph<'_> {
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
             }
-            FrameworkClassRole::DjangoView => &[],
+            FrameworkClassRole::BuiltinDict | FrameworkClassRole::DjangoView => &[],
             // The generic implementation's get_default_settings returns an
             // empty dictionary. A zero-argument call performs no setting writes.
             FrameworkClassRole::DjangoStorageBase => &["get_default_settings"],

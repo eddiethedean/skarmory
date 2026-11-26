@@ -276,10 +276,6 @@ enum ObjectKind {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum FrameworkClassRole {
     BuiltinDict,
-    StdlibAstVisitor,
-    StdlibAsyncProtocol,
-    StdlibCtypesStructure,
-    TraitletsConfigurable,
     Unittest,
     UnittestAsync,
     DjangoTestCase,
@@ -3497,6 +3493,7 @@ impl<'a> Graph<'a> {
                                 | FrameworkClassRole::DjangoQuerySet
                                 | FrameworkClassRole::DjangoRelationshipField
                                 | FrameworkClassRole::DjangoStorageBase
+                                | FrameworkClassRole::BuiltinDict
                                 | FrameworkClassRole::DjangoView,
                             ),
                             "__new__",
@@ -6852,18 +6849,7 @@ impl<'a> Graph<'a> {
             } else {
                 ("constructor", certainty)
             };
-            if self.phase03
-                && (!positional.is_empty() || !keywords.is_empty())
-                && self.dependency_ancestor(id, 0).is_some()
-                && self.class_member(id, "__init__", 0).is_none()
-            {
-                self.scope_issue(
-                    scope,
-                    at,
-                    "unresolved_constructor",
-                    "dependency superclass allocation requires a zero-argument constructor",
-                );
-            } else if !self.phase03 || !self.framework_default_constructor(id, call, certainty) {
+            if !self.phase03 || !self.framework_default_constructor(id, call, certainty) {
                 self.constructor(scope, id, kind, certainty, at);
             }
             if self.phase03 {
@@ -7669,6 +7655,140 @@ impl<'a> Graph<'a> {
                             };
                     } else {
                         self.scope_issue(scope, at, "unsupported_construct", "assignment target must be a simple name or a resolved Django settings update");
+                    }
+                }
+                StatementKind::SetGlobalName { value, .. } => {
+                    self.record_django_global_write(scope, value, at);
+                }
+                StatementKind::DjangoSettingsGlobalCall(call) => {
+                    if self.phase03 {
+                        self.walk(scope, call, at);
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "global declarations are outside the compatibility subset",
+                        );
+                    }
+                }
+                StatementKind::EditDjangoBackendList { receiver, edit } => {
+                    if let Some(value) = edit.value() {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, receiver, at);
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_setting_mutation",
+                        "Django backend list mutation requires a proven list in the selected settings",
+                    );
+                }
+                StatementKind::DeleteName(name) => {
+                    if !self.phase03
+                        || scope != self.scopes[scope].file
+                        || self.local(scope, &name.text, at).is_none_or(|previous| {
+                            self.binding_depends_on_branch(previous, at)
+                                || matches!(
+                                    self.symbols[previous].binding,
+                                    Binding::Deleted | Binding::Variable(None, _)
+                                )
+                        })
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "deleting a name requires a previously bound module-local name",
+                        );
+                    }
+                }
+                StatementKind::WriteAttribute {
+                    receiver, value, ..
+                }
+                | StatementKind::WriteModuleEntry {
+                    mapping: receiver,
+                    value,
+                    ..
+                } => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, receiver, at);
+                    let flask_write = matches!(&statement.kind,
+                        StatementKind::WriteAttribute { member, value: Some(_), .. }
+                        if self.modeled_flask_context_write(scope, receiver, member, at));
+                    let celery_write = self.phase03
+                        && self.record_celery_backend_write(scope, at, &statement.kind);
+                    let fresh_field_write = self.phase03
+                        && (self.is_fresh_field_initializer(scope, statement)
+                            || self.defer_constructor_hook_store(scope, statement));
+                    let form_field_write =
+                        self.phase03 && self.modeled_django_instance_field_write(scope, statement);
+                    if !flask_write
+                        && !celery_write
+                        && !fresh_field_write
+                        && !form_field_write
+                        && !self.modeled_framework_write(scope, at)
+                    {
+                        if self.phase03
+                            && matches!(&statement.kind, StatementKind::WriteAttribute { .. })
+                        {
+                            self.record_unmodeled_class_write(scope, receiver, at);
+                        }
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_attribute_write",
+                            "attribute mutation is outside the bounded framework model",
+                        );
+                    }
+                }
+                StatementKind::ForwardSuperInit {
+                    super_name,
+                    positional,
+                    keywords,
+                } => {
+                    if !self.phase03 {
+                        self.issue(
+                            self.scopes[scope].file,
+                            at,
+                            "unsupported_construct",
+                            "forwarded super initializer is outside the compatibility subset",
+                        );
+                        continue;
+                    }
+                    self.walk(scope, super_name, at);
+                    self.walk(scope, positional, at);
+                    self.walk(scope, keywords, at);
+                    if !self.modeled_django_form_super_init(scope) {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "forwarded super initializer is outside the bounded Django form model",
+                        );
+                    }
+                }
+                StatementKind::WriteCeleryConfigEntry {
+                    mapping,
+                    key,
+                    value,
+                } => {
+                    if let Some(value) = value {
+                        self.walk(scope, value, at);
+                    }
+                    self.walk(scope, mapping, at);
+                    self.walk(scope, key, at);
+                    if !self.phase03
+                        || !self.record_celery_config_key(scope, at, mapping, key, value)
+                    {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "a computed configuration key requires a resolved Celery settings object",
+                        );
                     }
                 }
                 StatementKind::Return(value) => {
@@ -10351,6 +10471,7 @@ impl<'a> Graph<'a> {
                         | "celery_task_declaration"
                         | "django_relationship_field_declaration"
                         | frameworks::CLASS_ATTRIBUTE_DECLARATION
+                        | frameworks::BUILTIN_OVERRIDE_DECLARATION
                 ) {
                     continue;
                 }
@@ -11852,17 +11973,6 @@ fn builtin_noop_subclass_hook(name: &str) -> bool {
 fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
     match name {
         "builtins.dict" => Some(FrameworkClassRole::BuiltinDict),
-        "ast.NodeVisitor" => Some(FrameworkClassRole::StdlibAstVisitor),
-        "asyncio.Protocol" | "asyncio.protocols.Protocol" => {
-            Some(FrameworkClassRole::StdlibAsyncProtocol)
-        }
-        "ctypes.Structure" => Some(FrameworkClassRole::StdlibCtypesStructure),
-        "traitlets.config.LoggingConfigurable"
-        | "traitlets.config.configurable.LoggingConfigurable"
-        | "traitlets.config.Configurable"
-        | "traitlets.config.configurable.Configurable" => {
-            Some(FrameworkClassRole::TraitletsConfigurable)
-        }
         "unittest.TestCase" | "unittest.case.TestCase" => Some(FrameworkClassRole::Unittest),
         "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
             Some(FrameworkClassRole::UnittestAsync)
