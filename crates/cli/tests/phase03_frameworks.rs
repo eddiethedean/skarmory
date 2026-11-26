@@ -211,6 +211,82 @@ fn generic_django_storage_constructor_uses_empty_defaults() {
 }
 
 #[test]
+fn django_ready_import_requires_an_active_hook_and_a_proven_signal_registration() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    fs::write(root.join("shop/__init__.py"), "").unwrap();
+    fs::write(root.join("shop/helpers.py"), "def helper(): pass\n").unwrap();
+    fs::write(
+        root.join("shop/apps.py"),
+        r#"from django.apps import AppConfig
+class Config(AppConfig):
+    name = 'shop'
+    def initialize(self):
+        from . import helpers, signals as hooks
+    ready = initialize
+    def dormant(self):
+        from . import signals as unused_hooks
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("main.py"),
+        "import django, os\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+    )
+    .unwrap();
+    let registration = "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n\
+                        @receiver(post_save)\ndef register(sender, **kwargs): pass\n";
+    let cache = tempfile::tempdir().unwrap();
+    for (installed_apps, signals, retains_signal_import) in [
+        ("['shop.apps.Config']", registration, true),
+        ("[]", registration, false),
+        ("['shop.apps.Config']", "def lookalike(): pass\n", false),
+    ] {
+        fs::write(
+            root.join("settings.py"),
+            format!("INSTALLED_APPS = {installed_apps}\nSECRET_KEY = 'fixture'\n"),
+        )
+        .unwrap();
+        fs::write(root.join("shop/signals.py"), signals).unwrap();
+        let report = scan(root);
+        let imports = report["unused_imports"].as_array().unwrap();
+        assert!(imports.iter().any(|row| row["full_name"] == "shop.helpers"));
+        assert!(
+            imports
+                .iter()
+                .any(|row| row["full_name"] == "shop.signals" && row["line"] == 8),
+            "{report}"
+        );
+        assert_eq!(
+            imports
+                .iter()
+                .any(|row| row["full_name"] == "shop.signals" && row["line"] == 5),
+            !retains_signal_import,
+            "{report}"
+        );
+        assert_eq!(
+            evidence_certainties(
+                &report,
+                "shop.apps.Config.initialize.hooks",
+                "django_ready_signal_import"
+            ),
+            if retains_signal_import {
+                vec!["certain"]
+            } else {
+                vec![]
+            },
+            "{report}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
 fn gin_bindings_keep_only_selected_registrations_and_leave_wrappers_unused() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

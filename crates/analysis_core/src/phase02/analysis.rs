@@ -701,6 +701,7 @@ pub(super) fn analyze_with_verification(
         django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
+        django_ready_hooks: BTreeSet::new(),
         django_settings_sources: BTreeSet::new(),
         django_template_apps: BTreeMap::new(),
         django_registration_issues: Vec::new(),
@@ -937,6 +938,7 @@ struct Graph<'a> {
     django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
+    django_ready_hooks: BTreeSet<SymbolId>,
     django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
     django_template_apps: BTreeMap<ScopeId, BTreeMap<usize, Option<String>>>,
     django_registration_issues: Vec<(Object, Issue)>,
@@ -10398,6 +10400,7 @@ impl<'a> Graph<'a> {
         let fastapi_route_contracts = self.report_fastapi_signatures(&reach);
         if self.phase03 {
             self.report_django_startup_coverage(&reach);
+            self.retain_django_ready_signal_imports(&mut reach);
             self.report_django_global_signals(&reach);
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
@@ -10521,6 +10524,7 @@ impl<'a> Graph<'a> {
                     | "marshmallow_schema_options"
                     | "django_setting"
                     | "django_application"
+                    | "django_ready_signal_import"
                     | "django_converter_regex"
                     | "django_migration_parameter"
                     | django_migrations::DECLARATION
