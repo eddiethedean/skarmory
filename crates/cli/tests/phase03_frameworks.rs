@@ -127,7 +127,7 @@ class Settings(Base):
     def _missing_default(self):
         return None
 
-SETTINGS = Settings
+SETTINGS = Settings()
 "#;
     fs::write(&path, source).unwrap();
     let report = scan(root);
@@ -146,6 +146,25 @@ SETTINGS = Settings
         let mut cached = scan_with_settings(root, None, Some(cache.path()));
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(cached, report);
+    }
+    for construction in [
+        "SETTINGS = Settings(root='configured')",
+        "class Derived(Settings):\n    def __init__(self):\n        pass\n\nSETTINGS = Derived()",
+        "class Derived(Settings):\n    def setup_instance(self):\n        pass\n\nSETTINGS = Derived()",
+        "class Derived(Settings):\n    def _config_default(self):\n        return None\n\nSETTINGS = Derived()",
+        "class Derived(Settings):\n    def __getattribute__(self, name):\n        pass\n\nSETTINGS = Derived()",
+        "Settings.setup_instance = handler_body\nSETTINGS = Settings()",
+    ] {
+        fs::write(&path, source.replace("SETTINGS = Settings()", construction)).unwrap();
+        let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            incomplete["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_constructor"),
+            "{construction}\n{incomplete}",
+        );
     }
     fs::write(
         &path,
