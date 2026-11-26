@@ -16283,11 +16283,10 @@ languages = ["python"]
 source = "test/test_django_historical_consumer_controls.py"
 assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_historical_consumer_controls.py:46", "test/test_django_historical_consumer_controls.py:47"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed project includes a fresh source-owned provider supplied to a Provider-typed consumer. CPython executes the concrete schedule implementation and preserves the independent scoreboard entry."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The original consumer invokes ConcreteProvider.scoreboard and never supplies an invocation of schedule_dates.", evidence = "Executing the unchanged consumer with the project root on sys.path constructs ConcreteProvider and returns its scoreboard result. The two methods have distinct return values and only scoreboard is invoked by the wrapper.", assertions = ["coverage:complete", "evidence:direct_call:certain:provider_iface.provider.ConcreteProvider.scoreboard", "unused:unused_functions:provider_iface.provider.ConcreteProvider.schedule_dates"] }
 
 [[cases]]
 id = "test/test_django_historical_consumer_controls.py::test_original_importlib_processor_contract_remains_live"
@@ -16296,11 +16295,10 @@ languages = ["python"]
 source = "test/test_django_historical_consumer_controls.py"
 assertions = ["test/test_django_app_repro_liveness.py:25", "test/test_django_app_repro_liveness.py:50"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed project selects the processor through a literal logical name exposed by the original importlib registry. CPython loads the processor only when requested, and the selected class matches the original loader and processes the sample session."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The registry only stores a module name and the frozen project never calls its loader or dispatcher.", evidence = "CPython 3.11.15 imported processor_plugin.loader without importing its registered processor module. An explicit runtime selection loaded IntegrateSessions and returned the integrated control result.", assertions = ["coverage:complete", "definition:processor_plugin.loader.PROCESSORS", "unused:unused_functions:processor_plugin.loader.load_processor", "unused:unused_functions:processor_plugin.loader.run_named", "unused:unused_classes:processor_plugin.plugins.integrate.IntegrateSessions"] }
 
 [[cases]]
 id = "test/test_django_quiet_dead_code.py::test_django_framework_names_are_live_and_real_dead_code_remains"
