@@ -4,6 +4,7 @@ use super::*;
 
 const MAX_SNAPSHOTS: usize = 16_384;
 const MAX_ROUTER_GRAPH_STEPS: usize = 8 * MAX_SNAPSHOTS;
+pub(super) const MAX_INITIALIZER_CALL_EVENTS: usize = 20_000;
 
 pub(super) fn is_app_constructor(provider: &str) -> bool {
     matches!(provider, "fastapi.FastAPI" | "fastapi.applications.FastAPI")
@@ -31,6 +32,9 @@ pub(super) struct Fastapi {
     signatures: BTreeMap<SymbolId, BTreeMap<ScopeId, bool>>,
     lifespans: BTreeMap<Object, (Site, ScopeId)>,
     observable_objects: BTreeSet<Object>,
+    limited_initializers: BTreeSet<ScopeId>,
+    #[cfg(test)]
+    initializer_call_events: usize,
     plain_query_owners: BTreeSet<Object>,
     parameter_routes: Vec<ParameterRoute>,
     pub(super) route_declarations: BTreeSet<SymbolId>,
@@ -54,8 +58,10 @@ impl Fastapi {
             .apps
             .iter()
             .filter_map(|(&object, scope)| {
-                (reached_scopes.contains(scope) && self.observable_objects.contains(&object))
-                    .then_some(object)
+                (reached_scopes.contains(scope)
+                    && self.observable_objects.contains(&object)
+                    && !self.limited_initializers.contains(scope))
+                .then_some(object)
             })
             .collect();
         let mut pending = roots.clone();
@@ -181,6 +187,48 @@ enum DecoratorLayer<'a> {
 }
 
 impl<'a> Graph<'a> {
+    pub(super) fn bound_fastapi_initializers(&mut self, limit: usize) {
+        let initializers: BTreeSet<_> = self
+            .fastapi
+            .apps
+            .iter()
+            .filter_map(|(object, &scope)| {
+                self.fastapi
+                    .observable_objects
+                    .contains(object)
+                    .then_some(scope)
+            })
+            .collect();
+        if initializers.is_empty() {
+            return;
+        }
+        let mut calls = BTreeMap::<ScopeId, Vec<ScopeId>>::new();
+        for (&target, callers) in &self.direct_arguments {
+            let Binding::Definition(definition, body) = self.symbols[target].binding else {
+                continue;
+            };
+            if definition.kind != DefinitionKind::Function || definition.is_generator {
+                continue;
+            }
+            for caller in callers
+                .iter()
+                .filter(|caller| caller.arguments_bound && !caller.verified && !caller.conditional)
+            {
+                calls.entry(caller.caller).or_default().push(body);
+            }
+        }
+        let mut remaining = limit;
+        for scope in initializers {
+            if !initializer_call_events(&calls, scope, &mut remaining) {
+                self.fastapi.limited_initializers.insert(scope);
+            }
+        }
+        #[cfg(test)]
+        {
+            self.fastapi.initializer_call_events = limit - remaining;
+        }
+    }
+
     pub(super) fn terminal_fastapi_shadowed_import(
         &mut self,
         scope: ScopeId,
@@ -847,30 +895,80 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         kind: &str,
     ) -> bool {
+        let Some((definition, scope, slots)) = self.fastapi_callback_parameter_slots(target, kind)
+        else {
+            return false;
+        };
+        self.read.extend(
+            definition.parameters.iter().take(slots).map(|parameter| {
+                self.by_location[&(scope, parameter.at.line, parameter.at.column)]
+            }),
+        );
+        true
+    }
+
+    fn fastapi_callback_parameter_slots(
+        &self,
+        target: SymbolId,
+        kind: &str,
+    ) -> Option<(&'a Definition, ScopeId, usize)> {
         let slots = match kind {
             "fastapi_lifespan" => 1,
             "fastapi_exception_handler" | "fastapi_middleware" => 2,
             "fastapi_asgi_application" => 3,
-            _ => return false,
+            _ => return None,
         };
         let Binding::Definition(definition, scope) = self.symbols[target].binding else {
-            return false;
+            return None;
         };
         if !definition.simple_positional_parameters {
-            return false;
+            return None;
         }
         let receiver = usize::from(
             self.scopes[self.symbols[target].scope]
                 .owner
                 .is_some_and(|id| self.is_class(id)),
         );
-        let parameters = definition.parameters.iter().take(slots + receiver);
-        self.read.extend(
-            parameters.map(|parameter| {
-                self.by_location[&(scope, parameter.at.line, parameter.at.column)]
-            }),
-        );
-        true
+        Some((definition, scope, slots + receiver))
+    }
+
+    #[cfg(test)]
+    pub(super) fn fastapi_initializer_evidence(
+        &self,
+        reach: &Reachability,
+    ) -> super::super::FastapiInitializerEvidence {
+        let mut callbacks = BTreeSet::new();
+        for &(target, kind, _) in &reach.evidence {
+            if let Some((definition, scope, slots)) =
+                self.fastapi_callback_parameter_slots(target, kind)
+            {
+                callbacks.extend(definition.parameters.iter().take(slots).map(|parameter| {
+                    self.by_location[&(scope, parameter.at.line, parameter.at.column)]
+                }));
+            }
+        }
+        let injected_parameters = self
+            .fastapi
+            .injected_parameters
+            .iter()
+            .filter(|(owner, _)| {
+                reach.fastapi_callbacks.contains(owner)
+                    || self.fastapi.signatures.get(owner).is_some_and(|scopes| {
+                        scopes.keys().any(|scope| reach.scopes.contains(scope))
+                    })
+            })
+            .map(|(_, parameters)| parameters.len())
+            .sum();
+        super::super::FastapiInitializerEvidence {
+            call_events: self.fastapi.initializer_call_events,
+            limited: self
+                .fastapi
+                .limited_initializers
+                .iter()
+                .any(|scope| reach.scopes.contains(scope)),
+            callback_parameters: callbacks.len(),
+            injected_parameters,
+        }
     }
 
     pub(super) fn fastapi_defaults(
@@ -2172,6 +2270,15 @@ impl<'a> Graph<'a> {
                 "FastAPI router inclusion graph step budget exceeded",
             ));
         }
+        for &scope in &self.fastapi.limited_initializers {
+            if reach.scopes.contains(&scope) {
+                self.issues.push(Issue::new(
+                    "analysis_limit",
+                    &self.files[self.scopes[scope].file].path,
+                    "FastAPI initializer call-event budget exceeded",
+                ));
+            }
+        }
         if reach.fastapi_limited {
             self.issues.push(Issue::new(
                 "analysis_limit",
@@ -2308,6 +2415,37 @@ impl<'a> Graph<'a> {
     }
 }
 
+fn initializer_call_events(
+    calls: &BTreeMap<ScopeId, Vec<ScopeId>>,
+    initializer: ScopeId,
+    remaining: &mut usize,
+) -> bool {
+    let callees = |scope| {
+        calls
+            .get(&scope)
+            .map_or([].iter(), |children| children.iter())
+    };
+    let mut active = BTreeSet::from([initializer]);
+    let mut pending = vec![(initializer, callees(initializer))];
+    while let Some((caller, children)) = pending.last_mut() {
+        if let Some(&callee) = children.next() {
+            if *remaining == 0 {
+                return false;
+            }
+            *remaining -= 1;
+            // Count repeated acyclic call paths, while a recursive back-edge
+            // is already represented by its active ancestor in the graph.
+            if active.insert(callee) {
+                pending.push((callee, callees(callee)));
+            }
+        } else {
+            active.remove(caller);
+            pending.pop();
+        }
+    }
+    true
+}
+
 fn plain_empty_middleware_body(definition: &Definition) -> bool {
     definition.decorators.is_empty()
         && definition.annotations.is_empty()
@@ -2348,6 +2486,17 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initializer_call_budget_counts_repeated_acyclic_paths_and_stops_at_the_limit() {
+        let calls = BTreeMap::from([(0, vec![1]), (1, vec![2, 2]), (2, vec![3, 3])]);
+        let mut remaining = 6;
+        assert!(!initializer_call_events(&calls, 0, &mut remaining));
+        assert_eq!(remaining, 0);
+        let mut remaining = 7;
+        assert!(initializer_call_events(&calls, 0, &mut remaining));
+        assert_eq!(remaining, 0);
+    }
 
     #[derive(serde::Deserialize)]
     struct IncludeGraphFixture {
