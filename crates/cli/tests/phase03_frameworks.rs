@@ -12929,3 +12929,75 @@ class ExplicitError(APIException):
         .is_empty()
     );
 }
+
+#[test]
+fn django_settings_retain_only_the_selected_uppercase_aliases() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let settings = root.join("project/settings");
+    fs::create_dir_all(&settings).unwrap();
+    for (name, text) in [
+        ("project/__init__.py", ""),
+        ("project/urls.py", "urlpatterns = []\n"),
+        ("project/unused.py", "UNSELECTED = True\n"),
+        (
+            "project/settings/__init__.py",
+            "from .base import *\nif DEV:\n    from .dev import *\nfrom .base import _named_value as NAMED_SETTING\nREPLACED = 'chosen'\n",
+        ),
+        (
+            "project/settings/dev.py",
+            "INSTALLED_APPS = ['debug_toolbar']\nDEBUG_TOOLBAR_CONFIG = {'SHOW_TOOLBAR_CALLBACK': lambda request: True}\n",
+        ),
+        (
+            "wsgi.py",
+            "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'project.settings'\napplication = get_wsgi_application()\n",
+        ),
+    ] {
+        fs::write(root.join(name), text).unwrap();
+    }
+    for (dev, literal) in [(false, "False"), (true, "True")] {
+        fs::write(
+            settings.join("base.py"),
+            format!(
+                "DEV = {literal}\nINSTALLED_APPS = []\nSECRET_KEY = 'fixture'\nROOT_URLCONF = 'project.urls'\nSTATIC_ROOT = 'staticfiles'\nSTATIC_URL = '/static/'\nEMAIL_CONSENT_TITLE = 'Stay informed'\nREPLACED = 'shadowed'\n_named_value = 1\n_ignored = 2\nif DEV:\n    SESSION_COOKIE_SECURE = False\n"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        for target in [
+            "project.settings.base.EMAIL_CONSENT_TITLE",
+            "project.settings.base._named_value",
+            "project.settings.REPLACED",
+        ] {
+            assert_eq!(
+                evidence_certainties(&report, target, "django_setting"),
+                ["certain"]
+            );
+        }
+        let variables = findings(&report, "unused_variables");
+        for target in [
+            "project.settings.base.REPLACED",
+            "project.settings.base._ignored",
+            "project.unused.UNSELECTED",
+        ] {
+            assert!(variables.contains(&target), "{variables:?}");
+        }
+        for (target, selected) in [
+            ("project.settings.base.SESSION_COOKIE_SECURE", dev),
+            ("project.settings.dev.DEBUG_TOOLBAR_CONFIG", dev),
+        ] {
+            let expected: &[&str] = if selected { &["certain"] } else { &[] };
+            assert_eq!(
+                evidence_certainties(&report, target, "django_setting"),
+                expected
+            );
+            assert_eq!(variables.contains(&target), !selected, "{variables:?}");
+        }
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}

@@ -2559,9 +2559,9 @@ impl Graph<'_> {
             django_loaded_module(settings),
             django_loaded_module(row.file),
         ]);
-        let settings_bindings: Vec<_> = self.django_setting_bindings(settings).collect();
-        for binding in settings_bindings {
-            self.edge(scope, binding, "django_setting", "certain");
+        for (binding, definite) in self.django_setting_bindings(settings) {
+            let certainty = if definite { "certain" } else { "possible" };
+            self.edge(scope, binding, "django_setting", certainty);
         }
         if !self.collect_django_apps(scope, settings, commands) {
             return;
@@ -2583,15 +2583,77 @@ impl Graph<'_> {
         }
     }
 
-    fn django_setting_bindings(&self, settings: ScopeId) -> impl Iterator<Item = SymbolId> + '_ {
-        self.scopes[settings]
-            .names
-            .iter()
-            .filter(|(name, _)| {
-                name.chars().any(char::is_uppercase) && !name.chars().any(char::is_lowercase)
-            })
-            .flat_map(|(_, bindings)| self.effective_bindings(bindings).iter().copied())
-            .filter(|&binding| matches!(self.symbols[binding].binding, Binding::Variable(..)))
+    fn django_setting_bindings(&self, settings: ScopeId) -> BTreeMap<SymbolId, bool> {
+        let mut selected = BTreeMap::new();
+        let namespace = &self.scopes[settings];
+        let closed = !namespace.open_wildcard && self.local(settings, "__dir__", END).is_none();
+        for (&name, bindings) in &namespace.names {
+            if !name.chars().any(char::is_uppercase) || name.chars().any(char::is_lowercase) {
+                continue;
+            }
+            let candidates = self.effective_bindings(bindings);
+            for &binding in candidates {
+                if !closed && matches!(self.symbols[binding].binding, Binding::Import(_)) {
+                    continue;
+                }
+                let definite =
+                    candidates.len() == 1 && !self.binding_depends_on_branch(binding, END);
+                let Some(chain) = self.django_setting_alias_chain(binding) else {
+                    continue;
+                };
+                for binding in chain {
+                    *selected.entry(binding).or_default() |= definite;
+                }
+            }
+        }
+        selected
+    }
+
+    fn django_setting_alias_chain(&self, mut binding: SymbolId) -> Option<Vec<SymbolId>> {
+        let mut aliases = Vec::new();
+        let mut visited = BTreeSet::new();
+        while visited.insert(binding) {
+            aliases.push(binding);
+            let symbol = &self.symbols[binding];
+            match symbol.binding {
+                Binding::Variable(Some(_), _) | Binding::UnpackItem { .. } => return Some(aliases),
+                Binding::Variable(None, _) if aliases.len() == 1 => return Some(aliases),
+                Binding::Import(import) => {
+                    let member = import.member.as_deref()?;
+                    let module = self.import_module(self.scopes[symbol.scope].file, import)?;
+                    let &source = self.modules.get(module.as_str())?;
+                    let access = (symbol.scope, import.local.at);
+                    let before = self
+                        .import_member_position(symbol.scope, &module, import)
+                        .unwrap_or(END);
+                    if self.scopes[source].open_wildcard
+                        || self.failed_terminal_modules.contains(&source)
+                        || self.imported_module_write(&module, access).is_some()
+                        || self.module_member_write(&module, member, access).is_some()
+                        || self
+                            .module_global_write(source, member, before, access)
+                            .is_some()
+                    {
+                        return None;
+                    }
+                    let ModuleMember::Binding(origin, None) = self.selected_module_member(
+                        source,
+                        member,
+                        before,
+                        access,
+                        ModuleMemberAccess::FromImport,
+                    ) else {
+                        return None;
+                    };
+                    if self.binding_depends_on_branch(origin, before) {
+                        return None;
+                    }
+                    binding = origin;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     pub(super) fn report_django_startup_coverage(&mut self, reach: &Reachability) {
