@@ -3613,7 +3613,12 @@ impl Graph<'_> {
         self.scopes[scope]
             .routes
             .push((object, target, "django_admin_registration"));
-        for name in ["get_queryset", "save_model", "delete_model"] {
+        for name in [
+            "get_queryset",
+            "save_model",
+            "delete_model",
+            "get_list_select_related",
+        ] {
             self.django_admin_method(scope, object, target, name, at);
         }
         for (name, getter) in [
@@ -3716,6 +3721,26 @@ impl Graph<'_> {
         };
         match attribute {
             Value::Callable(callback) if !self.is_class(callback.target) => {
+                if name == "get_list_select_related" {
+                    let Binding::Definition(definition, body) =
+                        self.symbols[callback.target].binding
+                    else {
+                        return true;
+                    };
+                    if !field_dispatch::plain_method(definition, 2) {
+                        self.django_registration_issue(
+                            object,
+                            option_at,
+                            "Django ModelAdmin list-select-related signature could not be resolved",
+                        );
+                        return true;
+                    }
+                    let request = definition.parameters[1].at;
+                    let parameter = self.by_location[&(body, request.line, request.column)];
+                    self.scopes[scope]
+                        .routes
+                        .push((object, parameter, "django_admin_parameter"));
+                }
                 self.scopes[scope].routes.push((
                     object,
                     callback.target,

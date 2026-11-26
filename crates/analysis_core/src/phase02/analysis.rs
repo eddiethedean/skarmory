@@ -10706,8 +10706,10 @@ impl<'a> Graph<'a> {
                             target,
                             kind,
                             certainty: if optional
-                                || matches!(kind, "sanic_listener" | "starlette_route")
-                            {
+                                || matches!(
+                                    kind,
+                                    "sanic_listener" | "starlette_route" | "django_admin_parameter"
+                                ) {
                                 "possible"
                             } else {
                                 "certain"
@@ -11126,6 +11128,7 @@ impl<'a> Graph<'a> {
                     | "django_converter_regex"
                     | "django_migration_parameter"
                     | django_migrations::DECLARATION
+                    | "django_admin_parameter"
                     | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
