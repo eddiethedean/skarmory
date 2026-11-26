@@ -16203,11 +16203,10 @@ languages = ["python"]
 source = "test/test_django_quiet_dead_code.py"
 assertions = ["test/test_django_quiet_dead_code.py:262", "test/test_django_quiet_dead_code.py:263", "test/test_django_quiet_dead_code.py:264", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed case selects conf.settings_production through the environment and supplies the auth app's ContentType prerequisite. Django 5.2.1 reads both selected flags during startup without a source launcher and leaves the unrelated constant outside the settings module."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The fixture supplies no settings selection and its auth application cannot finish setup without ContentType even under either explicit settings selection. The settings declarations and isolated dead constant remain testable.", evidence = "CPython directly imports the production settings and exposes both flags. Django 4.2.1 and 5.2.1 both fail settings access with the environment unset. Explicit production selection reads both values before setup fails with missing django.contrib.contenttypes. The native finite wildcard consumer regression verifies the import binding. The unchanged fixture records unresolved app activation, both setting definitions and the original dead constant in its complete file scope.", assertions = ["coverage:incomplete", "issue:unresolved_registration:conf/settings.py:1", "definition:conf.settings.CUSTOM_FLAG", "definition:conf.settings_production.PRODUCTION_ONLY", "no-evidence:django_setting:*:conf.settings_production.PRODUCTION_ONLY", "scoped-unused:conf/constants.py:unused_variables:constants.STALE_CONSTANT"] }
 
 [[cases]]
 id = "test/test_django_wagtail_conventions.py::test_django_signatures_and_format_files"
