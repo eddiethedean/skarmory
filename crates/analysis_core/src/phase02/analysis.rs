@@ -728,7 +728,6 @@ pub(super) fn analyze_with_verification(
         django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
-        django_widget_data_gets: BTreeMap::new(),
         django_ready_hooks: BTreeSet::new(),
         django_settings_sources: BTreeSet::new(),
         django_template_apps: BTreeMap::new(),
@@ -969,7 +968,6 @@ struct Graph<'a> {
     django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
-    django_widget_data_gets: BTreeMap<ScopeId, Location>,
     django_ready_hooks: BTreeSet<SymbolId>,
     django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
     django_template_apps: BTreeMap<ScopeId, BTreeMap<usize, Option<String>>>,
@@ -10847,6 +10845,7 @@ impl<'a> Graph<'a> {
                     | "marshmallow_schema_options"
                     | "django_setting"
                     | "django_application"
+                    | "django_ready_signal_import"
                     | "django_converter_regex"
                     | "django_migration_parameter"
                     | django_migrations::DECLARATION
