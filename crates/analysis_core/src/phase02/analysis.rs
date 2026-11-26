@@ -270,6 +270,7 @@ enum ObjectKind {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum FrameworkClassRole {
+    BuiltinDict,
     Unittest,
     UnittestAsync,
     DjangoTestCase,
@@ -635,6 +636,7 @@ pub(super) fn analyze_with_verification(
         receiver_calls: Vec::new(),
         fresh_field_calls: BTreeMap::new(),
         fresh_field_invocations: Vec::new(),
+        constructor_hook_stores: Vec::new(),
         source_provider_calls: BTreeMap::new(),
         source_provider_invalidated: None,
         source_provider_opaque_arguments: BTreeSet::new(),
@@ -874,6 +876,7 @@ struct Graph<'a> {
     receiver_calls: Vec<ReceiverCall>,
     fresh_field_calls: BTreeMap<SymbolId, Location>,
     fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
+    constructor_hook_stores: Vec<field_dispatch::ConstructorHookStore>,
     source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
     source_provider_invalidated: Option<BTreeSet<SymbolId>>,
     source_provider_opaque_arguments: BTreeSet<SymbolId>,
@@ -3244,6 +3247,7 @@ impl<'a> Graph<'a> {
                                 | FrameworkClassRole::DjangoQuerySet
                                 | FrameworkClassRole::DjangoRelationshipField
                                 | FrameworkClassRole::DjangoStorageBase
+                                | FrameworkClassRole::BuiltinDict
                                 | FrameworkClassRole::DjangoView,
                             ),
                             "__new__",
@@ -6469,7 +6473,7 @@ impl<'a> Graph<'a> {
             } else {
                 ("constructor", certainty)
             };
-            if !self.phase03 || !self.django_default_constructor(id, call, certainty) {
+            if !self.phase03 || !self.framework_default_constructor(id, call, certainty) {
                 self.constructor(scope, id, kind, certainty, at);
             }
             if self.phase03 {
@@ -7367,8 +7371,9 @@ impl<'a> Graph<'a> {
                         if self.modeled_flask_context_write(scope, receiver, member, at));
                     let celery_write = self.phase03
                         && self.record_celery_backend_write(scope, at, &statement.kind);
-                    let fresh_field_write =
-                        self.phase03 && self.is_fresh_field_initializer(scope, statement);
+                    let fresh_field_write = self.phase03
+                        && (self.is_fresh_field_initializer(scope, statement)
+                            || self.defer_constructor_hook_store(scope, statement));
                     let form_field_write =
                         self.phase03 && self.modeled_django_instance_field_write(scope, statement);
                     if !flask_write
@@ -10036,6 +10041,7 @@ impl<'a> Graph<'a> {
                         | "celery_task_declaration"
                         | "django_relationship_field_declaration"
                         | frameworks::CLASS_ATTRIBUTE_DECLARATION
+                        | frameworks::BUILTIN_OVERRIDE_DECLARATION
                 ) {
                     continue;
                 }
@@ -10381,6 +10387,7 @@ impl<'a> Graph<'a> {
         }
         self.report_unbound_receiver_calls(&reach);
         self.report_fresh_field_calls(&reach);
+        self.report_constructor_hook_stores(&reach);
         self.report_source_provider_calls(&reach);
         self.issues
             .extend(
@@ -11540,6 +11547,7 @@ fn builtin_noop_subclass_hook(name: &str) -> bool {
 
 fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
     match name {
+        "builtins.dict" => Some(FrameworkClassRole::BuiltinDict),
         "unittest.TestCase" | "unittest.case.TestCase" => Some(FrameworkClassRole::Unittest),
         "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
             Some(FrameworkClassRole::UnittestAsync)
