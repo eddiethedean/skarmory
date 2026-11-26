@@ -15,9 +15,10 @@ candidate and a complete inventory.
 The [case inventory](../tests/conformance/phase03-inventory.toml) records the
 original assertions and verified runtime discrepancies. A mapped
 `runtime_review` includes the reason, runtime evidence and corrected
-assertions. The checker keeps the original Skylos and Skarmory outcomes in
-the receipt and reports successful corrections under `reviewed_runtime`.
-Ordinary pinned matches are counted separately under `skylos_parity`.
+assertions. Receipts preserve the original Skylos and Skarmory outcomes.
+The checker counts validated runtime reviews as preview passes under
+`reviewed_runtime_preview_passes`. Release pass counts require ordinary
+passes on the original assertions.
 
 | Required cases | Observed behavior |
 | --- | --- |
@@ -54,11 +55,11 @@ phase03-skylos/.venv/bin/python tests/conformance/phase03_framework_corpus.py \
 ```
 
 The workflow saves `runtime-controls.json` beside the candidate receipts.
-The release decision requires the original reference outcome and all
-prerequisites. On reviewed rows it also requires each corrected assertion
-to run on the candidate SDK and pass with the specified coverage. When a
-correction expects incomplete coverage, the receipt must contain its
-diagnostic and show that every fixture source was extracted.
+The checker requires the original reference outcome and all prerequisites.
+On reviewed rows it also requires each corrected assertion to run on the
+candidate SDK and pass with the specified coverage. When a correction expects
+incomplete coverage, the receipt must contain its diagnostic and show that
+every fixture source was extracted.
 When an unresolved import prevents full-project analysis, a correction can
 preserve a finding or declaration in a complete scan of a declared fixture subtree.
 The receipt records the full-project diagnostic and verifies that the subtree
@@ -94,10 +95,11 @@ pass must account for the listed assertions. For a reviewed `xfail`, record
 the expected failing assertion as `reference_xfail` in the inventory. The
 receipt records the failure location in `reference_failed_assertion` and
 the preceding completed assertions in `reference_assertions`. Run the candidate
-with the upstream marker disabled. Parity credit requires passing the original
-assertions. Reviewed runtime credit also records any mapped candidate assertion
+with the upstream marker disabled. Release credit requires passing the original
+assertions. A reviewed runtime receipt records any mapped candidate assertion
 failure or failure of the pinned shared fixture's complete-coverage assertion
-when the correction requires incomplete coverage.
+when the correction requires incomplete coverage. A passing runtime control
+can qualify the case for the preview while the original failure blocks release.
 
 Use `--fixture-root` to check declared fixture paths for required cases.
 The gate checks fixture provenance, license, and SHA-256, and requires
@@ -220,10 +222,10 @@ runs real pytest and Skarmory analysis, and requires exactly the named
 Rust test to pass. The receipt identifies the test executable and the
 fixture bytes.
 
-For versions below 0.3, matching pull requests and manual workflow runs
-require the mapped SDK, CLI, and engine cases to pass and upload the full gate decision.
-The full decision remains blocked while required evidence is missing.
-Publication of 0.3 and later requires that full decision to pass.
+For versions below 0.3, matching pull requests and manual workflow runs check
+each mapped SDK, CLI, and engine case's `preview_status` and upload the full
+gate decision. Publication of 0.3 and later requires the full decision to pass,
+including a complete inventory and an ordinary pass for every required case.
 
 Run the checker regression tests with the following command.
 
