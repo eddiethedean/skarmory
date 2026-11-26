@@ -7496,7 +7496,8 @@ impl<'a> Graph<'a> {
                 StatementKind::Evaluate(value) => {
                     if !self.phase03
                         || !(self.discarded_generator_call(scope, value, at)
-                            || self.walk_flask_globals_update(scope, value, at))
+                            || self.walk_flask_globals_update(scope, value, at)
+                            || self.walk_flask_login_mock_start(scope, value, at))
                     {
                         self.walk(scope, value, at);
                     }
