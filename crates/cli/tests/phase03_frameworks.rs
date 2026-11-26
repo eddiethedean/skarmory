@@ -5682,6 +5682,47 @@ fn django_date_format_uses_only_the_selected_source_locale() {
 }
 
 #[test]
+fn celery_logging_with_previously_imported_receivers_keeps_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let worker = root.join("worker.py");
+    let setup =
+        "from celery import Celery\napp = Celery('shop')\napp.log.setup_logging_subsystem()\n";
+    fs::write(
+        root.join("logging_hooks.py"),
+        "from celery.signals import setup_logging\n@setup_logging.connect\ndef configure_logging(**kwargs): return None\n",
+    )
+    .unwrap();
+    fs::write(root.join("hooks.py"), "import logging_hooks\n").unwrap();
+
+    for import in [
+        "import logging_hooks\n",
+        "import hooks\n",
+        "from os import getenv\nif getenv('LOAD_LOGGING'):\n    import logging_hooks\n",
+    ] {
+        fs::write(&worker, format!("{import}{setup}")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(report["coverage"]["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["path"] == "worker.py"
+                && issue["message"] == "Celery logging dispatch may reach receivers registered in an imported module"
+        }), "{report}");
+        assert!(!unreachable_functions(&report).contains(&"logging_hooks.configure_logging"));
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    for suffix in ["", "import logging_hooks\n"] {
+        fs::write(&worker, format!("{setup}{suffix}")).unwrap();
+        let report = scan(root);
+        assert!(unreachable_functions(&report).contains(&"logging_hooks.configure_logging"));
+    }
+}
+
+#[test]
 fn celery_logging_dispatch_uses_only_receivers_registered_before_stock_setup() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -12705,6 +12746,71 @@ fn source_owned_installers_replace_the_selected_django_command_handle() {
             .any(|issue| issue["kind"] == "unresolved_call")
     );
     assert!(evidence_certainties(&frozen, handle, "django_command").is_empty());
+}
+
+#[test]
+fn django_management_check_keeps_unproved_dispatch_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (name, source) in [
+        ("shop/__init__.py", ""),
+        (
+            "shop/settings.py",
+            "INSTALLED_APPS = ['shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
+        ),
+        (
+            "shop/apps.py",
+            "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from . import checks\n",
+        ),
+        (
+            "shop/checks.py",
+            "from django.core.checks import Tags, register\n@register(Tags.security)\ndef check_store(app_configs, **kwargs): return []\n",
+        ),
+    ] {
+        fs::write(root.join(name), source).unwrap();
+    }
+    let launcher = root.join("manage.py");
+    let prefix = "import os\nfrom django.core.management import execute_from_command_line\nos.environ['DJANGO_SETTINGS_MODULE'] = 'shop.settings'\n";
+    for dispatch in [
+        "execute_from_command_line(['manage.py', 'check', '--settings=shop.settings'])\n",
+        "import sys\nexecute_from_command_line(sys.argv)\n",
+    ] {
+        fs::write(&launcher, format!("{prefix}{dispatch}")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(report["coverage"]["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["path"] == "manage.py"
+                && issue["message"] == "Django management dispatch of project system checks is outside the bounded model"
+        }), "{report}");
+        assert!(!unreachable_functions(&report).contains(&"shop.checks.check_store"));
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(
+        &launcher,
+        format!("{prefix}execute_from_command_line(['manage.py', 'check', '--help'])\n"),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(unreachable_functions(&report).contains(&"shop.checks.check_store"));
+
+    fs::write(
+        root.join("shop/settings.py"),
+        "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    fs::write(
+        &launcher,
+        format!("{prefix}execute_from_command_line(['manage.py', 'check'])\n"),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(unreachable_functions(&report).contains(&"shop.checks.check_store"));
 }
 
 #[test]

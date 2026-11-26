@@ -569,8 +569,9 @@ Declaration evidence does not imply that a query ran.
 A first zero-argument Celery logging setup on a stock application can
 retain an earlier same-module `@setup_logging.connect` receiver as possible.
 The bounded proof accepts plain synchronous receivers with a keyword
-argument collector. Custom applications and opaque setup keep incomplete
-coverage.
+argument collector. Receivers imported before setup require cross-module
+ordering, so that path reports incomplete coverage. Custom applications and
+opaque setup also keep incomplete coverage.
 
 Selected Django startup accepts the standard auth, content types, and session
 apps and their explicit default AppConfig classes. Discovery continues through
@@ -629,6 +630,9 @@ with the default `run_checks` arguments and literal tag selections. Matching
 checks receive possible-use evidence and retain their framework-supplied
 `app_configs` and keyword arguments. Unsupported registration or dispatch
 forms and unresolved registration order produce coverage diagnostics.
+A selected management `check` command or unresolved command selection reports
+incomplete coverage when it can reach project checks outside the bounded
+dispatch model.
 
 The profile also recognizes selected Celery task registrations, including
 reached `register_task` calls on a resolved app. Bounded Celery backend
