@@ -591,6 +591,10 @@ startup can retain the requested source format from a single literal
 locales with a verified regular package path. Dynamic settings, packages and
 lookups keep incomplete coverage.
 
+Selected Django startup accepts the standard auth, content types, and session
+apps and their explicit default AppConfig classes. Discovery continues through
+the source-owned apps in the same installed list.
+
 Django admin discovery follows installed apps when `django.contrib.admin` or
 `AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules
 dormant unless the selected application imports them. The analyzer resolves
