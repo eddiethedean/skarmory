@@ -65,7 +65,7 @@ passes on the original assertions.
 | External decorator in the FastAPI evidence suite | The frozen project supplies no `plugin` module. The derived fixture supplies a local shutdown registrar. CPython runs the callback and its helper after initialization, and the SDK records possible shutdown evidence while preserving the no-FastAPI-root assertion. |
 | FastAPI nested projects | With FastAPI 0.141.1, the tool-only namespace fixture fails to import from the repository root and serves `/namespace_route` with HTTP 200 when `backend` is on the import path. The fixture leaves the source root unspecified. The sibling-service fixture fails to import `other` from `backend`. Including `worker` on the path finds `router = None` and fails at router inclusion. |
 | Django function view negatives | Django supports a mounted async function view and can dispatch its provider. A view module that raises while the selected URLconf imports it cannot supply a callback. An unconditional source-proven failure can completely establish that the callback and later URL mappings are unreachable. |
-| Django source-layout admin stubs | The frozen fixture leaves the import path unspecified. The derived fixture selects the local source layout explicitly. CPython selects the inert local `django` package and fails to import `django.apps`. |
+| Django source-layout admin stubs | The frozen fixture leaves the import path unspecified and its local package lacks `django.apps`. The derived fixture selects the local source layout explicitly and supplies an inert `django.apps` lookalike that imports successfully. |
 | Django command, autoreload and hook tests | The standalone fixtures leave installed apps, command selection, and invocation unspecified. Dispatching `handle`, validation, saving, and queries requires separate lifecycle actions. Escaped callbacks and classes remain unresolved without the external installer's code. |
 | Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1302) |
 | Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. The derived reference supplies the runtime-verified fixture correction. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1300) |
@@ -136,9 +136,10 @@ The original venv case still requires external dependency discovery and public
 liveness. The vendored-package case checks the private search list.
 
 The external-override suite exercises stdlib ancestry, builtin `dict`
-allocation, Traitlets, DRF, Guardian, and an unavailable external base with
-an explicit fallback. The remaining cases require external source lookup or
-assertions on Skylos's private dependency search and class index. The inventory
+allocation, DRF, Guardian, and an unavailable external base with an explicit
+fallback. The Traitlets case requires actual configurable construction and
+remains pending. Other cases require external source lookup or assertions
+on Skylos's private dependency search and class index. The inventory
 preserves those requirements for native scope review.
 
 ### Runtime-derived test expectations

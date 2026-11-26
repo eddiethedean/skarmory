@@ -481,8 +481,11 @@ def engine_case(args, key, case, env, trace=None):
         passed = passed and details["assertion_error"] is None and set(assertions) <= trace.completed
     sys.stdout.write(outcome.stdout)
     sys.stderr.write(outcome.stderr)
+    status = "passed" if passed else "failed"
+    if key in EXCEPTION_CONTROLS:
+        status = "blocked"
     return {
-        "status": "blocked" if passed and key in EXCEPTION_CONTROLS else ("passed" if passed else "failed"),
+        "status": status,
         "assertions": assertions if passed and key not in EXCEPTION_CONTROLS else [],
         "prerequisites": {
             prerequisite: "passed" if passed or key == CASE and index == 0 else "blocked"
