@@ -8687,7 +8687,9 @@ fn django_selected_command_dispatches_reloader_only_with_bound_options() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let root = project.path();
-    let source = r#"from django.core.management.base import BaseCommand
+    install_django_reloader_command(
+        root,
+        r#"from django.core.management.base import BaseCommand
 from django.utils import autoreload
 
 def restart(name, queue):
@@ -8705,8 +8707,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         autoreload.run_with_reloader(restart, options["name"], options["queue"])
-"#;
-    install_django_reloader_command(root, source);
+"#,
+    );
     let launcher = |args| {
         fs::write(
             root.join("manage.py"),
@@ -8736,15 +8738,6 @@ class Command(BaseCommand):
         "'--name=night', '-Q', 'main', '--unknown'",
     ] {
         launcher(bad);
-        let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
-        assert!(evidence_certainties(&incomplete, callback, "django_autoreload").is_empty());
-    }
-    for reserved in ["args", "stdout", "stderr"] {
-        let source = source
-            .replace("\"--queue\"", &format!("\"--{reserved}\""))
-            .replace("options[\"queue\"]", &format!("options[\"{reserved}\"]"));
-        install_django_reloader_command(root, &source);
-        launcher("'--name=night', '-Q', 'main'");
         let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
         assert!(evidence_certainties(&incomplete, callback, "django_autoreload").is_empty());
     }

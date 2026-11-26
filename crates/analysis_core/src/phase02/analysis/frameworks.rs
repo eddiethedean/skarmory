@@ -23,13 +23,7 @@ fn django_unconditionally_raises(body: &[Statement]) -> bool {
 mod django_commands;
 mod django_settings;
 
-enum DjangoSettingAliasError {
-    Unresolved,
-    FailedInitializer,
-}
-
 pub(super) use django_commands::DjangoCommandDispatch;
-pub(super) use django_settings::DjangoFormatLookup;
 
 pub(super) struct DjangoStartup {
     pub(super) at: Location,

@@ -721,7 +721,6 @@ pub(super) fn analyze_with_verification(
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
-        django_checks: django_checks::Checks::default(),
         django_command_dispatches: Vec::new(),
         django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
@@ -965,7 +964,6 @@ struct Graph<'a> {
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
-    django_checks: django_checks::Checks,
     django_command_dispatches: Vec<frameworks::DjangoCommandDispatch>,
     django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
@@ -7770,10 +7768,13 @@ impl<'a> Graph<'a> {
                             || self.defer_constructor_hook_store(scope, statement));
                     let form_field_write =
                         self.phase03 && self.modeled_django_instance_field_write(scope, statement);
+                    let command_write =
+                        self.phase03 && self.modeled_django_command_instance_write(scope, at);
                     if !flask_write
                         && !celery_write
                         && !fresh_field_write
                         && !form_field_write
+                        && !command_write
                         && !self.modeled_framework_write(scope, at)
                     {
                         if self.phase03
@@ -10902,8 +10903,6 @@ impl<'a> Graph<'a> {
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
-            self.report_django_system_check_order(&reach);
-            self.report_celery_logging_imports(&reach);
             self.remove_proven_django_command_option_diagnostics(&reach);
             self.report_django_middleware_calls(&reach);
             self.report_log_record_calls(&reach);
