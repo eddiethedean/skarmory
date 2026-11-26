@@ -514,7 +514,10 @@ and unrelated options retain their existing evidence and coverage rules.
 Resolved Traitlets configurable classes support zero-argument text trait
 declarations and their named default, validation, and observation hooks.
 The analyzer records possible declarations when a named trait resolves.
-An ambiguous default and unmodeled construction keep coverage incomplete.
+Zero-argument construction is supported for a bounded configurable
+lineage with the provider's empty config and known declarations. Construction
+registers hooks. A trait operation or independent call can activate their bodies.
+An ambiguous default or unmodeled setup keeps coverage incomplete.
 [Traitlets callbacks](https://traitlets.readthedocs.io/en/stable/api.html)
 
 A module-level optional import can select a plain class from an
