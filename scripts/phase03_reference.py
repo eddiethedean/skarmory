@@ -83,8 +83,14 @@ def validate_corpus_changes(before, after, paths, reviewed):
         raise ValueError("fixture changes do not match the reviewed corpus cases")
 
 
-def inline_fixture(source, rule):
+def inline_fixtures(source, rules):
     tree = ast.parse(source)
+    ids = [remove_parametrized_fixture(tree, rule) for rule in rules]
+    assertions = [node.lineno for node in ast.walk(tree) if isinstance(node, ast.Assert)]
+    return ast.dump(tree), assertions, ids
+
+
+def remove_parametrized_fixture(tree, rule):
     [function] = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == rule["function"]
@@ -110,13 +116,49 @@ def inline_fixture(source, rule):
             or not all(isinstance(case_id, str) for case_id in ids)):
         raise ValueError("inline fixture correction must name every input")
     function.decorator_list.remove(decorator)
-    assertions = [node.lineno for node in ast.walk(tree) if isinstance(node, ast.Assert)]
-    return ast.dump(tree), assertions, list(ids)
+    return list(ids)
 
 
-def validate_inline_fixture(before, after, rule):
-    if inline_fixture(before, rule) != inline_fixture(after, rule):
-        raise ValueError(f"{rule['path']}: correction changed test code, assertions, or pytest IDs")
+def validate_inline_fixtures(before, after, rules):
+    if inline_fixtures(before, rules) != inline_fixtures(after, rules):
+        raise ValueError(f"{rules[0]['path']}: correction changed test code, assertions, or pytest IDs")
+
+
+def test_contract(source):
+    tree = ast.parse(source)
+    assertions = [
+        (node.lineno, ast.dump(node))
+        for node in ast.walk(tree) if isinstance(node, ast.Assert)
+    ]
+    tests = [
+        (node.name, node.lineno, ast.dump(node.args), tuple(map(ast.dump, node.decorator_list)))
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+    ]
+    return assertions, tests
+
+
+def validate_fixture_setup(before, after, rule):
+    old_lines, new_lines = before.splitlines(keepends=True), after.splitlines(keepends=True)
+    changed_lines = {
+        line for line, (old, new) in enumerate(zip(old_lines, new_lines), 1) if old != new
+    }
+    reviewed_lines = rule["lines"]
+    if (len(old_lines) != len(new_lines) or not reviewed_lines
+            or len(set(reviewed_lines)) != len(reviewed_lines)
+            or changed_lines != set(reviewed_lines)):
+        raise ValueError(f"{rule['path']}: fixture edit differs from the reviewed lines")
+    if test_contract(before) != test_contract(after):
+        raise ValueError(f"{rule['path']}: fixture setup changed assertions or test collection")
+
+
+def checked_test_fixture(checkout, original, env, paths, path):
+    fixture = PurePosixPath(path)
+    if (path not in paths or fixture.parts[:1] != ("test",)
+            or ".." in fixture.parts or fixture.suffix != ".py"):
+        raise ValueError(f"{path}: missing or invalid inline fixture correction")
+    paths.remove(path)
+    return git(checkout, "show", f"{original}:{path}"), git(checkout, "show", f":{path}", env=env)
 
 
 def materialize(checkout, manifest=BASELINE):
@@ -144,18 +186,15 @@ def materialize(checkout, manifest=BASELINE):
         corpus_paths = paths.copy()
         before = json.loads(git(checkout, "show", f"{original}:{CORPUS}"))
         after = json.loads(git(checkout, "show", f":{CORPUS}", env=env))
+        inline = {}
         for rule in corrections.get("inline_corrections", ()):
-            path = rule["path"]
-            fixture = PurePosixPath(path)
-            if (path not in corpus_paths or fixture.parts[:1] != ("test",)
-                    or ".." in fixture.parts or fixture.suffix != ".py"):
-                raise ValueError(f"{path}: missing or invalid inline fixture correction")
-            validate_inline_fixture(
-                git(checkout, "show", f"{original}:{path}"),
-                git(checkout, "show", f":{path}", env=env),
-                rule,
-            )
-            corpus_paths.remove(path)
+            inline.setdefault(rule["path"], []).append(rule)
+        for path, rules in inline.items():
+            old, new = checked_test_fixture(checkout, original, env, corpus_paths, path)
+            validate_inline_fixtures(old, new, rules)
+        for rule in corrections.get("fixture_setup_corrections", ()):
+            old, new = checked_test_fixture(checkout, original, env, corpus_paths, rule["path"])
+            validate_fixture_setup(old, new, rule)
         validate_corpus_changes(before, after, corpus_paths, reviewed)
         for path in paths:
             entry = git(checkout, "ls-files", "--stage", "--", path, env=env)

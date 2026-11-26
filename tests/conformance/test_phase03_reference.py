@@ -10,7 +10,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from phase03_reference import (
-    COMMIT_ENV, COMMIT_MESSAGE, CORPUS, git, materialize, validate_inline_fixture,
+    COMMIT_ENV, COMMIT_MESSAGE, CORPUS, git, materialize, validate_fixture_setup,
+    validate_inline_fixtures,
 )
 
 
@@ -24,7 +25,7 @@ def test_run(source):
     adjusted = original.replace('["always"]', '["sometimes"], ids=["always"]')
 
     def test_preserves_assertions_and_pytest_ids(self):
-        validate_inline_fixture(self.original, self.adjusted, self.rule)
+        validate_inline_fixtures(self.original, self.adjusted, [self.rule])
 
     def test_rejects_changed_assertions_or_ids(self):
         for changed in (
@@ -34,7 +35,41 @@ def test_run(source):
         ):
             with self.subTest(changed=changed):
                 with self.assertRaisesRegex(ValueError, "changed test code, assertions, or pytest IDs"):
-                    validate_inline_fixture(self.original, changed, self.rule)
+                    validate_inline_fixtures(self.original, changed, [self.rule])
+
+    def test_multiple_parametrized_fixtures_in_one_file(self):
+        other = {**self.rule, "function": "test_other"}
+        validate_inline_fixtures(
+            self.original + self.original.replace("test_run", "test_other"),
+            self.adjusted + self.adjusted.replace("test_run", "test_other"),
+            [self.rule, other],
+        )
+
+
+class FixtureSetupTests(unittest.TestCase):
+    original = """@pytest.mark.parametrize("value", ["input"])
+def test_fixture(value):
+    fixture = build(value)
+    assert inspect(fixture)
+"""
+    adjusted = original.replace("build(value)", "build(value, setup=True)")
+
+    def test_preserves_test_contract_at_reviewed_setup_line(self):
+        validate_fixture_setup(self.original, self.adjusted, {"path": "test/test_fixture.py", "lines": [3]})
+
+    def test_rejects_extra_setup_edit(self):
+        changed = self.adjusted.replace("assert inspect(fixture)", "assert True")
+        with self.assertRaisesRegex(ValueError, "differs from the reviewed lines"):
+            validate_fixture_setup(self.original, changed, {"path": "test/test_fixture.py", "lines": [3]})
+
+    def test_rejects_changes_to_assertions_and_collection_even_if_listed(self):
+        for changed, lines in (
+            (self.adjusted.replace("assert inspect(fixture)", "assert True"), [3, 4]),
+            (self.adjusted.replace('["input"]', '["different"]'), [1, 3]),
+        ):
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(ValueError, "changed assertions or test collection"):
+                    validate_fixture_setup(self.original, changed, {"path": "test/test_fixture.py", "lines": lines})
 
 
 class Phase03ReferenceTests(unittest.TestCase):
