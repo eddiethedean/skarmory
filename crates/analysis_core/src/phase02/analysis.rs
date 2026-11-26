@@ -10088,6 +10088,13 @@ impl<'a> Graph<'a> {
             let visit_scope = (kind == "local_namespace").then_some(scope);
             let members = match value {
                 Value::Callable(invocation) => {
+                    if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
+                        self.report_unmodeled_deferred_value(
+                            scope,
+                            at,
+                            &Value::DeferredComprehension,
+                        );
+                    }
                     self.invoke(scope, invocation, kind, certainty, at);
                     if kind == "local_namespace" {
                         self.uncertain(
@@ -10108,7 +10115,7 @@ impl<'a> Graph<'a> {
                     self.expose(scope, value, kind, at);
                     Vec::new()
                 }
-                Value::DeferredLambda => {
+                Value::DeferredLambda | Value::CallbackGenerator(_) => {
                     self.report_unmodeled_deferred_value(scope, at, &value);
                     Vec::new()
                 }

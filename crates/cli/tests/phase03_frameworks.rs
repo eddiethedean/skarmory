@@ -160,6 +160,9 @@ unused_generator()
         "set(generator())",
         "[item for item in generator()]",
         "list(generator() if __debug__ else unused_generator())",
+        "dict([generator()])",
+        "__all__ = ['generator']",
+        "stream = generator()\n__all__ = ['stream']",
     ] {
         fs::write(&path, source.replace("list(generator())", consumer)).unwrap();
         let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
