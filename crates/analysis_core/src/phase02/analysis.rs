@@ -26,6 +26,7 @@ mod aiohttp;
 mod celery;
 mod celery_routes;
 mod class_parameter_calls;
+mod closures;
 mod comprehension;
 mod django_checks;
 mod django_choices;
@@ -722,6 +723,7 @@ pub(super) fn analyze_with_verification(
         django_view_arguments: BTreeMap::new(),
         django_failed_view_initializers: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
+        closure_registries: BTreeMap::new(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
@@ -967,6 +969,7 @@ struct Graph<'a> {
     django_view_arguments: django_views::ViewRouteArguments,
     django_failed_view_initializers: BTreeMap<ScopeId, Location>,
     django_globals: django_globals::Globals,
+    closure_registries: BTreeMap<SymbolId, closures::RegistryUse>,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
@@ -1052,6 +1055,11 @@ impl<'a> Graph<'a> {
             match &statement.kind {
                 StatementKind::Define(definition) => {
                     let file = self.scopes[scope].file;
+                    if let (Some(name), [value]) =
+                        (&definition.default_binding, definition.defaults.as_slice())
+                    {
+                        self.bind(scope, name, Binding::Variable(Some(value), statement.at));
+                    }
                     let id = self.symbols.len();
                     let child = self.push_scope(file, Some(scope), Some(id), &definition.body);
                     self.bind(
@@ -1337,6 +1345,22 @@ impl<'a> Graph<'a> {
     }
 
     fn local(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+        let key = self.function_binding_key(scope, name);
+        self.local_by_key(scope, &key, before)
+    }
+
+    fn local_by_key(&self, scope: ScopeId, key: &str, before: Location) -> Option<SymbolId> {
+        let primary = self.local_raw(scope, key, before);
+        let alias = self
+            .private_function_spelling(scope, key)
+            .and_then(|name| self.local_raw(scope, name, before));
+        primary
+            .into_iter()
+            .chain(alias)
+            .max_by_key(|&id| position(self.symbols[id].name.at))
+    }
+
+    fn local_raw(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
         self.scopes[scope]
             .names
             .get(name)?
@@ -1347,6 +1371,46 @@ impl<'a> Graph<'a> {
                 let at = self.symbols[id].name.at;
                 (at.line, at.column) < (before.line, before.column)
             })
+    }
+
+    fn function_private_class(&self, mut scope: ScopeId) -> Option<&str> {
+        if !self.phase03 || !self.in_function(scope) {
+            return None;
+        }
+        while let Some(parent) = self.scopes[scope].parent {
+            scope = parent;
+            if let Some(owner) = self.scopes[scope].owner
+                && self.is_class(owner)
+            {
+                let name = self.symbols[owner].name.text.trim_start_matches('_');
+                return (!name.is_empty()).then_some(name);
+            }
+        }
+        None
+    }
+
+    fn function_binding_key<'name>(&self, scope: ScopeId, name: &'name str) -> Cow<'name, str> {
+        if is_private_name(name)
+            && let Some(class) = self.function_private_class(scope)
+        {
+            Cow::Owned(format!("_{class}{name}"))
+        } else {
+            Cow::Borrowed(name)
+        }
+    }
+
+    fn private_function_spelling<'name>(
+        &self,
+        scope: ScopeId,
+        key: &'name str,
+    ) -> Option<&'name str> {
+        if !key.starts_with('_') {
+            return None;
+        }
+        let class = self.function_private_class(scope)?;
+        key.strip_prefix('_')?
+            .strip_prefix(class)
+            .filter(|name| is_private_name(name))
     }
 
     fn supported_provider_wildcard(
@@ -1397,20 +1461,36 @@ impl<'a> Graph<'a> {
     ) -> LexicalBinding {
         let mut scope = origin;
         let mut before = before;
+        // Compile-time mangling belongs to the lookup's lexical class,
+        // including when lookup proceeds to a function outside that class.
+        let key = self.function_binding_key(origin, name);
+        if let Some(owner) = self.scopes[origin].owner
+            && let Binding::Definition(definition, _) = self.symbols[owner].binding
+            && definition
+                .global_reads
+                .iter()
+                .any(|global| self.function_binding_key(origin, global) == key)
+        {
+            scope = self.scopes[origin].file;
+            before = END;
+        }
         loop {
             let row = &self.scopes[scope];
             let class = row.owner.is_some_and(|id| self.is_class(id));
             // A class body sees its own namespace, but nested scopes do not
             // capture a class namespace as an enclosing lexical scope.
             if scope == origin || !class {
-                if let Some(id) = self.local(scope, name, before) {
+                if let Some(id) = self.local_by_key(scope, &key, before) {
                     return LexicalBinding::Found(id);
                 }
+                let private = self.private_function_spelling(scope, &key);
                 if row.owner.is_some()
                     && !class
-                    && (row.names.contains_key(name)
+                    && (row.names.contains_key(key.as_ref())
+                        || private.is_some_and(|name| row.names.contains_key(name))
                         || (check_dormant_declarations || self.is_namespace_builtin(name))
-                            && suite_binds_name(row.body, name))
+                            && (suite_binds_name(row.body, &key)
+                                || private.is_some_and(|name| suite_binds_name(row.body, name))))
                 {
                     // A lexical declaration can shadow an outer binding even
                     // in a branch omitted from the runtime binding index.
@@ -2421,6 +2501,21 @@ impl<'a> Graph<'a> {
                     } else {
                         Value::Instance(class)
                     };
+                }
+                if let Some(outer) = self.scopes[scope].parent
+                    && let Some(call) = self.final_direct_closure_call(scope, outer)
+                    && let Some(owner) = self.scopes[scope].owner
+                    && let Binding::Definition(closure, _) = self.symbols[owner].binding
+                    && let Some(index) = closure.parameters.iter().position(|parameter| {
+                        position(parameter.at) == position(self.symbols[id].name.at)
+                    })
+                    && let Some(argument) = call.arguments.get(index)
+                    && let Value::Instance(class) =
+                        self.identity(outer, argument, call.at, depth + 1)
+                    // A reference to the closure can re-enter it with a different argument.
+                    && !self.closure_reads_own_binding(scope, closure)
+                {
+                    return Value::Instance(class);
                 }
                 Value::Unknown
             }
@@ -3866,6 +3961,7 @@ impl<'a> Graph<'a> {
                 }
                 if let LexicalBinding::Found(id) = binding {
                     self.record_django_global_read(scope, id, expression.at);
+                    self.record_closure_registry_read(scope, id, expression.at);
                     if let ValueEvaluation::Lazy {
                         argument: Some((parameter, text)),
                         ..
@@ -3883,8 +3979,26 @@ impl<'a> Graph<'a> {
                         // deferred function body, it can select the binding
                         // currently installed by each enclosing suite.
                         before
+                    } else if let Some(call) = self.final_direct_closure_call(scope, binding_scope)
+                    {
+                        if let Some(write) = call.write
+                            && self.function_binding_key(write.setter, &write.name.text)
+                                == self.function_binding_key(scope, name)
+                            && position(self.symbols[id].name.at) < position(write.at)
+                        {
+                            self.read.insert(id);
+                            return self.identity(binding_scope, write.value, write.at, depth + 1);
+                        }
+                        call.at
                     } else {
-                        if self.scopes[binding_scope].names[name.as_str()].len() > 1 {
+                        let names = &self.scopes[binding_scope].names;
+                        let key = self.function_binding_key(scope, name);
+                        let primary = names.get(key.as_ref()).map_or(0, Vec::len);
+                        let private = self
+                            .private_function_spelling(binding_scope, &key)
+                            .and_then(|name| names.get(name))
+                            .map_or(0, Vec::len);
+                        if primary + private > 1 {
                             self.scope_issue(scope, expression.at, "ambiguous_binding",
                                 "an enclosing name has multiple bindings and the active version is unresolved");
                             return Value::Unknown;
@@ -4125,6 +4239,12 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::Callable(invocation) if self.phase03 => {
+                    if arguments.is_empty()
+                        && keywords.is_empty()
+                        && let Some(callback) = self.returned_local_callable(invocation)
+                    {
+                        return callback;
+                    }
                     if let Some(app) = self.fastapi_subclass_app(
                         invocation,
                         CallArguments {
@@ -5859,6 +5979,24 @@ impl<'a> Graph<'a> {
                         );
                     }
                     Value::Provider(name)
+                        if self.phase03 && scope == self.scopes[scope].file && name == "asyncio.run" =>
+                    {
+                        if let [awaitable] = arguments.as_slice()
+                            && keywords.is_empty()
+                            && let target @ Value::Coroutine(_) =
+                                self.identity(scope, awaitable, before, 0)
+                        {
+                            self.activate_callback(scope, target, "asyncio_run", expr.at);
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "asyncio.run requires a resolved coroutine and no runner options",
+                            );
+                        }
+                    }
+                    Value::Provider(name)
                         if self.phase03
                             && name == "pluggy.HookimplMarker"
                             && matches!(
@@ -6546,6 +6684,16 @@ impl<'a> Graph<'a> {
                         }
                     }
                     _ => {
+                        if let ExpressionKind::Member(receiver, name) = &function.kind
+                            && name == "append"
+                            && let [argument] = arguments.as_slice()
+                            && keywords.is_empty()
+                            && self.retain_registry_callback(
+                                scope, receiver, argument, before, expr.at, closures::RegistryKind::List,
+                            )
+                        {
+                            return;
+                        }
                         if self.phase03
                             && !self.probing_identity
                             && self.branch_depth == 0
@@ -7716,6 +7864,19 @@ impl<'a> Graph<'a> {
                 StatementKind::SetGlobalName { value, .. } => {
                     self.record_django_global_write(scope, value, at);
                 }
+                StatementKind::SetNonlocalName { value, .. } => {
+                    if let Some(write) = self.proved_closure_cell_write(scope) {
+                        let outer = self.scopes[scope].parent.expect("known enclosing function");
+                        self.walk(outer, value, write.at);
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "nonlocal assignment has no bounded closure call",
+                        );
+                    }
+                }
                 StatementKind::DjangoSettingsGlobalCall(call) => {
                     if self.phase03 {
                         self.walk(scope, call, at);
@@ -7789,11 +7950,17 @@ impl<'a> Graph<'a> {
                         self.phase03 && self.modeled_django_instance_field_write(scope, statement);
                     let command_write =
                         self.phase03 && self.modeled_django_command_instance_write(scope, at);
+                    let registry_write = matches!(&statement.kind,
+                    StatementKind::WriteModuleEntry { mapping, value: Some(callback), .. }
+                    if self.retain_registry_callback(
+                        scope, mapping, callback, at, at, closures::RegistryKind::Dictionary,
+                    ));
                     if !flask_write
                         && !celery_write
                         && !fresh_field_write
                         && !form_field_write
                         && !command_write
+                        && !registry_write
                         && !self.modeled_framework_write(scope, at)
                     {
                         if self.phase03
@@ -11026,6 +11193,7 @@ impl<'a> Graph<'a> {
             self.issues.push(framework_limit());
         }
         self.report_unbound_receiver_calls(&reach);
+        self.report_unmodeled_registry_reads(&reach);
         self.report_fresh_field_calls(&reach);
         self.report_constructor_hook_stores(&reach);
         self.report_source_provider_calls(&reach);
@@ -11495,6 +11663,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
         match &statement.kind {
             StatementKind::Define(child) => {
                 assigned.insert(child.name.text.as_str());
+                if let Some(target) = &child.default_binding {
+                    assigned.insert(target.text.as_str());
+                }
                 nested_reads.extend(namespace_free_names(child, postponed));
                 expressions.extend(&child.decorators);
                 expressions.extend(&child.bases);
@@ -11553,6 +11724,10 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             StatementKind::DeleteName(name) => {
                 assigned.insert(name.text.as_str());
+            }
+            StatementKind::SetNonlocalName { name, value } => {
+                nested_reads.insert(name.text.as_str());
+                expressions.push(value);
             }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
@@ -11648,7 +11823,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::IdentityDecoratorLambda => {}
         }
     }
-    reads.retain(|name| !assigned.contains(name));
+    reads.retain(|name| {
+        !assigned.contains(name) && !definition.global_reads.iter().any(|global| global == name)
+    });
     // Class-local names cannot supply cells to nested functions.
     if !class {
         nested_reads.retain(|name| !assigned.contains(name));
@@ -11661,7 +11838,13 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
 // branches that the runtime index can prove are never executed.
 fn suite_binds_name(body: &[Statement], name: &str) -> bool {
     body.iter().any(|statement| match &statement.kind {
-        StatementKind::Define(definition) => definition.name.text == name,
+        StatementKind::Define(definition) => {
+            definition.name.text == name
+                || definition
+                    .default_binding
+                    .as_ref()
+                    .is_some_and(|target| target.text == name)
+        }
         StatementKind::Import(import) => import.local.text == name,
         StatementKind::ProviderWildcardImport(imports) => {
             imports.iter().any(|import| import.local.text == name)
@@ -11769,6 +11952,10 @@ fn is_identity_decorator(definition: &Definition) -> bool {
         return false;
     };
     returns_parameter(definition, parameter)
+}
+
+fn is_private_name(name: &str) -> bool {
+    name.starts_with("__") && !name.ends_with("__")
 }
 
 fn returns_parameter(definition: &Definition, parameter: &Name) -> bool {
@@ -15463,6 +15650,192 @@ def explicit(source):
                 .unwrap()
                 .iter()
                 .any(|issue| issue["kind"] == "ambiguous_binding" && issue["line"] == call_line));
+        }
+    }
+
+    #[test]
+    fn phase03_final_local_closure_call_uses_the_binding_at_invocation() {
+        let source = r#"def early(): return 1
+def late(): return 2
+def outer():
+    target = early
+    def closure():
+        return target()
+    target = late
+    return closure()
+outer()
+"#;
+        let report = analyze_phase03(&[module("main.py", "main", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.late" && edge.kind == "direct_call" })
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.early" && edge.kind == "direct_call" })
+        );
+
+        let earlier_call = source.replace("    target = late", "    closure()\n    target = late");
+        let report = analyze_phase03(&[module("main.py", "main", &earlier_call)], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "ambiguous_binding")
+        );
+    }
+
+    #[test]
+    fn phase03_nonlocal_setter_requires_a_terminal_cell_read() {
+        let scan = |source: &str| {
+            let file = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+            };
+            analyze_phase03(&[file], &[])
+        };
+        let source = r#"def initial(): return 1
+def replacement(): return 2
+def final_task(): return 3
+def configure():
+    task = initial
+    def install():
+        nonlocal task
+        task = replacement
+    def invoke():
+        return task()
+    install()
+    return invoke()
+configure()
+"#;
+        let report = scan(source);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.replacement" && edge.kind == "direct_call" })
+        );
+        assert!(names(&report, Category::Function).contains(&"initial"));
+
+        let intermediate_read = source.replace(
+            "    return invoke()",
+            "    saved = task\n    result = saved()\n    task = final_task\n    return invoke()",
+        );
+        let argument_read = source
+            .replace("def invoke():", "def invoke(result):")
+            .replace("    return invoke()", "    return invoke(task())");
+        for source in [intermediate_read, argument_read] {
+            let report = scan(&source);
+            assert!(
+                report.issues.iter().any(|issue| {
+                    issue.kind == "unsupported_construct"
+                        && issue.message == "nonlocal assignment has no bounded closure call"
+                }),
+                "{:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_recursive_closure_does_not_reuse_its_initial_receiver() {
+        let source = r#"class Primary:
+    def run(self): return 1
+class Fallback:
+    def run(self): return 2
+depth = 1
+def outer():
+    def invoke(worker, budget):
+        return worker.run()
+    return invoke(Primary(), depth)
+outer()
+"#;
+        let report = analyze_phase03(&[module("main.py", "main", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.Primary.run" && edge.kind == "direct_call" })
+        );
+
+        for recursive_branch in [
+            "        if budget:\n            return invoke(Fallback(), 0)\n",
+            "        if budget:\n            again = invoke\n            return again(Fallback(), 0)\n",
+        ] {
+            let source = source.replace(
+                "        return worker.run()",
+                &format!("{recursive_branch}        return worker.run()"),
+            );
+            let report = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"),
+                "{:?}",
+                report.issues
+            );
+            assert!(!report.evidence.iter().any(|edge| {
+                edge.full_name == "main.Primary.run" && edge.kind == "direct_call"
+            }));
+        }
+    }
+
+    #[test]
+    fn phase03_returned_closure_requires_the_factory_to_be_reached() {
+        let source = r#"def leaf(): return 1
+def factory():
+    def callback():
+        return leaf()
+    return callback
+"#;
+        let dormant = analyze_phase03(&[module("main.py", "main", source)], &[]);
+        assert!(dormant.issues.is_empty(), "{:?}", dormant.issues);
+        assert!(names(&dormant, Category::Function).contains(&"leaf"));
+
+        let source = format!("{source}handler = factory()\nhandler()\n");
+        let active = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+        assert!(active.issues.is_empty(), "{:?}", active.issues);
+        assert!(active.evidence.iter().any(|edge| {
+            edge.full_name == "main.factory.callback" && edge.kind == "direct_call"
+        }));
+        assert!(!names(&active, Category::Function).contains(&"leaf"));
+    }
+
+    #[test]
+    fn phase03_literal_callback_registry_retains_closures_and_rejects_unmodeled_reads() {
+        for (initializer, write) in [
+            ("[]", "registry.append(callback)"),
+            ("{}", "registry['key'] = callback"),
+        ] {
+            let source = format!(
+                "registry = {initializer}\ndef leaf(): return 1\ndef populate():\n    def callback():\n        return leaf()\n    {write}\npopulate()\n"
+            );
+            let report = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(report.evidence.iter().any(|edge| {
+                edge.full_name == "main.populate.callback" && edge.kind == "callback_registry"
+            }));
+            assert!(!names(&report, Category::Function).contains(&"leaf"));
+
+            let source = format!("{source}print(registry)\n");
+            let report = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registry_read")
+            );
         }
     }
 

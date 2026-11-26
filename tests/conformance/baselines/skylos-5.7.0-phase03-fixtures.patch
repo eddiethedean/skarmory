@@ -1593,3 +1593,63 @@ index 2cf2a54..0ff3116 100644
                      "formatters": {
                          "json": {"()": "app.formatters.JSONFormatter"},
                      },
+diff --git a/test/test_closure_reachability.py b/test/test_closure_reachability.py
+index ff881b8..ddd794c 100644
+--- a/test/test_closure_reachability.py
++++ b/test/test_closure_reachability.py
+@@ -97,8 +97,8 @@ def test_returned_callback_only_protects_its_body_when_factory_is_live(
+ )
+ def test_live_owner_keeps_callbacks_that_may_be_invoked_elsewhere(tmp_path, use):
+     source = """
+-        from external import register, registry
+-
++        from atexit import register
++        registry = REGISTRY
+         def finish_packet():
+             return 17
+
+@@ -108,7 +108,7 @@ def test_live_owner_keeps_callbacks_that_may_be_invoked_elsewhere(tmp_path, use)
+             PLACEHOLDER
+
+         arrange_packet()
+-    """.replace("PLACEHOLDER", use)
++    """.replace("PLACEHOLDER", use).replace("REGISTRY", "[]" if use.startswith("registry.append") else "{}")
+
+     unused = _unused(tmp_path, source)
+
+@@ -285,7 +285,7 @@ def test_decorating_callback_is_an_owner_time_use_and_can_execute_body(tmp_path,
+             return 17
+
+         def arrange_packet():
+-            from external import register
++            from atexit import register
+             @register
+             def process_packet():
+                 return finish_packet()
+@@ -312,7 +312,7 @@ def test_nested_async_body_keeps_its_own_owner(tmp_path, live):
+                 return finish_packet()
+             PLACEHOLDER
+
+-        from external import run
++        from asyncio import run
+         run(arrange_packet())
+     """.replace("PLACEHOLDER", "return await process_packet()" if live else "return 0")
+
+@@ -396,7 +396,7 @@ def test_method_nested_body_can_capture_its_enclosing_receiver(tmp_path, live):
+         ),
+         (
+             """
+-            from external import choose
++            def choose(): return __debug__
+             def first_finish(): return 1
+             def second_finish(): return 2
+             def arrange_packet():
+@@ -440,7 +440,7 @@ def test_method_nested_body_can_capture_its_enclosing_receiver(tmp_path, live):
+         ),
+         (
+             """
+-            from external import choose
++            def choose(): return __debug__
+             def first_finish(): return 1
+             def second_finish(): return 2
+             def arrange_packet():
