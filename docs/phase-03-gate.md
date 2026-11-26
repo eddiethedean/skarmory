@@ -204,36 +204,29 @@ job publishes the frozen Skylos results alongside the paired derived replay.
 
 ### Closure safety audit
 
-The frozen Skylos 5.7.0 checkout passes all 26 cases in
-`test/test_closure_reachability_safety.py`. The installed Phase 0.3 SDK
-qualifies ten cases under their original pytest IDs and assertions. Each case
-requires the original fixture write, default grep verification, and disabled
-runtime trace input. [Pinned closure safety tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_closure_reachability_safety.py)
+The release inventory requires all 26 cases in the pinned Skylos 5.7.0
+`test/test_closure_reachability_safety.py` suite. Each installed SDK receipt
+must prove fixture creation, default grep verification, and disabled runtime
+trace input. The release job also records the frozen Skylos results and
+checks that the required SDK cases match the complete frozen test ID set.
+[Original closure safety tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_closure_reachability_safety.py)
 
-The `private-attribute-uses-lexical-class` case now retains both
-`Receiver._Envelope__dispatch` and `leaf_south`. Syntactic attributes use the
-enclosing class's mangled name. Lookup keeps that key across base classes and
-reports declarations with their original source spellings. Aliases assigned
-in a class body capture the binding installed at the assignment. Literal
-attribute names passed at runtime keep their supplied spelling. [Dispatch issue](https://github.com/eddiethedean/skarmory/issues/167)
+The reviewed input for two cases supplies the missing `external.py` next to
+the original `worker.py` without changing its source or either assertion.
+In normal CPython 3.11, the provider invokes the dispatched callback and
+returns true from `choose()`. Under `-O` it leaves the callback uncalled and
+returns false. Together the two executions reach each receiver in both
+fixtures.
 
-The remaining 16 cases are Python release qualification gaps. The
-[diagnostic manifest](../tests/conformance/phase03-closure-safety-audit.toml)
-records their original assertions and prerequisites. The release preview
-archives the frozen JUnit output for all 26 cases and the paired audit results
-for these 16 in `closure-safety-audit.json`. Only the release inventory
-contributes case results to reconciliation. The diagnostic manifest blocks
-publication while any required cases remain there, even if the release
-inventory is marked complete. The preview still reports the results of all
-mapped release cases.
-
-| Candidate outcome on `1be3369` | Pytest parameter IDs |
-| --- | --- |
-| Incomplete coverage for captured binding writes | `called-nonlocal-receiver-mutator`, `global-capture-rebinding`, `grandchild-nonlocal-rebinding`, `nonlocal-function-rebinding` |
-| Incomplete coverage with an unavailable fixture provider | `escaped-nonlocal-receiver-mutator` imports `external.dispatch`. `conditional-captured-receiver` imports `external.choose`. The pinned fixture creates only `worker.py`. |
-| Incomplete coverage for a declaration in a `finally` block | `finally-nested-definition` |
-| Incomplete coverage for definition-time expressions that update a captured receiver | `lambda-default-mutates-captured-receiver`, `decorator-expression-mutates-captured-receiver`, `class-header-mutates-captured-receiver`, `argument-annotation-mutates-captured-receiver`, `return-annotation-mutates-captured-receiver` |
-| Incomplete coverage for callable dispatch through comprehension and lambda scopes | `comprehension-target-shadows-nested-function`, `escaped-generator-target-shadows-nested-function`, `lambda-captures-private-local-function`, `lambda-private-parameter-shadows-local-function` |
+Skarmory uses the lexical class's mangled names for private attributes and
+lambda parameters. It tracks captured binding updates through bounded calls
+and definition headers, including optional rebinding when the possible
+receivers are known. It distinguishes eager comprehensions from deferred
+generator expressions and models materialization by resolved built-in
+`list` and `tuple` for the bounded scalar callback form. Other generator
+consumers and escaping generator values can still make coverage incomplete.
+Skarmory follows a `finally` suite after straight-line literal assignments
+to fresh local names. An overwrite can release an object and run its finalizer.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

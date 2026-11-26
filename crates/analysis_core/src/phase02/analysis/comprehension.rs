@@ -14,6 +14,141 @@ struct Evaluation<'a> {
 }
 
 impl Graph<'_> {
+    pub(super) fn scalar_callback_comprehension(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+    ) -> Option<Vec<Invocation>> {
+        let ExpressionKind::Comprehension {
+            form: ComprehensionForm::List | ComprehensionForm::Generator,
+            iterators,
+            elements,
+        } = &expression.kind
+        else {
+            return None;
+        };
+        if self.scopes[scope]
+            .owner
+            .is_some_and(|owner| self.is_class(owner))
+        {
+            return None;
+        }
+        let [iterator] = iterators.as_slice() else {
+            return None;
+        };
+        let ExpressionKind::Sequence { items, .. } = &iterator.iterable.kind else {
+            return None;
+        };
+        let [
+            Expression {
+                kind:
+                    ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    },
+                ..
+            },
+        ] = elements.as_slice()
+        else {
+            return None;
+        };
+        if items.len() > MAX_COMPREHENSION_STEPS
+            || !iterator.filters.is_empty()
+            || !arguments.is_empty()
+            || !keywords.is_empty()
+            || !matches!(function.kind, ExpressionKind::IterationVariable(binding)
+                if position(binding) == position(iterator.target))
+        {
+            return None;
+        }
+        items
+            .iter()
+            .map(|item| {
+                if !matches!(item.kind, ExpressionKind::Name(_)) {
+                    return None;
+                }
+                let Value::Callable(invocation) = self.identity(scope, item, before, depth + 1)
+                else {
+                    return None;
+                };
+                let Binding::Definition(definition, _) = self.symbols[invocation.target].binding
+                else {
+                    return None;
+                };
+                (matches!(invocation.receiver, Receiver::Ordinary)
+                    && definition.kind == DefinitionKind::Function
+                    && !definition.is_generator
+                    && definition.parameters.is_empty()
+                    && definition.decorators.is_empty()
+                    && matches!(
+                        body_without_docstring(definition),
+                        [Statement {
+                            kind: StatementKind::Return(
+                                None | Some(Expression {
+                                    kind: ExpressionKind::None
+                                        | ExpressionKind::Bool(_)
+                                        | ExpressionKind::Scalar(_)
+                                        | ExpressionKind::Text(_),
+                                    ..
+                                })
+                            ),
+                            ..
+                        }]
+                    ))
+                .then_some(invocation)
+            })
+            .collect()
+    }
+
+    pub(super) fn callback_generator_return(
+        &mut self,
+        invocation: Invocation,
+        depth: usize,
+    ) -> Option<Vec<Invocation>> {
+        let Binding::Definition(factory, body) = self.symbols[invocation.target].binding else {
+            return None;
+        };
+        if !matches!(invocation.receiver, Receiver::Ordinary)
+            || factory.kind != DefinitionKind::Function
+            || factory.is_generator
+            || !factory.parameters.is_empty()
+            || !factory.decorators.is_empty()
+        {
+            return None;
+        }
+        let [
+            prefix @ ..,
+            Statement {
+                at,
+                kind: StatementKind::Return(Some(expression)),
+            },
+        ] = body_without_docstring(factory)
+        else {
+            return None;
+        };
+        if !matches!(
+            expression.kind,
+            ExpressionKind::Comprehension {
+                form: ComprehensionForm::Generator,
+                ..
+            }
+        ) || !prefix.iter().all(|statement| {
+            matches!(&statement.kind,
+                StatementKind::Define(definition)
+                    if definition.kind == DefinitionKind::Function
+                        && definition.decorators.is_empty()
+                        && definition.defaults.is_empty()
+                        && definition.annotations.is_empty()
+            )
+        }) {
+            return None;
+        }
+        self.scalar_callback_comprehension(body, expression, *at, depth)
+    }
+
     pub(super) fn walk_comprehension(
         &mut self,
         scope: ScopeId,
@@ -71,7 +206,7 @@ impl Graph<'_> {
         value: &Value,
     ) {
         let (kind, message) = match value {
-            Value::DeferredComprehension => (
+            Value::DeferredComprehension | Value::CallbackGenerator(_) => (
                 "unresolved_generator_execution",
                 "resuming a generator expression is outside the bounded model",
             ),
@@ -95,7 +230,13 @@ impl Graph<'_> {
     ) -> Value {
         self.walk(evaluation.scope, iterable, evaluation.before);
         let value = self.identity(evaluation.scope, iterable, evaluation.before, 0);
-        if matches!(
+        if value.contains_callback_generator() {
+            self.report_unmodeled_deferred_value(
+                evaluation.scope,
+                iterable.at,
+                &Value::DeferredComprehension,
+            );
+        } else if matches!(
             value,
             Value::DeferredComprehension | Value::ComprehensionResult
         ) {

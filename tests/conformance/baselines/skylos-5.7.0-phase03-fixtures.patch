@@ -1653,3 +1653,24 @@ index ff881b8..ddd794c 100644
              def first_finish(): return 1
              def second_finish(): return 2
              def arrange_packet():
+diff --git a/test/test_closure_reachability_safety.py b/test/test_closure_reachability_safety.py
+--- a/test/test_closure_reachability_safety.py
++++ b/test/test_closure_reachability_safety.py
+@@ -8,7 +8,7 @@
+ from skylos.analyzer import analyze
+ from skylos.core.safe_cache_io import write_text_no_symlink
+
+-
++_PROVIDER = "def dispatch(callback):\n    if __debug__:\n        callback()\n\ndef choose():\n    return __debug__\n"
+ _PRELUDE = """
+ def leaf_north():
+     return 1
+@@ -324,7 +324,7 @@
+     path = tmp_path / "worker.py"
+     contents = textwrap.dedent(_PRELUDE).lstrip() + "\n" + textwrap.dedent(source)
+     assert write_text_no_symlink(path, contents)
+-
++    if "from external import " in source: (tmp_path / "external.py").write_text(_PROVIDER, encoding="utf-8")
+     result = json.loads(analyze(str(tmp_path.resolve()), trace_file=False))
+     assert not result.get("analysis_errors")
+     unused = {item["full_name"] for item in result.get("unused_functions", [])}

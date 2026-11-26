@@ -1,17 +1,17 @@
 //! Serializable source facts for the bounded Python 3.11 compatibility profile.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use ruff_python_ast::{
-    Alias, BoolOp, CmpOp, ElifElseClause, ExceptHandler, Expr, InterpolatedStringElement, Mod,
-    Operator, Stmt, StmtTry, UnaryOp,
+    Alias, BoolOp, CmpOp, ElifElseClause, ExceptHandler, Expr, ExprContext,
+    InterpolatedStringElement, Mod, Operator, Stmt, StmtFunctionDef, StmtTry, UnaryOp,
 };
 use ruff_python_ast::{
     token::TokenKind,
     visitor::{self, Visitor},
 };
-use ruff_text_size::Ranged;
+use ruff_text_size::{Ranged, TextSize};
 use serde::{Deserialize, Serialize};
 
 use crate::{FrontendError, Lines, Location, parse_source};
@@ -21,6 +21,16 @@ const MAX_NESTING: usize = 32;
 
 pub fn is_private_name(name: &str) -> bool {
     name.starts_with("__") && !name.ends_with("__")
+}
+
+fn name_in_class(name: &str, class: Option<&str>) -> String {
+    if let Some(class) = class
+        && is_private_name(name)
+    {
+        format!("_{class}{name}")
+    } else {
+        name.to_owned()
+    }
 }
 
 fn lambda_parameter(lambda: &ruff_python_ast::ExprLambda) -> Option<&str> {
@@ -72,6 +82,14 @@ fn django_settings_global_call<'a>(statement: &'a Stmt, name: &str) -> Option<&'
     matches!(call.func.as_ref(), Expr::Attribute(member)
         if matches!(member.value.as_ref(), Expr::Name(receiver) if receiver.id.as_str() == name))
     .then_some(statement.value.as_ref())
+}
+
+fn bounded_cell_value(value: &Expr) -> bool {
+    matches!(value, Expr::Name(_))
+        || matches!(value, Expr::Call(call)
+            if matches!(call.func.as_ref(), Expr::Name(_))
+                && call.arguments.args.is_empty()
+                && call.arguments.keywords.is_empty())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -374,9 +392,11 @@ pub enum ExpressionKind {
     ConstantLambda,
     NullaryConstantLambda,
     IdentityLambda,
+    IdentityDefaultLambda(Box<Expression>),
     IdentityDecoratorLambda,
     DeferredLambda(Box<Expression>),
     DeferredBoolLambda,
+    DeferredCallbackLambda,
     EmptyListComprehension,
     Sequence {
         items: Vec<Expression>,
@@ -504,6 +524,7 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         &named_condition,
         project_wildcards,
         None,
+        None,
     )
     .suite(&syntax.body, 0)?;
     Ok(ModuleFacts {
@@ -581,7 +602,109 @@ struct Lowering<'a>(
     &'a Cell<Option<Location>>,
     bool,
     Option<&'a str>,
+    Option<&'a FunctionBindings<'a>>,
 );
+
+struct FunctionBindings<'a> {
+    node: &'a StmtFunctionDef,
+    overwrites: OnceCell<BTreeSet<TextSize>>,
+}
+
+struct LocalBindings<'a> {
+    class: Option<&'a str>,
+    first: BTreeMap<String, TextSize>,
+    overwrites: BTreeSet<TextSize>,
+    nested_body: Option<Option<&'a str>>,
+    depth: usize,
+}
+
+impl LocalBindings<'_> {
+    fn record(&mut self, name: &str, node: &impl Ranged) {
+        let at = node.start();
+        self.first
+            .entry(name_in_class(name, self.class))
+            .and_modify(|first| {
+                self.overwrites.insert((*first).max(at));
+                *first = (*first).min(at);
+            })
+            .or_insert(at);
+    }
+
+    fn record_imports(&mut self, aliases: &[Alias], from: bool) {
+        for alias in aliases {
+            let name = alias.name.as_str();
+            let local = alias.asname.as_ref().map_or_else(
+                || {
+                    if from {
+                        name
+                    } else {
+                        name.split('.').next().unwrap_or(name)
+                    }
+                },
+                |name| name.as_str(),
+            );
+            self.record(local, alias);
+        }
+    }
+}
+
+impl<'a, 'ast: 'a> Visitor<'ast> for LocalBindings<'a> {
+    fn visit_stmt(&mut self, statement: &'ast Stmt) {
+        if let Stmt::Nonlocal(node) = statement {
+            // A nested setter can initialize a cell before its first local assignment.
+            for name in &node.names {
+                self.record(name.as_str(), name);
+            }
+        }
+        if self.depth == 0 {
+            match statement {
+                Stmt::FunctionDef(node) => self.record(node.name.as_str(), &node.name),
+                Stmt::ClassDef(node) => self.record(node.name.as_str(), &node.name),
+                Stmt::Import(node) => self.record_imports(&node.names, false),
+                Stmt::ImportFrom(node) => self.record_imports(&node.names, true),
+                _ => {}
+            }
+        }
+        let nested = match statement {
+            Stmt::FunctionDef(_) => Some(self.class),
+            Stmt::ClassDef(node) => {
+                let class = node.name.as_str().trim_start_matches('_');
+                Some((!class.is_empty()).then_some(class))
+            }
+            _ => None,
+        };
+        let previous = std::mem::replace(&mut self.nested_body, nested);
+        visitor::walk_stmt(self, statement);
+        self.nested_body = previous;
+    }
+
+    fn visit_body(&mut self, statements: &'ast [Stmt]) {
+        let depth = self.depth;
+        let class = self.class;
+        if let Some(body_class) = self.nested_body {
+            self.class = body_class;
+            self.depth += 1;
+        }
+        visitor::walk_body(self, statements);
+        self.depth = depth;
+        self.class = class;
+    }
+
+    fn visit_expr(&mut self, expression: &'ast Expr) {
+        if self.depth == 0
+            && let Expr::Name(name) = expression
+        {
+            match name.ctx {
+                ExprContext::Store => self.record(name.id.as_str(), name),
+                ExprContext::Del => {
+                    self.overwrites.insert(name.start());
+                }
+                _ => {}
+            }
+        }
+        visitor::walk_expr(self, expression);
+    }
+}
 
 struct BodyCoverage<'a> {
     source: &'a Lines,
@@ -633,6 +756,44 @@ impl<'ast> Visitor<'ast> for BodyCoverage<'_> {
 }
 
 impl Lowering<'_> {
+    fn finally_initializes_fresh_locals(&self, node: &StmtTry) -> bool {
+        let Some(function) = self.6 else {
+            return false;
+        };
+        if !node.body.iter().all(|statement| match statement {
+            Stmt::Pass(_) => true,
+            Stmt::Assign(assign) => {
+                matches!(assign.targets.as_slice(), [Expr::Name(_)])
+                    && matches!(
+                        assign.value.as_ref(),
+                        Expr::NoneLiteral(_)
+                            | Expr::BooleanLiteral(_)
+                            | Expr::NumberLiteral(_)
+                            | Expr::StringLiteral(_)
+                    )
+            }
+            _ => false,
+        }) {
+            return false;
+        }
+        let overwrites = function.overwrites.get_or_init(|| {
+            let mut bindings = LocalBindings {
+                class: self.5,
+                first: BTreeMap::new(),
+                overwrites: BTreeSet::new(),
+                nested_body: None,
+                depth: 0,
+            };
+            for parameter in function.node.parameters.iter() {
+                let name = parameter.name();
+                bindings.record(name.as_str(), name);
+            }
+            bindings.visit_body(&function.node.body);
+            bindings.overwrites
+        });
+        overwrites.range(node.start()..node.end()).next().is_none()
+    }
+
     fn repeated_keyword_arguments(call: &ruff_python_ast::ExprCall) -> Option<Vec<&Expr>> {
         let (expansion, explicit) = call.arguments.keywords.split_last()?;
         if expansion.arg.is_some() || explicit.is_empty() {
@@ -703,13 +864,7 @@ impl Lowering<'_> {
     fn attribute_name(&self, name: &str) -> String {
         // Syntactic attribute names use the enclosing class, even when the
         // receiver is unrelated to that class. Literal strings stay unchanged.
-        if let Some(class) = self.5
-            && is_private_name(name)
-        {
-            format!("_{class}{name}")
-        } else {
-            name.to_owned()
-        }
+        name_in_class(name, self.5)
     }
 
     fn write_target(
@@ -812,6 +967,58 @@ impl Lowering<'_> {
             .iter()
             .map(|expr| self.expression(expr, depth))
             .collect()
+    }
+
+    fn definition_decorators(
+        &self,
+        decorators: &[ruff_python_ast::Decorator],
+        simple_header: bool,
+        output: &mut Vec<Statement>,
+        depth: usize,
+    ) -> Result<Vec<Expression>, FrontendError> {
+        if self.4
+            && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+            && simple_header
+            && let [decorator] = decorators
+            && let Expr::BoolOp(test) = &decorator.expression
+            && test.op == BoolOp::And
+            && let [Expr::Named(assignment), right @ Expr::Name(_)] = test.values.as_slice()
+        {
+            let guard = self.definition_header_assignment(assignment, output, depth)?;
+            return Ok(vec![Expression {
+                at: self.0.locate(test.start()),
+                kind: ExpressionKind::Boolean {
+                    and: true,
+                    values: vec![guard, self.expression(right, depth)?],
+                },
+            }]);
+        }
+        decorators
+            .iter()
+            .map(|decorator| self.expression(&decorator.expression, depth))
+            .collect()
+    }
+
+    fn definition_header_assignment(
+        &self,
+        assignment: &ruff_python_ast::ExprNamed,
+        output: &mut Vec<Statement>,
+        depth: usize,
+    ) -> Result<Expression, FrontendError> {
+        let name = self.target(&assignment.target)?;
+        let read = Expression {
+            at: self.0.locate(assignment.end()),
+            kind: ExpressionKind::Name(name.text.clone()),
+        };
+        output.push(Statement {
+            at: self.0.locate(assignment.start()),
+            kind: StatementKind::Assign {
+                names: vec![name],
+                value: Some(self.expression(&assignment.value, depth)?),
+                annotation: None,
+            },
+        });
+        Ok(read)
     }
 
     fn imports(
@@ -966,6 +1173,10 @@ impl Lowering<'_> {
                     }
                     let name = self.binding_name(node.name.as_str(), &node.name)?;
                     let is_async = node.is_async;
+                    let bindings = FunctionBindings {
+                        node,
+                        overwrites: OnceCell::new(),
+                    };
                     let lowering = Lowering(
                         self.0,
                         if is_async {
@@ -977,6 +1188,7 @@ impl Lowering<'_> {
                         self.3,
                         self.4,
                         self.5,
+                        Some(&bindings),
                     );
                     let mut global_reads = Vec::new();
                     let body = if !is_async
@@ -986,7 +1198,13 @@ impl Lowering<'_> {
                         && let [name] = declare.names.as_slice()
                         && let [Expr::Name(target)] = assign.targets.as_slice()
                         && target.id.as_str() == name.as_str()
-                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                        && (matches!(assign.value.as_ref(), Expr::Name(_))
+                            || self.4
+                                && matches!(
+                                    self.1,
+                                    SyntaxScope::Function | SyntaxScope::AsyncFunction
+                                )
+                                && bounded_cell_value(&assign.value))
                     {
                         vec![Statement {
                             at: self.0.locate(declare.start()),
@@ -1015,20 +1233,25 @@ impl Lowering<'_> {
                         && parameters.is_empty()
                         && node.decorator_list.is_empty()
                         && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
-                        && let [Stmt::Nonlocal(declare), Stmt::Assign(assign)] =
+                        && let [Stmt::Nonlocal(declare), Stmt::Assign(assign), tail @ ..] =
                             node.body.as_slice()
                         && let [name] = declare.names.as_slice()
                         && let [Expr::Name(target)] = assign.targets.as_slice()
                         && target.id.as_str() == name.as_str()
-                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                        && bounded_cell_value(&assign.value)
+                        && (tail.is_empty()
+                            || matches!(tail, [Stmt::Return(ret)]
+                                if matches!(ret.value.as_deref(), Some(Expr::Name(_)))))
                     {
-                        vec![Statement {
+                        let mut statements = vec![Statement {
                             at: self.0.locate(declare.start()),
                             kind: StatementKind::SetNonlocalName {
                                 name: self.binding_name(name.as_str(), target)?,
                                 value: lowering.expression(&assign.value, next + 1)?,
                             },
-                        }]
+                        }];
+                        statements.extend(lowering.suite(tail, next)?);
+                        statements
                     } else if self.4
                         && let [Stmt::Global(declare), statement @ Stmt::Return(_)] =
                             node.body.as_slice()
@@ -1075,6 +1298,12 @@ impl Lowering<'_> {
                             None,
                         )
                     };
+                    let decorators = self.definition_decorators(
+                        &node.decorator_list,
+                        defaults.is_empty() && annotations.is_empty(),
+                        &mut result,
+                        next,
+                    )?;
                     StatementKind::Define(Definition {
                         name,
                         kind: if is_async {
@@ -1088,11 +1317,7 @@ impl Lowering<'_> {
                         body,
                         body_coverage_lines: coverage.lines.into_iter().collect(),
                         global_reads,
-                        decorators: node
-                            .decorator_list
-                            .iter()
-                            .map(|item| expression(&item.expression))
-                            .collect::<Result<_, _>>()?,
+                        decorators,
                         parameters,
                         positional_only_parameter_count: node.parameters.posonlyargs.len(),
                         positional_parameter_count: node.parameters.posonlyargs.len()
@@ -1176,15 +1401,19 @@ impl Lowering<'_> {
                             self.3,
                             self.4,
                             (self.4 && !class.is_empty()).then_some(class),
+                            None,
                         )
                         .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
                         global_reads: Vec::new(),
-                        decorators: node
-                            .decorator_list
-                            .iter()
-                            .map(|item| expression(&item.expression))
-                            .collect::<Result<_, _>>()?,
+                        decorators: self.definition_decorators(
+                            &node.decorator_list,
+                            node.arguments.as_ref().is_none_or(|arguments| {
+                                arguments.args.is_empty() && arguments.keywords.is_empty()
+                            }),
+                            &mut result,
+                            next,
+                        )?,
                         parameters: Vec::new(),
                         positional_only_parameter_count: 0,
                         positional_parameter_count: 0,
@@ -1207,7 +1436,33 @@ impl Lowering<'_> {
                     })
                 }
                 Stmt::Assign(node) => {
-                    if let [Expr::Subscript(target)] = node.targets.as_slice()
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && let [Expr::Name(target)] = node.targets.as_slice()
+                        && let Expr::Lambda(lambda) = node.value.as_ref()
+                        && let Some(parameters) = &lambda.parameters
+                        && parameters.len() == 1
+                        && parameters.kwonlyargs.is_empty()
+                        && let Some(parameter) = parameters.iter_non_variadic_params().next()
+                        && let Some(Expr::Named(assignment)) = parameter.default.as_deref()
+                        && let Expr::Name(default_name) = assignment.target.as_ref()
+                        && self.attribute_name(target.id.as_str())
+                            != self.attribute_name(default_name.id.as_str())
+                        && matches!(lambda.body.as_ref(), Expr::Name(name)
+                            if self.attribute_name(name.id.as_str())
+                                == self.attribute_name(parameter.name().as_str()))
+                    {
+                        let default =
+                            self.definition_header_assignment(assignment, &mut result, next)?;
+                        StatementKind::Assign {
+                            names: vec![self.target(&node.targets[0])?],
+                            value: Some(Expression {
+                                at: self.0.locate(lambda.start()),
+                                kind: ExpressionKind::IdentityDefaultLambda(Box::new(default)),
+                            }),
+                            annotation: None,
+                        }
+                    } else if let [Expr::Subscript(target)] = node.targets.as_slice()
                         && matches!(target.slice.as_ref(), Expr::StringLiteral(key)
                             if key.value.to_str() == "DJANGO_SETTINGS_MODULE")
                     {
@@ -1335,6 +1590,21 @@ impl Lowering<'_> {
                         missing_member: missing_member.into(),
                         fallback: self.suite(fallback, next)?,
                     }
+                }
+                Stmt::Try(node)
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && !node.is_star
+                        && node.handlers.is_empty()
+                        && node.orelse.is_empty()
+                        && !node.finalbody.is_empty()
+                        && self.finally_initializes_fresh_locals(node) =>
+                {
+                    // Fresh local bindings cannot release an earlier value
+                    // and invoke its finalizer before the following suite.
+                    result.extend(self.suite(&node.body, next)?);
+                    result.extend(self.suite(&node.finalbody, next)?);
+                    continue;
                 }
                 Stmt::Return(node) => {
                     if matches!(self.1, SyntaxScope::Module | SyntaxScope::Class) {
@@ -1556,6 +1826,18 @@ impl Lowering<'_> {
             {
                 ExpressionKind::DeferredBoolLambda
             }
+            Expr::Lambda(node)
+                if self.4
+                    && let Some(parameter) = lambda_parameter(node)
+                    && parameter != "__debug__"
+                    && let Expr::Call(call) = node.body.as_ref()
+                    && call.arguments.args.is_empty()
+                    && call.arguments.keywords.is_empty()
+                    && matches!(&*call.func, Expr::Name(name)
+                        if self.attribute_name(name.id.as_str()) == self.attribute_name(parameter)) =>
+            {
+                ExpressionKind::DeferredCallbackLambda
+            }
             Expr::NoneLiteral(_) => ExpressionKind::None,
             Expr::ListComp(node)
                 if node.generators.first().is_some_and(|first| {
@@ -1716,7 +1998,15 @@ impl Lowering<'_> {
                 .or_insert_with(|| self.0.locate(target.start()));
             targets.push(target);
         }
-        let mut child = Self(self.0, self.1, self.2.clone(), self.3, self.4, self.5);
+        let mut child = Self(
+            self.0,
+            self.1,
+            self.2.clone(),
+            self.3,
+            self.4,
+            self.5,
+            self.6,
+        );
         child.2.extend(local_targets);
         let iterators = generators
             .iter()

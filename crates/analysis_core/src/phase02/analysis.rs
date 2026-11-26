@@ -117,6 +117,7 @@ enum Value {
     CeleryLogging(Object),
     CeleryBackend(Object),
     DeferredComprehension,
+    CallbackGenerator(Vec<Invocation>),
     ComprehensionResult,
     DeferredLambda,
     Executor,
@@ -143,6 +144,7 @@ enum Value {
     ConstantFunction,
     NullaryConstantFunction,
     IdentityFunction,
+    IdentityDefaultFunction(Box<Value>),
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     FlaskConfig,
@@ -191,6 +193,17 @@ impl Value {
                 values.iter().any(Self::may_contain_namespace)
             }
             Self::Alternatives(values) => values.iter().any(Self::may_contain_namespace),
+            Self::IdentityDefaultFunction(default) => default.may_contain_namespace(),
+            _ => false,
+        }
+    }
+
+    fn contains_callback_generator(&self) -> bool {
+        match self {
+            Self::CallbackGenerator(_) => true,
+            Self::Sequence(values) | Self::Mapping(values) | Self::Alternatives(values) => {
+                values.iter().any(Self::contains_callback_generator)
+            }
             _ => false,
         }
     }
@@ -653,6 +666,7 @@ pub(super) fn analyze_with_verification(
         evaluated_module_booleans: BTreeMap::new(),
         branch_depth: 0,
         dormant_classes: BTreeSet::new(),
+        transparent_guarded_definitions: BTreeSet::new(),
         subclassed: BTreeSet::new(),
         instance_receivers: BTreeMap::new(),
         class_invocations: Vec::new(),
@@ -901,6 +915,7 @@ struct Graph<'a> {
     evaluated_module_booleans: BTreeMap<SymbolId, bool>,
     branch_depth: usize,
     dormant_classes: BTreeSet<SymbolId>,
+    transparent_guarded_definitions: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
     class_invocations: Vec<ClassInvocation>,
@@ -4000,6 +4015,16 @@ impl<'a> Graph<'a> {
                 form: ComprehensionForm::Generator,
                 ..
             } => Value::DeferredComprehension,
+            ExpressionKind::Comprehension {
+                form: ComprehensionForm::List,
+                ..
+            } if self.phase03
+                && self
+                    .scalar_callback_comprehension(scope, expression, before, depth)
+                    .is_some() =>
+            {
+                Value::BuiltinIterable
+            }
             ExpressionKind::Comprehension { .. } => Value::ComprehensionResult,
             ExpressionKind::FormattedString(_) => Value::Scalar,
             ExpressionKind::Name(name) => {
@@ -4036,6 +4061,21 @@ impl<'a> Graph<'a> {
                         return Value::Text(text.to_owned());
                     }
                     let binding_scope = self.symbols[id].scope;
+                    if !lazy && let Some(write) = self.closure_cell_read(scope, expression) {
+                        self.read.insert(id);
+                        let replacement = self.identity(
+                            write.value_scope,
+                            write.value,
+                            write.value_before,
+                            depth + 1,
+                        );
+                        return if write.possible {
+                            let initial = self.binding(id, END, depth + 1);
+                            Value::alternatives(vec![initial, replacement])
+                        } else {
+                            replacement
+                        };
+                    }
                     let binding_before = if binding_scope == scope
                         || self.immediately_encloses_class_body(scope, binding_scope)
                     {
@@ -4045,14 +4085,6 @@ impl<'a> Graph<'a> {
                         before
                     } else if let Some(call) = self.final_direct_closure_call(scope, binding_scope)
                     {
-                        if let Some(write) = call.write
-                            && self.lexical_binding_key(write.setter, &write.name.text)
-                                == self.lexical_binding_key(scope, name)
-                            && position(self.symbols[id].name.at) < position(write.at)
-                        {
-                            self.read.insert(id);
-                            return self.identity(binding_scope, write.value, write.at, depth + 1);
-                        }
                         call.at
                     } else {
                         let names = &self.scopes[binding_scope].names;
@@ -4309,6 +4341,12 @@ impl<'a> Graph<'a> {
                     {
                         return callback;
                     }
+                    if arguments.is_empty()
+                        && keywords.is_empty()
+                        && let Some(calls) = self.callback_generator_return(invocation, depth)
+                    {
+                        return Value::CallbackGenerator(calls);
+                    }
                     if let Some(app) = self.fastapi_subclass_app(
                         invocation,
                         CallArguments {
@@ -4337,6 +4375,13 @@ impl<'a> Graph<'a> {
                 }
                 Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {
                     recurse(self, &arguments[0])
+                }
+                Value::IdentityDefaultFunction(default) if keywords.is_empty() => {
+                    match arguments.as_slice() {
+                        [] => *default,
+                        [argument] => recurse(self, argument),
+                        _ => Value::Unknown,
+                    }
                 }
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
@@ -4480,7 +4525,9 @@ impl<'a> Graph<'a> {
                         [] => Value::Sequence(Vec::new()),
                         [argument] => match recurse(self, argument) {
                             value @ (Value::Sequence(_) | Value::BuiltinIterable) => value,
-                            Value::Range | Value::Text(_) => Value::BuiltinIterable,
+                            Value::Range | Value::Text(_) | Value::CallbackGenerator(_) => {
+                                Value::BuiltinIterable
+                            }
                             _ => Value::Unknown,
                         },
                         _ => Value::Unknown,
@@ -4776,10 +4823,13 @@ impl<'a> Graph<'a> {
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
+            ExpressionKind::IdentityDefaultLambda(default) => Value::IdentityDefaultFunction(
+                Box::new(self.identity(scope, default, default.at, depth + 1)),
+            ),
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
-            ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda => {
-                Value::DeferredLambda
-            }
+            ExpressionKind::DeferredLambda(_)
+            | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda => Value::DeferredLambda,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Divide(operands) if self.phase03 => {
                 let [left, right] = operands.as_slice() else {
@@ -5181,7 +5231,13 @@ impl<'a> Graph<'a> {
 
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
-            Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
+            Value::Callable(invocation) => {
+                if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
+                    self.report_unmodeled_deferred_value(scope, at, &Value::DeferredComprehension);
+                }
+                invocation
+            }
+            Value::Coroutine(invocation) => invocation,
             Value::Provider(provider)
                 if self.phase03 && is_bounded_declaration_provider(&provider) =>
             {
@@ -5199,6 +5255,10 @@ impl<'a> Graph<'a> {
                 }
                 return;
             }
+            Value::IdentityDefaultFunction(default) => {
+                self.expose(scope, *default, kind, at);
+                return;
+            }
             Value::OpaqueNamespace => {
                 self.scope_issue(
                     scope,
@@ -5208,7 +5268,10 @@ impl<'a> Graph<'a> {
                 );
                 return;
             }
-            Value::DeferredComprehension | Value::ComprehensionResult | Value::DeferredLambda => {
+            Value::DeferredComprehension
+            | Value::CallbackGenerator(_)
+            | Value::ComprehensionResult
+            | Value::DeferredLambda => {
                 self.report_unmodeled_deferred_value(scope, at, &value);
                 return;
             }
@@ -5786,6 +5849,20 @@ impl<'a> Graph<'a> {
                 {
                     return;
                 }
+                if self.phase03
+                    && self.walk_direct_lambda_call(
+                        function,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                {
+                    return;
+                }
                 let rebound_converter =
                     if self.phase03 && arguments.len() == 2 && keywords.is_empty() {
                         self.django_converter_noop_rebinding(scope, function, expr.at, before)
@@ -5806,10 +5883,19 @@ impl<'a> Graph<'a> {
                         } else {
                             Value::ComprehensionResult
                         };
-                        self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                        if !self.phase03
+                            || !matches!(
+                                self.identity(scope, expr, before, 0),
+                                Value::BuiltinIterable
+                            )
+                        {
+                            self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                        }
                     } else if matches!(
                         expr.kind,
-                        ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda
+                        ExpressionKind::DeferredLambda(_)
+                            | ExpressionKind::DeferredBoolLambda
+                            | ExpressionKind::DeferredCallbackLambda
                     ) {
                         self.report_unmodeled_deferred_value(
                             scope,
@@ -5841,6 +5927,8 @@ impl<'a> Graph<'a> {
                         self.report_unmodeled_deferred_value(scope, expr.at, &callee)
                     }
                     Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
+                    Value::IdentityDefaultFunction(_)
+                        if arguments.len() <= 1 && keywords.is_empty() => {}
                     Value::DjangoFormValidation(Some(class)) => self.record_django_form_validation(
                         class,
                         function,
@@ -6700,6 +6788,25 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
+                        if self.phase03 {
+                            for arg in arguments.iter().chain(keywords.iter().map(|(_, expr)| expr)) {
+                                let value = self.probe_identity(scope, arg, before);
+                                match value {
+                                    Value::CallbackGenerator(calls)
+                                        if matches!(name.as_str(), "builtins.list" | "builtins.tuple")
+                                            && arguments.len() == 1 && keywords.is_empty() =>
+                                    {
+                                        for invocation in calls {
+                                            self.invoke(scope, invocation, "direct_call", "possible", expr.at);
+                                        }
+                                    }
+                                    value if value.contains_callback_generator() => {
+                                        self.report_unmodeled_deferred_value(scope, arg.at, &Value::DeferredComprehension);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                         if self.phase03 && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && let Some(receiver) = arguments.first()
                         {
@@ -7023,15 +7130,19 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Name(_) | ExpressionKind::IterationVariable(_) => {
                 let value = self.identity(scope, expr, before, 0);
-                self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                if !matches!(value, Value::CallbackGenerator(_)) {
+                    self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                }
                 self.record_class_reference(scope, &value);
             }
+            ExpressionKind::IdentityDefaultLambda(default) => self.walk(scope, default, default.at),
             ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda
             | ExpressionKind::DeferredLambda(_)
             | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -7341,6 +7452,24 @@ impl<'a> Graph<'a> {
         arguments: &[Expression],
         keywords: &[(String, Expression)],
     ) {
+        if self.phase03 {
+            for argument in arguments
+                .iter()
+                .skip(1)
+                .chain(keywords.iter().map(|(_, value)| value))
+            {
+                if self
+                    .probe_identity(scope, argument, before)
+                    .contains_callback_generator()
+                {
+                    self.report_unmodeled_deferred_value(
+                        scope,
+                        argument.at,
+                        &Value::DeferredComprehension,
+                    );
+                }
+            }
+        }
         let target = arguments.first().map_or(Value::Unknown, |argument| {
             self.identity(scope, argument, before, 0)
         });
@@ -7926,12 +8055,15 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::SetGlobalName { value, .. } => {
-                    self.record_django_global_write(scope, value, at);
+                    if self.proved_closure_cell_write(scope).is_some() {
+                        self.walk(scope, value, at);
+                    } else {
+                        self.record_django_global_write(scope, value, at);
+                    }
                 }
-                StatementKind::SetNonlocalName { value, .. } => {
+                StatementKind::SetNonlocalName { .. } => {
                     if let Some(write) = self.proved_closure_cell_write(scope) {
-                        let outer = self.scopes[scope].parent.expect("known enclosing function");
-                        self.walk(outer, value, write.at);
+                        self.walk(write.value_scope, write.value, write.value_before);
                     } else {
                         self.scope_issue(
                             scope,
@@ -8091,7 +8223,15 @@ impl<'a> Graph<'a> {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
                         let result = self.identity(scope, value, at, 0);
-                        self.expose(scope, result, "returned_callable", value.at);
+                        if !matches!(result, Value::DeferredComprehension)
+                            || !self.phase03
+                            || !self.scopes[scope].owner.is_some_and(|owner| {
+                                self.callback_generator_return(Invocation::ordinary(owner), 0)
+                                    .is_some()
+                            })
+                        {
+                            self.expose(scope, result, "returned_callable", value.at);
+                        }
                     }
                     return true;
                 }
@@ -8327,6 +8467,46 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         before: Location,
     ) -> bool {
+        if self.phase03
+            && let ExpressionKind::Boolean { and: true, values } = &decorator.kind
+            && let [guard, function] = values.as_slice()
+            && matches!(guard.kind, ExpressionKind::Name(_))
+            && matches!(function.kind, ExpressionKind::Name(_))
+        {
+            self.walk(scope, guard, guard.at);
+            let known_true = match self.identity(scope, guard, guard.at, 0) {
+                Value::Bool(value) => value,
+                Value::Instance(class)
+                    if ["__bool__", "__len__"].into_iter().all(|name| {
+                        self.class_member_at(class, name, 0, Some((scope, guard.at)))
+                            .is_none()
+                    }) =>
+                {
+                    true
+                }
+                value => {
+                    self.record_truth_test(scope, guard, &value);
+                    false
+                }
+            };
+            if known_true {
+                self.walk(scope, function, function.at);
+                if let Value::Callable(invocation) = self.identity(scope, function, function.at, 0)
+                    && self.local_identity_decorator(Value::Callable(invocation), function)
+                {
+                    self.invoke(scope, invocation, "decorator", "certain", decorator.at);
+                    self.transparent_guarded_definitions.insert(target);
+                    return true;
+                }
+            }
+            self.scope_issue(
+                scope,
+                decorator.at,
+                "unresolved_decorator",
+                "guarded decorator requires a proven true guard and a resolved identity decorator",
+            );
+            return false;
+        }
         if let ExpressionKind::KeywordMappingCall {
             function,
             arguments,
@@ -9951,6 +10131,13 @@ impl<'a> Graph<'a> {
             let visit_scope = (kind == "local_namespace").then_some(scope);
             let members = match value {
                 Value::Callable(invocation) => {
+                    if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
+                        self.report_unmodeled_deferred_value(
+                            scope,
+                            at,
+                            &Value::DeferredComprehension,
+                        );
+                    }
                     self.invoke(scope, invocation, kind, certainty, at);
                     if kind == "local_namespace" {
                         self.uncertain(
@@ -9971,7 +10158,7 @@ impl<'a> Graph<'a> {
                     self.expose(scope, value, kind, at);
                     Vec::new()
                 }
-                Value::DeferredLambda => {
+                Value::DeferredLambda | Value::CallbackGenerator(_) => {
                     self.report_unmodeled_deferred_value(scope, at, &value);
                     Vec::new()
                 }
@@ -10046,6 +10233,7 @@ impl<'a> Graph<'a> {
                 Value::Sequence(items) | Value::Mapping(items) | Value::Alternatives(items) => {
                     items
                 }
+                Value::IdentityDefaultFunction(default) => vec![*default],
                 Value::Unknown | Value::OpaqueNamespace => {
                     self.scope_issue(
                         scope,
@@ -11808,6 +11996,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::Member(value, _)
             | ExpressionKind::Not(value)
+            | ExpressionKind::IdentityDefaultLambda(value)
             | ExpressionKind::DeferredLambda(value)
             | ExpressionKind::Await(value) => expressions.push(value),
             ExpressionKind::Call {
@@ -11882,6 +12071,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}
@@ -15757,6 +15947,84 @@ outer()
     }
 
     #[test]
+    fn phase03_nonlocal_setter_uses_the_active_alias_at_its_call() {
+        let scan = |source: &str| {
+            let file = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+            };
+            analyze_phase03(&[file], &[])
+        };
+        let reassigned = r#"def old(): return 1
+def selected(): return 2
+def configure():
+    replacement = old
+    active = replacement
+    def install():
+        nonlocal active
+        active = replacement
+    def invoke():
+        return active()
+    replacement = selected
+    install()
+    return invoke()
+configure()
+"#;
+        let private = r#"def old(): return 1
+def selected(): return 2
+class Service:
+    def configure(self):
+        active = old
+        __replacement = selected
+        def install():
+            nonlocal active
+            active = _Service__replacement
+        def invoke():
+            return active()
+        install()
+        return invoke()
+Service().configure()
+"#;
+        let private_unmangled = private.replace("_Service__replacement", "__replacement");
+        for source in [reassigned, private, &private_unmangled] {
+            let report = scan(source);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(
+                report.evidence.iter().any(|edge| {
+                    edge.full_name == "main.selected" && edge.kind == "direct_call"
+                })
+            );
+            assert!(names(&report, Category::Function).contains(&"old"));
+        }
+
+        let later_assignment = reassigned.replace(
+            "    replacement = selected\n    install()",
+            "    install()\n    replacement = selected",
+        );
+        let report = scan(&later_assignment);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == "unsupported_construct"
+                && issue.message == "nonlocal assignment has no bounded closure call"
+        }));
+
+        let finalizing_overwrite = format!(
+            "def release(): pass\nclass Resource:\n    def __del__(self): release()\n{}",
+            reassigned.replace(
+                "    replacement = old\n    active = replacement",
+                "    replacement = Resource()\n    active = old",
+            )
+        );
+        let report = scan(&finalizing_overwrite);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == "unsupported_construct"
+                && issue.message == "nonlocal assignment has no bounded closure call"
+        }));
+    }
+
+    #[test]
     fn phase03_nonlocal_setter_requires_a_terminal_cell_read() {
         let scan = |source: &str| {
             let file = AnalyzedFile {
@@ -15810,6 +16078,176 @@ configure()
                 report.issues
             );
         }
+    }
+
+    #[test]
+    fn phase03_closure_reads_the_rebound_receiver_at_the_terminal_call() {
+        let classes = "\
+class First:
+    def work(self): return 1
+class Second:
+    def work(self): return 2
+";
+        for (source, possible) in [
+            (
+                "
+def run():
+    selected = First()
+    def install():
+        nonlocal selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+def run():
+    selected = First()
+    def install():
+        def write():
+            nonlocal selected
+            selected = Second()
+        write()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+selected = First()
+def run():
+    def install():
+        global selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+from external import dispatch
+def run():
+    selected = First()
+    def install():
+        nonlocal selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    dispatch(install)
+    return execute()
+run()
+",
+                true,
+            ),
+            (
+                "
+from external import choose
+def run():
+    if choose():
+        selected = First()
+    else:
+        selected = Second()
+    def execute():
+        return selected.work()
+    return execute()
+run()
+",
+                true,
+            ),
+        ] {
+            let source = format!("{classes}{source}");
+            let main = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(&source).unwrap(),
+            };
+            let external = module(
+                "external.py",
+                "external",
+                "def dispatch(callback):\n    if __debug__:\n        callback()\n\ndef choose():\n    return __debug__\n",
+            );
+            let files = if possible {
+                vec![main, external]
+            } else {
+                vec![main]
+            };
+            let result = analyze_phase03(&files, &[]);
+            assert!(result.issues.is_empty(), "{source}\n{:?}", result.issues);
+            let called = |name, certainty| {
+                result.evidence.iter().any(|edge| {
+                    edge.full_name == name
+                        && edge.kind == "direct_call"
+                        && edge.certainty == certainty
+                })
+            };
+            assert!(
+                called(
+                    "main.Second.work",
+                    if possible { "possible" } else { "certain" }
+                ),
+                "{source}"
+            );
+            assert_eq!(called("main.First.work", "possible"), possible, "{source}");
+            assert!(!called("main.First.work", "certain"), "{source}");
+        }
+    }
+
+    #[test]
+    fn phase03_global_cell_replay_requires_the_only_invocation_to_be_last() {
+        let source = r#"
+class First:
+    def work(self): return 1
+    def extra(self): return 3
+class Second:
+    def work(self): return 2
+    def extra(self): return 4
+
+selected = First()
+
+def run():
+    def install():
+        global selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+
+run()
+selected.extra()
+run()
+"#;
+        let file = AnalyzedFile {
+            path: "main.py".into(),
+            module: "main".into(),
+            is_package: false,
+            fastapi_router_mode: FastapiRouterMode::Auto,
+            facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+        };
+        let report = analyze_phase03(&[file], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unsupported_construct"),
+            "{:?}",
+            report.issues
+        );
     }
 
     #[test]
