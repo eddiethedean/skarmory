@@ -78,6 +78,18 @@ fn findings<'a>(report: &'a Value, category: &str) -> Vec<&'a str> {
     names
 }
 
+fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<&'a str> {
+    report["dead_code_evidence"]["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["qualified_name"] == symbol)
+        .flat_map(|row| row["evidence"].as_array().unwrap())
+        .filter(|edge| edge["kind"] == kind)
+        .map(|edge| edge["certainty"].as_str().unwrap())
+        .collect()
+}
+
 #[test]
 fn reached_stdlib_logging_binds_os_before_a_local_pathlike_stub() {
     let project = tempfile::tempdir().unwrap();
@@ -4016,6 +4028,100 @@ def dormant_setup():
 }
 
 #[test]
+fn flask_conditional_imperative_teardown_retains_possible_callbacks() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("web.py"),
+        r#"from flask import Flask
+from os import name
+
+def release(error): return cleanup()
+def cleanup(): return 1
+def always(error): return 2
+
+app = Flask(__name__)
+if name == "nt":
+    app.teardown_appcontext(release)
+app.teardown_appcontext(always)
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        evidence_certainties(&report, "web.release", "flask_registration"),
+        ["possible"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "web.cleanup", "direct_call"),
+        ["possible"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "web.always", "flask_registration"),
+        ["certain"]
+    );
+    let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+}
+
+#[test]
+fn flask_login_global_rebind_does_not_prove_registration() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("providers.py"),
+        "from flask_login import LoginManager\nlogin = LoginManager()\n",
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        r#"from providers import login
+
+class DisabledLogin:
+    def user_loader(self, callback):
+        return callback
+
+manager = login
+replacement = DisabledLogin()
+
+def configure():
+    global manager
+    manager = replacement
+
+configure()
+
+@manager.user_loader
+def load(user_id): return user_id
+
+@login.request_loader
+def request_user(request): return None
+"#,
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_global_binding"),
+        "{report}"
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.load", "flask_login_registration"),
+        ["possible"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.request_user", "flask_login_registration"),
+        ["certain"]
+    );
+    let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+}
+
+#[test]
 fn fastapi_lifespan_executes_only_for_active_owners() {
     let project = tempfile::tempdir().unwrap();
     fs::write(
@@ -4073,6 +4179,172 @@ def replaced_event(): return 1
             }),
             "missing lifespan evidence for {callback}: {report}"
         );
+    }
+}
+
+#[test]
+fn fastapi_router_lifespan_inherits_conditional_inclusion() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let source = r#"import os
+from contextlib import asynccontextmanager
+from fastapi import APIRouter, FastAPI
+
+def initialize(): return 1
+
+@asynccontextmanager
+async def child_lifespan(app):
+    initialize()
+    yield
+
+router = APIRouter(lifespan=child_lifespan)
+app = FastAPI()
+"#;
+    for (mount, expected) in [
+        (
+            "if os.getenv('ENABLE_ROUTER'):\n    app.include_router(router)\n",
+            "possible",
+        ),
+        ("app.include_router(router)\n", "certain"),
+    ] {
+        fs::write(project.path().join("web.py"), format!("{source}{mount}")).unwrap();
+        let report = scan(project.path());
+        assert_eq!(
+            evidence_certainties(&report, "web.child_lifespan", "fastapi_lifespan"),
+            [expected]
+        );
+        assert_eq!(
+            evidence_certainties(&report, "web.initialize", "direct_call"),
+            [expected]
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn fastapi_none_lifespan_alias_uses_legacy_startup() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let config = project.path().join("config.py");
+    fs::write(
+        project.path().join("web.py"),
+        r#"from fastapi import FastAPI
+from config import LIFESPAN
+
+def initialize(): return 1
+def startup(): return initialize()
+
+app = FastAPI(lifespan=LIFESPAN, on_startup=[startup])
+"#,
+    )
+    .unwrap();
+    for (value, expected) in [
+        ("LIFESPAN = None\n", true),
+        (
+            "from contextlib import asynccontextmanager\n@asynccontextmanager\nasync def LIFESPAN(app):\n    yield\n",
+            false,
+        ),
+    ] {
+        fs::write(&config, value).unwrap();
+        let report = scan(project.path());
+        let certainty = if expected { &["certain"][..] } else { &[] };
+        assert_eq!(
+            evidence_certainties(&report, "web.startup", "fastapi_lifecycle"),
+            certainty
+        );
+        assert_eq!(
+            evidence_certainties(&report, "web.initialize", "direct_call"),
+            certainty
+        );
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn fastapi_router_constructor_hooks_require_zero_argument_binding() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    for (definition, callback, symbol, valid) in [
+        (
+            "def startup(settings): return initialize()",
+            "startup",
+            "web.startup",
+            false,
+        ),
+        (
+            "async def startup(*, settings): return initialize()",
+            "startup",
+            "web.startup",
+            false,
+        ),
+        (
+            "def startup(settings=None): return initialize()",
+            "startup",
+            "web.startup",
+            true,
+        ),
+        (
+            "class Startup:\n    def __call__(self): return initialize()",
+            "Startup()",
+            "web.Startup.__call__",
+            true,
+        ),
+        (
+            "class Startup:\n    def __call__(self, settings): return initialize()",
+            "Startup()",
+            "web.Startup.__call__",
+            false,
+        ),
+    ] {
+        fs::write(
+            project.path().join("web.py"),
+            format!(
+                r#"from fastapi import APIRouter, FastAPI
+
+def initialize(): return 1
+{definition}
+
+router = APIRouter(on_startup=[{callback}])
+app = FastAPI()
+app.include_router(router)
+"#
+            ),
+        )
+        .unwrap();
+        let code = if valid { 0 } else { 2 };
+        let report = scan_with_exit(project.path(), None, None, code);
+        let certainty = if valid { &["certain"][..] } else { &[] };
+        assert_eq!(
+            evidence_certainties(&report, symbol, "fastapi_lifecycle"),
+            certainty
+        );
+        assert_eq!(
+            evidence_certainties(&report, "web.initialize", "direct_call"),
+            certainty
+        );
+        if !valid {
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_registration"
+                        && issue["message"]
+                            .as_str()
+                            .unwrap()
+                            .contains("zero arguments")),
+                "{report}"
+            );
+        }
+        let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), code);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
     }
 }
 
