@@ -11174,6 +11174,8 @@ impl<'a> Graph<'a> {
                     | "django_application"
                     | "django_ready_signal_import"
                     | "django_converter_regex"
+                    | "django_choice_member"
+                    | "django_model_form_help_texts"
                     | "django_migration_parameter"
                     | django_migrations::DECLARATION
                     | "django_admin_parameter"

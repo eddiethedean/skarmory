@@ -584,28 +584,6 @@ Declaration evidence does not imply that a query ran.
 A first zero-argument Celery logging setup on a stock application can
 retain an earlier same-module `@setup_logging.connect` receiver as possible.
 The bounded proof accepts plain synchronous receivers with a keyword
-argument collector. Receivers imported before setup require cross-module
-ordering, so that path reports incomplete coverage. Custom applications and
-opaque setup also keep incomplete coverage.
-
-Selected Django startup accepts the standard auth, content types, and session
-apps and their explicit default AppConfig classes. Discovery continues through
-the source-owned apps in the same installed list.
-
-A literal `get_format("DATE_FORMAT", lang=...)` call after selected Django
-startup can retain the requested source format from a single literal
-`FORMAT_MODULE_PATH`. The bounded lookup supports stock English and French
-locales with a verified regular package path. Dynamic settings, packages and
-lookups keep incomplete coverage.
-
-A literal CharField constructor with a direct source converter can register
-the converter as part of a source model's field declaration. Its contract
-retains the parameters Django supplies when adapting database results.
-Declaration evidence does not imply that a query ran.
-
-A first zero-argument Celery logging setup on a stock application can
-retain an earlier same-module `@setup_logging.connect` receiver as possible.
-The bounded proof accepts plain synchronous receivers with a keyword
 argument collector. Custom applications and opaque setup keep incomplete
 coverage.
 
