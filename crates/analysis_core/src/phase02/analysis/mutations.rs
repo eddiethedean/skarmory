@@ -548,19 +548,21 @@ impl Graph<'_> {
                 if is_flask_login_constructor(&name))
             || self.member_write(&class_key, method, access).is_some()
             || self.framework_receiver_has_escaped(&class_key, None, access)
-            || self
-                .flask_login_identity_replacement(file, at, replacement)
-                .is_none()
         {
             return false;
         }
+        let Some(Value::Callable(replacement)) =
+            self.flask_login_identity_replacement(file, at, replacement)
+        else {
+            return false;
+        };
         let value = if conditional {
             MemberWriteValue::Ambiguous
         } else {
             // The framework function keeps its identity and globals. These
             // replacement instructions only return the bound callback parameter.
             self.mutations.modeled.insert((file, position(at)));
-            MemberWriteValue::Replacement(Value::IdentityFunction)
+            MemberWriteValue::Replacement(Value::FrameworkCode(replacement.target))
         };
         self.mutations
             .flask_login_code
@@ -568,6 +570,33 @@ impl Graph<'_> {
             .or_default()
             .push(Write { file, at, value });
         true
+    }
+
+    pub(super) fn retain_flask_login_code_source(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        receiver: &Expression,
+    ) {
+        let ExpressionKind::Member(_, method) = &receiver.kind else {
+            return;
+        };
+        let write = self
+            .mutations
+            .flask_login_code
+            .get(method)
+            .and_then(|writes| {
+                writes
+                    .iter()
+                    .find(|write| write.file == scope && position(write.at) == position(at))
+            });
+        if let Some(Write {
+            value: MemberWriteValue::Replacement(Value::FrameworkCode(source)),
+            ..
+        }) = write
+        {
+            self.edge(scope, *source, "code_reference", "certain");
+        }
     }
 
     pub(super) fn flask_login_code_at_call(
@@ -590,7 +619,7 @@ impl Graph<'_> {
             return Some(Value::Unknown);
         }
         Some(match code {
-            MemberWriteValue::Replacement(value) => value,
+            MemberWriteValue::Replacement(Value::FrameworkCode(_)) => Value::IdentityFunction,
             _ => Value::Unknown,
         })
     }
