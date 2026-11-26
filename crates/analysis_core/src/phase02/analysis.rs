@@ -710,6 +710,7 @@ pub(super) fn analyze_with_verification(
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
+        django_command_dispatches: Vec::new(),
         django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
@@ -952,6 +953,7 @@ struct Graph<'a> {
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
+    django_command_dispatches: Vec<frameworks::DjangoCommandDispatch>,
     django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
@@ -2956,6 +2958,13 @@ impl<'a> Graph<'a> {
                     && self.unresolved_django_command_lookup(class, access)
                 {
                     return Value::Unknown;
+                }
+                if self.phase03
+                    && matches!(base, Value::Instance(_))
+                    && let Some(value) =
+                        self.django_command_captured_member(access.0, name, access.1)
+                {
+                    return value;
                 }
                 let member = self
                     .class_member_at(class, name, depth, Some(access))
@@ -7501,10 +7510,13 @@ impl<'a> Graph<'a> {
                             || self.defer_constructor_hook_store(scope, statement));
                     let form_field_write =
                         self.phase03 && self.modeled_django_instance_field_write(scope, statement);
+                    let command_write =
+                        self.phase03 && self.modeled_django_command_instance_write(scope, at);
                     if !flask_write
                         && !celery_write
                         && !fresh_field_write
                         && !form_field_write
+                        && !command_write
                         && !self.modeled_framework_write(scope, at)
                     {
                         if self.phase03
@@ -10617,6 +10629,7 @@ impl<'a> Graph<'a> {
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
+            self.remove_proven_django_command_option_diagnostics(&reach);
             self.report_django_middleware_calls(&reach);
             self.report_log_record_calls(&reach);
             self.report_flask_parameter_hooks(&reach);
@@ -16459,7 +16472,7 @@ class Command(BaseCommand):\n    def add_arguments(self, parser): return parser\
             Value::Text("audit".into()),
             Value::Text("--".into()),
             Value::Text("--help".into()),
-        ]), frameworks::DjangoCommands::Selected(name) if name == "audit"));
+        ]), frameworks::DjangoCommands::Selected { name, .. } if name == "audit"));
     }
 
     #[test]

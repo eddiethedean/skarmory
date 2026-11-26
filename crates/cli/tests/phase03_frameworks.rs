@@ -7654,6 +7654,125 @@ reload(main_func=start)
     assert!(!unused.contains(&"startup.helper"));
 }
 
+fn install_django_reloader_command(root: &Path, source: &str) {
+    let commands = root.join("shop/management/commands");
+    fs::create_dir_all(&commands).unwrap();
+    for package in ["shop", "shop/management", "shop/management/commands"] {
+        fs::write(root.join(package).join("__init__.py"), "").unwrap();
+    }
+    fs::write(root.join("settings.py"), "INSTALLED_APPS = ['shop']\n").unwrap();
+    fs::write(commands.join("hello.py"), source).unwrap();
+}
+
+#[test]
+fn django_selected_command_preserves_bound_autoreloader_capture_order() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("manage.py"),
+        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings'])\n",
+    )
+    .unwrap();
+    let callback = "shop.management.commands.hello.callback";
+    let capture = "        saved = self.start\n";
+    let replace = "        self.start = lambda target: None\n";
+    for (operations, expected) in [
+        (format!("{capture}{replace}"), &["certain"][..]),
+        (format!("{replace}{capture}"), &[][..]),
+    ] {
+        install_django_reloader_command(
+            root,
+            &format!(
+                r#"from django.core.management.base import BaseCommand
+from django.utils import autoreload
+
+def callback():
+    return 1
+
+class Command(BaseCommand):
+    def handle(self, **options):
+{operations}        saved(callback)
+
+    def start(self, target):
+        autoreload.run_with_reloader(target)
+"#
+            ),
+        );
+        let report = scan(root);
+        assert_eq!(
+            evidence_certainties(&report, callback, "django_autoreload"),
+            expected
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn django_selected_command_dispatches_reloader_only_with_bound_options() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    install_django_reloader_command(
+        root,
+        r#"from django.core.management.base import BaseCommand
+from django.utils import autoreload
+
+def restart(name, queue):
+    print(f"{name} on {queue}")
+
+def dormant():
+    return 1
+
+class Command(BaseCommand):
+    help = "Restart a worker"
+
+    def add_arguments(self, parser):
+        parser.add_argument("-Q", "--queue", required=True)
+        parser.add_argument("-n", "--name", required=True)
+
+    def handle(self, *args, **options):
+        autoreload.run_with_reloader(restart, options["name"], options["queue"])
+"#,
+    );
+    let launcher = |args| {
+        fs::write(
+            root.join("manage.py"),
+            format!(
+                "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings', {args}])\n"
+            ),
+        )
+        .unwrap();
+    };
+    let callback = "shop.management.commands.hello.restart";
+    launcher("'--name=night', '-Q', 'main'");
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, callback, "django_autoreload"),
+        ["certain"]
+    );
+    assert!(
+        findings(&report, "unused_functions").contains(&"shop.management.commands.hello.dormant")
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    for bad in [
+        "'--name=night'",
+        "'--name=night', '-Q', 'main', '--unknown'",
+    ] {
+        launcher(bad);
+        let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(evidence_certainties(&incomplete, callback, "django_autoreload").is_empty());
+    }
+}
+
 #[test]
 fn django_autoreload_wrapper_activates_only_bound_callbacks() {
     let project = tempfile::tempdir().unwrap();

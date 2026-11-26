@@ -392,7 +392,10 @@ Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.
 An activated command can forward an autoreload callback through a resolved
 bound method or captured bound alias. Argument binding accounts for the
-implicit receiver.
+implicit receiver. A bounded instance write preserves the original bound
+method if capture happened first. Stock command dispatch can bind required
+literal parser options and pass them through `handle` to an autoreload
+callback. Unresolved parser or argument effects keep coverage incomplete.
 An explicit call on a resolved `BaseCommand` instance can identify `handle`
 parameters as part of its callback contract. Bounded zero-argument Manager
 and QuerySet construction follows actual initializer hooks. ORM operations
