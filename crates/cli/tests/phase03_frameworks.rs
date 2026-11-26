@@ -532,6 +532,103 @@ class Local(RedisBackend):
 }
 
 #[test]
+fn django_model_construction_retains_the_explicit_save_and_reports_dormant_siblings() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let app = root.join("app.py");
+    fs::write(
+        root.join("settings.py"),
+        "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    let source = concat!(
+        "import django, os\n",
+        "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n",
+        "django.setup()\n",
+        "from django.db import models\n",
+        "class Worker(models.Model):\n",
+        "    class Meta: app_label = 'fixture'\n",
+        "    def save(self): return 1\n",
+        "    def get_queryset(self): return 2\n",
+        "Worker().save()\n",
+    );
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Worker.get_queryset"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.Worker.save", "direct_call"),
+        ["certain"],
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&app, source.replace("Worker()", "Worker(id=1)")).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "unresolved_constructor")
+    );
+}
+
+#[test]
+fn django_manager_all_dispatches_the_effective_queryset_override() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let declaration = concat!(
+        "from django.db.models import Manager\n",
+        "def load(): return 1\n",
+        "class Worker(Manager):\n",
+        "    def get_queryset(self): return load()\n",
+        "    def abandoned(self): return 2\n",
+    );
+    fs::write(&app, format!("{declaration}Worker()\n")).unwrap();
+    let dormant = scan(root);
+    assert_eq!(
+        findings(&dormant, "unused_functions"),
+        [
+            "app.Worker.abandoned",
+            "app.Worker.get_queryset",
+            "app.load"
+        ],
+    );
+    fs::write(&app, format!("{declaration}Worker().all()\n")).unwrap();
+    let active = scan(root);
+    assert_eq!(
+        findings(&active, "unused_functions"),
+        ["app.Worker.abandoned"]
+    );
+    assert_eq!(
+        evidence_certainties(
+            &active,
+            "app.Worker.get_queryset",
+            "django_manager_queryset"
+        ),
+        ["certain"],
+    );
+    fs::write(&app, format!("{declaration}Worker().all(1)\n")).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        evidence_certainties(
+            &incomplete,
+            "app.Worker.get_queryset",
+            "django_manager_queryset",
+        )
+        .is_empty(),
+    );
+}
+
+#[test]
 fn generic_django_storage_constructor_uses_empty_defaults() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

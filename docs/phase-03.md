@@ -454,6 +454,13 @@ constructor. Selected formatter overrides can format a standard log record
 and serialize its literal string fields. An opaque configuration or consumer
 leaves coverage incomplete.
 
+Django supports zero-argument construction for a direct source model with a
+literal app label and the provider's implicit primary key after selected
+startup. Explicit fields, constructor arguments, and dynamic class changes
+remain outside this allocation model. A call to the inherited manager
+`all()` reaches a resolved source `get_queryset` override with the manager
+as receiver.
+
 Wagtail settings registration supports direct subclasses of the standard site or
 generic settings base and a literal registration icon. The analyzer also
 recognizes bounded Wagtail StructBlock and StreamBlock field declarations and

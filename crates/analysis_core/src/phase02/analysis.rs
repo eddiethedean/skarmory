@@ -32,6 +32,7 @@ mod django_forms;
 mod django_globals;
 mod django_middleware;
 mod django_migrations;
+mod django_models;
 mod django_template_paths;
 mod django_templates;
 mod django_urls;
@@ -96,6 +97,7 @@ enum Value {
     DjangoView(SymbolId),
     DjangoField(django_forms::Field),
     DjangoFormValidation(Option<SymbolId>),
+    DjangoManagerAll(Option<SymbolId>),
     DjangoSignal(Object),
     DjangoSignalConnect,
     DjangoReceiver(frameworks::DjangoReceiver),
@@ -2980,6 +2982,12 @@ impl<'a> Graph<'a> {
                         _ => Value::Unknown,
                     };
                 }
+                if matches!(member, Value::DjangoManagerAll(None)) {
+                    return match base {
+                        Value::Instance(_) => Value::DjangoManagerAll(Some(class)),
+                        _ => Value::Unknown,
+                    };
+                }
                 if matches!(member, Value::DjangoSignalConnect)
                     && matches!(base, Value::Callable(_))
                 {
@@ -3315,6 +3323,7 @@ impl<'a> Graph<'a> {
                         (
                             Some(
                                 FrameworkClassRole::DjangoCommand
+                                | FrameworkClassRole::DjangoModel
                                 | FrameworkClassRole::DjangoManager
                                 | FrameworkClassRole::DjangoQuerySet
                                 | FrameworkClassRole::DjangoRelationshipField
@@ -3350,6 +3359,9 @@ impl<'a> Graph<'a> {
                             ),
                             "is_valid" | "full_clean" | "non_field_errors",
                         ) => Some(Value::DjangoFormValidation(None)),
+                        (Some(FrameworkClassRole::DjangoManager), "all") => {
+                            Some(Value::DjangoManagerAll(None))
+                        }
                         (Some(FrameworkClassRole::DjangoSignal), "connect") => {
                             Some(Value::DjangoSignalConnect)
                         }
@@ -5420,6 +5432,12 @@ impl<'a> Graph<'a> {
                     Value::DjangoFormValidation(Some(class)) => self.record_django_form_validation(
                         class,
                         function,
+                        CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        },
+                    ),
+                    Value::DjangoManagerAll(Some(class)) => self.record_django_manager_all(
+                        class,
                         CallArguments {
                             scope, before, at: expr.at, positional: arguments, keywords,
                         },
