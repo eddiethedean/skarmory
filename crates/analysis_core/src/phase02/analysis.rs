@@ -144,6 +144,7 @@ enum Value {
     ConstantFunction,
     NullaryConstantFunction,
     IdentityFunction,
+    IdentityDefaultFunction(Box<Value>),
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     FlaskConfig,
@@ -4372,6 +4373,13 @@ impl<'a> Graph<'a> {
                 Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {
                     recurse(self, &arguments[0])
                 }
+                Value::IdentityDefaultFunction(default) if keywords.is_empty() => {
+                    match arguments.as_slice() {
+                        [] => *default,
+                        [argument] => recurse(self, argument),
+                        _ => Value::Unknown,
+                    }
+                }
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
                     .map_or(Value::Unknown, |(value, _)| value),
@@ -4812,6 +4820,9 @@ impl<'a> Graph<'a> {
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
+            ExpressionKind::IdentityDefaultLambda(default) => Value::IdentityDefaultFunction(
+                Box::new(self.identity(scope, default, default.at, depth + 1)),
+            ),
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
             ExpressionKind::DeferredLambda(_)
             | ExpressionKind::DeferredBoolLambda
@@ -5239,6 +5250,10 @@ impl<'a> Graph<'a> {
                 for value in values {
                     self.expose(scope, value, kind, at);
                 }
+                return;
+            }
+            Value::IdentityDefaultFunction(default) => {
+                self.expose(scope, *default, kind, at);
                 return;
             }
             Value::OpaqueNamespace => {
@@ -5909,6 +5924,8 @@ impl<'a> Graph<'a> {
                         self.report_unmodeled_deferred_value(scope, expr.at, &callee)
                     }
                     Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
+                    Value::IdentityDefaultFunction(_)
+                        if arguments.len() <= 1 && keywords.is_empty() => {}
                     Value::DjangoFormValidation(Some(class)) => self.record_django_form_validation(
                         class,
                         function,
@@ -7115,6 +7132,7 @@ impl<'a> Graph<'a> {
                 }
                 self.record_class_reference(scope, &value);
             }
+            ExpressionKind::IdentityDefaultLambda(default) => self.walk(scope, default, default.at),
             ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
@@ -8464,6 +8482,45 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         before: Location,
     ) -> bool {
+        if self.phase03
+            && let ExpressionKind::Boolean { and: true, values } = &decorator.kind
+            && let [guard, function] = values.as_slice()
+            && matches!(guard.kind, ExpressionKind::Name(_))
+            && matches!(function.kind, ExpressionKind::Name(_))
+        {
+            self.walk(scope, guard, guard.at);
+            let known_true = match self.identity(scope, guard, guard.at, 0) {
+                Value::Bool(value) => value,
+                Value::Instance(class)
+                    if ["__bool__", "__len__"].into_iter().all(|name| {
+                        self.class_member_at(class, name, 0, Some((scope, guard.at)))
+                            .is_none()
+                    }) =>
+                {
+                    true
+                }
+                value => {
+                    self.record_truth_test(scope, guard, &value);
+                    false
+                }
+            };
+            if known_true {
+                self.walk(scope, function, function.at);
+                if let Value::Callable(invocation) = self.identity(scope, function, function.at, 0)
+                    && self.local_identity_decorator(Value::Callable(invocation), function)
+                {
+                    self.invoke(scope, invocation, "decorator", "certain", decorator.at);
+                    return true;
+                }
+            }
+            self.scope_issue(
+                scope,
+                decorator.at,
+                "unresolved_decorator",
+                "guarded decorator requires a proven true guard and a resolved identity decorator",
+            );
+            return false;
+        }
         if let ExpressionKind::KeywordMappingCall {
             function,
             arguments,
@@ -11973,6 +12030,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::Member(value, _)
             | ExpressionKind::Not(value)
+            | ExpressionKind::IdentityDefaultLambda(value)
             | ExpressionKind::DeferredLambda(value)
             | ExpressionKind::Await(value) => expressions.push(value),
             ExpressionKind::Call {
