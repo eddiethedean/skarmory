@@ -505,7 +505,7 @@ index a0fc96b..fc7a48f 100644
                  "from django.core.management.base import BaseCommand\n"
                  "from django.utils import autoreload\n"
 diff --git a/test/test_django_celery_entrypoints.py b/test/test_django_celery_entrypoints.py
-index ce688b9..d86f72b 100644
+index ce688b9..d96cd3f 100644
 --- a/test/test_django_celery_entrypoints.py
 +++ b/test/test_django_celery_entrypoints.py
 @@ -134,7 +134,7 @@ def test_runpython_lookalikes_and_shadowing_do_not_rescue(tmp_path, registration
@@ -517,6 +517,26 @@ index ce688b9..d86f72b 100644
              "shop/migrations/__init__.py": "",
              "shop/migrations/0001_data.py": (
                  "def forwards(apps, schema_editor): pass\n" + registration
+@@ -213,8 +213,8 @@ def test_appconfig_ready_signal_import_only(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
+-            "shop/signals.py": "",
++            "shop/__init__.py": "", "settings.py": "INSTALLED_APPS = ['shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
++            "shop/signals.py": "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef observe(sender, **kwargs): return sender\n", "manage.py": "import django, os\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+             "shop/helpers.py": "",
+             "shop/apps.py": """
+                 from django.apps import AppConfig as BaseConfig
+@@ -223,7 +223,7 @@ def test_appconfig_ready_signal_import_only(tmp_path):
+                         from . import helpers, signals as hooks
+                     def unrelated(self):
+                         from . import signals as unrelated_signals
+-            """,
++                    name = 'shop'""",
+         },
+     )
+     imports = result.get("unused_imports", [])
 @@ -240,7 +240,7 @@ def test_fake_appconfig_ready_import_stays_unused(tmp_path, prefix):
      result = _scan(
          tmp_path,
@@ -526,6 +546,24 @@ index ce688b9..d86f72b 100644
              "shop/signals.py": "",
              "shop/apps.py": prefix + "\nclass ShopConfig(AppConfig):\n"
              "    def ready(self):\n        from . import signals\n",
+@@ -294,14 +294,14 @@ def test_ready_false_exit_branch_keeps_signal_import_live(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
+-            "shop/signals.py": "",
++            "shop/__init__.py": "", "settings.py": "INSTALLED_APPS = ['shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
++            "shop/signals.py": "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef observe(sender, **kwargs): return sender\n", "manage.py": "import django, os\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+             "shop/apps.py": "from django.apps import AppConfig\n"
+             "class ShopConfig(AppConfig):\n"
+             "    def ready(self):\n"
+             "        if False:\n"
+             "            return\n"
+-            "        from . import signals\n",
++            "        from . import signals\n    name = 'shop'\n",
+         },
+     )
+     assert "shop.signals" not in _names(result, "unused_imports")
 @@ -311,7 +311,7 @@ def test_class_local_app_shadow_does_not_erase_module_configuration(tmp_path):
      result = _scan(
          tmp_path,
@@ -535,6 +573,81 @@ index ce688b9..d86f72b 100644
              "app.py": 'from celery import Celery\napp = Celery("shop")\n'
              'app.conf.task_routes = ("routers.route_task",)\n'
              "class Other:\n    app = object()\n",
+diff --git a/test/test_django_hook_provenance.py b/test/test_django_hook_provenance.py
+index 6bab49e..992674d 100644
+--- a/test/test_django_hook_provenance.py
++++ b/test/test_django_hook_provenance.py
+@@ -3,8 +3,8 @@
+ import pytest
+
+ from test.web_framework_fixtures import _scan, _unused
+-
+-
++_FORM_SETTINGS = {"settings.py": "SECRET_KEY = 'fixture'\n"}
++_COMMAND_SETUP = {"settings.py": "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n", "shop/__init__.py": "", "shop/management/__init__.py": "", "shop/management/commands/__init__.py": "", "shop/management/commands/probe.py": "from app import Worker as Command\n", "manage.py": "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'probe', '--settings=settings'])\n"}
+ @pytest.mark.parametrize(
+     ("base", "hook"),
+     [("BaseCommand", "handle"), ("Form", "clean_phone"), ("Model", "save")],
+@@ -43,15 +43,15 @@ def test_genuine_imported_django_hooks_remain_recognized(
+ ):
+     result = _scan(
+         tmp_path,
+-        {
++        {**(_COMMAND_SETUP if base == "BaseCommand" else _FORM_SETTINGS if base == "Form" else {}),
+             "app.py": f"""
+         from {provider} import {base} as Parent
+         class Worker(Parent):
+-            def {hook}(self):
+-                return 1
++            def {hook}(self{", **options" if base == "BaseCommand" else ""}):
++                return "ready"
+             def abandoned(self):
+                 return 2
+-        Worker()
++        {"Worker(data={}).is_valid()" if base == "Form" else "Worker()" if base == "Model" else ""}
+     """
+         },
+     )
+@@ -154,7 +154,7 @@ def test_model_form_selected_model_field_keeps_clean_hook(tmp_path):
+ def test_imported_project_django_base_keeps_hooks(tmp_path):
+     result = _scan(
+         tmp_path,
+-        {
++        {**_COMMAND_SETUP,
+             "parent.py": """
+             from django.core.management.base import BaseCommand
+             class Parent(BaseCommand):
+@@ -164,10 +164,10 @@ def test_imported_project_django_base_keeps_hooks(tmp_path):
+             from parent import Parent
+             class Worker(Parent):
+                 def handle(self, *args, **kwargs):
+-                    return 1
++                    return "ready"
+                 def abandoned(self):
+                     return 2
+-            Worker()
++
+         """,
+         },
+     )
+@@ -182,7 +182,7 @@ def test_rebinding_a_provider_keeps_only_captured_genuine_base(tmp_path, capture
+         base = "forms.Form"
+     result = _scan(
+         tmp_path,
+-        {
++        {**_FORM_SETTINGS,
+             "app.py": f"""
+         from django import forms
+         Saved = forms.Form
+@@ -192,7 +192,7 @@ def test_rebinding_a_provider_keeps_only_captured_genuine_base(tmp_path, capture
+         class Contact({base}):
+             def clean(self):
+                 return "ok"
+-        Contact()
++        {"Contact(data={}).is_valid()" if captured else "Contact()"}
+     """
+         },
+     )
 diff --git a/test/test_django_management_command_reachability.py b/test/test_django_management_command_reachability.py
 index dcb66d2..e6a0971 100644
 --- a/test/test_django_management_command_reachability.py
@@ -715,7 +828,7 @@ index e44ba3a..3858059 100644
  @pytest.mark.parametrize(
      "condition",
 diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
-index 2386a5c..0e01636 100644
+index 2386a5c..7ac28e5 100644
 --- a/test/test_flask_callback_providers.py
 +++ b/test/test_flask_callback_providers.py
 @@ -39,12 +39,12 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
@@ -725,12 +838,13 @@ index 2386a5c..0e01636 100644
 -        "from flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n",
+-        "from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
+-        "import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n',
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n',
 +        'def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n',
-         "from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
--        "import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n",
--        "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
++        "def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nimport flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n',
 +        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
