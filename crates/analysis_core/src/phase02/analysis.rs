@@ -11489,6 +11489,9 @@ mod tests {
         let result = serde_json::json!({
             "complete": report.issues.is_empty(),
             "issues": report.issues,
+            "candidates": report.fastapi_route_declarations.iter()
+                .map(|row| (&row.file, row.line))
+                .collect::<BTreeSet<_>>(),
             "roots": locations("certain"),
             "uncertain": locations("possible"),
         });

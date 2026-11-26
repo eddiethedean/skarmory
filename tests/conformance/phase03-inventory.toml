@@ -17254,11 +17254,10 @@ languages = ["python"]
 source = "test/test_fastapi_truth_cycles.py"
 assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_cycles.py:44", "test/test_fastapi_truth_cycles.py:45", "test/test_fastapi_truth_cycles.py:46"]
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
-provenance = "Pinned test/test_fastapi_truth_cycles.py:42 writes the original source via _collect at line 13."
+provenance = "Derived Skylos 5.7.0 supplies a runtime truth seed in the original assignments parameter. Line 42 stages the source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original graph expects uncertainty after reassignment. FastAPI 0.141.1 executes a determinate registration decision; the native port and original assertion review remain pending."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_cyclic_truth_alias_is_uncertain_registration[flag and app.add_api_route('/', endpoint)-first = True\\nsecond = not first\\nfirst = second\\nflag = first\\n]"
@@ -17267,11 +17266,10 @@ languages = ["python"]
 source = "test/test_fastapi_truth_cycles.py"
 assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_cycles.py:44", "test/test_fastapi_truth_cycles.py:45", "test/test_fastapi_truth_cycles.py:46"]
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
-provenance = "Pinned test/test_fastapi_truth_cycles.py:42 writes the original source via _collect at line 13."
+provenance = "Derived Skylos 5.7.0 supplies a runtime truth seed in the original assignments parameter. Line 42 stages the source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original graph expects uncertainty after reassignment. FastAPI 0.141.1 executes a determinate registration decision; the native port and original assertion review remain pending."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_cyclic_truth_alias_is_uncertain_registration[flag or app.add_api_route('/', endpoint)-flag = True\\nflag = not flag\\n]"
@@ -17280,11 +17278,10 @@ languages = ["python"]
 source = "test/test_fastapi_truth_cycles.py"
 assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_cycles.py:44", "test/test_fastapi_truth_cycles.py:45", "test/test_fastapi_truth_cycles.py:46"]
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
-provenance = "Pinned test/test_fastapi_truth_cycles.py:42 writes the original source via _collect at line 13."
+provenance = "Derived Skylos 5.7.0 supplies a runtime truth seed in the original assignments parameter. Line 42 stages the source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original graph expects uncertainty after reassignment. FastAPI 0.141.1 executes a determinate registration decision; the native port and original assertion review remain pending."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_cyclic_truth_alias_is_uncertain_registration[flag or app.add_api_route('/', endpoint)-first = True\\nsecond = not first\\nfirst = second\\nflag = first\\n]"
@@ -17293,11 +17290,10 @@ languages = ["python"]
 source = "test/test_fastapi_truth_cycles.py"
 assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_cycles.py:44", "test/test_fastapi_truth_cycles.py:45", "test/test_fastapi_truth_cycles.py:46"]
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
-provenance = "Pinned test/test_fastapi_truth_cycles.py:42 writes the original source via _collect at line 13."
+provenance = "Derived Skylos 5.7.0 supplies a runtime truth seed in the original assignments parameter. Line 42 stages the source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original graph expects uncertainty after reassignment. FastAPI 0.141.1 executes a determinate registration decision; the native port and original assertion review remain pending."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_cyclic_truth_alias_is_uncertain_registration[app.add_api_route('/', endpoint) if flag else None-flag = True\\nflag = not flag\\n]"
@@ -17306,11 +17302,10 @@ languages = ["python"]
 source = "test/test_fastapi_truth_cycles.py"
 assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_cycles.py:44", "test/test_fastapi_truth_cycles.py:45", "test/test_fastapi_truth_cycles.py:46"]
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
-provenance = "Pinned test/test_fastapi_truth_cycles.py:42 writes the original source via _collect at line 13."
+provenance = "Derived Skylos 5.7.0 supplies a runtime truth seed in the original assignments parameter. Line 42 stages the source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original graph expects uncertainty after reassignment. FastAPI 0.141.1 executes a determinate registration decision; the native port and original assertion review remain pending."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_cyclic_truth_alias_is_uncertain_registration[app.add_api_route('/', endpoint) if flag else None-first = True\\nsecond = not first\\nfirst = second\\nflag = first\\n]"
@@ -17319,11 +17314,10 @@ languages = ["python"]
 source = "test/test_fastapi_truth_cycles.py"
 assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_cycles.py:44", "test/test_fastapi_truth_cycles.py:45", "test/test_fastapi_truth_cycles.py:46"]
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
-provenance = "Pinned test/test_fastapi_truth_cycles.py:42 writes the original source via _collect at line 13."
+provenance = "Derived Skylos 5.7.0 supplies a runtime truth seed in the original assignments parameter. Line 42 stages the source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original graph expects uncertainty after reassignment. FastAPI 0.141.1 executes a determinate registration decision; the native port and original assertion review remain pending."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-False-0]"

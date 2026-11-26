@@ -43,16 +43,38 @@ INCLUDE_CASES = {
 }
 TRUTH_SOURCE = "test/test_fastapi_truth_cycles.py"
 TRUTH_FUNCTION = "test_acyclic_truth_alias_preserves_short_circuit_parity"
+TRUTH_REASSIGNMENT_FUNCTION = "test_cyclic_truth_alias_is_uncertain_registration"
 TRUTH_TEST = "phase02::analysis::tests::pinned_fastapi_truth_chain"
-TRUTH_ASSERTIONS = [f"{TRUTH_SOURCE}:{line}" for line in (23, 65, 66)]
+TRUTH_ASSERTIONS = {
+    TRUTH_FUNCTION: [f"{TRUTH_SOURCE}:{line}" for line in (23, 65, 66)],
+    TRUTH_REASSIGNMENT_FUNCTION: [f"{TRUTH_SOURCE}:{line}" for line in (23, 44, 45, 46)],
+}
 TRUTH_PREREQUISITES = [
     "Native FastAPI route registration index",
     "Original synthesized Python route fixture",
 ]
+TRUTH_REASSIGNMENTS = (
+    "flag = True\nflag = not flag\n",
+    "first = True\nsecond = not first\nfirst = second\nflag = first\n",
+)
+TRUTH_CONDITIONS = (
+    "flag and app.add_api_route('/', endpoint)",
+    "flag or app.add_api_route('/', endpoint)",
+    "app.add_api_route('/', endpoint) if flag else None",
+)
 TRUTH_CASES = {
-    f"{TRUTH_SOURCE}::{TRUTH_FUNCTION}[{operator}-{initial}-{length}]": (length, initial, operator)
+    f"{TRUTH_SOURCE}::{TRUTH_FUNCTION}[{operator}-{initial}-{length}]": (
+        TRUTH_FUNCTION, (length, initial, operator),
+    )
     for length, initial, operator in product((0, 1, 2, 1100, 1101), (False, True), ("and", "or"))
 }
+TRUTH_CASES.update({
+    f"{TRUTH_SOURCE}::{TRUTH_REASSIGNMENT_FUNCTION}"
+    f"[{condition}-{assignments.encode('unicode_escape').decode('ascii')}]": (
+        TRUTH_REASSIGNMENT_FUNCTION, (assignments, condition),
+    )
+    for assignments, condition in product(TRUTH_REASSIGNMENTS, TRUTH_CONDITIONS)
+})
 TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES}
 ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES}
 ROOT = Path(__file__).resolve().parents[2]
@@ -214,17 +236,30 @@ def replay_truth_chain(key, source, fixture, argv, env, trace):
             return SimpleNamespace(
                 complete=report["complete"],
                 incomplete_reason=report["issues"],
+                candidates={(str(fixture / path), line) for path, line in report["candidates"]},
                 roots={(str(fixture / path), line) for path, line in report["roots"]},
                 uncertain={(str(fixture / path), line) for path, line in report["uncertain"]},
             )
 
-    original = source[TRUTH_FUNCTION]
+    function, arguments = TRUTH_CASES[key]
+    original = source[function]
+    if function == TRUTH_REASSIGNMENT_FUNCTION:
+        # The reviewed overlay keeps the original node IDs while replacing
+        # their source inputs. Get the actual fixture from its decorator.
+        [mark] = [
+            mark for mark in original.pytestmark
+            if mark.name == "parametrize" and mark.args[0] == "assignments"
+        ]
+        assignments = mark.args[1]
+        fixture_by_id = dict(zip(mark.kwargs.get("ids", assignments), assignments, strict=True))
+        original_id, condition = arguments
+        arguments = (fixture_by_id[original_id], condition)
     previous_trace = sys.gettrace()
     failure = None
     try:
         with patch.dict(original.__globals__, {"FastAPIProject": Project}):
             sys.settrace(trace)
-            original(fixture, *TRUTH_CASES[key])
+            original(fixture, *arguments)
     except (AssertionError, ValueError, OSError) as error:
         failure = str(error)
     finally:
@@ -249,7 +284,7 @@ def engine_case(args, key, case, env, trace=None):
         source_file, test = INCLUDE_SOURCE, INCLUDE_TEST
     elif key in TRUTH_CASES:
         source_file, assertions, prerequisites, test = (
-            TRUTH_SOURCE, TRUTH_ASSERTIONS, TRUTH_PREREQUISITES, TRUTH_TEST,
+            TRUTH_SOURCE, TRUTH_ASSERTIONS[TRUTH_CASES[key][0]], TRUTH_PREREQUISITES, TRUTH_TEST,
         )
     else:
         raise ValueError(f"missing native engine port for {key}")
