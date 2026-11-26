@@ -5250,6 +5250,50 @@ fn django_builtin_startup_app_support_requires_default_toolbar_panels() {
 }
 
 #[test]
+fn django_startup_replays_a_wildcard_selected_app_extension() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let settings = root.join("conf/settings");
+    fs::create_dir_all(&settings).unwrap();
+    fs::write(root.join("conf/__init__.py"), "").unwrap();
+    fs::write(root.join("conf/urls.py"), "urlpatterns = []\n").unwrap();
+    fs::write(
+        root.join("wsgi.py"),
+        "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'conf.settings'\napplication = get_wsgi_application()\n",
+    ).unwrap();
+    fs::write(
+        settings.join("__init__.py"),
+        "from .base import *\nif DEV:\n    from .dev import *\n",
+    )
+    .unwrap();
+
+    for (base, additional) in [
+        ("('django.contrib.staticfiles',)", "('debug_toolbar',)"),
+        ("['django.contrib.staticfiles']", "['debug_toolbar']"),
+    ] {
+        fs::write(settings.join("base.py"), format!("DEV = True\nINSTALLED_APPS = {base}\nROOT_URLCONF = 'conf.urls'\nSTATIC_ROOT = 'static'\nSECRET_KEY = 'fixture'\n")).unwrap();
+        fs::write(settings.join("dev.py"), format!("import conf.settings.base as base\nINSTALLED_APPS = base.INSTALLED_APPS + {additional}\n")).unwrap();
+        scan(root);
+    }
+    fs::write(
+        settings.join("dev.py"),
+        "import conf.settings.base as base\nINSTALLED_APPS = base.INSTALLED_APPS + ('debug_toolbar',)\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["kind"] == "unsupported_construct"
+                    && error["file"] == "conf/settings/__init__.py"
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incomplete() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
