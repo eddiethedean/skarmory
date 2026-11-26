@@ -28,6 +28,24 @@ APPROVED_EXCEPTION_TESTS = {
         "phase02::analysis::tests::pinned_fastapi_initializer_call_budget",
 }
 CLICK_CONTROL = "phase02::analysis::tests::pinned_click_dead_code_control"
+DJANGO_ASYNC_SOURCE = "test/test_django_function_view_roots.py"
+DJANGO_ASYNC_EXCEPTIONS = frozenset(
+    f"{DJANGO_ASYNC_SOURCE}::test_unproved_function_callbacks_do_not_create_provider_roots[async_view-{confidence}]"
+    for confidence in (0, 80)
+)
+DJANGO_ASYNC_ASSERTIONS = [f"{DJANGO_ASYNC_SOURCE}:{line}" for line in (29, 120, 121, 125)]
+DJANGO_ASYNC_PREREQUISITES = [
+    "installed-sdk", "native-framework-evidence", "grep-verification-disabled",
+]
+DJANGO_ASYNC_PATHS = ["manage.py", "pipeline.py", "providers.py", "settings.py", "urls.py", "views.py"]
+DJANGO_ASYNC_CONTROLS = [
+    "coverage:complete",
+    "evidence:django_registration:certain:views.view",
+    "evidence:direct_call:certain:pipeline.dispatch",
+    "evidence:direct_call:certain:providers.NcaaClient.schedule_dates",
+    "unused:unused_functions:providers.NjcaaClient.schedule_dates",
+    "unused:unused_functions:providers.UnrelatedClient.schedule_dates",
+]
 
 
 def sha256(path):
@@ -166,16 +184,23 @@ def read_inventory(path):
             require_string(case, "blocker")
         if "reviewed_exception" in case:
             exception = case["reviewed_exception"]
-            if (case_id not in APPROVED_EXCEPTION_TESTS or milestone != MILESTONE
+            sdk_exception = case_id in DJANGO_ASYNC_EXCEPTIONS
+            if ((case_id not in APPROVED_EXCEPTION_TESTS and not sdk_exception)
+                    or milestone != MILESTONE
                     or case["port"] != REVIEW_PORT
                     or not isinstance(exception, dict)
                     or set(exception) != {"reason", "approval", "tracking_issue", "fixture_sha256"}
-                    or {"reference_xfail", "runtime_review", "blocker"} & case.keys()):
+                    or {"reference_xfail", "blocker"} & case.keys()
+                    or sdk_exception != ("runtime_review" in case)):
                 raise ValueError(f"{case_id}: invalid approved compatibility exception")
             require_string(exception, "reason")
             if not re.fullmatch(r"[0-9a-f]{64}", require_string(exception, "fixture_sha256")):
                 raise ValueError(f"{case_id}: approved exception must pin the original fixture bytes")
-            if (exception["approval"] != "approved in the issue 43 implementation request"
+            approval = (
+                "approved for the two mounted Django async cases"
+                if sdk_exception else "approved in the issue 43 implementation request"
+            )
+            if (exception["approval"] != approval
                     or exception["tracking_issue"] != "https://github.com/eddiethedean/skarmory/issues/41"):
                 raise ValueError(f"{case_id}: exception must identify the Phase 0.3 release review")
         if "runtime_review" in case:
@@ -203,6 +228,14 @@ def read_inventory(path):
             raise ValueError(f"{case_id}: reference_xfail must name a mapped assertion")
         string_list(case, "prerequisites", unique=True)
         string_list(case, "omitted_assertions", unique=True)
+        if "reviewed_exception" in case and case_id in DJANGO_ASYNC_EXCEPTIONS and (
+            case["source"] != DJANGO_ASYNC_SOURCE
+            or assertions != DJANGO_ASYNC_ASSERTIONS
+            or case["prerequisites"] != DJANGO_ASYNC_PREREQUISITES
+            or case["omitted_assertions"]
+            or case["runtime_review"]["assertions"] != DJANGO_ASYNC_CONTROLS
+        ):
+            raise ValueError(f"{case_id}: approved exception must preserve the original assertions and controls")
         if "fixtures" in case:
             for fixture in string_list(case, "fixtures", unique=True):
                 if fixture not in fixtures:
@@ -212,7 +245,8 @@ def read_inventory(path):
                 raise ValueError(f"{case_id}: unknown variant {variant!r}")
             if "runtime_review" in case and variants[variant]["layer"] != "sdk":
                 raise ValueError(f"{case_id}: reviewed runtime controls require the installed SDK")
-            if "reviewed_exception" in case and variants[variant]["layer"] != "engine":
+            if (case_id in APPROVED_EXCEPTION_TESTS and "reviewed_exception" in case
+                    and variants[variant]["layer"] != "engine"):
                 raise ValueError(f"{case_id}: the approved native control requires an engine artifact")
             by_variant[variant][case_id] = case
     if unused := [variant for variant, mapped in by_variant.items() if not mapped]:
@@ -277,7 +311,8 @@ def verify_preview_result(result, case):
     reference_assertions = string_list(result, "reference_assertions", unique=True)
     if reference_assertions != required_reference:
         reasons.append("completed reference assertions do not match the inventory")
-    if "reviewed_exception" in case:
+    is_exception = "reviewed_exception" in case
+    if is_exception and case["id"] in APPROVED_EXCEPTION_TESTS:
         reasons.extend(verify_exception_control(result, case))
         return reasons
     review = case.get("runtime_review")
@@ -307,6 +342,19 @@ def verify_preview_result(result, case):
         or any(status != "passed" for status in prerequisites.values())
     ):
         reasons.append("required prerequisites were not all verified")
+    if is_exception and case["id"] in DJANGO_ASYNC_EXCEPTIONS:
+        if (
+            status != "failed"
+            or assertions != {DJANGO_ASYNC_ASSERTIONS[0]}
+            or result.get("candidate_failed_assertion") != DJANGO_ASYNC_ASSERTIONS[1]
+        ):
+            reasons.append("approved Django exception requires the original candidate assertion failure")
+        control = result.get("reviewed_runtime")
+        if (not isinstance(control, dict)
+                or control.get("fixture_sha256") != case["reviewed_exception"]["fixture_sha256"]):
+            reasons.append("approved Django exception fixture bytes differ from the review")
+        elif control.get("selected_paths") != DJANGO_ASYNC_PATHS:
+            reasons.append("approved Django exception did not analyze every original source")
     return reasons
 
 
@@ -578,7 +626,8 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
                     "original_assertions": case["assertions"],
                     "original_reference_status": result.get("reference_status"),
                     "original_candidate_status": candidate_status,
-                    "native_control": result.get("native_test"),
+                    "original_candidate_failed_assertion": result.get("candidate_failed_assertion"),
+                    "native_control": result.get("native_test", result.get("reviewed_runtime")),
                 })
                 if reasons:
                     errors.append(f"{case_id}: approved exception control is missing or invalid")

@@ -106,7 +106,7 @@ sets. The separate legacy fallback test requires no public analysis error
 even when its internal proof is incomplete. Native coverage records an
 exhausted budget explicitly and preserves unresolved route evidence.
 
-Two cases have approved release-scope exceptions tracked under
+Four cases have approved release-scope exceptions tracked under
 [#41](https://github.com/eddiethedean/skarmory/issues/41). The gate executes
 their original assertions on Skylos and keeps the original candidate outcomes
 visible without awarding ordinary pass credit. The installed SDK lacks the
@@ -115,8 +115,12 @@ evidence and a clean error list after its proof is exhausted. The native
 engine controls use the original staged sources from the same release
 candidate. They verify the Click declaration, dormant call, and unused
 neighbor, and require an explicit FastAPI work-limit diagnostic with no
-unproved activation or parameter evidence. A missing or failed control
-blocks qualification.
+unproved activation or parameter evidence. Django awaits the directly mounted
+async view at both tested confidence levels. Each exception preserves the
+original unused-provider assertion failure and pins the six fixture source
+files by digest. The same installed wheel must show a complete scan, the live
+view and provider, and the two unused neighboring providers. Missing or failed
+controls block qualification.
 
 The class-attribute provider suite contributes 19 original Python cases.
 The SDK ports use genuine Celery, Django admin, and django-storages providers
@@ -230,7 +234,7 @@ python scripts/check_dead_code_gate.py \
 
 The report includes artifact hashes, receipt contents, and each required case
 and variant's decision. The ordinary pass and blocker counts cover the Python
-cases outside the two approved exceptions. The approved cases have their own
+cases outside the four approved exceptions. The approved cases have their own
 acceptance status and retain their original reference and candidate outcomes.
 The checker exits 1 if a required result is missing,
 blocked, skipped, duplicated, stale, or unsuccessful, or if the inventory is
