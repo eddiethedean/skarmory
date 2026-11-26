@@ -10,8 +10,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from phase03_reference import (
-    COMMIT_ENV, COMMIT_MESSAGE, CORPUS, git, materialize, validate_fixture_setup,
-    validate_inline_fixtures,
+    COMMIT_ENV, COMMIT_MESSAGE, CORPUS, git, materialize, validate_combined_fixtures,
+    validate_fixture_setup, validate_inline_fixtures,
 )
 
 
@@ -44,6 +44,21 @@ def test_run(source):
             self.adjusted + self.adjusted.replace("test_run", "test_other"),
             [self.rule, other],
         )
+
+    def test_combined_inline_and_setup_edits_require_both_reviews(self):
+        before = 'setup = "old"\n' + self.original
+        after = 'setup = "new"\n' + self.adjusted
+        setup = {"path": self.rule["path"], "lines": [1]}
+        validate_combined_fixtures(before, after, [self.rule], setup)
+        with self.assertRaisesRegex(ValueError, "changed test code, assertions, or pytest IDs"):
+            validate_combined_fixtures(
+                before, after.replace('ids=["always"]', 'ids=["renamed"]'), [self.rule], setup,
+            )
+        with self.assertRaisesRegex(ValueError, "changed assertions or test collection"):
+            validate_combined_fixtures(
+                before, after.replace("assert run(source)", "assert True"),
+                [self.rule], {**setup, "lines": [1, 5]},
+            )
 
 
 class FixtureSetupTests(unittest.TestCase):
