@@ -620,6 +620,10 @@ In the `skylos-0.3` profile, a reached call to the resolved standard-library
 `atexit.register` retains a selected synchronous function or bound method
 passed as its first positional argument. Import aliases, finite callback
 alternatives, and bare function decorators preserve that relationship. A
+declared module-level decorator can forward an unchanged callback to a
+resolved shutdown registrar. A bounded identity layer underneath it preserves
+the original callback. Shutdown evidence remains possible, including when
+the callback reads a helper defined later in the module. A
 lexically shadowed provider or callback requires a resolved local binding. The
 callback and code reached only through its body carry possible-use evidence.
 Forwarded values can supply possible-use evidence for known callable arguments.

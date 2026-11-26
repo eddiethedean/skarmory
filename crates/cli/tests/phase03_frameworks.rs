@@ -9311,6 +9311,46 @@ def dormant():
 }
 
 #[test]
+fn atexit_forwarding_decorator_preserves_the_callback_in_a_local_stack() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        "from plugin import register_entry\nclass Local:\n    def get(self, path): return lambda fn: fn\nfake = Local()\n@register_entry\n@fake.get('/')\ndef endpoint(): return helper()\ndef helper(): return 1\ndef unused(): return 2\n",
+    )
+    .unwrap();
+    let plugin = root.join("plugin.py");
+    let wrapper = "from atexit import register\ndef register_entry(callback):\n    register(callback)\n    return callback\n";
+    fs::write(&plugin, wrapper).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.unused"],
+        "{report}"
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.endpoint", "atexit_registration"),
+        ["possible"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.helper", "direct_call"),
+        ["possible"]
+    );
+    assert!(evidence_certainties(&report, "app.endpoint", "fastapi_registration").is_empty());
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&plugin, wrapper.replace("register(callback)", "callback()")).unwrap();
+    let immediate = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(immediate["coverage"]["status"], "incomplete", "{immediate}");
+    assert!(evidence_certainties(&immediate, "app.endpoint", "atexit_registration").is_empty());
+}
+
+#[test]
 fn atexit_registration_checks_provider_identity_and_unresolved_targets() {
     let project = tempfile::tempdir().unwrap();
     let path = project.path().join("shutdown.py");
