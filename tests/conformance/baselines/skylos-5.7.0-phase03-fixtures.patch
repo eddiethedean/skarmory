@@ -471,6 +471,232 @@ index 3a3f6ea..ae07eca 100644
        "description": "Django AppConfig classes and ready hooks are framework lifecycle entrypoints.",
        "source": {
          "repo": "https://github.com/django/django",
+diff --git a/test/test_django_autoreload_precision.py b/test/test_django_autoreload_precision.py
+index a0fc96b..fc7a48f 100644
+--- a/test/test_django_autoreload_precision.py
++++ b/test/test_django_autoreload_precision.py
+@@ -27,8 +27,8 @@ def callback():
+ def helper():
+     return 1
+ """
+-
+-
++_SHOP_PACKAGES = {"shop/__init__.py": "", "shop/management/__init__.py": "", "shop/management/commands/__init__.py": ""}
++_COMMAND_LAUNCH = {"settings.py": "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n", "manage.py": "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings'])\n"}
+ @pytest.mark.parametrize("conf", [0, 80])
+ @pytest.mark.parametrize("grep", [False, True])
+ def test_uncalled_autoreload_owner_does_not_execute_callback(tmp_path, conf, grep):
+@@ -132,7 +132,7 @@ def test_autoreload_in_management_command_handle_is_live(tmp_path):
+         {
+             "shop/__init__.py": "",
+             "shop/management/__init__.py": "",
+-            "shop/management/commands/__init__.py": "",
++            "shop/management/commands/__init__.py": "", **_COMMAND_LAUNCH,
+             "shop/management/commands/hello.py": (
+                 "from django.core.management.base import BaseCommand\n"
+                 "from django.utils import autoreload\n"
+@@ -196,7 +196,7 @@ def test_autoreload_wrapper_in_imported_module_uses_actual_callback_argument(tmp
+ def test_management_command_bound_wrapper_uses_the_callback_argument(tmp_path):
+     result, definitions = _scan(
+         tmp_path,
+-        {
++        {**_SHOP_PACKAGES, **_COMMAND_LAUNCH,
+             "shop/management/commands/hello.py": (
+                 "from django.core.management.base import BaseCommand\n"
+                 "from django.utils import autoreload\n"
+diff --git a/test/test_django_celery_entrypoints.py b/test/test_django_celery_entrypoints.py
+index ce688b9..d86f72b 100644
+--- a/test/test_django_celery_entrypoints.py
++++ b/test/test_django_celery_entrypoints.py
+@@ -134,7 +134,7 @@ def test_runpython_lookalikes_and_shadowing_do_not_rescue(tmp_path, registration
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
++            "shop/__init__.py": "", "local_ops.py": "RunPython = lambda callback: None\n",
+             "shop/migrations/__init__.py": "",
+             "shop/migrations/0001_data.py": (
+                 "def forwards(apps, schema_editor): pass\n" + registration
+@@ -240,7 +240,7 @@ def test_fake_appconfig_ready_import_stays_unused(tmp_path, prefix):
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
++            "shop/__init__.py": "", "local_apps.py": "class AppConfig: pass\n",
+             "shop/signals.py": "",
+             "shop/apps.py": prefix + "\nclass ShopConfig(AppConfig):\n"
+             "    def ready(self):\n        from . import signals\n",
+@@ -311,7 +311,7 @@ def test_class_local_app_shadow_does_not_erase_module_configuration(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "routers.py": "def route_task(name, args, kwargs, options): return None\n",
++            "routers.py": "def route_task(name, args, kwargs, options, *, task=None): return None\n",
+             "app.py": 'from celery import Celery\napp = Celery("shop")\n'
+             'app.conf.task_routes = ("routers.route_task",)\n'
+             "class Other:\n    app = object()\n",
+diff --git a/test/test_django_management_command_reachability.py b/test/test_django_management_command_reachability.py
+index dcb66d2..e6a0971 100644
+--- a/test/test_django_management_command_reachability.py
++++ b/test/test_django_management_command_reachability.py
+@@ -10,11 +10,11 @@ from skylos.analyzer import Skylos
+
+ _MODULE = "shop.management.commands.audit"
+ _PATH = "shop/management/commands/audit.py"
+-_HELPERS = "def prepare(): return 1\ndef abandoned(): return 2\n"
++_HELPERS = "def prepare(): return 'ready'\ndef abandoned(): return 2\n"
+ _PROVIDER = "from django.core.management.base import BaseCommand\n"
+ _ROOT_REASON = "dead_code_liveness:django_web_management_command_handle"
+-
+-
++_SETTINGS = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n"
++_MANAGE = "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n"
+ def _scan(tmp_path, sources):
+     for name, source in sources.items():
+         path = tmp_path / name
+@@ -40,7 +40,7 @@ def _scan(tmp_path, sources):
+     return unused, definitions
+
+
+-def _command(tmp_path, code, extra=None, path=_PATH):
++def _command(tmp_path, code, extra=None, path=_PATH, *, launch=False):
+     return _scan(
+         tmp_path,
+         {
+@@ -48,7 +48,7 @@ def _command(tmp_path, code, extra=None, path=_PATH):
+             "shop/management/__init__.py": "",
+             "shop/management/commands/__init__.py": "",
+             path: code,
+-            **(extra or {}),
++            **({"settings.py": _SETTINGS, "manage.py": _MANAGE} if launch else {}), **(extra or {}),
+         },
+     )
+
+@@ -58,19 +58,19 @@ def _command(tmp_path, code, extra=None, path=_PATH):
+     [
+         ("return prepare()", _HELPERS, ["prepare"], ["abandoned"]),
+         (
+-            "def prepare(): return 1\ndef abandoned(): return 2\nreturn prepare()",
++            "def prepare(): return 'ready'\ndef abandoned(): return 2\nreturn prepare()",
+             "",
+             ["Command.handle.prepare"],
+             ["Command.handle.abandoned"],
+         ),
+         (
+-            "def prepare(): return 1\ndef run(): return prepare()\nreturn run()",
++            "def prepare(): return 'ready'\ndef run(): return prepare()\nreturn run()",
+             "",
+             ["Command.handle.prepare", "Command.handle.run"],
+             [],
+         ),
+         (
+-            "def prepare(): return 1\nselected = prepare\nreturn selected()",
++            "def prepare(): return 'ready'\nselected = prepare\nreturn selected()",
+             "",
+             ["Command.handle.prepare"],
+             [],
+@@ -78,7 +78,7 @@ def _command(tmp_path, code, extra=None, path=_PATH):
+         (
+             "return analyze_games_queryset()",
+             "class GameDiscontinuityAnalyzer:\n"
+-            "    def run(self): return 1\n"
++            "    def run(self): return 'ready'\n"
+             "def analyze_games_queryset(): return GameDiscontinuityAnalyzer().run()\n"
+             "def abandoned(): return 2\n",
+             ["analyze_games_queryset", "GameDiscontinuityAnalyzer"],
+@@ -104,7 +104,7 @@ def test_discovered_handle_roots_only_its_called_helpers(
+         + textwrap.indent(body, "        ")
+         + "\n"
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=True)
+     assert not ({f"{_MODULE}.{name}" for name in live} & unused)
+     assert {f"{_MODULE}.{name}" for name in dead} <= unused
+     handle = definitions[f"{_MODULE}.Command.handle"]
+@@ -130,7 +130,7 @@ def test_management_discovery_selects_the_effective_inherited_handle(
+         owner = "parent"
+     else:
+         source = parent + source
+-    unused, definitions = _command(tmp_path, source, extra)
++    unused, definitions = _command(tmp_path, source, extra, launch=True)
+     assert f"{owner}.prepare" not in unused
+     assert f"{owner}.abandoned" in unused
+     assert definitions[f"{owner}.Parent.handle"].heuristic_refs.get(_ROOT_REASON) == 1.0
+@@ -146,7 +146,7 @@ def test_management_export_alias_and_unrelated_constructor_do_not_lose_identity(
+         + "class Actual(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + "Command = Actual\n"
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=True)
+     assert f"{_MODULE}.prepare" not in unused
+     assert f"{_MODULE}.abandoned" in unused
+     assert (
+@@ -335,7 +335,7 @@ def test_direct_readonly_module_metadata_keeps_command_proof(tmp_path):
+         + "class Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + "module_name = globals().get('__name__')\n"
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=True)
+     assert f"{_MODULE}.prepare" not in unused
+     assert (
+         definitions[f"{_MODULE}.Command.handle"].heuristic_refs.get(_ROOT_REASON) == 1.0
+@@ -359,7 +359,7 @@ def test_command_helpers_require_the_original_handle_body(tmp_path, tail, replac
+         + "def replacement(self, *args, **options): return None\n"
+         + tail
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=not replaced)
+     if not replaced:
+         assert f"{_MODULE}.prepare" not in unused
+     # Function-object uncertainty already retained helpers on original main.
+diff --git a/test/test_django_named_setting_imports.py b/test/test_django_named_setting_imports.py
+index cff9b2d..960821d 100644
+--- a/test/test_django_named_setting_imports.py
++++ b/test/test_django_named_setting_imports.py
+@@ -209,7 +209,7 @@ def test_imported_template_directories_retain_the_source_path_context(tmp_path):
+ def test_called_setting_mutation_helper_uses_the_module_binding(
+     tmp_path, setting, target, scope
+ ):
+-    configured = "{'filters': {'extra': {'()': 'app.protocols.Factory'}}}"
++    configured = "{'version': 1, 'filters': {'extra': {'()': 'app.protocols.Factory'}}}"
+     if setting == "STORAGES":
+         configured = "{'default': {'BACKEND': 'app.protocols.Storage'}}"
+     parameters = ""
+diff --git a/test/test_fastapi_nested_projects.py b/test/test_fastapi_nested_projects.py
+index ff9919f..4e085e3 100644
+--- a/test/test_fastapi_nested_projects.py
++++ b/test/test_fastapi_nested_projects.py
+@@ -108,11 +108,11 @@ CASES = {
+     "tool_config_only_namespace_dir": (
+         {
+             "pyproject.toml": "[tool.ruff]\nline-length = 100\n",
+-            "backend/pyproject.toml": "[tool.ruff]\nline-length = 100\n",
++            "backend/pyproject.toml": "[tool.ruff]\nline-length = 100\n", "app/routes.py": _route("root_route"),
+             "backend/app/main.py": APP
+             + "from app.routes import router\n\napp = FastAPI()\n"
+             "app.include_router(router)\n",
+-            "backend/app/routes.py": _route("namespace_route"),
++            "backend/app/routes.py": _route("namespace_route"), "app/__init__.py": "",
+         },
+         {"namespace_route"},
+         set(),
+@@ -120,14 +120,14 @@ CASES = {
+     "project_without_its_own_package_import": (
+         {
+             "backend/pyproject.toml": MEMBER,
+-            "backend/app/__init__.py": "",
++            "backend/app/__init__.py": "", "backend/other/__init__.py": "",
+             "backend/app/main.py": APP
+             + "from other.routes import router\n\napp = FastAPI()\n"
+             "app.include_router(router)\n",
+             "backend/app/routes.py": _route("unimported_route"),
+             "worker/pyproject.toml": MEMBER,
+             "worker/other/__init__.py": "",
+-            "worker/other/routes.py": "router = None\n",
++            "worker/other/routes.py": "router = None\n", "backend/other/routes.py": ROUTER,
+         },
+         {"unimported_route"},
+         set(),
 diff --git a/test/test_fastapi_truth_cycles.py b/test/test_fastapi_truth_cycles.py
 index e44ba3a..3858059 100644
 --- a/test/test_fastapi_truth_cycles.py
@@ -488,3 +714,92 @@ index e44ba3a..3858059 100644
  )
  @pytest.mark.parametrize(
      "condition",
+diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
+index 2386a5c..0e01636 100644
+--- a/test/test_flask_callback_providers.py
++++ b/test/test_flask_callback_providers.py
+@@ -39,12 +39,12 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
+     "provider",
+     [
+         "class LoginManager: pass\nlogin = LoginManager()\n",
+-        "from flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n",
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n',
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n',
++        'def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n',
+         "from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
+-        "import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nimport flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n',
++        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
+@@ -56,7 +56,7 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
+         "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
+-    ],
++    ], ids=['class LoginManager: pass\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n', 'from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n', 'import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n', "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n", "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n", 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n', 'from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n'],
+ )
+ def test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks(
+     tmp_path, provider
+@@ -187,11 +187,11 @@ def test_global_constructor_replacement_keeps_callback_unproved(tmp_path):
+         "from flask import Flask\ndef create_app(Flask):\n    app = Flask(__name__)\n    return app\n",
+         "from flask import Flask\ndef create_app(flag):\n    if flag:\n        return replacement\n    app = Flask(__name__)\n    return app\n",
+         "from flask import Flask\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n",
+-        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n",
++        'class Replacement:\n    @staticmethod\n    def shell_context_processor(callback): return callback\nreplacement = Replacement\nfrom flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n',
+         "from flask import Flask\nasync def create_app():\n    app = Flask(__name__)\n    return app\n",
+         "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield 1\n    return app\n",
+         "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield from []\n    return app\n",
+-    ],
++    ], ids=['from flask import Flask\ndef create_app():\n    return replacement\n', 'from flask import Flask\ndef create_app(Flask):\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\ndef create_app(flag):\n    if flag:\n        return replacement\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n', 'from flask import Flask\nasync def create_app():\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield 1\n    return app\n', 'from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield from []\n    return app\n'],
+ )
+ def test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks(
+     tmp_path, factory
+diff --git a/test/test_framework_class_attr_providers.py b/test/test_framework_class_attr_providers.py
+index a6efeb9..abcac71 100644
+--- a/test/test_framework_class_attr_providers.py
++++ b/test/test_framework_class_attr_providers.py
+@@ -53,7 +53,7 @@ def test_missing_framework_provider_keeps_only_documented_attributes_live(
+         f"class Backend({name}):\n"
+         f"{assignments}"
+         "    orphan = 1\n\n"
+-        "ENTRY = Backend()\n",
++        "ENTRY = Backend\n",
+     )
+     for attr in attributes:
+         assert f"app.Backend.{attr}" not in reported
+@@ -79,7 +79,7 @@ def test_celery_provider_aliases_keep_the_hook_live(tmp_path, imports, base):
+         f"class Backend({base}):\n"
+         "    ResultConsumer = object\n"
+         "    orphan = 1\n\n"
+-        "ENTRY = Backend()\n",
++        "ENTRY = Backend\n",
+     )
+     assert "app.Backend.ResultConsumer" not in reported
+     assert "app.Backend.orphan" in reported
+@@ -92,7 +92,7 @@ def test_framework_provider_through_project_intermediary_keeps_the_hook_live(tmp
+         "class Backend(Intermediate):\n"
+         "    ResultConsumer = object\n"
+         "    orphan = 1\n\n"
+-        "ENTRY = Backend()\n",
++        "ENTRY = Backend\n",
+         {
+             "project_base.py": (
+                 "from celery.backends.redis import RedisBackend as FrameworkBase\n\n"
+diff --git a/test/test_settings_without_django_import.py b/test/test_settings_without_django_import.py
+index 2cf2a54..0ff3116 100644
+--- a/test/test_settings_without_django_import.py
++++ b/test/test_settings_without_django_import.py
+@@ -46,7 +46,7 @@ def test_satellite_logging_factories_without_django_import(tmp_path):
+                 from app.settings_logging import LOGGING  # noqa: F401
+             """,
+             "app/settings_logging.py": """
+-                LOGGING = {
++                LOGGING = {"version": 1,
+                     "formatters": {
+                         "json": {"()": "app.formatters.JSONFormatter"},
+                     },
