@@ -8385,6 +8385,19 @@ impl<'a> Graph<'a> {
                     return Some(Value::NullaryConstantFunction);
                 }
                 ExpressionKind::Name(name)
+                    if decorated.kind == DefinitionKind::Function
+                        && !invocation.verified
+                        && !invocation.implicit_descriptor_receiver
+                        && symbol.scope == self.symbols[invocation.target].scope
+                        && self.scopes[symbol.scope].owner.is_none()
+                        && definition.parameters[0].text != *name
+                        && matches!(decorated.decorators[0].kind, ExpressionKind::Name(_))
+                        && decorated.defaults.is_empty()
+                        && decorated.annotations.is_empty() =>
+                {
+                    return self.closed_decorator_class_return(symbol.scope, decorated, name);
+                }
+                ExpressionKind::Name(name)
                     if decorated.kind == DefinitionKind::Class
                         && symbol.scope == self.symbols[invocation.target].scope
                         && self.scopes[symbol.scope].owner.is_none()
@@ -8431,6 +8444,48 @@ impl<'a> Graph<'a> {
             return None;
         }
         self.local_replacement_decorator(invocation)
+    }
+
+    fn closed_decorator_class_return(
+        &self,
+        scope: ScopeId,
+        decorated: &Definition,
+        name: &str,
+    ) -> Option<Value> {
+        let replacement = self.local(scope, name, decorated.name.at)?;
+        let Binding::Definition(class, _) = self.symbols[replacement].binding else {
+            return None;
+        };
+        if class.kind != DefinitionKind::Class
+            || !class.decorators.is_empty()
+            || !class.bases.is_empty()
+            || class.has_class_keywords()
+            || self.scopes[scope].open_wildcard
+            || self.binding_depends_on_branch(replacement, decorated.name.at)
+        {
+            return None;
+        }
+        // Only declarations without initializer effects can occur between
+        // binding this class and evaluating the decorated function.
+        let decorator_line = decorated.decorators[0].at.line;
+        let unmodified = self.scopes[scope]
+            .body
+            .iter()
+            .take_while(|statement| statement.at.line < decorator_line)
+            .filter(|statement| statement.at.line > class.name.at.line)
+            .all(|statement| match &statement.kind {
+                StatementKind::Define(definition) => {
+                    definition.kind == DefinitionKind::Function
+                        && definition.defaults.is_empty()
+                        && definition.annotations.is_empty()
+                        && definition.decorators.is_empty()
+                }
+                StatementKind::Evaluate(expression) => {
+                    matches!(expression.kind, ExpressionKind::Text(_))
+                }
+                _ => false,
+            });
+        unmodified.then_some(Value::Callable(Invocation::ordinary(replacement)))
     }
 
     fn bounded_replacement_function(

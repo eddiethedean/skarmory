@@ -3020,6 +3020,61 @@ fn flask_login_empty_provider_lookalike_has_no_registration_method() {
 }
 
 #[test]
+fn flask_factory_decorator_keeps_its_closed_named_class_replacement() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = r#"from flask import Flask
+class Replacement:
+    @staticmethod
+    def shell_context_processor(callback): return callback
+def replace(factory): return Replacement
+"#;
+    let factory = "@replace\ndef create_app(): return Flask(__name__)\n";
+    fs::write(&provider, format!("{setup}{factory}")).unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import create_app\napp = create_app()\n@app.shell_context_processor\ndef context(): return {}\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.replace", "decorator"),
+        ["certain"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "providers.Replacement", "direct_call"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.context", "flask_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.context"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &provider,
+        format!(
+            "{setup}def overwrite():\n    global Replacement\n    Replacement = Flask\noverwrite()\n{factory}"
+        ),
+    )
+    .unwrap();
+    let mut report = scan_with_exit(root, None, Some(cache.path()), 2);
+    report.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, scan_with_exit(root, None, None, 2));
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
 fn flask_factory_consumer_stops_at_proven_initialization_failures() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
