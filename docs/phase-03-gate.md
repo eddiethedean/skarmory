@@ -105,6 +105,14 @@ The venv case checks private dependency search before its public liveness
 assertions. The vendored-package case checks only the private search list
 and still needs scope review for a corresponding native assertion.
 
+The external-override suite contributes ten pending cases. The pinned
+reference passes all ten. The installed SDK reports incomplete coverage
+for its eight public scan cases, including stdlib ancestry, builtin
+`dict` allocation, and Traitlets, DRF, and Guardian subclasses. Two
+remaining assertion groups exercise only Skylos's private dependency
+search and class index. The inventory records those groups for separate
+native scope review.
+
 ### Runtime-derived test expectations
 
 The release workflow tests nine discrepancies directly through the installed

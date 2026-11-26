@@ -17990,6 +17990,138 @@ port = ""
 omitted_assertions = []
 blocker = "The original directly tests Skylos's private default_search_dirs result without a public scan. Scope review is pending for an equivalent native dependency-discovery assertion."
 
+# External overrides and bounded framework protocol coverage.
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_stdlib_overrides_through_project_bases"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:83", "test/test_dead_code_framework_overrides.py:84", "test/test_dead_code_framework_overrides.py:85", "test/test_dead_code_framework_overrides.py:86", "test/test_dead_code_framework_overrides.py:87", "test/test_dead_code_framework_overrides.py:88"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:43."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The original requires stdlib visitor, asyncio protocol, and ctypes layout evidence through local ancestry. The native scan reports unresolved subclass hooks for those bases before the dormant main can run."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_third_party_overrides_read_from_site_packages"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:139", "test/test_dead_code_framework_overrides.py:140", "test/test_dead_code_framework_overrides.py:141", "test/test_dead_code_framework_overrides.py:142", "test/test_dead_code_framework_overrides.py:143", "test/test_dead_code_framework_overrides.py:145"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:131."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The original uses a temporary site-packages source added to sys.path outside the project. The native scan reports unresolved subclass and constructor dispatch. The port needs an explicit external source selection and must preserve the assertion that the package is never imported."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_unresolvable_external_base_keeps_reporting"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:153", "test/test_dead_code_framework_overrides.py:154"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:148."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The base source is absent. The native scan reports unresolved subclass and constructor dispatch and cannot prove the original unused override assertions."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_site_packages_inside_the_scan_root_is_not_external"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:163", "test/test_dead_code_framework_overrides.py:165"]
+prerequisites = ["test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:157."
+variants = ["linux-x86_64-cp311-python-engine"]
+port = ""
+omitted_assertions = []
+blocker = "The original checks the private Skylos dependency search and class index without running a public scan. Scope review is pending for the equivalent native source-selection assertions."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_index_follows_reexports_aliases_and_stops_on_cycles"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:184", "test/test_dead_code_framework_overrides.py:187", "test/test_dead_code_framework_overrides.py:190", "test/test_dead_code_framework_overrides.py:193", "test/test_dead_code_framework_overrides.py:194", "test/test_dead_code_framework_overrides.py:195", "test/test_dead_code_framework_overrides.py:196"]
+prerequisites = ["test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:168."
+variants = ["linux-x86_64-cp311-python-engine"]
+port = ""
+omitted_assertions = []
+blocker = "The original directly constructs Skylos's private external class index and tests re-exports, cycles, and dependency non-execution. A native engine port needs an external class index and must verify the same controls."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_traitlets_handlers_and_dynamic_defaults"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:251", "test/test_dead_code_framework_overrides.py:252", "test/test_dead_code_framework_overrides.py:253", "test/test_dead_code_framework_overrides.py:254"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:199."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The native scan reports incomplete coverage for Traitlets ancestry, descriptors, and decorator dispatch. The original requires both genuine hook retention and reporting the local decorator lookalike."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_drf_field_hooks_through_project_serializers"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:296", "test/test_dead_code_framework_overrides.py:297", "test/test_dead_code_framework_overrides.py:298", "test/test_dead_code_framework_overrides.py:299", "test/test_dead_code_framework_overrides.py:300", "test/test_dead_code_framework_overrides.py:301", "test/test_dead_code_framework_overrides.py:302"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:257."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The native scan does not complete the original DRF field and token-view subclass dispatch. Qualification needs the original serializer, field, view, and local lookalike assertions together."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_django_admin_options_on_third_party_model_admins"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:327", "test/test_dead_code_framework_overrides.py:328"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:305."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The native scan reports unresolved subclass hooks through the third-party Guardian base. The original requires recognition of specific admin options and reporting their adjacent dead member."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_builtin_base_members_count_as_overrides[get]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:349", "test/test_dead_code_framework_overrides.py:350"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:332."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The native scan does not complete construction through the builtin dict base. The original requires retaining the known get override and reporting its adjacent dead method."
+
+[[cases]]
+id = "test/test_dead_code_framework_overrides.py::test_builtin_base_members_count_as_overrides[keys]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_dead_code_framework_overrides.py"
+assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_code_framework_overrides.py:349", "test/test_dead_code_framework_overrides.py:350"]
+prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
+provenance = "Pinned test/test_dead_code_framework_overrides.py:332."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The native scan does not complete construction through the builtin dict base. The original requires retaining the known keys override and reporting its adjacent dead method."
+
 [[fixtures]]
 path = "corpus/fixtures/django_appconfig/demo/__init__.py"
 sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
