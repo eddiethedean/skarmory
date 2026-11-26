@@ -398,6 +398,9 @@ exiting. The built-in command listing and version paths need no local command.
 A literal `call_command` after a resolved `django.setup()` in the same scope
 uses programmatic dispatch through parser setup and `execute`.
 The selected command follows its effective lifecycle after module initialization.
+A module-level call to a resolved source installer can update the selected
+command's handle or copy compatible inert code to a captured handle. The
+supported installer has one parameter and one literal `setattr` operation.
 Ordered writes through the command module's own globals dictionary or module
 object can replace the export before Django reads it. Later ordinary assignments
 can replace it again.

@@ -6835,6 +6835,11 @@ impl<'a> Graph<'a> {
                 self.check_django_form_initializer(id, call);
             }
         }
+        // A resolved installer supplies its whole effect above. Passing the
+        // receiver to this call does not invoke it as a callback.
+        if self.modeled_django_command_installer(scope, at) {
+            return;
+        }
         // Callback parameter substitution is bounded by retaining the finite
         // supplied values even if the callee dispatches dynamically.
         for argument in positional
