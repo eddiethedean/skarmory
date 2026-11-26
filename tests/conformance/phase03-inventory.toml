@@ -9730,11 +9730,10 @@ languages = ["python"]
 source = "test/test_flask_callback_providers.py"
 assertions = ["test/test_flask_callback_providers.py:206"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_flask_callback_providers.py at the pinned revision"
+provenance = "The derived factory fixture installs a local class through a closed decorator. Flask 3.1.3 and CPython 3.11 execute the resulting local shell-decorator lookalike without Flask registration."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The blocked provider import prevents callback registration. The scanner must expose the failed import while preserving the lexical callback without a framework root.", evidence = "Skylos 5.7.0 at 87978e69adf91b3811e97b00c40aa39d7937cd94, unchanged test/test_flask_callback_providers.py fixture, CPython 3.11.15, Flask 3.1.3, Flask-Login 0.6.3. Import app with the fixture root on sys.path. CPython raised NameError for unbound 'decorator' at providers.py:2 before app.py could finish its line 1 import and register app.shell_context.", assertions = ["coverage:incomplete", "issue:unresolved_import:app.py:1", "definition:app.shell_context", "no-evidence:flask_registration:*:app.shell_context"] }
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks[from flask import Flask\\nasync def create_app():\\n    app = Flask(__name__)\\n    return app\\n]"
