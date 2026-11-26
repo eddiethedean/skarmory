@@ -355,7 +355,7 @@ struct Scope<'a> {
     optional_flask_routes: Vec<(Object, SymbolId, &'static str)>,
     django_settings: DjangoSettings,
     celery_logging_receivers: Vec<(SymbolId, SymbolId)>,
-    celery_logging_setup: Option<Location>,
+    started_celery_logging: bool,
     starts_django: Vec<frameworks::DjangoStartup>,
     django_formats: Vec<frameworks::DjangoFormatLookup>,
     django_signals: Vec<frameworks::DjangoSignalRegistration>,
@@ -1017,7 +1017,7 @@ impl<'a> Graph<'a> {
             optional_flask_routes: Vec::new(),
             django_settings: self.initial_django_settings.clone(),
             celery_logging_receivers: Vec::new(),
-            celery_logging_setup: None,
+            started_celery_logging: false,
             starts_django: Vec::new(),
             django_formats: Vec::new(),
             django_signals: Vec::new(),
@@ -8235,6 +8235,19 @@ impl<'a> Graph<'a> {
                 self.edge(scope, target, "click_command_declaration", "possible");
             }
             Value::Provider(name)
+                if self.phase03 && !reads_rebound_global && name == celery::LOGGING_CONNECT =>
+            {
+                if self.register_celery_logging(scope, target, decorator) {
+                    return true;
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_registration",
+                    "Celery setup_logging decorator requires a plain synchronous keyword receiver",
+                );
+            }
+            Value::Provider(name)
                 if self.phase03 && !reads_rebound_global && django_checks::is_register(&name) =>
             {
                 if self.record_django_system_check_decorator(scope, target, decorator, before) {
@@ -11164,6 +11177,7 @@ impl<'a> Graph<'a> {
                     | "django_field_parameter"
                     | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
+                    | celery::LOGGING_PARAMETER
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
                     | drf::FIELD_DECLARATION
@@ -11889,6 +11903,7 @@ fn is_deferred_possible_edge(kind: &str) -> bool {
         || matches!(
             kind,
             django_checks::CALLBACK
+                | celery::LOGGING_CALLBACK
                 | django_forms::VALIDATION_HOOK
                 | "logging_factory"
                 | celery_routes::ROUTER
