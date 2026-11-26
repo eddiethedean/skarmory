@@ -11892,3 +11892,84 @@ fn click_command_declarations_do_not_execute_a_short_circuited_callback() {
         "{invocation}"
     );
 }
+
+#[test]
+fn source_owned_installers_replace_the_selected_django_command_handle() {
+    let workspace = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    fs::create_dir_all(root.join("shop/management/commands")).unwrap();
+    for path in [
+        "shop/__init__.py",
+        "shop/management/__init__.py",
+        "shop/management/commands/__init__.py",
+    ] {
+        fs::write(root.join(path), "").unwrap();
+    }
+    fs::write(
+        root.join("settings.py"),
+        "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("manage.py"),
+        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+    )
+    .unwrap();
+    let command = root.join("shop/management/commands/audit.py");
+    let source = "from django.core.management.base import BaseCommand\nfrom external_plugin import install\n\ndef prepare(): return 'ready'\n\nclass Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n";
+    let handle = "shop.management.commands.audit.Command.handle";
+    for (statement, replacement, kind) in [
+        (
+            "install(Command)\n",
+            "setattr(target, 'handle', replacement)",
+            "django_command",
+        ),
+        (
+            "selected = Command.handle\ninstall(selected)\n",
+            "setattr(target, '__code__', replacement.__code__)",
+            "code_reference",
+        ),
+    ] {
+        fs::write(
+            root.join("external_plugin.py"),
+            format!(
+                "def replacement(self, *args, **options): return None\ndef install(target): {replacement}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(&command, source).unwrap();
+        assert_eq!(
+            evidence_certainties(&scan(root), handle, "django_command"),
+            ["certain"]
+        );
+        fs::write(&command, format!("{source}{statement}")).unwrap();
+        let report = scan(root);
+        assert!(evidence_certainties(&report, handle, "django_command").is_empty());
+        assert!(
+            !evidence_certainties(&report, "external_plugin.replacement", kind).is_empty(),
+            "{report}",
+        );
+        if kind == "code_reference" {
+            assert!(
+                evidence_certainties(&report, "external_plugin.replacement", "direct_call")
+                    .is_empty()
+            );
+        }
+        for _ in 0..2 {
+            let mut warm = scan_with_settings(root, None, Some(cache.path()));
+            warm.as_object_mut().unwrap().remove("cache");
+            assert_eq!(report, warm);
+        }
+    }
+    fs::remove_file(root.join("external_plugin.py")).unwrap();
+    let frozen = scan_with_exit(root, None, None, 2);
+    assert!(
+        frozen["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call")
+    );
+    assert!(evidence_certainties(&frozen, handle, "django_command").is_empty());
+}

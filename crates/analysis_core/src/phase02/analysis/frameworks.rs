@@ -1874,7 +1874,7 @@ impl Graph<'_> {
         result
     }
 
-    fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
+    pub(super) fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
         let symbol = &self.symbols[target];
         let Binding::Definition(definition, _) = symbol.binding else {
             return false;
