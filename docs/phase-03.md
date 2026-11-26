@@ -596,8 +596,12 @@ and declared fields through a resolved SQLAlchemy or SQLModel base, including
 SQLModel's literal `table` class option. It recognizes Pydantic model hooks,
 unittest tests and lifecycle methods through effective class bindings, and pytest
 hooks and fixtures through selected conftest modules or literal `pytest_plugins`
-declarations. In a conventional unselected plugin module, a bounded hook
-signature and a resolved pytest import can contribute possible-use evidence.
+declarations. For an imported unittest case with runnable tests, unittest module
+hooks follow the case's defining module. An explicitly overridden class
+`__module__` leaves unittest module hook coverage incomplete. pytest can run
+xUnit module hooks in the test file that collects an imported case.
+In a conventional unselected plugin module, a bounded hook signature and a
+resolved pytest import can contribute possible-use evidence.
 pytest autouse fixtures also apply to unittest cases collected by pytest. A reachable eager Pydantic
 model declaration can execute its core-schema hook during class creation.
 A resolved model dump can invoke the selected Pydantic serializers and computed

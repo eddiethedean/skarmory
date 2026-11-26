@@ -819,6 +819,7 @@ impl Graph<'_> {
     fn collect_test_frameworks(&mut self) {
         let mut plugins = BTreeSet::new();
         let mut declarations = Vec::new();
+        let mut unittest_fixture_modules = BTreeMap::new();
         for file in 0..self.files.len() {
             let path = &self.files[file].path;
             if let Some(prefix) = pytest_conftest_prefix(path)
@@ -839,7 +840,10 @@ impl Graph<'_> {
             {
                 continue;
             }
-            self.collect_unittest_module(file);
+            self.collect_unittest_module(file, &mut unittest_fixture_modules);
+        }
+        for (file, certain) in unittest_fixture_modules {
+            self.collect_module_test_fixtures(file, "unittest_discovery", certain);
         }
         while let Some(file) = declarations.pop() {
             let Some(binding) = self.local(file, "pytest_plugins", END) else {
@@ -884,6 +888,251 @@ impl Graph<'_> {
                 }
             }
         }
+    }
+
+    fn collect_unittest_module(
+        &mut self,
+        file: ScopeId,
+        unittest_fixture_modules: &mut BTreeMap<ScopeId, bool>,
+    ) {
+        let mut pytest_module_fixtures = None;
+        for (class, certain) in self.pytest_registrations(&self.scopes[file].names, "") {
+            let Some(&role) = self.unittest_classes.get(&class.target) else {
+                continue;
+            };
+            self.read.extend(class.bindings);
+            self.framework_root(class.target, "unittest_discovery", certain);
+            let (lineage, _) = self.class_lineage(class.target);
+            let mut names = BTreeMap::new();
+            let mut overrides = BTreeMap::new();
+            for scope in lineage {
+                let owner = self.scopes[scope].owner.expect("class scope has an owner");
+                let writes = self.class_discovery_writes(owner, file);
+                for (name, write) in &writes {
+                    if !names.contains_key(name.as_str())
+                        && !matches!(write, mutations::MemberWriteValue::Deleted)
+                    {
+                        overrides.entry(name.clone()).or_insert(write.clone());
+                    }
+                }
+                for (&name, bindings) in &self.scopes[scope].names {
+                    if writes.contains_key(name) || overrides.contains_key(name) {
+                        continue;
+                    }
+                    // A bare annotation changes __annotations__, not the
+                    // actual class attribute consulted by discovery.
+                    let bindings: Vec<_> = bindings
+                        .iter()
+                        .copied()
+                        .filter(|&id| {
+                            !matches!(self.symbols[id].binding, Binding::Variable(None, _))
+                        })
+                        .collect();
+                    if !bindings.is_empty() {
+                        names.entry(name).or_insert(bindings);
+                    }
+                }
+            }
+            let mut tests = self.pytest_registrations(&names, "test");
+            tests.retain(|(method, _)| self.unittest_callable(method.target));
+            let mut opaque_test = false;
+            for (name, write) in &overrides {
+                if name.starts_with("test") {
+                    tests.extend(self.unittest_write(write));
+                    opaque_test |= matches!(
+                        write,
+                        mutations::MemberWriteValue::Replacement(Value::ConstantFunction)
+                    );
+                }
+                if matches!(write, mutations::MemberWriteValue::Ambiguous) {
+                    let symbol = &self.symbols[class.target];
+                    self.scope_issue(
+                        file,
+                        symbol.name.at,
+                        "unresolved_unittest_member",
+                        "unittest member changed by a write with unresolved ordering or value",
+                    );
+                }
+            }
+            if tests.is_empty() && !opaque_test {
+                tests = self.unittest_member(&names, &overrides, "runTest");
+                opaque_test = matches!(
+                    overrides.get("runTest"),
+                    Some(mutations::MemberWriteValue::Replacement(
+                        Value::ConstantFunction
+                    ))
+                );
+            }
+            if tests.is_empty() && !opaque_test {
+                continue;
+            }
+            let certain_case =
+                certain && (opaque_test || tests.iter().any(|(_, selected)| *selected));
+            let symbol = &self.symbols[class.target];
+            let defining_file = self.scopes[symbol.scope].file;
+            let Binding::Definition(_, class_scope) = symbol.binding else {
+                unreachable!("discovery requires a class definition");
+            };
+            let module_overridden = self.scopes[class_scope]
+                .names
+                .get("__module__")
+                .is_some_and(|bindings| {
+                    bindings
+                        .iter()
+                        .any(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+                })
+                || self
+                    .class_discovery_write(class.target, "__module__", file)
+                    .is_some();
+            if module_overridden {
+                self.scope_issue(
+                    defining_file,
+                    symbol.name.at,
+                    "unresolved_unittest_fixture_module",
+                    "unittest module fixtures depend on an overridden class __module__",
+                );
+            } else {
+                // unittest uses the concrete test class's __module__, even
+                // when the loader finds the class in another module.
+                *unittest_fixture_modules.entry(defining_file).or_default() |= certain_case;
+            }
+            if self.is_pytest_file(file) {
+                if defining_file != file || module_overridden {
+                    // pytest's xUnit fixtures belong to its collection module.
+                    pytest_module_fixtures =
+                        Some(pytest_module_fixtures.unwrap_or(false) || certain_case);
+                }
+                self.pytest_unittest_cases
+                    .entry(file)
+                    .or_default()
+                    .push((names.clone(), certain_case));
+            }
+            let asynchronous = role == FrameworkClassRole::UnittestAsync;
+            let django = matches!(
+                role,
+                FrameworkClassRole::DjangoTestCase | FrameworkClassRole::DjangoDatabaseTestCase
+            );
+            for (method, selected) in tests {
+                if asynchronous || django || !self.is_coroutine(method.target) {
+                    self.unittest_method(class.target, method, certain && selected);
+                }
+            }
+            let mut lifecycle = vec!["setUp", "tearDown", "setUpClass", "tearDownClass"];
+            if asynchronous {
+                lifecycle.extend(["asyncSetUp", "asyncTearDown"]);
+            }
+            if django {
+                lifecycle.extend(["_pre_setup", "_post_teardown"]);
+            }
+            if role == FrameworkClassRole::DjangoDatabaseTestCase {
+                lifecycle.push("setUpTestData");
+            }
+            for name in lifecycle {
+                for (method, selected) in self.unittest_member(&names, &overrides, name) {
+                    if self.is_coroutine(method.target) == name.starts_with("async") {
+                        self.unittest_method(class.target, method, certain_case && selected);
+                    }
+                }
+            }
+        }
+        if let Some(certain) = pytest_module_fixtures {
+            self.collect_module_test_fixtures(file, "pytest_xunit_fixture", certain);
+        }
+    }
+
+    fn collect_module_test_fixtures(&mut self, file: ScopeId, kind: &'static str, certain: bool) {
+        for name in ["setUpModule", "tearDownModule"] {
+            let Some(bindings) = self.scopes[file].names.get(name) else {
+                continue;
+            };
+            let bindings: Vec<_> = bindings
+                .iter()
+                .copied()
+                .filter(|&id| !matches!(self.symbols[id].binding, Binding::Variable(None, _)))
+                .collect();
+            for (method, selected) in self.callable_candidates(&bindings) {
+                let target = method.target;
+                if !self.unittest_callable(target) || self.is_coroutine(target) {
+                    continue;
+                }
+                self.read.extend(method.bindings);
+                self.framework_root(
+                    target,
+                    if self.is_generator(target) {
+                        "generator_creation"
+                    } else {
+                        kind
+                    },
+                    certain && selected,
+                );
+            }
+        }
+    }
+
+    fn unittest_member(
+        &mut self,
+        names: &PytestNames<'_>,
+        overrides: &BTreeMap<String, mutations::MemberWriteValue>,
+        name: &str,
+    ) -> Vec<(CallableBinding, bool)> {
+        if let Some(write) = overrides.get(name) {
+            return self.unittest_write(write).into_iter().collect();
+        }
+        let Some(bindings) = names.get(name) else {
+            return Vec::new();
+        };
+        self.callable_candidates(bindings)
+            .into_iter()
+            .filter(|(method, _)| self.unittest_callable(method.target))
+            .collect()
+    }
+
+    fn unittest_write(
+        &mut self,
+        write: &mutations::MemberWriteValue,
+    ) -> Option<(CallableBinding, bool)> {
+        let mutations::MemberWriteValue::Replacement(Value::Callable(invocation)) = write else {
+            return None;
+        };
+        self.unittest_callable(invocation.target).then_some((
+            CallableBinding {
+                target: invocation.target,
+                bindings: Vec::new(),
+            },
+            true,
+        ))
+    }
+
+    fn unittest_callable(&mut self, target: SymbolId) -> bool {
+        if !self.is_pytest_function(target) {
+            return false;
+        }
+        let symbol = &self.symbols[target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            unreachable!()
+        };
+        let scope = symbol.scope;
+        definition.decorators.iter().all(|decorator| {
+            let value = self.probe_identity(scope, decorator, definition.name.at);
+            matches!(
+                &value,
+                Value::Provider(provider)
+                    if matches!(provider.as_str(), "builtins.classmethod" | "builtins.staticmethod")
+            ) || self.local_identity_decorator(value, decorator)
+        })
+    }
+
+    fn unittest_method(&mut self, class: SymbolId, method: CallableBinding, certain: bool) {
+        self.read.extend(method.bindings);
+        if self.is_generator(method.target) {
+            self.framework_root(method.target, "generator_creation", certain);
+            return;
+        }
+        self.method_receivers
+            .entry(method.target)
+            .or_default()
+            .insert(class);
+        self.framework_root(method.target, "unittest_discovery", certain);
     }
 
     fn collect_possible_pytest_hooks(&mut self, file: ScopeId) {
