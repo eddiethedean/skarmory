@@ -41,6 +41,7 @@ pub(super) struct Mutations {
     modules: BTreeMap<String, Vec<Write>>,
     command_namespaces: BTreeSet<ScopeId>,
     module_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
+    flask_global_setters: BTreeSet<ScopeId>,
     command_code: BTreeMap<SymbolId, Vec<Write>>,
     django_command_installers: BTreeSet<(ScopeId, [usize; 2])>,
     flask_login_code: BTreeMap<String, Vec<Write>>,
@@ -238,8 +239,13 @@ impl<'a> Graph<'a> {
                 }
                 StatementKind::Evaluate(expression)
                     if track_framework_escapes
-                        && self.index_flask_login_mock_start(file, at, expression, conditional) => {
-                }
+                        && (self.index_flask_login_mock_start(
+                            file,
+                            at,
+                            expression,
+                            conditional,
+                        ) || !conditional
+                            && self.index_flask_global_setter(file, at, expression)) => {}
                 StatementKind::Evaluate(
                     expression @ Expression {
                         kind:
@@ -626,6 +632,94 @@ impl<'a> Graph<'a> {
         }
         self.index_module_global_value(file, at, name, Value::Instance(class), conditional);
         true
+    }
+
+    fn index_flask_global_setter(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &expression.kind
+        else {
+            return false;
+        };
+        if !arguments.is_empty()
+            || !keywords.is_empty()
+            || !matches!(function.kind, ExpressionKind::Name(_))
+        {
+            return false;
+        }
+        let Value::Callable(invocation) = self.probe_identity(file, function, at) else {
+            return false;
+        };
+        let symbol = &self.symbols[invocation.target];
+        let Binding::Definition(setter, scope) = symbol.binding else {
+            return false;
+        };
+        let [
+            Statement {
+                kind: StatementKind::SetGlobalName { name, value },
+                ..
+            },
+        ] = setter.body.as_slice()
+        else {
+            return false;
+        };
+        let ExpressionKind::Name(replacement) = &value.kind else {
+            return false;
+        };
+        if invocation.verified
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || symbol.scope != file
+            || setter.kind != DefinitionKind::Function
+            || !setter.decorators.is_empty()
+            || !setter.parameters.is_empty()
+            || !setter.defaults.is_empty()
+            || !setter.annotations.is_empty()
+            || !self.scopes[file].names.get(replacement.as_str()).is_some_and(|ids| ids.len() == 1)
+            || !self.scopes[file].body.windows(2).any(|pair| {
+                matches!(&pair[0].kind, StatementKind::Define(definition)
+                    if std::ptr::eq(definition, setter))
+                    && position(pair[1].at) == position(at)
+            })
+            || self.scopes.iter().enumerate().any(|(other, row)| {
+                other != scope && row.file == file
+                    && matches!(row.body, [Statement { kind: StatementKind::SetGlobalName { name: other, .. }, .. }]
+                        if other.text == *replacement || other.text == name.text)
+            })
+        {
+            return false;
+        }
+
+        // The immediately invoked helper can only assign the same bounded
+        // instance when called again. Earlier lexical reads see the old slot.
+        let current = Expression {
+            kind: ExpressionKind::Name(name.text.clone()),
+            at,
+        };
+        if !matches!(self.probe_identity(file, &current, at),
+            Value::Object(site, ObjectKind::FlaskLoginManager) if site.0 == file)
+        {
+            return false;
+        }
+        let Value::Instance(class) = self.probe_identity(file, value, at) else {
+            return false;
+        };
+        if !self.plain_default_provider(class, (file, at), &BTreeSet::new()) {
+            return false;
+        }
+        self.index_module_global_value(file, at, &name.text, Value::Instance(class), false);
+        self.mutations.flask_global_setters.insert(scope);
+        true
+    }
+
+    pub(super) fn modeled_flask_global_setter(&self, scope: ScopeId) -> bool {
+        self.mutations.flask_global_setters.contains(&scope)
     }
 
     pub(super) fn walk_flask_globals_update(
