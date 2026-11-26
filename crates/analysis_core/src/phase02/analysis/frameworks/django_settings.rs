@@ -93,7 +93,144 @@ struct SettingsWrites {
     modules: BTreeSet<ScopeId>,
 }
 
+pub(in crate::phase02::analysis) struct DjangoFormatLookup {
+    at: Location,
+    settings: String,
+    language: String,
+}
+
+fn literal_format_module(body: &[Statement]) -> bool {
+    body.iter().all(|statement| match &statement.kind {
+        StatementKind::Evaluate(expression) => matches!(expression.kind, ExpressionKind::Text(_)),
+        StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } => names.iter().all(|name| !name.text.starts_with("__")) && inert_format_literal(value),
+        _ => false,
+    })
+}
+
+fn inert_format_literal(expression: &Expression) -> bool {
+    match &expression.kind {
+        ExpressionKind::Text(_)
+        | ExpressionKind::Bool(_)
+        | ExpressionKind::None
+        | ExpressionKind::Scalar(_) => true,
+        ExpressionKind::Sequence { items, .. } => items.iter().all(inert_format_literal),
+        ExpressionKind::Dictionary(items) => {
+            let (pairs, rest) = items.as_chunks::<2>();
+            rest.is_empty()
+                && pairs.iter().all(|[key, value]| {
+                    matches!(key.kind, ExpressionKind::Text(_)) && inert_format_literal(value)
+                })
+        }
+        _ => false,
+    }
+}
+
 impl Graph<'_> {
+    pub(in crate::phase02::analysis) fn record_django_format_lookup(
+        &mut self,
+        call: CallArguments<'_>,
+    ) {
+        let selected = self.scopes[call.scope]
+            .starts_django
+            .iter()
+            .find(|startup| startup.definite_setup)
+            .and_then(|startup| startup.settings.clone());
+        let bound = registration_arguments(call.positional, call.keywords, ["format_type", "lang"]);
+        if let Some(settings) = selected
+            && let Some([Some(key), Some(lang)]) = bound
+            && matches!(self.identity(call.scope, key, call.before, 0), Value::Text(key) if key == "DATE_FORMAT")
+            && let Value::Text(language) = self.identity(call.scope, lang, call.before, 0)
+            && matches!(language.as_str(), "en" | "fr")
+        {
+            self.scopes[call.scope]
+                .django_formats
+                .push(DjangoFormatLookup {
+                    at: call.at,
+                    settings,
+                    language,
+                });
+        } else {
+            self.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_call",
+                "Django format lookup requires an earlier resolved setup and a supported literal format and language",
+            );
+        }
+    }
+
+    pub(super) fn collect_django_format_lookups(&mut self) {
+        for scope in 0..self.scopes.len() {
+            for lookup in std::mem::take(&mut self.scopes[scope].django_formats) {
+                if let Some(binding) = self.django_date_format_binding(scope, &lookup) {
+                    self.edge(scope, binding, "django_format_setting", "possible");
+                } else {
+                    self.scope_issue(
+                        scope,
+                        lookup.at,
+                        "unresolved_call",
+                        "Django DATE_FORMAT lookup could not resolve the configured source locale",
+                    );
+                }
+            }
+        }
+    }
+
+    fn django_date_format_binding(
+        &mut self,
+        scope: ScopeId,
+        lookup: &DjangoFormatLookup,
+    ) -> Option<SymbolId> {
+        let &settings = self.modules.get(lookup.settings.as_str())?;
+        if !literal_format_module(self.scopes[settings].body)
+            || self.local(settings, "USE_I18N", END).is_some()
+        {
+            return None;
+        }
+        let paths = self.local(settings, "FORMAT_MODULE_PATH", END)?;
+        // Follow a single explicit locale path with stock translation enabled.
+        // Ordered paths, custom translation and dynamic format modules need
+        // their own initialization and fallback proofs.
+        let Value::Text(base) = self.binding(paths, END, 0) else {
+            return None;
+        };
+        let package = format!("{base}.{}", lookup.language);
+        let module = format!("{package}.formats");
+        let &file = self.modules.get(module.as_str())?;
+        if !self.discovery?.package_source_unambiguous(
+            &package,
+            "formats",
+            Some(&self.files[file].path),
+        ) {
+            return None;
+        }
+        let mut parent = package.as_str();
+        loop {
+            let &initializer = self.modules.get(parent)?;
+            if !self.files[initializer].is_package || !self.scopes[initializer].body.is_empty() {
+                return None;
+            }
+            let Some((outer, _)) = parent.rsplit_once('.') else {
+                break;
+            };
+            parent = outer;
+        }
+        let binding = self.local(file, "DATE_FORMAT", END)?;
+        let writes = self.django_settings_initializer_writes(scope)?;
+        if !literal_format_module(self.scopes[file].body)
+            || !matches!(self.binding(binding, END, 0), Value::Text(_))
+            || writes.modules.contains(&settings)
+            || writes.modules.contains(&file)
+        {
+            return None;
+        }
+        Some(binding)
+    }
+
     pub(in crate::phase02::analysis) fn external_django_setting_declarations(
         &mut self,
         reach: &Reachability,

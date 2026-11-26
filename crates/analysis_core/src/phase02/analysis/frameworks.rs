@@ -24,6 +24,7 @@ mod django_commands;
 mod django_settings;
 
 pub(super) use django_commands::DjangoCommandDispatch;
+pub(super) use django_settings::DjangoFormatLookup;
 
 pub(super) struct DjangoStartup {
     pub(super) at: Location,
@@ -315,6 +316,7 @@ impl Graph<'_> {
 
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
+        self.collect_django_format_lookups();
         self.collect_django_migration_declarations();
         self.retain_django_configured_class_declarations();
         self.collect_flask_cli_factory();

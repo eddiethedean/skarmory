@@ -354,6 +354,7 @@ struct Scope<'a> {
     optional_flask_routes: Vec<(Object, SymbolId, &'static str)>,
     django_settings: DjangoSettings,
     starts_django: Vec<frameworks::DjangoStartup>,
+    django_formats: Vec<frameworks::DjangoFormatLookup>,
     django_signals: Vec<frameworks::DjangoSignalRegistration>,
 }
 
@@ -1010,6 +1011,7 @@ impl<'a> Graph<'a> {
             optional_flask_routes: Vec::new(),
             django_settings: self.initial_django_settings.clone(),
             starts_django: Vec::new(),
+            django_formats: Vec::new(),
             django_signals: Vec::new(),
         });
         index
@@ -6157,6 +6159,11 @@ impl<'a> Graph<'a> {
                     Value::DjangoViewFactory(_) if arguments.is_empty() && keywords.is_empty() => {}
                     Value::Provider(name) if self.phase03 && name == "django.urls.include" => {
                         self.record_failed_django_include(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
+                    Value::Provider(name) if self.phase03 && name == "django.utils.formats.get_format" => {
+                        self.record_django_format_lookup(CallArguments {
                             scope, before, at: expr.at, positional: arguments, keywords,
                         });
                     }

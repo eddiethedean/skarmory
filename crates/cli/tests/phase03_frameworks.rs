@@ -5514,6 +5514,77 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
 }
 
 #[test]
+fn django_date_format_uses_only_the_selected_source_locale() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let imports = "import os\nfrom django.core.wsgi import get_wsgi_application\nfrom django.utils.formats import get_format\n";
+    let setup =
+        "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n";
+    let lookup = "print(get_format('DATE_FORMAT', lang='fr'))\n";
+    for (path, source) in [
+        ("locale_settings/__init__.py", ""),
+        ("locale_settings/fr/__init__.py", ""),
+        (
+            "locale_settings/fr/formats.py",
+            "DATE_FORMAT = 'j F Y'\nTIME_FORMAT = 'H:i'\n",
+        ),
+        ("locale_settings/en/__init__.py", ""),
+        ("locale_settings/en/formats.py", "DATE_FORMAT = 'N j, Y'\n"),
+        (
+            "settings.py",
+            "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\nFORMAT_MODULE_PATH = 'locale_settings'\n",
+        ),
+    ] {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, source).unwrap();
+    }
+    let wsgi = root.join("wsgi.py");
+    fs::write(&wsgi, format!("{imports}{setup}{lookup}")).unwrap();
+    let report = scan(root);
+    let selected = "locale_settings.fr.formats.DATE_FORMAT";
+    assert_eq!(
+        evidence_certainties(&report, selected, "django_format_setting"),
+        ["possible"]
+    );
+    let unused = findings(&report, "unused_variables");
+    assert!(!unused.contains(&selected));
+    assert!(unused.contains(&"locale_settings.fr.formats.TIME_FORMAT"));
+    assert!(unused.contains(&"locale_settings.en.formats.DATE_FORMAT"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&wsgi, format!("{imports}{lookup}{setup}")).unwrap();
+    let early = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&early, selected, "django_format_setting").is_empty());
+
+    fs::write(&wsgi, format!("{imports}{setup}{lookup}")).unwrap();
+    fs::write(
+        root.join("locale_settings/fr/__init__.py"),
+        "raise ImportError\n",
+    )
+    .unwrap();
+    let failed_parent = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&failed_parent, selected, "django_format_setting").is_empty());
+
+    fs::write(root.join("locale_settings/fr/__init__.py"), "").unwrap();
+    let source = root.join("locale_settings/fr/formats.py");
+    fs::write(&source, "DATE_FORMAT = 'j F Y'\nraise ImportError\n").unwrap();
+    let failed_module = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&failed_module, selected, "django_format_setting").is_empty());
+
+    fs::write(&source, "DATE_FORMAT = 'j F Y'\n").unwrap();
+    let edit = "import settings\nsettings.FORMAT_MODULE_PATH = 'alternate'\n";
+    fs::write(&wsgi, format!("{imports}{edit}{setup}{lookup}")).unwrap();
+    let edited = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&edited, selected, "django_format_setting").is_empty());
+}
+
+#[test]
 fn django_standard_contrib_apps_allow_source_startup() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
