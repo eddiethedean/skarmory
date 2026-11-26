@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "845d7aaccde3022efeb72c4e385e3f747c2962b6"
+git_revision = "851ea835128678c53cc9bc9ef386ad20e29bd5f9"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "2d774b0b700a15aa5e7ccdac27a94370f1420c821f1f365eb62d0d815642254b"
+patch_sha256 = "8d0067285e9241746c4fb9143beeac872bdd530642dd504e01c719acca9b3467"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
@@ -92,8 +92,13 @@ runtime = "Django 5.2.1 management-command dispatch with an installed local app"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_celery_entrypoints.py"
-lines = [137, 243, 314]
+lines = [137, 216, 217, 226, 243, 297, 298, 304, 314]
 runtime = "Django 5.2.1 and Celery 5.5.3 with local lookalikes and a callable task router"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_django_hook_provenance.py"
+lines = [6, 7, 46, 50, 51, 54, 157, 167, 170, 185, 195]
+runtime = "Django 5.2.1 with actual command dispatch and bound form validation"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_management_command_reachability.py"

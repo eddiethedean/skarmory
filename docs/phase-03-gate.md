@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,399 cases to Phase 0.3 and defers 41 to later language
+inventory assigns 1,417 cases to Phase 0.3 and defers 41 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -29,6 +29,13 @@ dependency lock come from the frozen revision. The gate checks fixture
 hashes and requires an ordinary pass on the original assertions from the
 derived checkout. The release retains separate controls on the frozen
 fixture bytes for review evidence.
+
+The derived checkout also supplies runnable setup for the reviewed Flask
+replacements, FastAPI nested package imports, Django commands, form
+validation, startup, logging and Celery routing. The review retains each
+pytest ID and assertion. For fixture setup in a test file, the materializer
+checks the exact edited source lines and protects test signatures,
+parametrization IDs, expected values, and assertions.
 
 For a clean checkout of the frozen revision, materialize the same reference
 locally with:
@@ -85,7 +92,15 @@ seed that yields a determinate registration decision in FastAPI 0.141.1.
 The derived baseline supplies a runtime seed for the six reassignment
 cases, preserving each reassignment chain, pytest ID, and assertion. The
 engine port checks the route declaration and possible registration
-independently. The Click SDK case remains pending.
+independently. The native Click control checks the declaration and dormant
+callback after reassignment. The original combined Click SDK case also
+enables the unported danger and secrets analyzers and remains required.
+
+Two additional FastAPI cases assert the frozen implementation's call-event
+budget and legacy fallback. The native adapter still needs a mapping for
+the original budget. The legacy test requires no public analysis error
+even when its internal proof is incomplete. Native coverage records an
+exhausted budget explicitly and preserves unresolved route evidence.
 
 The class-attribute provider suite contributes 19 original Python cases.
 The SDK ports use genuine Celery, Django admin, and django-storages providers
@@ -222,8 +237,10 @@ request that supplies the unannotated query argument enters the handler with a
 string and fails at `accept()`. The corpus also checks that the unmounted
 route and the unrelated helper are reported as unused.
 The framework audit now includes the FastAPI dependency-parameter tests and
-all 40 nested-project route variants. Thirty-two route variants have SDK
-ports. The remaining eight lack a resolved router. The audit also records
+all 40 nested-project route variants, each with an SDK port. Eight derived
+variants supply the missing package prerequisites. FastAPI 0.141.1 serves
+the root package's route and resolves the backend's own dependency. The
+unrelated namespace and sibling-service routes stay dormant. The audit also records
 eight import-scope cases where a project-local package has no such submodule.
 Those cases now replay the original declaration, activation and unused-route
 assertions through the installed SDK. The import-root alias engine port stages
