@@ -57,6 +57,75 @@ fn unused(report: &Value, bucket: &str, name: &str) -> bool {
         .any(|row| row["full_name"] == name)
 }
 
+fn test_only_whitelisted(report: &Value, file: &str, name: &str) -> bool {
+    report["whitelisted"].as_array().unwrap().iter().any(|row| {
+        row["file"] == file
+            && row["full_name"] == name
+            && row["reason"] == "test-only path"
+            && row["suppression_code"] == "non_library_path"
+            && row["folder_role"] == "test"
+            && row["dead_code_evidence"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["role"] == "supports_dead")
+    })
+}
+
+#[test]
+fn test_path_whitelists_dead_bindings_without_opening_their_bodies() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("test_service.py"),
+        r#"from unittest import TestCase
+from support import publish_record
+
+class ServiceTests(TestCase):
+    def test_service(self): pass
+
+def setUpModule(): pass
+
+def prepare_record():
+    publish_record()
+"#,
+    )
+    .unwrap();
+    fs::write(root.join("support.py"), "def publish_record(): pass\n").unwrap();
+    fs::create_dir(root.join("tests")).unwrap();
+    let support = "def prepare_record(): pass\n";
+    fs::write(root.join("tests/helpers.py"), support).unwrap();
+
+    let report = scan(root, None);
+    assert!(discovery(&report, "test_service.setUpModule"));
+    assert!(unused(
+        &report,
+        "unused_functions",
+        "support.publish_record"
+    ));
+    for (file, name) in [
+        ("test_service.py", "test_service.prepare_record"),
+        ("tests/helpers.py", "tests.helpers.prepare_record"),
+    ] {
+        assert!(!unused(&report, "unused_functions", name));
+        assert!(test_only_whitelisted(&report, file, name), "{report}");
+    }
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan(root, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::rename(root.join("tests/helpers.py"), root.join("helpers.py")).unwrap();
+    let moved = scan(root, None);
+    assert!(unused(&moved, "unused_functions", "helpers.prepare_record"));
+    let mut cached = scan(root, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, moved);
+}
+
 #[test]
 fn unittest_keeps_tests_with_proven_identity_decorators() {
     let project = tempfile::tempdir().unwrap();
@@ -86,9 +155,9 @@ class ServiceTests(TestCase):
         "unused_functions",
         "test_service.exercise_service"
     ));
-    assert!(unused(
+    assert!(test_only_whitelisted(
         &report,
-        "unused_functions",
+        "test_service.py",
         "test_service.abandoned"
     ));
 }
@@ -142,9 +211,9 @@ class Empty(TestCase):
         "unused_functions",
         "test_service.seed_rows"
     ));
-    assert!(unused(
+    assert!(test_only_whitelisted(
         &report,
-        "unused_functions",
+        "test_service.py",
         "test_service.unused_cleanup"
     ));
     let module_hooks = ["test_empty.configure", "test_empty.tearDownModule"];
@@ -156,10 +225,16 @@ class Empty(TestCase):
     assert!(discovery(&report, "test_empty.Empty"));
     for hook in module_hooks.into_iter().chain(class_hooks) {
         assert!(!discovery(&report, hook), "{report}");
-        assert!(unused(&report, "unused_functions", hook), "{report}");
+        assert!(
+            test_only_whitelisted(&report, "test_empty.py", hook),
+            "{report}"
+        );
     }
     for name in helpers {
-        assert!(unused(&report, "unused_functions", name), "{report}");
+        assert!(
+            test_only_whitelisted(&report, "test_empty.py", name),
+            "{report}"
+        );
     }
     let cache = tempfile::tempdir().unwrap();
     for _ in 0..2 {
@@ -180,6 +255,10 @@ class Empty(TestCase):
     }
     for helper in helpers {
         assert!(!unused(&report, "unused_functions", helper), "{report}");
+        assert!(
+            !test_only_whitelisted(&report, "test_empty.py", helper),
+            "{report}"
+        );
     }
     let mut cached = scan(root, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");

@@ -7291,8 +7291,9 @@ def unused():
     )
     .unwrap();
     let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").is_empty());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        findings(&report, "whitelisted"),
         ["checks_test.unused"],
         "{report}"
     );
@@ -7337,8 +7338,9 @@ def sync_setup():
     )
     .unwrap();
     let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").is_empty());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        findings(&report, "whitelisted"),
         [
             "test_setup.SyncExample.asyncSetUp",
             "test_setup.SyncExample.test_unawaited",

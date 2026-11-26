@@ -212,6 +212,10 @@ struct Diagnostic {
     category: Option<&'static str>,
     rule_id: &'static str,
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suppression_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder_role: Option<&'static str>,
     dead_code_disposition: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     dead_code_classification: Option<&'static str>,
@@ -271,6 +275,8 @@ impl Diagnostic {
             category: file.then_some("DEAD_CODE"),
             rule_id: finding.rule_id,
             reason,
+            suppression_code: None,
+            folder_role: None,
             dead_code_disposition: disposition,
             dead_code_classification: None,
             change_status: None,
@@ -745,6 +751,34 @@ fn artifact_uri(path: &str) -> String {
         }
     }
     uri
+}
+
+fn is_test_only_path(file: &str) -> bool {
+    let path = file.to_ascii_lowercase();
+    let (directories, basename) = path.rsplit_once('/').unwrap_or(("", &path));
+    let mut parent = "";
+    for directory in directories.split('/') {
+        // The reference uses the first non-library directory role.
+        match directory {
+            "test" | "tests" | "__tests__" => return true,
+            "example" if matches!(parent, "com" | "org" | "net") => {}
+            "example" | "examples" | "doc_src" | "docs_src" | "bench" | "benchmark"
+            | "benchmarks" => return false,
+            _ if ["_example", "_examples", "_benchmark", "_benchmarks"]
+                .iter()
+                .any(|suffix| directory.ends_with(suffix)) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        parent = directory;
+    }
+    basename == "conftest.py"
+        || basename.starts_with("test_")
+        || basename.ends_with("_test.py")
+        || basename.contains(".test.")
+        || basename.contains(".spec.")
 }
 
 fn validate_category(category: Option<&str>) -> Result<(), ConfigError> {
@@ -1249,6 +1283,11 @@ fn scan_selected(
         .iter()
         .map(|file| (file.path.as_str(), &file.facts))
         .collect();
+    let test_only_paths: BTreeSet<_> = file_facts
+        .keys()
+        .copied()
+        .filter(|file| phase03 && is_test_only_path(file))
+        .collect();
     if python_complete {
         for mut finding in analysis.findings {
             if generated_sources.contains(&finding.file) {
@@ -1295,6 +1334,16 @@ fn scan_selected(
                     finding.confidence = finding.confidence.saturating_sub(amount)
                 }
                 config::Decision::Keep => {}
+            }
+            if finding.category != Category::File && test_only_paths.contains(finding.file.as_str())
+            {
+                // Keep non-use evidence while presenting a test-path policy decision.
+                let mut diagnostic =
+                    Diagnostic::new(finding, "test-only path".into(), "whitelisted", source);
+                diagnostic.suppression_code = Some("non_library_path");
+                diagnostic.folder_role = Some("test");
+                whitelisted.push(diagnostic);
+                continue;
             }
             if let Some(reason) = finding.declaration_whitelist {
                 whitelisted.push(Diagnostic::new(
