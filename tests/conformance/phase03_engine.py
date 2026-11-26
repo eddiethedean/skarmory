@@ -75,7 +75,17 @@ TRUTH_CASES.update({
     )
     for assignments, condition in product(TRUTH_REASSIGNMENTS, TRUTH_CONDITIONS)
 })
-TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES}
+BUDGET_SOURCE = "test/test_fastapi_route_precision.py"
+BUDGET_FUNCTION = "test_abstract_call_budget_bounds_acyclic_source_expansion"
+BUDGET_CASE = f"{BUDGET_SOURCE}::{BUDGET_FUNCTION}"
+BUDGET_TEST = "phase02::analysis::tests::pinned_fastapi_initializer_call_budget"
+BUDGET_ASSERTIONS = [f"{BUDGET_SOURCE}:{line}" for line in range(332, 338)]
+BUDGET_PREREQUISITES = [
+    "Original generated wrapper chain",
+    "Reference abstract analysis-step and call-event limits",
+    "Native engine call-work evidence",
+]
+TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES, BUDGET_CASE}
 ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES}
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -271,6 +281,64 @@ def replay_truth_chain(key, source, fixture, argv, env, trace):
     return outcome, fixtures, {"truth": report, "assertion_error": failure}
 
 
+def replay_initializer_budget(source, fixture, argv, env, trace):
+    import pytest
+    from skylos.deadcode import fastapi_liveness
+
+    input_path = fixture / "app.py"
+    report_path = fixture / "budget-report.json"
+    stages = []
+
+    def collect(definitions, parsed, root):
+        if stages or not definitions or root != fixture or len(parsed) != 1 or parsed[0].path != input_path:
+            raise ValueError("the original initializer must parse and analyze the staged app.py once")
+        if fastapi_liveness._MAX_ANALYSIS_STEPS != 100_000 or fastapi_liveness._MAX_CALL_EVENTS != 40:
+            raise ValueError("the original initializer must apply both reviewed work limits")
+        digest = hashlib.sha256(input_path.read_bytes()).hexdigest()
+        outcome = subprocess.run(
+            argv,
+            env={
+                **env,
+                "SKARMORY_PHASE03_FASTAPI_BUDGET_FIXTURE": str(input_path),
+                "SKARMORY_PHASE03_FASTAPI_BUDGET_REPORT": str(report_path),
+                "SKARMORY_PHASE03_FASTAPI_CALL_LIMIT": str(fastapi_liveness._MAX_CALL_EVENTS),
+            },
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+        stages.append((outcome, {input_path.name: digest}))
+        if not passed_exact_test(outcome, BUDGET_TEST):
+            raise ValueError("the named native initializer budget test failed")
+        result = json.loads(report_path.read_text(encoding="utf-8"))
+        count = result["call_events"]
+        if not isinstance(count, int) or count < 0 or count > fastapi_liveness._MAX_CALL_EVENTS:
+            raise ValueError("the native call-event count is outside its configured limit")
+        return SimpleNamespace(
+            complete=result["complete"],
+            incomplete_reason=result["incomplete_reason"],
+            project=SimpleNamespace(calls=range(count)),
+            roots=result["roots"],
+            callback_parameters=range(result["callback_parameters"]),
+            injected_parameters=range(result["injected_parameters"]),
+        )
+
+    previous_trace = sys.gettrace()
+    failure = None
+    try:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(fastapi_liveness, "collect_fastapi_liveness", collect)
+            sys.settrace(trace)
+            source[BUDGET_FUNCTION](fixture, monkeypatch)
+    except (AssertionError, ValueError, OSError) as error:
+        failure = str(error)
+    finally:
+        sys.settrace(previous_trace)
+    if len(stages) != 1:
+        raise ValueError("the original initializer fixture did not invoke native analysis exactly once")
+    outcome, fixtures = stages[0]
+    result = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else None
+    return outcome, fixtures, {"initializer_budget": result, "assertion_error": failure}
+
+
 def engine_case(args, key, case, env, trace=None):
     if key == IMPORT_ROOT_CASE:
         source_file = IMPORT_ROOT_SOURCE
@@ -285,6 +353,10 @@ def engine_case(args, key, case, env, trace=None):
     elif key in TRUTH_CASES:
         source_file, assertions, prerequisites, test = (
             TRUTH_SOURCE, TRUTH_ASSERTIONS[TRUTH_CASES[key][0]], TRUTH_PREREQUISITES, TRUTH_TEST,
+        )
+    elif key == BUDGET_CASE:
+        source_file, assertions, prerequisites, test = (
+            BUDGET_SOURCE, BUDGET_ASSERTIONS, BUDGET_PREREQUISITES, BUDGET_TEST,
         )
     else:
         raise ValueError(f"missing native engine port for {key}")
@@ -306,6 +378,8 @@ def engine_case(args, key, case, env, trace=None):
             outcome, fixtures, details = replay_include_graph(key, source, fixture, argv, env, trace)
         elif key in TRUTH_CASES:
             outcome, fixtures, details = replay_truth_chain(key, source, fixture, argv, env, trace)
+        elif key == BUDGET_CASE:
+            outcome, fixtures, details = replay_initializer_budget(source, fixture, argv, env, trace)
         elif key == CASE:
             # Keep the source inputs and the real pytest command from the
             # upstream fixture. Rust generates its own cleanup findings.

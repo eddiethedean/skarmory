@@ -18175,9 +18175,8 @@ assertions = ["test/test_fastapi_route_precision.py:332", "test/test_fastapi_rou
 prerequisites = ["Original generated wrapper chain", "Reference abstract analysis-step and call-event limits", "Native engine call-work evidence"]
 provenance = "The frozen test builds a 12-level acyclic wrapper chain and sets the Skylos private call-event limit to 40."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine adapter does not yet map the reference call-event budget and the corresponding incomplete-result and capture assertions."
 
 [[cases]]
 id = "test/test_fastapi_route_precision.py::test_incomplete_fastapi_proofs_preserve_all_legacy_hints"
