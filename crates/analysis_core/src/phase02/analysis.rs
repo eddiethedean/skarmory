@@ -8254,7 +8254,7 @@ impl<'a> Graph<'a> {
             Value::Callable(invocation) => {
                 if self.phase03
                     && !reads_rebound_global
-                    && self.apply_atexit_forwarding_decorator(
+                    && self.apply_immediate_callback_decorator(
                         scope, decorator, target, before, invocation,
                     )
                 {
@@ -8426,7 +8426,7 @@ impl<'a> Graph<'a> {
         self.decorator_receives_function(scope, decorator, target, before)
     }
 
-    fn apply_atexit_forwarding_decorator(
+    fn apply_immediate_callback_decorator(
         &mut self,
         scope: ScopeId,
         decorator: &Expression,
@@ -8434,24 +8434,14 @@ impl<'a> Graph<'a> {
         before: Location,
         invocation: Invocation,
     ) -> bool {
-        let (factory, invocation) = match decorator.kind {
-            ExpressionKind::Name(_) => (None, invocation),
-            ExpressionKind::Call { .. } => {
-                let Some(wrapper) =
-                    self.atexit_decorator_factory_target(scope, decorator, before, invocation)
-                else {
-                    return false;
-                };
-                (Some(invocation.target), wrapper)
-            }
-            _ => return false,
-        };
-        let provider_scope = self.symbols[invocation.target].scope;
         if scope != self.scopes[scope].file
-            || provider_scope != self.scopes[provider_scope].file
-            || self.failed_terminal_modules.contains(&provider_scope)
             || self.branch_depth != 0
             || invocation.verified
+            || !matches!(
+                decorator.kind,
+                ExpressionKind::Name(_) | ExpressionKind::Member(..)
+            )
+            || !self.decorator_receives_function(scope, decorator, target, before)
         {
             return false;
         }
@@ -8480,131 +8470,32 @@ impl<'a> Graph<'a> {
             return false;
         };
         let callback = &definition.parameters[0].text;
-        let ExpressionKind::Name(registrar) = &function.kind else {
-            return false;
-        };
-        let [callback_argument, forwarded @ ..] = arguments.as_slice() else {
-            return false;
-        };
         if definition.is_generator
-            || registrar == callback
+            || !arguments.is_empty()
             || !keywords.is_empty()
-            || !matches!(&callback_argument.kind, ExpressionKind::Name(name) if name == callback)
+            || !matches!(&function.kind, ExpressionKind::Name(name) if name == callback)
             || !matches!(&result.kind, ExpressionKind::Name(name) if name == callback)
-            || !forwarded.iter().all(|argument| {
-                matches!(
-                    argument.kind,
-                    ExpressionKind::None
-                        | ExpressionKind::Bool(_)
-                        | ExpressionKind::Text(_)
-                        | ExpressionKind::Scalar(_)
-                )
-            })
             || !matches!(self.symbols[target].binding, Binding::Definition(callback, _)
                 if callback.kind == DefinitionKind::Function
-                    && !callback.is_generator
-                    && callback.required_positional_parameter_count <= forwarded.len()
-                    && callback.required_keyword_only_parameters.is_empty()
-                    && (callback.has_variadic_positional_parameter
-                        || forwarded.len() <= callback.positional_parameter_count))
+                    && !callback.is_generator && callback.parameters.is_empty())
         {
             return false;
         }
-        let provider_before = if provider_scope == scope { before } else { END };
-        let module = &self.files[provider_scope].module;
-        if self
-            .module_member_write(module, registrar, (scope, before))
-            .is_some()
-            || !matches!(self.probe_identity(provider_scope, function, provider_before),
-                Value::Provider(name) if name == "atexit.register")
-            || !self.decorator_receives_function(scope, decorator, target, before)
-        {
-            return false;
-        }
-        // The wrapper binds and returns its argument from the same frame.
-        // The registered callback can run later, after module initialization.
-        if let Some(factory) = factory {
-            self.edge(scope, factory, mcp_tools::DECORATOR_APPLICATION, "certain");
-        }
+        // Account for the decorator's complete body with the argument bound.
         self.edge(
             scope,
             invocation.target,
             mcp_tools::DECORATOR_APPLICATION,
             "certain",
         );
-        self.retain_atexit_callback(
+        self.invoke(
             scope,
-            Value::Callable(Invocation::ordinary(target)),
+            Invocation::ordinary(target),
+            "decorator_callback",
+            "certain",
             decorator.at,
-        )
-    }
-
-    fn atexit_decorator_factory_target(
-        &mut self,
-        scope: ScopeId,
-        decorator: &Expression,
-        before: Location,
-        factory: Invocation,
-    ) -> Option<Invocation> {
-        let ExpressionKind::Call {
-            arguments,
-            keywords,
-            ..
-        } = &decorator.kind
-        else {
-            return None;
-        };
-        let [argument] = arguments.as_slice() else {
-            return None;
-        };
-        let provider_scope = self.symbols[factory.target].scope;
-        if !keywords.is_empty()
-            || factory.verified
-            || provider_scope != self.scopes[provider_scope].file
-            || self.failed_terminal_modules.contains(&provider_scope)
-            || !matches!(
-                argument.kind,
-                ExpressionKind::Name(_)
-                    | ExpressionKind::None
-                    | ExpressionKind::Bool(_)
-                    | ExpressionKind::Text(_)
-                    | ExpressionKind::Scalar(_)
-            )
-            || !self
-                .probe_identity(scope, argument, before)
-                .is_builtin_scalar()
-        {
-            return None;
-        }
-        let (definition, _) = self.bounded_replacement_function(factory)?;
-        let [
-            Statement {
-                kind:
-                    StatementKind::Return(Some(
-                        result @ Expression {
-                            kind: ExpressionKind::Name(name),
-                            ..
-                        },
-                    )),
-                ..
-            },
-        ] = body_without_docstring(definition)
-        else {
-            return None;
-        };
-        if definition.is_generator
-            || *name == definition.parameters[0].text
-            || self
-                .module_member_write(&self.files[provider_scope].module, name, (scope, before))
-                .is_some()
-        {
-            return None;
-        }
-        let provider_before = if provider_scope == scope { before } else { END };
-        match self.probe_identity(provider_scope, result, provider_before) {
-            Value::Callable(wrapper) => Some(wrapper),
-            _ => None,
-        }
+        );
+        true
     }
 
     fn decorator_receives_function(
