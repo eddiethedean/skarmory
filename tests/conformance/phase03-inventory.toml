@@ -17985,9 +17985,8 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:43."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original requires stdlib visitor, asyncio protocol, and ctypes layout evidence through local ancestry. The native scan reports unresolved subclass hooks for those bases before the dormant main can run."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_third_party_overrides_read_from_site_packages"
