@@ -2888,7 +2888,7 @@ impl Graph<'_> {
             }
             let module = &self.files[file].module;
             let command = match self
-                .command_global_write(file, "Command", END, (file, END))
+                .module_global_write(file, "Command", END, (file, END))
                 .or_else(|| self.module_member_write(module, "Command", (file, END)))
             {
                 Some(mutations::MemberWriteValue::Replacement(Value::Callable(invocation)))

@@ -4932,6 +4932,53 @@ app.teardown_appcontext(always)
 }
 
 #[test]
+fn flask_login_literal_globals_update_changes_only_later_receiver_reads() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = r#"from flask_login import LoginManager
+login = LoginManager()
+class Replacement:
+    @staticmethod
+    def user_loader(callback): return callback
+replacement = Replacement()
+@login.user_loader
+def before(user_id): return user_id
+"#;
+    let update = "globals().update({'login': replacement})\n";
+    fs::write(&provider, format!("{setup}{update}")).unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef after(user_id): return user_id\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.before", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.after", "flask_login_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.after"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(
+        &provider,
+        format!("{setup}def globals(): return {{}}\n{update}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(
+        evidence_certainties(&report, "app.after", "flask_login_registration"),
+        ["certain"]
+    );
+}
+
+#[test]
 fn flask_login_global_rebind_does_not_prove_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
