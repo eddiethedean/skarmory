@@ -1417,48 +1417,6 @@ impl<'a> Graph<'a> {
                 })
     }
 
-    pub(super) fn flask_login_allocation(
-        &mut self,
-        scope: ScopeId,
-        before: Location,
-    ) -> Option<(Invocation, SymbolId)> {
-        let kind = ObjectKind::FlaskLoginManager;
-        let class = ReceiverKey::FlaskBase(kind);
-        let access = (scope, before);
-        if scope != self.scopes[scope].file
-            || self.framework_receiver_has_escaped(&class, None, access)
-            || self.member_write(&class, "__init__", access).is_some()
-        {
-            return None;
-        }
-        let MemberWriteValue::Replacement(Value::Callable(allocator)) =
-            self.member_write(&class, "__new__", access)?
-        else {
-            return None;
-        };
-        if self.symbols[allocator.target].scope != scope {
-            return None;
-        }
-        // The allocator reads this global when called, not when it is
-        // assigned to __new__. Resolve the class at that execution point.
-        let name = self.flask_login_allocator_class(allocator)?.to_owned();
-        if self.scopes[scope].names.get(name.as_str())?.len() != 1 {
-            return None;
-        }
-        let expression = Expression {
-            kind: ExpressionKind::Name(name),
-            at: before,
-        };
-        let Value::Callable(class) = self.probe_identity(scope, &expression, before) else {
-            return None;
-        };
-        (!class.verified
-            && matches!(class.receiver, Receiver::Ordinary)
-            && !class.implicit_descriptor_receiver
-            && self.closed_flask_login_layout(class.target, access))
-        .then_some((allocator, class.target))
-    }
-
     pub(super) fn flask_constructor_changed(
         &self,
         kind: ObjectKind,
