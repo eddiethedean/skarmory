@@ -4063,8 +4063,12 @@ impl<'a> Graph<'a> {
                     let binding_scope = self.symbols[id].scope;
                     if !lazy && let Some(write) = self.closure_cell_read(scope, expression) {
                         self.read.insert(id);
-                        let replacement =
-                            self.identity(write.setter, write.value, write.value.at, depth + 1);
+                        let replacement = self.identity(
+                            write.value_scope,
+                            write.value,
+                            write.value_before,
+                            depth + 1,
+                        );
                         return if write.possible {
                             let initial = self.binding(id, END, depth + 1);
                             Value::alternatives(vec![initial, replacement])
@@ -7448,6 +7452,24 @@ impl<'a> Graph<'a> {
         arguments: &[Expression],
         keywords: &[(String, Expression)],
     ) {
+        if self.phase03 {
+            for argument in arguments
+                .iter()
+                .skip(1)
+                .chain(keywords.iter().map(|(_, value)| value))
+            {
+                if self
+                    .probe_identity(scope, argument, before)
+                    .contains_callback_generator()
+                {
+                    self.report_unmodeled_deferred_value(
+                        scope,
+                        argument.at,
+                        &Value::DeferredComprehension,
+                    );
+                }
+            }
+        }
         let target = arguments.first().map_or(Value::Unknown, |argument| {
             self.identity(scope, argument, before, 0)
         });
@@ -8033,15 +8055,15 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::SetGlobalName { value, .. } => {
-                    if self.proved_closure_cell_write(scope) {
+                    if self.proved_closure_cell_write(scope).is_some() {
                         self.walk(scope, value, at);
                     } else {
                         self.record_django_global_write(scope, value, at);
                     }
                 }
-                StatementKind::SetNonlocalName { value, .. } => {
-                    if self.proved_closure_cell_write(scope) {
-                        self.walk(scope, value, at);
+                StatementKind::SetNonlocalName { .. } => {
+                    if let Some(write) = self.proved_closure_cell_write(scope) {
+                        self.walk(write.value_scope, write.value, write.value_before);
                     } else {
                         self.scope_issue(
                             scope,
@@ -15922,6 +15944,84 @@ outer()
                 .iter()
                 .any(|issue| issue.kind == "ambiguous_binding")
         );
+    }
+
+    #[test]
+    fn phase03_nonlocal_setter_uses_the_active_alias_at_its_call() {
+        let scan = |source: &str| {
+            let file = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+            };
+            analyze_phase03(&[file], &[])
+        };
+        let reassigned = r#"def old(): return 1
+def selected(): return 2
+def configure():
+    replacement = old
+    active = replacement
+    def install():
+        nonlocal active
+        active = replacement
+    def invoke():
+        return active()
+    replacement = selected
+    install()
+    return invoke()
+configure()
+"#;
+        let private = r#"def old(): return 1
+def selected(): return 2
+class Service:
+    def configure(self):
+        active = old
+        __replacement = selected
+        def install():
+            nonlocal active
+            active = _Service__replacement
+        def invoke():
+            return active()
+        install()
+        return invoke()
+Service().configure()
+"#;
+        let private_unmangled = private.replace("_Service__replacement", "__replacement");
+        for source in [reassigned, private, &private_unmangled] {
+            let report = scan(source);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(
+                report.evidence.iter().any(|edge| {
+                    edge.full_name == "main.selected" && edge.kind == "direct_call"
+                })
+            );
+            assert!(names(&report, Category::Function).contains(&"old"));
+        }
+
+        let later_assignment = reassigned.replace(
+            "    replacement = selected\n    install()",
+            "    install()\n    replacement = selected",
+        );
+        let report = scan(&later_assignment);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == "unsupported_construct"
+                && issue.message == "nonlocal assignment has no bounded closure call"
+        }));
+
+        let finalizing_overwrite = format!(
+            "def release(): pass\nclass Resource:\n    def __del__(self): release()\n{}",
+            reassigned.replace(
+                "    replacement = old\n    active = replacement",
+                "    replacement = Resource()\n    active = old",
+            )
+        );
+        let report = scan(&finalizing_overwrite);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == "unsupported_construct"
+                && issue.message == "nonlocal assignment has no bounded closure call"
+        }));
     }
 
     #[test]

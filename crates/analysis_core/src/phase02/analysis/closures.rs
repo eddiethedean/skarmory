@@ -9,8 +9,10 @@ pub(super) struct ClosureCall<'a> {
 
 #[derive(Clone, Copy)]
 pub(super) struct ClosureCellWrite<'a> {
-    pub(super) setter: ScopeId,
+    setter: ScopeId,
     pub(super) value: &'a Expression,
+    pub(super) value_scope: ScopeId,
+    pub(super) value_before: Location,
     slot: ScopeId,
     source: SymbolId,
     key: &'a Name,
@@ -151,6 +153,13 @@ impl<'a> Graph<'a> {
                     && def.simple_positional_parameters && def.required_positional_parameter_count == 0)
         {
             return false;
+        }
+        // Invocation records a call edge, but a used lambda result can carry
+        // the deferred generator outside that edge's modeled scope.
+        if !matches!(suite[index].kind, StatementKind::Evaluate(_))
+            && self.callback_generator_return(invocation, 0).is_some()
+        {
+            self.report_unmodeled_deferred_value(scope, at, &Value::DeferredComprehension);
         }
         self.walk(scope, target, before);
         self.read.extend(local);
@@ -485,17 +494,6 @@ impl<'a> Graph<'a> {
         {
             return None;
         }
-        // Replay may move the RHS identity to a read in the caller. Require a
-        // declaration or a single stable value, never a changing alias.
-        if !matches!(self.symbols[source_id].binding, Binding::Definition(_, _))
-            && self.scopes[source_scope]
-                .names
-                .get(source_key.as_ref())?
-                .len()
-                != 1
-        {
-            return None;
-        }
         // Only ordinary nullary construction has a modeled result here.
         if plain_name(value).is_none() && !self.ordinary_cell_constructor(source_id) {
             return None;
@@ -503,6 +501,8 @@ impl<'a> Graph<'a> {
         Some(ClosureCellWrite {
             setter: scope,
             value,
+            value_scope: scope,
+            value_before: value.at,
             slot,
             source: source_id,
             key,
@@ -516,7 +516,7 @@ impl<'a> Graph<'a> {
         call: &Expression,
     ) -> Option<ClosureCellWrite<'a>> {
         let (name, arguments) = name_call(call)?;
-        let write = match arguments {
+        let mut write = match arguments {
             [] => {
                 let id = self.local(frame, name, call.at)?;
                 let Binding::Definition(_, setter) = self.symbols[id].binding else {
@@ -566,6 +566,41 @@ impl<'a> Graph<'a> {
         }?;
         let source = &self.symbols[write.source];
         if source.scope == frame && position(source.name.at) >= position(call.at) {
+            return None;
+        }
+        let key = self.lexical_binding_key(source.scope, &source.name.text);
+        let names = &self.scopes[source.scope].names;
+        let explicit = names.get(key.as_ref());
+        let private = self
+            .private_binding_spelling(source.scope, &key)
+            .and_then(|name| names.get(name));
+        if write.slot == frame
+            && source.scope == frame
+            && self.scopes[write.setter].parent == Some(frame)
+            && !write.possible
+            && plain_name(write.value).is_some()
+            && matches!(source.binding, Binding::Variable(Some(value), _) if plain_name(value).is_some())
+        {
+            // The immediate setter reads this caller's cell at the call.
+            // Earlier values replaced by reassignment must be safe to drop.
+            if self.local_by_key(frame, &key, call.at) != Some(write.source)
+                || explicit
+                    .into_iter()
+                    .flatten()
+                    .chain(private.into_iter().flatten())
+                    .any(|&id| {
+                        position(self.symbols[id].name.at) < position(source.name.at)
+                            && !self.finalizer_free_cell_binding(id, 0)
+                    })
+            {
+                return None;
+            }
+            write.value_scope = frame;
+            write.value_before = call.at;
+        } else if !matches!(source.binding, Binding::Definition(_, _))
+            && explicit.map_or(0, Vec::len) + private.map_or(0, Vec::len) != 1
+        {
+            // For other frames, keep requiring a single stable source.
             return None;
         }
         Some(write)
@@ -633,7 +668,13 @@ impl<'a> Graph<'a> {
             return None;
         }
         let key = self.lexical_binding_key(write.setter, &write.key.text);
-        self.local_by_key(write.slot, &key, call.at)?;
+        let previous = self.local_by_key(write.slot, &key, call.at)?;
+        if self.binding_depends_on_branch(previous, call.at)
+            || !self.finalizer_free_cell_binding(previous, 0)
+            || !self.finalizer_free_cell_binding(write.source, 0)
+        {
+            return None;
+        }
         let ExpressionKind::Call { function, .. } = &call.kind else {
             return None;
         };
@@ -722,15 +763,105 @@ impl<'a> Graph<'a> {
             ))
     }
 
+    fn finalizer_free_cell_binding(&self, id: SymbolId, depth: usize) -> bool {
+        if depth >= MAX_BINDING_CHAIN {
+            return false;
+        }
+        let symbol = &self.symbols[id];
+        match symbol.binding {
+            Binding::Definition(definition, _) => {
+                if definition.kind == DefinitionKind::Class {
+                    self.finalizer_free_cell_instance(id)
+                } else {
+                    definition.decorators.is_empty()
+                }
+            }
+            Binding::Variable(Some(value), _) if inert_default(value) => true,
+            Binding::Variable(Some(value), before) => {
+                let Some(source) = bounded_cell_source(value)
+                    .and_then(|source| self.lexical(symbol.scope, source, before))
+                else {
+                    return false;
+                };
+                !self.binding_depends_on_branch(source, before)
+                    && if plain_name(value).is_some() {
+                        self.finalizer_free_cell_binding(source, depth + 1)
+                    } else {
+                        self.finalizer_free_cell_instance(source)
+                    }
+            }
+            Binding::Import(import) => {
+                let Some(member) = import.member.as_deref() else {
+                    return false;
+                };
+                let Some(module) = self.import_module(self.scopes[symbol.scope].file, import)
+                else {
+                    return false;
+                };
+                let Some(&provider) = self.modules.get(module.as_str()) else {
+                    return false;
+                };
+                let before = self
+                    .import_member_position(symbol.scope, &module, import)
+                    .unwrap_or(END);
+                self.module_member_write(&module, member, (symbol.scope, import.local.at))
+                    .is_none()
+                    && self.local(provider, member, before).is_some_and(|source| {
+                        !self.binding_depends_on_branch(source, before)
+                            && self.finalizer_free_cell_binding(source, depth + 1)
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn finalizer_free_cell_class(&self, source: SymbolId) -> Option<&'a Definition> {
+        let Binding::Definition(class, _) = self.symbols[source].binding else {
+            return None;
+        };
+        (class.kind == DefinitionKind::Class
+            && class.decorators.is_empty()
+            && class.bases.is_empty()
+            && !class.has_class_keywords()
+            && class.body.iter().all(|statement| {
+                matches!(&statement.kind,
+                StatementKind::Define(member)
+                    if !matches!(member.name.text.as_str(), "__new__" | "__del__"))
+            }))
+        .then_some(class)
+    }
+
+    fn finalizer_free_cell_instance(&self, source: SymbolId) -> bool {
+        let Some(class) = self.finalizer_free_cell_class(source) else {
+            return false;
+        };
+        class.body.iter().all(|statement| {
+            let StatementKind::Define(member) = &statement.kind else {
+                return false;
+            };
+            member.name.text != "__init__"
+                || (field_dispatch::plain_method(member, 1)
+                    && matches!(
+                        body_without_docstring(member),
+                        [] | [Statement {
+                            kind: StatementKind::Return(
+                                None | Some(Expression {
+                                    kind: ExpressionKind::None,
+                                    ..
+                                })
+                            ),
+                            ..
+                        }]
+                    ))
+        })
+    }
+
     fn ordinary_cell_constructor(&self, source: SymbolId) -> bool {
-        matches!(self.symbols[source].binding, Binding::Definition(class, _) if
-            class.kind == DefinitionKind::Class
-                && class.decorators.is_empty()
-                && class.bases.is_empty()
-                && !class.has_class_keywords()
-                && class.body.iter().all(|statement| matches!(&statement.kind,
-                    StatementKind::Define(member)
-                        if !matches!(member.name.text.as_str(), "__new__" | "__init__"))))
+        self.finalizer_free_cell_class(source).is_some_and(|class| {
+            class.body.iter().all(|statement| {
+                matches!(&statement.kind, StatementKind::Define(member) if member.name.text != "__init__")
+            })
+        })
     }
 
     fn closed_global_cell_frame(&self, frame: ScopeId, write: &ClosureCellWrite<'a>) -> bool {
@@ -803,19 +934,18 @@ impl<'a> Graph<'a> {
             })
     }
 
-    pub(super) fn proved_closure_cell_write(&self, scope: ScopeId) -> bool {
+    pub(super) fn proved_closure_cell_write(&self, scope: ScopeId) -> Option<ClosureCellWrite<'a>> {
         let mut parent = self.scopes[scope].parent;
         for _ in 0..MAX_BINDING_CHAIN {
-            let Some(frame) = parent else { return false };
-            if self
-                .terminal_cell_write(frame)
-                .is_some_and(|(_, write)| write.setter == scope)
+            let frame = parent?;
+            if let Some((_, write)) = self.terminal_cell_write(frame)
+                && write.setter == scope
             {
-                return true;
+                return Some(write);
             }
             parent = self.scopes[frame].parent;
         }
-        false
+        None
     }
 }
 
