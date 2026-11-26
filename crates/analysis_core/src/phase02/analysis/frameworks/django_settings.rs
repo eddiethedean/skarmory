@@ -296,6 +296,7 @@ impl Graph<'_> {
         // The external selection identifies the settings namespace. It does
         // not establish that an application or a route has started.
         self.django_setting_bindings(settings)
+            .into_keys()
             .filter(|&binding| !self.binding_depends_on_branch(binding, END))
             .map(|binding| possible_edge(binding, "django_setting"))
             .collect()
