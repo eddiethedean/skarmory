@@ -779,6 +779,16 @@ impl Project {
             })
     }
 
+    pub(super) fn top_level_module_absent(&self, module: &str) -> bool {
+        std::iter::once(&self.base).chain(&self.search).all(|root| {
+            self.directories.get(root).is_some_and(|entries| {
+                !entries
+                    .iter()
+                    .any(|(name, kind)| entry_may_supply_module(name, *kind, module))
+            })
+        })
+    }
+
     fn package_submodule_absent(&self, package: &Path, module: &str) -> bool {
         self.directories
             .get(&self.base.join(package))

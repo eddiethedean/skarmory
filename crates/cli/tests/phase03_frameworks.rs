@@ -5062,6 +5062,75 @@ fn project_wildcards_follow_the_selected_nested_settings_branch() {
 }
 
 #[test]
+fn django_settings_replay_resolves_wildcard_collection_by_binding() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let conf = root.join("conf");
+    fs::create_dir(&conf).unwrap();
+    fs::write(conf.join("__init__.py"), "").unwrap();
+    fs::write(
+        conf.join("base.py"),
+        "INSTALLED_APPS = []\nROOT_URLCONF = 'conf.urls'\nMIDDLEWARE = ['handler.Middleware']\nSECRET_KEY = 'fixture'\n",
+    ).unwrap();
+    fs::write(conf.join("settings.py"), "from .base import *\n").unwrap();
+    fs::write(conf.join("urls.py"), "urlpatterns = []\n").unwrap();
+    fs::write(
+        root.join("wsgi.py"),
+        "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'conf.settings'\napplication = get_wsgi_application()\n",
+    ).unwrap();
+    fs::write(
+        root.join("handler.py"),
+        "class Middleware:\n    def __init__(self, get_response): self.get_response = get_response\n    def __call__(self, request): return self.get_response(request)\n",
+    ).unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "handler.Middleware", "django_setting_reference"),
+        ["possible"]
+    );
+}
+
+#[test]
+fn django_builtin_startup_app_support_requires_default_toolbar_panels() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("wsgi.py"),
+        "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n",
+    ).unwrap();
+    fs::write(root.join("urls.py"), "urlpatterns = []\n").unwrap();
+    let source = "INSTALLED_APPS = ['django.contrib.staticfiles.apps.StaticFilesConfig', 'debug_toolbar.apps.DebugToolbarConfig']\nROOT_URLCONF = 'urls'\nSTATIC_ROOT = 'staticfiles'\nSECRET_KEY = 'fixture'\n";
+    let settings = root.join("settings.py");
+    fs::write(&settings, source).unwrap();
+    scan(root);
+
+    let unresolved = |report: Value| {
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| {
+                    error["kind"] == "unresolved_registration"
+                        && error["file"] == "settings.py"
+                        && error["line"] == 1
+                }),
+            "{report}"
+        );
+    };
+    fs::write(
+        &settings,
+        format!("{source}DEBUG_TOOLBAR_PANELS = ['custom.Panel']\n"),
+    )
+    .unwrap();
+    unresolved(scan_with_exit(root, None, None, 2));
+    fs::write(&settings, source).unwrap();
+    fs::create_dir(root.join("debug_toolbar")).unwrap();
+    fs::write(root.join("debug_toolbar/__init__.py"), "").unwrap();
+    unresolved(scan_with_excludes(root, None, None, &["debug_toolbar/"], 2));
+}
+
+#[test]
 fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incomplete() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -5081,7 +5150,7 @@ fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incompl
     assert!(!findings(&report, "unused_variables").contains(&"conf.base.CUSTOM_FLAG"));
 
     fs::write(conf.join("local.py"), "CUSTOM_FLAG = False\n").unwrap();
-    for guard in ["True", "unknown"] {
+    for guard in ["True", "False", "unknown"] {
         let body = format!(
             "{source}try:\n    from .local import *\nexcept ImportError:\n    pass\n\
              if {guard}:\n    from .dev import *\nRETAINED = True\n"
