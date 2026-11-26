@@ -225,8 +225,8 @@ receivers are known. It distinguishes eager comprehensions from deferred
 generator expressions and models materialization by resolved built-in
 `list` and `tuple` for the bounded scalar callback form. Other generator
 consumers and escaping generator values can still make coverage incomplete.
-Plain local literal assignments followed by a `finally` suite preserve the
-binding and any definitions created by the latter suite.
+Skarmory follows a `finally` suite after straight-line literal assignments
+to fresh local names. An overwrite can release an object and run its finalizer.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

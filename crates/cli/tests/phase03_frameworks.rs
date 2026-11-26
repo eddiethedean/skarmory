@@ -121,6 +121,137 @@ launch()
 }
 
 #[test]
+fn closure_safety_finally_requires_fresh_local_bindings() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let definitions = r#"def release(): print("released")
+class Resource:
+    def __del__(self): release()
+"#;
+    let close = "    try:\n        resource = None\n    finally:\n        return resource\n";
+    let local = "def close():\n    resource = Resource()\n";
+    for (prefix, body, call) in [
+        (local, close, "close()"),
+        ("def close(resource):\n", close, "close(Resource())"),
+        (
+            "def close():\n    if __debug__:\n        resource = Resource()\n",
+            close,
+            "close()",
+        ),
+        (
+            local,
+            "    try:\n        unbound = 1\n    finally:\n        resource = None\n",
+            "close()",
+        ),
+        (
+            local,
+            "    try:\n        unbound = 1\n    finally:\n        def resource(): return 2\n",
+            "close()",
+        ),
+    ] {
+        fs::write(&path, format!("{definitions}{prefix}{body}{call}\n")).unwrap();
+        let report = scan_with_exit(project.path(), None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(findings(&report, "unused_functions").is_empty());
+        let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn closure_safety_rebinding_keeps_unresolved_finalizers_visible() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let definitions = r#"def release(): print("released")
+class First:
+    def read(self): return 1
+class Second:
+    def read(self): return 2
+"#;
+    let run = r#"def run():
+    selected = First()
+    def switch():
+        nonlocal selected
+        selected = Second()
+    def read():
+        return selected.read()
+    switch()
+    return read()
+run()
+"#;
+    let ordinary_init = definitions.replace(
+        "class First:\n",
+        "class First:\n    def __init__(self): pass\n",
+    );
+    fs::write(&path, format!("{ordinary_init}{run}")).unwrap();
+    let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").contains(&"app.First.read"));
+    assert!(!findings(&report, "unused_functions").contains(&"app.Second.read"));
+
+    let provider = project.path().join("provider.py");
+    fs::write(&provider, "def replacement(): return 2\n").unwrap();
+    fs::write(
+        &path,
+        r#"from provider import replacement
+def earlier(): return 1
+def run():
+    selected = earlier
+    def switch():
+        nonlocal selected
+        selected = replacement
+    def read():
+        return selected()
+    switch()
+    return read()
+run()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["app.earlier"]);
+    fs::remove_file(provider).unwrap();
+
+    for class in ["First", "Second"] {
+        let definitions = definitions.replace(
+            &format!("class {class}:\n"),
+            &format!("class {class}:\n    def __del__(self): release()\n"),
+        );
+        for run in [
+            run.to_owned(),
+            run.replace(
+                "    def switch():",
+                "    replacement = Second()\n    def switch():",
+            )
+            .replace(
+                "        selected = Second()",
+                "        selected = replacement",
+            ),
+        ] {
+            fs::write(&path, format!("{definitions}{run}")).unwrap();
+            let report = scan_with_exit(project.path(), None, None, 2);
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert!(findings(&report, "unused_functions").is_empty());
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| {
+                        issue["message"] == "nonlocal assignment has no bounded closure call"
+                    }),
+                "{report}"
+            );
+            let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
 fn closure_safety_comprehension_dispatch_follows_iteration_and_consumption() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -175,6 +306,110 @@ unused_generator()
             "{report}"
         );
     }
+}
+
+#[test]
+fn deferred_generator_results_from_forwarding_lambdas_keep_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let forwarded = r#"def make():
+    return (callback() for callback in [leaf])
+def launch():
+    forward = lambda callback: callback()
+"#;
+    let captured = r#"def launch():
+    def make():
+        return (callback() for callback in [leaf])
+    forward = lambda: make()
+"#;
+    for (source, call) in [(forwarded, "forward(make)"), (captured, "forward()")] {
+        let project_source = format!("def leaf(): return 2\n{source}");
+        fs::write(
+            &path,
+            format!("{project_source}    return {call}\nlist(launch())\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(project.path(), None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
+            "{report}"
+        );
+        assert!(
+            !findings(&report, "unused_functions").contains(&"app.leaf"),
+            "{report}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+
+        fs::write(&path, format!("{project_source}    {call}\nlaunch()\n")).unwrap();
+        let report = scan(project.path());
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["app.leaf"],
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn deferred_generator_arguments_to_executors_keep_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let prelude = r#"from concurrent.futures import ThreadPoolExecutor
+
+def leaf(): return 42
+def make(): return (callback() for callback in [leaf])
+def collect(items):
+    print(list(items))
+
+pool = ThreadPoolExecutor()
+"#;
+    for argument in ["make()", "items=make()"] {
+        fs::write(
+            &path,
+            format!("{prelude}pool.submit(collect, {argument})\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(project.path(), None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
+            "{report}"
+        );
+        assert!(
+            !findings(&report, "unused_functions").contains(&"app.leaf"),
+            "{report}"
+        );
+        assert_eq!(
+            evidence_certainties(&report, "app.collect", "executor_submission"),
+            ["possible"]
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(&path, format!("{prelude}pool.submit(collect, [42])\n")).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.leaf", "app.make"],
+        "{report}"
+    );
 }
 
 #[test]
