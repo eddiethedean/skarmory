@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,380 cases to Phase 0.3 and defers 41 to later language
+inventory assigns 1,399 cases to Phase 0.3 and defers 41 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -53,6 +53,13 @@ reassignment assertions expect uncertain roots even though the runtime
 makes a determinate choice. The eight long acyclic fixtures reach a native
 analysis limit. The original engine and Click SDK ports are pending and
 these cases earn no release credit.
+
+The class-attribute provider suite contributes 19 original Python cases.
+Eight SDK ports exercise local lookalikes, a shadowed framework import,
+and a source package named like Celery. All eight require a completed
+analysis and both unused-attribute assertions. The eleven tests that
+depend on external base-class behavior remain required. A diagnostic
+SDK scan reports incomplete coverage for those fixtures.
 
 ### Runtime-derived test expectations
 
