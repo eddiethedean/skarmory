@@ -607,6 +607,14 @@ diagnostics. Bound receivers contribute to method dispatch when their
 registration is reached. The model does not prove which dispatches occur.
 [Django signal registration](https://docs.djangoproject.com/en/5.2/topics/signals/#connecting-receiver-functions)
 
+A reached Django system-check dispatch can retain synchronous checks registered
+earlier in the same scope or in a selected module imported directly by that
+scope. The bounded model accepts stock `register` decorators and calls, along
+with the default `run_checks` arguments and literal tag selections. Matching
+checks receive possible-use evidence and retain their framework-supplied
+`app_configs` and keyword arguments. Unsupported registration or dispatch
+forms and unresolved registration order produce coverage diagnostics.
+
 The profile also recognizes selected Celery task registrations, including
 reached `register_task` calls on a resolved app. Bounded Celery backend
 configuration tracks the effective provider per app and honors the first

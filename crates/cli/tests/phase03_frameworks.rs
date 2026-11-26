@@ -12284,3 +12284,67 @@ fn source_owned_installers_replace_the_selected_django_command_handle() {
     );
     assert!(evidence_certainties(&frozen, handle, "django_command").is_empty());
 }
+
+#[test]
+fn django_system_checks_require_ordered_selected_registration_and_matching_tags() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (name, source) in [
+        ("shop/__init__.py", ""),
+        (
+            "manage.py",
+            "import os\nimport django\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+        ),
+        ("settings.py", "INSTALLED_APPS = ['shop.apps.Selected']\n"),
+        (
+            "shop/checks.py",
+            "from django.core.checks import Tags, register\n@register(Tags.security)\ndef checked(app_configs, **kwargs): return witness()\n@register(Tags.database)\ndef other(app_configs, **kwargs): return []\ndef witness(): return []\n",
+        ),
+        (
+            "shop/fields.py",
+            "def callback(app_configs, **kwargs): return []\ndef dead(arg): return None\ndead(1)\n",
+        ),
+    ] {
+        fs::write(root.join(name), source).unwrap();
+    }
+    let configure = |operations| {
+        fs::write(
+            root.join("shop/apps.py"),
+            format!(
+                "from django.apps import AppConfig\nclass Selected(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from django.core.checks import Tags, register, run_checks\n{operations}"
+            ),
+        )
+        .unwrap();
+    };
+    configure(
+        "        from . import checks, fields\n        register(fields.callback, Tags.security)\n        run_checks(tags=[Tags.security])\n",
+    );
+    let report = scan(root);
+    for expected in ["shop.checks.checked", "shop.fields.callback"] {
+        assert_eq!(
+            evidence_certainties(&report, expected, "django_system_check"),
+            ["possible"]
+        );
+    }
+    assert!(evidence_certainties(&report, "shop.checks.other", "django_system_check").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"shop.checks.other"));
+    let parameters = findings(&report, "unused_parameters");
+    assert!(parameters.contains(&"shop.fields.dead.arg"));
+    assert!(!parameters.contains(&"shop.checks.checked.app_configs"));
+    assert!(!parameters.contains(&"shop.fields.callback.kwargs"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    configure(
+        "        run_checks(tags=[Tags.security])\n        from . import checks, fields\n        register(fields.callback, Tags.security)\n",
+    );
+    let unordered = scan_with_exit(root, None, Some(cache.path()), 2);
+    for expected in ["shop.checks.checked", "shop.fields.callback"] {
+        assert!(evidence_certainties(&unordered, expected, "django_system_check").is_empty());
+    }
+}

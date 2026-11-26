@@ -27,6 +27,7 @@ mod celery;
 mod celery_routes;
 mod class_parameter_calls;
 mod comprehension;
+mod django_checks;
 mod django_choices;
 mod django_forms;
 mod django_globals;
@@ -714,6 +715,7 @@ pub(super) fn analyze_with_verification(
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
+        django_checks: django_checks::Checks::default(),
         django_command_dispatches: Vec::new(),
         django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
@@ -806,6 +808,7 @@ pub(super) fn analyze_with_verification(
         graph.collect_conventional_app(ObjectKind::SanicApp);
         graph.collect_conventional_app(ObjectKind::StarletteApp);
         graph.collect_gunicorn_config();
+        graph.collect_django_system_check_edges();
         graph.collect_phase03_frameworks();
         graph.collect_pydantic_serialization();
         graph.collect_mcp_registrations();
@@ -958,6 +961,7 @@ struct Graph<'a> {
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
+    django_checks: django_checks::Checks,
     django_command_dispatches: Vec<frameworks::DjangoCommandDispatch>,
     django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
@@ -6064,6 +6068,16 @@ impl<'a> Graph<'a> {
                             .map(|target| self.identity(scope, target, before, 0));
                         self.record_django_signal(scope, signal, callback, expr.at);
                     }
+                    Value::Provider(name) if self.phase03 && django_checks::is_register(&name) => {
+                        self.record_django_system_check_registration(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
+                    Value::Provider(name) if self.phase03 && django_checks::is_run_checks(&name) => {
+                        self.record_django_system_check_run(CallArguments {
+                            scope, before, at: expr.at, positional: arguments, keywords,
+                        });
+                    }
                     Value::Provider(name)
                         if self.phase03 && name == "django.utils.autoreload.run_with_reloader" =>
                     {
@@ -8194,6 +8208,19 @@ impl<'a> Graph<'a> {
                     && self.is_click_command_declaration(scope, decorator, target, &name) =>
             {
                 self.edge(scope, target, "click_command_declaration", "possible");
+            }
+            Value::Provider(name)
+                if self.phase03 && !reads_rebound_global && django_checks::is_register(&name) =>
+            {
+                if self.record_django_system_check_decorator(scope, target, decorator, before) {
+                    return true;
+                }
+                self.scope_issue(
+                    scope,
+                    decorator.at,
+                    "unresolved_registration",
+                    "Django system check decorator is outside the bounded model",
+                );
             }
             Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
                 let signal = self.django_receiver(scope, args, keywords, before, 0);
@@ -10964,6 +10991,7 @@ impl<'a> Graph<'a> {
             self.report_django_converter_wrappers(&reach);
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
+            self.report_django_system_check_order(&reach);
             self.remove_proven_django_command_option_diagnostics(&reach);
             self.report_django_middleware_calls(&reach);
             self.report_log_record_calls(&reach);
@@ -11061,7 +11089,8 @@ impl<'a> Graph<'a> {
         let django_callback_contracts: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
-                frameworks::is_django_signal_edge(kind).then_some(target)
+                (frameworks::is_django_signal_edge(kind) || kind == django_checks::CALLBACK)
+                    .then_some(target)
             })
             .collect();
         let transitive = verification
@@ -11849,7 +11878,8 @@ fn is_deferred_possible_edge(kind: &str) -> bool {
     is_atexit_edge(kind)
         || matches!(
             kind,
-            django_forms::VALIDATION_HOOK
+            django_checks::CALLBACK
+                | django_forms::VALIDATION_HOOK
                 | "logging_factory"
                 | celery_routes::ROUTER
                 | celery_routes::ROUTER_PARAMETER
