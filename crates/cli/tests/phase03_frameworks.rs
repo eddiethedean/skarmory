@@ -2739,6 +2739,52 @@ fn flask_failed_class_patches_leave_independent_receivers_unchanged() {
 }
 
 #[test]
+fn flask_login_literal_mock_start_replaces_a_resolved_callback_decorator() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = "from flask_login import LoginManager\nfrom unittest.mock import patch\nlogin = LoginManager()\n";
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef replaced(value): return value\n@login.request_loader\ndef active(request): return request\n",
+    )
+    .unwrap();
+    for start in [
+        "def replacement(callback): return callback\npatch('providers.login.user_loader', replacement).start()\n",
+        "def replacement(self, callback): return callback\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
+    ] {
+        fs::write(&provider, format!("{setup}{start}")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            evidence_certainties(&report, "providers.replacement", "decorator"),
+            ["certain"]
+        );
+        assert_eq!(
+            evidence_certainties(&report, "app.active", "flask_login_registration"),
+            ["certain"]
+        );
+        assert!(
+            evidence_certainties(&report, "app.replaced", "flask_login_registration").is_empty()
+        );
+        assert!(findings(&report, "unused_functions").contains(&"app.replaced"));
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+
+        fs::write(&provider, format!("{setup}{start}patch.stopall()\n")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_call")
+        );
+    }
+}
+
+#[test]
 fn flask_login_instance_dictionary_replaces_only_the_selected_callback_decorator() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
