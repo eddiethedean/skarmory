@@ -74,13 +74,12 @@ The native frontend or installed SDK variant follows the original entry point.
 This family contributes neither required results nor pass credit to Phase 0.3.
 
 The inventory also records the 27 original cases in `test_fastapi_truth_cycles.py`.
-All passed against the frozen Skylos checkout. A diagnostic comparison with
-FastAPI 0.141.1 and the native CLI agreed on registration for the six
-reassignment fixtures and 12 short acyclic fixtures. The six original
-reassignment assertions expect uncertain roots even though the runtime
-makes a determinate choice. The eight long acyclic fixtures reach a native
-analysis limit. The original engine and Click SDK ports are pending and
-these cases earn no release credit.
+The engine port replays all 20 acyclic guards, including the 1,100- and
+1,101-assignment variants. The pinned pytest function writes the Python
+fixture. Its original assertions check native coverage and FastAPI route
+evidence from the Rust engine. The six reassignment cases expect uncertain
+roots even though FastAPI 0.141.1 makes a determinate choice. Those cases and
+the Click SDK case remain pending.
 
 The class-attribute provider suite contributes 19 original Python cases.
 Eight SDK ports exercise local lookalikes, a shadowed framework import,

@@ -24,7 +24,7 @@ from phase03_dependencies import (
     dependency_declarations,
     unused_dependencies,
 )
-from phase03_engine import ENGINE_CASES, INCLUDE_CASES, INCLUDE_SOURCE, engine_case
+from phase03_engine import ENGINE_CASES, INCLUDE_SOURCE, TRACED_ENGINE_CASES, engine_case
 from phase03_framework import framework_report, patch_framework_analysis
 from phase03_fastapi import CASES as FASTAPI_CASES
 from phase03_fastapi import (
@@ -396,7 +396,7 @@ def pytest_worker(args):
         results = {
             key: engine_case(
                 args, key, case, env,
-                AssertionTrace(args.upstream, {case["source"]}) if key in INCLUDE_CASES else None,
+                AssertionTrace(args.upstream, {case["source"]}) if key in TRACED_ENGINE_CASES else None,
             )
             for key, case in cases.items()
         }

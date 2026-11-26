@@ -12096,89 +12096,34 @@ mod tests {
     }
 
     #[test]
-    fn fastapi_initializer_limit_withholds_affected_routes_and_preserves_an_independent_app() {
-        let route =
-            "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/')\ndef route(): return 1\n";
-        let helpers = "def leaf(): pass\ndef initialize():\n    leaf()\n    leaf()\n";
-        let scan = |invoke| {
-            analyze_with_verification(
-                &[
-                    module("app.py", "app", &format!("{route}{helpers}{invoke}")),
-                    module("other.py", "other", route),
-                ],
-                &[],
-                None,
-                None,
-                None,
-                true,
-                FrameworkInputs {
-                    fastapi_call_event_limit: Some(2),
-                    ..Default::default()
-                },
-            )
-        };
-        let roots = |report: &Analysis| {
-            report
-                .evidence
-                .iter()
-                .filter(|row| row.kind == "fastapi_registration" && row.certainty == "certain")
-                .map(|row| row.full_name.clone())
-                .collect::<Vec<_>>()
-        };
-        let reached = scan("initialize()\n");
-        assert_eq!(reached.fastapi_initializer_evidence.call_events, 2);
-        assert!(reached.fastapi_initializer_evidence.limited);
-        assert_eq!(roots(&reached), ["other.route"]);
-        assert!(
-            reached
-                .issues
-                .iter()
-                .any(|issue| issue.kind == "analysis_limit" && issue.path == "app.py")
-        );
-
-        let dormant = scan("");
-        assert_eq!(dormant.fastapi_initializer_evidence.call_events, 0);
-        assert!(dormant.issues.is_empty());
-        assert_eq!(roots(&dormant), ["app.route", "other.route"]);
-    }
-
-    #[test]
-    #[ignore = "requires the pinned FastAPI initializer call-budget fixture"]
-    fn pinned_fastapi_initializer_call_budget() {
-        let fixture = std::env::var_os("SKARMORY_PHASE03_FASTAPI_BUDGET_FIXTURE").unwrap();
-        let output = std::env::var_os("SKARMORY_PHASE03_FASTAPI_BUDGET_REPORT").unwrap();
-        let limit: usize = std::env::var("SKARMORY_PHASE03_FASTAPI_CALL_LIMIT")
-            .unwrap()
-            .parse()
-            .unwrap();
+    #[ignore = "requires the pinned FastAPI truth-chain fixture"]
+    fn pinned_fastapi_truth_chain() {
+        let fixture = std::env::var_os("SKARMORY_PHASE03_FASTAPI_TRUTH_FIXTURE").unwrap();
+        let output = std::env::var_os("SKARMORY_PHASE03_FASTAPI_TRUTH_REPORT").unwrap();
         let source = std::fs::read_to_string(fixture).unwrap();
-        let report = analyze_with_verification(
-            &[module("app.py", "app", &source)],
-            &[],
-            None,
-            None,
-            None,
-            true,
-            FrameworkInputs {
-                fastapi_call_event_limit: Some(limit),
-                ..Default::default()
-            },
+        let report = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+        assert!(
+            report.definitions.values().any(|row| {
+                row.name == "app.endpoint" && row.kind == "function" && row.line == 3
+            })
         );
-        let evidence = report.fastapi_initializer_evidence;
-        let roots: BTreeSet<_> = report
+        let registrations: Vec<_> = report
             .evidence
             .iter()
-            .filter(|row| row.kind == "fastapi_registration" && row.certainty == "certain")
-            .map(|row| (&row.file, row.line))
+            .filter(|row| row.kind == "fastapi_registration")
             .collect();
+        let locations = |certainty| {
+            registrations
+                .iter()
+                .filter(move |row| row.certainty == certainty)
+                .map(|row| (&row.file, row.line))
+                .collect::<BTreeSet<_>>()
+        };
         let result = serde_json::json!({
             "complete": report.issues.is_empty(),
-            "incomplete_reason": evidence.limited.then_some("call_event_budget"),
             "issues": report.issues,
-            "call_events": evidence.call_events,
-            "roots": roots,
-            "callback_parameters": evidence.callback_parameters,
-            "injected_parameters": evidence.injected_parameters,
+            "roots": locations("certain"),
+            "uncertain": locations("possible"),
         });
         std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
     }
