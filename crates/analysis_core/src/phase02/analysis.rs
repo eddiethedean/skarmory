@@ -8265,8 +8265,7 @@ impl<'a> Graph<'a> {
                 else {
                     unreachable!()
                 };
-                if (invocation.implicit_descriptor_receiver
-                    || matches!(invocation.receiver, Receiver::Bound(_)))
+                if invocation.implicit_descriptor_receiver
                     && !matches!(decorator.kind, ExpressionKind::Call { .. })
                     && field_dispatch::plain_method(definition, 2)
                     && returns_parameter(definition, &definition.parameters[1])

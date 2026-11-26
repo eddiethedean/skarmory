@@ -486,15 +486,9 @@ impl<'a> Graph<'a> {
             );
         let login_replacement = match (&receiver, value) {
             (ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager), Some(value))
-                if !conditional =>
+                if !conditional && flask_login_callback(member) =>
             {
-                match member {
-                    "__new__" => self.flask_login_allocator_patch(file, at, value),
-                    name if flask_login_callback(name) => {
-                        self.flask_login_identity_replacement(file, at, value)
-                    }
-                    _ => None,
-                }
+                self.flask_login_identity_replacement(file, at, value)
             }
             _ => None,
         };
@@ -548,104 +542,6 @@ impl<'a> Graph<'a> {
             .push(Write { file, at, value });
     }
 
-    fn index_flask_login_code(
-        &mut self,
-        file: ScopeId,
-        at: Location,
-        receiver: &Expression,
-        value: &Expression,
-        conditional: bool,
-    ) -> bool {
-        let ExpressionKind::Member(class, method) = &receiver.kind else {
-            return false;
-        };
-        let ExpressionKind::Member(replacement, member) = &value.kind else {
-            return false;
-        };
-        let class_key = ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager);
-        let access = (file, at);
-        if member != "__code__"
-            || !flask_login_callback(method)
-            || !matches!(self.probe_identity(file, class, at), Value::Provider(name)
-                if is_flask_login_constructor(&name))
-            || self.member_write(&class_key, method, access).is_some()
-            || self.framework_receiver_has_escaped(&class_key, None, access)
-        {
-            return false;
-        }
-        let Some(Value::Callable(replacement)) =
-            self.flask_login_identity_replacement(file, at, replacement)
-        else {
-            return false;
-        };
-        let value = if conditional {
-            MemberWriteValue::Ambiguous
-        } else {
-            // The framework function keeps its identity and globals. These
-            // replacement instructions only return the bound callback parameter.
-            self.mutations.modeled.insert((file, position(at)));
-            MemberWriteValue::Replacement(Value::FrameworkCode(replacement.target))
-        };
-        self.mutations
-            .flask_login_code
-            .entry(method.clone())
-            .or_default()
-            .push(Write { file, at, value });
-        true
-    }
-
-    pub(super) fn retain_flask_login_code_source(
-        &mut self,
-        scope: ScopeId,
-        at: Location,
-        receiver: &Expression,
-    ) {
-        let ExpressionKind::Member(_, method) = &receiver.kind else {
-            return;
-        };
-        let write = self
-            .mutations
-            .flask_login_code
-            .get(method)
-            .and_then(|writes| {
-                writes
-                    .iter()
-                    .find(|write| write.file == scope && position(write.at) == position(at))
-            });
-        if let Some(Write {
-            value: MemberWriteValue::Replacement(Value::FrameworkCode(source)),
-            ..
-        }) = write
-        {
-            self.edge(scope, *source, "code_reference", "certain");
-        }
-    }
-
-    pub(super) fn flask_login_code_at_call(
-        &self,
-        site: Object,
-        method: &str,
-        access: (ScopeId, Location),
-    ) -> Option<Value> {
-        let writes = self.mutations.flask_login_code.get(method)?;
-        let code = self.write_value(writes, Some(site.0), access)?;
-        let class = ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager);
-        // A class slot write may change which function receives the code
-        // assignment. A later slot write leaves an earlier bound alias intact.
-        if self.framework_receiver_has_escaped(&class, None, access)
-            || writes.iter().any(|write| {
-                self.member_write(&class, method, (write.file, write.at))
-                    .is_some()
-            })
-        {
-            return Some(Value::Unknown);
-        }
-        Some(match code {
-            MemberWriteValue::Replacement(Value::FrameworkCode(_)) => Value::IdentityFunction,
-            _ => Value::Unknown,
-        })
-    }
-
     fn flask_login_identity_replacement(
         &mut self,
         file: ScopeId,
@@ -674,63 +570,6 @@ impl<'a> Graph<'a> {
             implicit_descriptor_receiver: true,
             ..call
         }))
-    }
-
-    fn flask_login_allocator_patch(
-        &mut self,
-        file: ScopeId,
-        at: Location,
-        value: &Expression,
-    ) -> Option<Value> {
-        if !matches!(value.kind, ExpressionKind::Name(_)) {
-            return None;
-        }
-        let Value::Callable(call) = self.probe_identity(file, value, at) else {
-            return None;
-        };
-        (self.symbols[call.target].scope == file
-            && self.flask_login_allocator_class(call).is_some())
-        .then_some(Value::Callable(call))
-    }
-
-    fn flask_login_allocator_class(&self, call: Invocation) -> Option<&str> {
-        let Binding::Definition(definition, _) = self.symbols[call.target].binding else {
-            return None;
-        };
-        if call.verified
-            || !matches!(call.receiver, Receiver::Ordinary)
-            || call.implicit_descriptor_receiver
-            || !field_dispatch::plain_method(definition, 1)
-            || !definition.annotations.is_empty()
-        {
-            return None;
-        }
-        let [
-            Statement {
-                kind:
-                    StatementKind::Return(Some(Expression {
-                        kind:
-                            ExpressionKind::Call {
-                                function,
-                                arguments,
-                                keywords,
-                            },
-                        ..
-                    })),
-                ..
-            },
-        ] = body_without_docstring(definition)
-        else {
-            return None;
-        };
-        if let ExpressionKind::Name(class) = &function.kind
-            && arguments.is_empty()
-            && keywords.is_empty()
-            && *class != definition.parameters[0].text
-        {
-            return Some(class);
-        }
-        None
     }
 
     fn index_command_global(
