@@ -1062,9 +1062,12 @@ fn scan_selected(
         .flatten();
     let django_templates = (include_dead_code && phase03 && path.is_dir())
         .then(|| analysis::TemplateProject::new(&project, &config.selection));
+    let gin = (include_dead_code && phase03 && path.is_dir())
+        .then(|| analysis::GinProject::new(&project, &config.selection));
     let framework = analysis::FrameworkInputs {
         settings: django_settings.as_deref(),
         templates: django_templates.as_ref(),
+        gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
     };
@@ -1135,6 +1138,9 @@ fn scan_selected(
         if let Some(templates) = &django_templates {
             inputs.policy.extend(templates.input_digests());
         }
+        if let Some(gin) = &gin {
+            inputs.policy.extend(gin.input_digests());
+        }
         for config in std::iter::once(&config).chain(&local_configs) {
             inputs.policy.extend(
                 config
@@ -1201,6 +1207,9 @@ fn scan_selected(
     let mut snapshot_issues = project.verify(stamps);
     if let Some(templates) = django_templates {
         snapshot_issues.extend(templates.verify());
+    }
+    if let Some(gin) = gin {
+        snapshot_issues.extend(gin.verify());
     }
     if !snapshot_issues.is_empty()
         && dependency_result.is_some()
