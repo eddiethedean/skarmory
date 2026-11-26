@@ -52,9 +52,15 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "b979ee83989289c962dae15e4856f5fbbfb6a6bd"
+git_revision = "7812cded3a6918ec6a83b64fb3ca51d2aeb713ee"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "8eb36c775d12412d7d2e4141ba1d77a383a9191bf52e9c819ad6278ff016c9b1"
+patch_sha256 = "3f0c534d7e537500ce6b816460b5e519ed3d8fa9d76ba6da9d0b264144f30761"
+
+[[phase03_reference.inline_corrections]]
+path = "test/test_fastapi_truth_cycles.py"
+function = "test_cyclic_truth_alias_is_uncertain_registration"
+parameter = "assignments"
+runtime = "FastAPI 0.141.1 with FASTAPI_ROUTE set to on and off"
 
 [[phase03_reference.corrections]]
 id = "starlette-add-route"

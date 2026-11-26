@@ -15,13 +15,13 @@ candidate and a complete inventory.
 The release workflow derives its conformance checkout from Skylos 5.7.0 at
 `87978e69adf91b3811e97b00c40aa39d7937cd94`. The tracked patch supplies the
 reviewed Starlette, unittest, Django, and Gin fixture corrections while those
-upstream PRs are in review. The baseline manifest records the source revision,
-derived revision, exact patch hash, and upstream PR and head for every
-corrected case.
+upstream PRs are in review. It also supplies runtime-dependent FastAPI
+reassignment inputs with the original pytest IDs. The baseline manifest records
+the source revision, derived revision, exact patch hash, and correction provenance.
 
-The materializer verifies the patch, checks that only the reviewed corpus
-fixtures and their manifest paths change, and verifies the expected Git
-commit before switching to it. Analyzer code, test assertions, and the
+The materializer verifies the patch, checks the reviewed corpus and inline
+fixture changes, and verifies the expected Git commit before switching to it.
+Analyzer code, test assertions, and the
 dependency lock come from the frozen revision. The gate checks fixture
 hashes and requires an ordinary pass on the original assertions from the
 derived checkout. The release retains separate controls on the frozen
@@ -58,7 +58,7 @@ passes on the original assertions.
 | Django command, autoreload and hook tests | The standalone fixtures leave installed apps, command selection, and invocation unspecified. Dispatching `handle`, validation, saving, and queries requires separate lifecycle actions. Escaped callbacks and classes remain unresolved without the external installer's code. |
 | Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1302) |
 | Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. The derived reference supplies the runtime-verified fixture correction. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1300) |
-| Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. A corrected fixture loads both named bindings and passes on Skylos. Skarmory still reports incomplete coverage for reached Gin and retry operations. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1304) |
+| Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. The derived reference loads both named bindings, and the original corpus assertions pass on Skylos and Skarmory. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1304) |
 | Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. The launcher-free fixture needs explicit settings selection. Its auth application also needs `django.contrib.contenttypes` to finish setup. |
 | Pontoon-shaped Django startup | The WSGI fixture fails while loading admin because it omits `django.contrib.contenttypes`. The SDK extracts all sources, reports the unresolved wildcard imports, and keeps the original unused-code checks and bounded declaration evidence in complete file scopes. |
 | Django signature conventions | CPython 3.11 resolves `site` to its frozen non-package module. The original project cannot import `site.checks`, `site.views`, or `site.signals` by name under that interpreter configuration. |

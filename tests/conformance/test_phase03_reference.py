@@ -9,7 +9,32 @@ from tempfile import TemporaryDirectory
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from phase03_reference import COMMIT_ENV, COMMIT_MESSAGE, CORPUS, git, materialize
+from phase03_reference import (
+    COMMIT_ENV, COMMIT_MESSAGE, CORPUS, git, materialize, validate_inline_fixture,
+)
+
+
+class InlineFixtureTests(unittest.TestCase):
+    rule = {"path": "test/test_fixture.py", "function": "test_run", "parameter": "source"}
+    original = """
+@pytest.mark.parametrize("source", ["always"])
+def test_run(source):
+    assert run(source)
+"""
+    adjusted = original.replace('["always"]', '["sometimes"], ids=["always"]')
+
+    def test_preserves_assertions_and_pytest_ids(self):
+        validate_inline_fixture(self.original, self.adjusted, self.rule)
+
+    def test_rejects_changed_assertions_or_ids(self):
+        for changed in (
+            self.adjusted.replace("assert run(source)", "assert True"),
+            self.adjusted.replace("assert run(source)", "\n    assert run(source)"),
+            self.adjusted.replace('ids=["always"]', 'ids=["sometimes"]'),
+        ):
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(ValueError, "changed test code, assertions, or pytest IDs"):
+                    validate_inline_fixture(self.original, changed, self.rule)
 
 
 class Phase03ReferenceTests(unittest.TestCase):

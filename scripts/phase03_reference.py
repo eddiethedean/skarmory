@@ -2,6 +2,7 @@
 """Materialize the reviewed Phase 0.3 fixture corrections on pinned Skylos."""
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -25,7 +26,7 @@ COMMIT_ENV = {
     "GIT_COMMITTER_EMAIL": "skarmory-fixtures@example.invalid",
     "GIT_COMMITTER_DATE": "2026-11-19T00:00:00+00:00",
 }
-COMMIT_MESSAGE = b"Apply the reviewed Skarmory Phase 0.3 corpus fixture corrections\n"
+COMMIT_MESSAGE = b"Apply the reviewed Skarmory Phase 0.3 fixture corrections\n"
 
 
 def phase03_revisions(baseline):
@@ -82,6 +83,42 @@ def validate_corpus_changes(before, after, paths, reviewed):
         raise ValueError("fixture changes do not match the reviewed corpus cases")
 
 
+def inline_fixture(source, rule):
+    tree = ast.parse(source)
+    [function] = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == rule["function"]
+    ]
+    [decorator] = [
+        node for node in function.decorator_list
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "pytest.mark.parametrize"
+        and len(node.args) == 2
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == rule["parameter"]
+    ]
+    values = ast.literal_eval(decorator.args[1])
+    if not isinstance(values, (list, tuple)) or not all(isinstance(value, str) for value in values):
+        raise ValueError("inline fixture correction must use literal string inputs")
+    ids = values
+    if decorator.keywords:
+        [keyword] = decorator.keywords
+        if keyword.arg != "ids":
+            raise ValueError("inline fixture correction may only specify explicit pytest IDs")
+        ids = ast.literal_eval(keyword.value)
+    if (not isinstance(ids, (list, tuple)) or len(ids) != len(values)
+            or not all(isinstance(case_id, str) for case_id in ids)):
+        raise ValueError("inline fixture correction must name every input")
+    function.decorator_list.remove(decorator)
+    assertions = [node.lineno for node in ast.walk(tree) if isinstance(node, ast.Assert)]
+    return ast.dump(tree), assertions, list(ids)
+
+
+def validate_inline_fixture(before, after, rule):
+    if inline_fixture(before, rule) != inline_fixture(after, rule):
+        raise ValueError(f"{rule['path']}: correction changed test code, assertions, or pytest IDs")
+
+
 def materialize(checkout, manifest=BASELINE):
     baseline = tomllib.loads(manifest.read_text(encoding="utf-8"))
     original, selected = phase03_revisions(baseline)
@@ -104,9 +141,22 @@ def materialize(checkout, manifest=BASELINE):
         git(checkout, "apply", "--cached", "-", env=env, data=patch)
         changed = git(checkout, "diff", "--cached", "--name-only", "--no-renames", "-z", env=env)
         paths = set(changed.decode().rstrip("\0").split("\0"))
+        corpus_paths = paths.copy()
         before = json.loads(git(checkout, "show", f"{original}:{CORPUS}"))
         after = json.loads(git(checkout, "show", f":{CORPUS}", env=env))
-        validate_corpus_changes(before, after, paths, reviewed)
+        for rule in corrections.get("inline_corrections", ()):
+            path = rule["path"]
+            fixture = PurePosixPath(path)
+            if (path not in corpus_paths or fixture.parts[:1] != ("test",)
+                    or ".." in fixture.parts or fixture.suffix != ".py"):
+                raise ValueError(f"{path}: missing or invalid inline fixture correction")
+            validate_inline_fixture(
+                git(checkout, "show", f"{original}:{path}"),
+                git(checkout, "show", f":{path}", env=env),
+                rule,
+            )
+            corpus_paths.remove(path)
+        validate_corpus_changes(before, after, corpus_paths, reviewed)
         for path in paths:
             entry = git(checkout, "ls-files", "--stage", "--", path, env=env)
             if entry and not entry.startswith(b"100644 "):
