@@ -164,6 +164,35 @@ impl Graph<'_> {
                     self.index_django_form_table_field(file, at, class, field, value, conditional);
                 }
                 StatementKind::WriteModuleEntry {
+                    mapping:
+                        Expression {
+                            kind: ExpressionKind::Member(receiver, table),
+                            ..
+                        },
+                    module: member,
+                    value: Some(value),
+                } if table == "__dict__" && flask_login_callback(member) => {
+                    let kind = ObjectKind::FlaskLoginManager;
+                    if let Value::Object(site, ObjectKind::FlaskLoginManager) =
+                        self.probe_identity(file, receiver, at)
+                        && matches!(
+                            self.flask_member(site, kind, member, (file, at)),
+                            Value::Method(..)
+                        )
+                    {
+                        // An unmodified LoginManager callback is a non-data
+                        // descriptor. A literal instance slot shadows it.
+                        self.index_member_write(
+                            file,
+                            at,
+                            receiver,
+                            member,
+                            Some(value),
+                            conditional,
+                        );
+                    }
+                }
+                StatementKind::WriteModuleEntry {
                     mapping,
                     module,
                     value: Some(value),
