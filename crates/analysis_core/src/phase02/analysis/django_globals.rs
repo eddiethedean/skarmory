@@ -71,6 +71,9 @@ impl Graph<'_> {
 
     pub(super) fn index_django_global_writes(&mut self) {
         for scope in self.files.len()..self.scopes.len() {
+            if self.modeled_flask_global_setter(scope) {
+                continue;
+            }
             let row = &self.scopes[scope];
             let [
                 Statement {
@@ -113,6 +116,9 @@ impl Graph<'_> {
             return;
         }
         self.walk(scope, value, at);
+        if self.modeled_flask_global_setter(scope) {
+            return;
+        }
         let Some(&slot) = self.django_globals.writers.get(&scope) else {
             self.scope_issue(
                 scope,
