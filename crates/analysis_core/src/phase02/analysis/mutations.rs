@@ -1044,6 +1044,7 @@ impl<'a> Graph<'a> {
                         | celery::LOGGING_CONNECT
                 ) || is_flask_login_constructor(&qualified)
                     || gin::tracks_provider_member(&qualified)
+                    || traitlets::tracks_provider_member(&qualified)
                     || click_command_provider(&qualified)
                     || mcp_tools::is_server_provider(&qualified)
                     || is_typer_constructor(&qualified)
@@ -1628,6 +1629,8 @@ fn provider_module(name: &str) -> bool {
             | "tenacity.stop"
             | "typer"
             | "typer.main"
+            | "traitlets"
+            | "traitlets.traitlets"
             | "click"
             | "click.decorators"
             | "django.utils.autoreload"

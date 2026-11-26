@@ -344,6 +344,7 @@ impl Graph<'_> {
                 | FrameworkClassRole::StdlibAstVisitor
                 | FrameworkClassRole::StdlibAsyncProtocol
                 | FrameworkClassRole::StdlibCtypesStructure
+                | FrameworkClassRole::TraitletsConfigurable
                 | FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync
                 | FrameworkClassRole::DjangoTestCase
@@ -403,6 +404,9 @@ impl Graph<'_> {
                 continue;
             };
             self.collect_framework_class_attributes(class, class_scope, role);
+            if role == FrameworkClassRole::TraitletsConfigurable {
+                self.collect_traitlets_legacy_defaults(class, class_scope);
+            }
             if role == FrameworkClassRole::PydanticModel {
                 self.collect_pydantic_schema_build(class, class_scope);
             }
