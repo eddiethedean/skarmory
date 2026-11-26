@@ -91,6 +91,119 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn stdlib_override_declarations_keep_hooks_without_opening_their_bodies() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("app.py");
+    let source = r#"import ast
+import asyncio
+import ctypes
+
+def dormant_body():
+    return None
+
+class BaseVisitor(ast.NodeVisitor):
+    pass
+
+class Visitor(BaseVisitor):
+    def generic_visit(self, node):
+        return dormant_body()
+    def unused_helper(self):
+        return None
+
+class Protocol(asyncio.Protocol):
+    def eof_received(self):
+        return dormant_body()
+
+class Payload(ctypes.Structure):
+    _fields_ = [('size', ctypes.c_int)]
+    unused_field = 1
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Visitor.unused_helper", "app.dormant_body"]
+    );
+    assert!(findings(&report, "unused_variables").contains(&"app.Payload.unused_field"));
+    for name in [
+        "app.Visitor.generic_visit",
+        "app.Protocol.eof_received",
+        "app.Payload._fields_",
+    ] {
+        assert_eq!(
+            evidence_certainties(&report, name, "framework_class_attribute_declaration"),
+            ["possible"]
+        );
+    }
+    fs::write(
+        &path,
+        source.replace("[('size', ctypes.c_int)]", "external_layout"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_subclass_hook" })
+    );
+}
+
+#[test]
+fn drf_and_guardian_retain_only_proven_class_options() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("app.py");
+    let source = r#"from guardian.admin import GuardedModelAdmin
+from rest_framework import serializers
+from rest_framework.authtoken.views import ObtainAuthToken
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.viewsets import ModelViewSet
+
+class Field(serializers.Field):
+    default_error_messages = {'invalid': 'bad'}
+    unused_option = 1
+
+class Token(ObtainAuthToken):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+    unused_option = 1
+
+class ViewSet(ModelViewSet):
+    http_method_names = ['get', 'post']
+    unused_option = 1
+
+class Admin(GuardedModelAdmin):
+    radio_fields = {}
+    unused_option = 1
+"#;
+    fs::write(&path, source).unwrap();
+    let shown = scan(root);
+    for name in [
+        "app.Field.default_error_messages",
+        "app.Token.throttle_scope",
+        "app.ViewSet.http_method_names",
+        "app.Admin.radio_fields",
+    ] {
+        assert_eq!(
+            evidence_certainties(&shown, name, "framework_class_attribute_declaration"),
+            ["possible"]
+        );
+    }
+    for name in ["app.Field", "app.Token", "app.ViewSet", "app.Admin"] {
+        assert!(
+            findings(&shown, "unused_variables")
+                .contains(&format!("{name}.unused_option").as_str())
+        );
+    }
+    fs::write(&path, source.replace("[ScopedRateThrottle]", "[]")).unwrap();
+    let dormant = scan(root);
+    assert!(findings(&dormant, "unused_variables").contains(&"app.Token.throttle_scope"));
+}
+
+#[test]
 fn builtin_dictionary_overrides_keep_only_declared_members() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

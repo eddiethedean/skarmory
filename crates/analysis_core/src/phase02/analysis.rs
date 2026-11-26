@@ -271,6 +271,9 @@ enum ObjectKind {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum FrameworkClassRole {
     BuiltinDict,
+    StdlibAstVisitor,
+    StdlibAsyncProtocol,
+    StdlibCtypesStructure,
     Unittest,
     UnittestAsync,
     DjangoTestCase,
@@ -287,12 +290,15 @@ enum FrameworkClassRole {
     DjangoRelationshipField,
     DjangoSignal,
     DjangoAdmin,
+    DjangoGuardianAdmin,
     DjangoSimpleListFilter,
     DjangoStorageBase,
     DjangoS3Storage,
     ClickCommand,
     DrfSerializer,
     DrfViewSet,
+    DrfField,
+    DrfAuthTokenView,
     CeleryTask,
     CeleryRedisBackend,
     SqlAlchemyModel,
@@ -3369,6 +3375,18 @@ impl<'a> Graph<'a> {
 
     fn subclass_hook(&mut self, scope: ScopeId, base: Value, at: Location, subclass: &Definition) {
         let single_base = subclass.bases.len() == 1;
+        if self.phase03
+            && self.is_ctypes_structure_base(&base)
+            && (!single_base || !self.bounded_ctypes_layout(scope, subclass))
+        {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_subclass_hook",
+                "ctypes structure layout is outside the bounded class model",
+            );
+            return;
+        }
         let hook = match base {
             Value::Callable(Invocation { target: id, .. }) if self.is_class(id) => {
                 self.class_member_at(id, "__init_subclass__", 0, Some((scope, at)))
@@ -10131,6 +10149,7 @@ impl<'a> Graph<'a> {
                         | "django_relationship_field_declaration"
                         | frameworks::CLASS_ATTRIBUTE_DECLARATION
                         | frameworks::BUILTIN_OVERRIDE_DECLARATION
+                        | frameworks::STDLIB_PROTOCOL_DECLARATION
                 ) {
                     continue;
                 }
@@ -11642,6 +11661,11 @@ fn builtin_noop_subclass_hook(name: &str) -> bool {
 fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
     match name {
         "builtins.dict" => Some(FrameworkClassRole::BuiltinDict),
+        "ast.NodeVisitor" => Some(FrameworkClassRole::StdlibAstVisitor),
+        "asyncio.Protocol" | "asyncio.protocols.Protocol" => {
+            Some(FrameworkClassRole::StdlibAsyncProtocol)
+        }
+        "ctypes.Structure" => Some(FrameworkClassRole::StdlibCtypesStructure),
         "unittest.TestCase" | "unittest.case.TestCase" => Some(FrameworkClassRole::Unittest),
         "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
             Some(FrameworkClassRole::UnittestAsync)
@@ -11704,6 +11728,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
+        "guardian.admin.GuardedModelAdmin" => Some(FrameworkClassRole::DjangoGuardianAdmin),
         "django.contrib.admin.SimpleListFilter"
         | "django.contrib.admin.filters.SimpleListFilter" => {
             Some(FrameworkClassRole::DjangoSimpleListFilter)
@@ -11715,6 +11740,12 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "click.Command" | "click.core.Command" => Some(FrameworkClassRole::ClickCommand),
         "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
             Some(FrameworkClassRole::DrfSerializer)
+        }
+        "rest_framework.serializers.Field" | "rest_framework.fields.Field" => {
+            Some(FrameworkClassRole::DrfField)
+        }
+        "rest_framework.authtoken.views.ObtainAuthToken" => {
+            Some(FrameworkClassRole::DrfAuthTokenView)
         }
         "rest_framework.viewsets.ViewSet"
         | "rest_framework.viewsets.GenericViewSet"

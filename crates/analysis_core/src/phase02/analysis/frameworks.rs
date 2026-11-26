@@ -4,6 +4,7 @@ use super::*;
 
 pub(super) const CLASS_ATTRIBUTE_DECLARATION: &str = "framework_class_attribute_declaration";
 pub(super) const BUILTIN_OVERRIDE_DECLARATION: &str = "builtin_override_declaration";
+pub(super) const STDLIB_PROTOCOL_DECLARATION: &str = "stdlib_protocol_declaration";
 
 fn django_unconditionally_raises(body: &[Statement]) -> bool {
     body.iter()
@@ -314,6 +315,9 @@ impl Graph<'_> {
             }
             let (root, lifecycle, fields) = match role {
                 FrameworkClassRole::BuiltinDict
+                | FrameworkClassRole::StdlibAstVisitor
+                | FrameworkClassRole::StdlibAsyncProtocol
+                | FrameworkClassRole::StdlibCtypesStructure
                 | FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync
                 | FrameworkClassRole::DjangoTestCase
@@ -332,6 +336,7 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask
+                | FrameworkClassRole::DjangoGuardianAdmin
                 | FrameworkClassRole::CeleryRedisBackend
                 | FrameworkClassRole::DjangoSimpleListFilter
                 | FrameworkClassRole::DjangoStorageBase
@@ -339,6 +344,8 @@ impl Graph<'_> {
                 | FrameworkClassRole::MarshmallowSchema
                 | FrameworkClassRole::ClickCommand
                 | FrameworkClassRole::DrfSerializer
+                | FrameworkClassRole::DrfField
+                | FrameworkClassRole::DrfAuthTokenView
                 | FrameworkClassRole::DrfViewSet => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
@@ -432,6 +439,39 @@ impl Graph<'_> {
     ) {
         let (names, kind): (&[&str], _) = match role {
             FrameworkClassRole::BuiltinDict => (&["get", "keys"], BUILTIN_OVERRIDE_DECLARATION),
+            FrameworkClassRole::StdlibAstVisitor => {
+                (&["generic_visit"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::StdlibAsyncProtocol => {
+                (&["eof_received"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::StdlibCtypesStructure => {
+                (&["_fields_"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoGuardianAdmin => (
+                &["radio_fields", "sortable_by", "date_hierarchy"],
+                CLASS_ATTRIBUTE_DECLARATION,
+            ),
+            FrameworkClassRole::DrfField => {
+                (&["default_error_messages"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DrfViewSet => (&["http_method_names"], CLASS_ATTRIBUTE_DECLARATION),
+            FrameworkClassRole::DrfAuthTokenView => {
+                let Some(throttles) = self.local(body, "throttle_classes", END) else {
+                    return;
+                };
+                if self.binding_depends_on_branch(throttles, END)
+                    || self
+                        .class_discovery_write(class, "throttle_classes", self.symbols[class].scope)
+                        .is_some()
+                    || !matches!(self.binding(throttles, END, 0), Value::Sequence(classes)
+                        if matches!(classes.as_slice(), [Value::Provider(provider)]
+                            if provider == "rest_framework.throttling.ScopedRateThrottle"))
+                {
+                    return;
+                }
+                (&["throttle_scope"], CLASS_ATTRIBUTE_DECLARATION)
+            }
             FrameworkClassRole::CeleryRedisBackend => {
                 (&["ResultConsumer"], CLASS_ATTRIBUTE_DECLARATION)
             }
@@ -461,6 +501,12 @@ impl Graph<'_> {
             return;
         }
         let scope = self.symbols[class].scope;
+        let stdlib_namespace = matches!(
+            role,
+            FrameworkClassRole::StdlibAstVisitor | FrameworkClassRole::StdlibAsyncProtocol
+        )
+        .then(|| self.public_protocol_module_scope(class))
+        .flatten();
         for name in names {
             if let Some(target) = self.local(body, name, END)
                 && !self.binding_depends_on_branch(target, END)
@@ -474,6 +520,9 @@ impl Graph<'_> {
                         if definition.kind == DefinitionKind::Function && !definition.is_generator))
             {
                 self.edge(body, target, kind, "possible");
+                if let Some(namespace) = stdlib_namespace {
+                    self.edge(namespace, class, STDLIB_PROTOCOL_DECLARATION, "possible");
+                }
             }
         }
     }
@@ -488,6 +537,49 @@ impl Graph<'_> {
             && !self.binding_depends_on_branch(class, END)
             && matches!(symbol.binding, Binding::Definition(definition, _) if definition.decorators.is_empty()))
         .then_some(scope)
+    }
+
+    pub(super) fn is_ctypes_structure_base(&mut self, base: &Value) -> bool {
+        match base {
+            Value::Provider(name) => {
+                framework_class_provider(name) == Some(FrameworkClassRole::StdlibCtypesStructure)
+            }
+            Value::Callable(invocation) if self.is_class(invocation.target) => {
+                self.framework_class_role(invocation.target, &mut BTreeSet::new(), 0)
+                    == Some(FrameworkClassRole::StdlibCtypesStructure)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn bounded_ctypes_layout(&mut self, scope: ScopeId, class: &Definition) -> bool {
+        if class.has_class_keywords() {
+            return false;
+        }
+        body_without_docstring(class).iter().all(|statement| {
+            let StatementKind::Assign { names, value, .. } = &statement.kind else {
+                return matches!(statement.kind, StatementKind::Define(_));
+            };
+            if !names.iter().any(|name| name.text == "_fields_") {
+                return true;
+            }
+            let Some(Expression {
+                kind: ExpressionKind::Sequence { items, list: true },
+                ..
+            }) = value
+            else {
+                return false;
+            };
+            items.iter().all(|field| {
+                let ExpressionKind::Sequence { items, list: false } = &field.kind else {
+                    return false;
+                };
+                matches!(items.as_slice(), [name, ctype]
+                    if matches!(name.kind, ExpressionKind::Text(_))
+                        && matches!(self.probe_identity(scope, ctype, statement.at),
+                            Value::Provider(provider) if provider == "ctypes.c_int"))
+            })
+        })
     }
 
     fn collect_dispatch_declaration(
@@ -3410,8 +3502,10 @@ impl Graph<'_> {
             return;
         }
         if !self.is_class(target)
-            || self.framework_class_role(target, &mut BTreeSet::new(), 0)
-                != Some(FrameworkClassRole::DjangoAdmin)
+            || !matches!(
+                self.framework_class_role(target, &mut BTreeSet::new(), 0),
+                Some(FrameworkClassRole::DjangoAdmin | FrameworkClassRole::DjangoGuardianAdmin)
+            )
         {
             self.django_registration_issue(object, at, "Django ModelAdmin could not be resolved");
             return;
