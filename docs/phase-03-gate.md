@@ -77,9 +77,12 @@ The inventory also records the 27 original cases in `test_fastapi_truth_cycles.p
 The engine port replays all 20 acyclic guards, including the 1,100- and
 1,101-assignment variants. The pinned pytest function writes the Python
 fixture. Its original assertions check native coverage and FastAPI route
-evidence from the Rust engine. The six reassignment cases expect uncertain
-roots even though FastAPI 0.141.1 makes a determinate choice. Those cases and
-the Click SDK case remain pending.
+evidence from the Rust engine. The frozen reassignment fixtures use a literal
+seed that yields a determinate registration decision in FastAPI 0.141.1.
+The derived baseline supplies a runtime seed for the six reassignment
+cases, preserving each reassignment chain, pytest ID, and assertion. The
+engine port checks the route declaration and possible registration
+independently. The Click SDK case remains pending.
 
 The class-attribute provider suite contributes 19 original Python cases.
 Eight SDK ports exercise local lookalikes, a shadowed framework import,
