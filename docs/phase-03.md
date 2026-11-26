@@ -557,7 +557,9 @@ Django admin discovery follows installed apps when `django.contrib.admin` or
 dormant unless the selected application imports them. The analyzer resolves
 the default site's `register` decorator or method and follows the registered
 `ModelAdmin`'s effective literal `list_display`, `readonly_fields`, and `actions`
-entries that select local callbacks. A local getter can supply a literal
+entries that select local callbacks. The registered list-select-related
+override receives the request through its positional callback contract. A
+local getter can supply a literal
 display or readonly list. `@admin.display` and `@admin.action` attach
 metadata to a callback. A loaded registration with opaque options or an
 unresolved condition produces a coverage diagnostic.

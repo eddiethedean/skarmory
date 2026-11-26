@@ -5493,13 +5493,22 @@ class ProductAdmin(admin.ModelAdmin):
     def old_display(self, obj):
         return 2
 
+    def get_list_select_related(self, current_request):
+        return select_related()
+
     def __str__(self):
         return admin_label()
+
+def select_related():
+    return ()
 
 class OtherAdmin(admin.ModelAdmin):
     list_display = ("tax_display",)
     def tax_display(self, obj):
         return 3
+
+    def get_list_select_related(self, current_request):
+        return ()
 
 def format_tax():
     return 1
@@ -5536,6 +5545,19 @@ def admin_label():
             !active
         );
         assert_eq!(unused.contains(&"shop.admin.format_tax"), !active);
+        assert_eq!(unused.contains(&"shop.admin.select_related"), !active);
+        assert_eq!(
+            evidence_certainties(
+                &serial,
+                "shop.admin.ProductAdmin.get_list_select_related.current_request",
+                "django_admin_parameter",
+            ),
+            if active { vec!["possible"] } else { vec![] }
+        );
+        assert!(
+            findings(&serial, "unused_parameters")
+                .contains(&"shop.admin.OtherAdmin.get_list_select_related.current_request")
+        );
         assert!(unused.contains(&"shop.admin.ProductAdmin.old_display"));
         assert!(unused.contains(&"shop.admin.OtherAdmin.tax_display"));
         assert_eq!(
