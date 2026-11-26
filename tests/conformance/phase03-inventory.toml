@@ -17924,9 +17924,8 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:257."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native scan does not complete the original DRF field and token-view subclass dispatch. Qualification needs the original serializer, field, view, and local lookalike assertions together."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_django_admin_options_on_third_party_model_admins"
@@ -17937,9 +17936,8 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:305."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native scan reports unresolved subclass hooks through the third-party Guardian base. The original requires recognition of specific admin options and reporting their adjacent dead member."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_builtin_base_members_count_as_overrides[get]"
