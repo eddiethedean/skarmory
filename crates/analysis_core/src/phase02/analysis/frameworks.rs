@@ -2,6 +2,8 @@
 
 use super::*;
 
+pub(super) const CLASS_ATTRIBUTE_DECLARATION: &str = "framework_class_attribute_declaration";
+
 fn django_unconditionally_raises(body: &[Statement]) -> bool {
     body.iter()
         .find(|statement| {
@@ -328,6 +330,10 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask
+                | FrameworkClassRole::CeleryRedisBackend
+                | FrameworkClassRole::DjangoSimpleListFilter
+                | FrameworkClassRole::DjangoStorageBase
+                | FrameworkClassRole::DjangoS3Storage
                 | FrameworkClassRole::MarshmallowSchema
                 | FrameworkClassRole::ClickCommand
                 | FrameworkClassRole::DrfSerializer
@@ -361,6 +367,7 @@ impl Graph<'_> {
             let Binding::Definition(_, class_scope) = self.symbols[class].binding else {
                 continue;
             };
+            self.collect_framework_class_attributes(class, class_scope, role);
             if role == FrameworkClassRole::PydanticModel {
                 self.collect_pydantic_schema_build(class, class_scope);
             }
@@ -413,6 +420,49 @@ impl Graph<'_> {
         }
 
         self.collect_test_frameworks();
+    }
+
+    fn collect_framework_class_attributes(
+        &mut self,
+        class: SymbolId,
+        body: ScopeId,
+        role: FrameworkClassRole,
+    ) {
+        let names: &[&str] = match role {
+            FrameworkClassRole::CeleryRedisBackend => &["ResultConsumer"],
+            FrameworkClassRole::DjangoSimpleListFilter => &["parameter_name", "title"],
+            FrameworkClassRole::DjangoS3Storage => &[
+                "bucket_name",
+                "location",
+                "custom_domain",
+                "default_acl",
+                "file_overwrite",
+                "object_parameters",
+                "querystring_auth",
+                "gzip",
+                "region_name",
+                "endpoint_url",
+                "addressing_style",
+                "signature_version",
+            ],
+            _ => return,
+        };
+        if self.has_unmodeled_class_write(class) {
+            return;
+        }
+        let scope = self.symbols[class].scope;
+        for name in names {
+            if let Some(target) = self.local(body, name, END)
+                && !self.binding_depends_on_branch(target, END)
+                && self.class_discovery_write(class, name, scope).is_none()
+                && matches!(
+                    self.symbols[target].binding,
+                    Binding::Variable(..) | Binding::Definition(..)
+                )
+            {
+                self.edge(body, target, CLASS_ATTRIBUTE_DECLARATION, "possible");
+            }
+        }
     }
 
     pub(super) fn public_protocol_module_scope(&self, class: SymbolId) -> Option<ScopeId> {
@@ -3064,6 +3114,9 @@ impl Graph<'_> {
                 return self.record_django_relationship_field(class, call);
             }
             FrameworkClassRole::DjangoView => &[],
+            // The generic implementation's get_default_settings returns an
+            // empty dictionary. A zero-argument call performs no setting writes.
+            FrameworkClassRole::DjangoStorageBase => &["get_default_settings"],
             FrameworkClassRole::DjangoCommand => {
                 &["stdout", "stderr", "style", "requires_system_checks"]
             }
