@@ -91,6 +91,148 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn private_attribute_lookup_uses_the_lexical_class_and_runtime_key() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let source = r#"def base_helper(): return "base"
+def child_helper(): return "child"
+def earlier_helper(): return "earlier"
+def explicit_helper(): return "explicit"
+
+class Base:
+    def __step(self):
+        return base_helper()
+
+    def run(self):
+        return self.__step()
+
+class Child(Base):
+    def __step(self):
+        return child_helper()
+
+class _Owner:
+    def __step(self):
+        return earlier_helper()
+
+    def _Owner__step(self):
+        return explicit_helper()
+
+Child().run()
+_Owner()._Owner__step()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    for live in ["app.Base.__step", "app.base_helper", "app.explicit_helper"] {
+        assert!(!unused.contains(&live), "{live}: {unused:?}");
+    }
+    for dead in ["app.Child.__step", "app.child_helper", "app.earlier_helper"] {
+        assert!(unused.contains(&dead), "{dead}: {unused:?}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let conditional = source
+        .replace("class _Owner:", "def choose(): return __debug__\n\nclass _Owner:")
+        .replace(
+            "    def _Owner__step(self):\n        return explicit_helper()",
+            "    if choose():\n        def _Owner__step(self):\n            return explicit_helper()",
+        );
+    fs::write(&path, conditional).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["kind"] == "ambiguous_binding"
+                && issue["message"] == "a private attribute has conditional declarations under different spellings"
+        }),
+        "{report}"
+    );
+}
+
+#[test]
+fn private_class_alias_captures_the_active_binding_at_assignment() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let source = r#"def original(): return "original"
+def installed(self): return "installed"
+def later(self): return "later"
+
+class Processor:
+    def __step(self):
+        return original()
+    _Processor__step = installed
+    __callback = __step
+    _Processor__step = later
+
+Processor()._Processor__callback()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(!unused.contains(&"app.installed"), "{unused:?}");
+    assert!(unused.contains(&"app.original"), "{unused:?}");
+    assert!(unused.contains(&"app.later"), "{unused:?}");
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let conditional = source
+        .replace(
+            "class Processor:",
+            "def choose(): return __debug__\n\nclass Processor:",
+        )
+        .replace(
+            "    _Processor__step = installed",
+            "    if choose():\n        _Processor__step = installed",
+        );
+    fs::write(&path, conditional).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "ambiguous_binding" }),
+        "{report}"
+    );
+    assert!(findings(&report, "unused_functions").is_empty());
+}
+
+#[test]
+fn private_class_alias_uses_module_fallback_before_the_class_binding() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        r#"def _Handler__step(self): return "module"
+def alternate(self): return "outer"
+
+def setup():
+    _Handler__step = alternate
+    class Handler:
+        __callback = __step
+        def __step(self): return "later"
+    return Handler()._Handler__callback()
+
+setup()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    assert!(!unused.contains(&"app._Handler__step"), "{unused:?}");
+    assert!(unused.contains(&"app.alternate"), "{unused:?}");
+}
+
+#[test]
 fn traitlets_hooks_require_genuine_text_trait_declarations() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use skarmory_python::Location;
 use skarmory_python::phase02::{
     ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, DjangoBackendListEdit,
-    Expression, ExpressionKind, Import, Name, Statement, StatementKind,
+    Expression, ExpressionKind, Import, Name, Statement, StatementKind, is_private_name,
 };
 
 use super::config::{Entrypoint, FastapiRouterMode};
@@ -1349,14 +1349,14 @@ impl<'a> Graph<'a> {
     }
 
     fn local(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
-        let key = self.function_binding_key(scope, name);
+        let key = self.lexical_binding_key(scope, name);
         self.local_by_key(scope, &key, before)
     }
 
     fn local_by_key(&self, scope: ScopeId, key: &str, before: Location) -> Option<SymbolId> {
         let primary = self.local_raw(scope, key, before);
         let alias = self
-            .private_function_spelling(scope, key)
+            .private_binding_spelling(scope, key)
             .and_then(|name| self.local_raw(scope, name, before));
         primary
             .into_iter()
@@ -1377,25 +1377,24 @@ impl<'a> Graph<'a> {
             })
     }
 
-    fn function_private_class(&self, mut scope: ScopeId) -> Option<&str> {
-        if !self.phase03 || !self.in_function(scope) {
+    fn lexical_private_class(&self, mut scope: ScopeId) -> Option<&str> {
+        if !self.phase03 {
             return None;
         }
-        while let Some(parent) = self.scopes[scope].parent {
-            scope = parent;
+        loop {
             if let Some(owner) = self.scopes[scope].owner
                 && self.is_class(owner)
             {
                 let name = self.symbols[owner].name.text.trim_start_matches('_');
                 return (!name.is_empty()).then_some(name);
             }
+            scope = self.scopes[scope].parent?;
         }
-        None
     }
 
-    fn function_binding_key<'name>(&self, scope: ScopeId, name: &'name str) -> Cow<'name, str> {
+    fn lexical_binding_key<'name>(&self, scope: ScopeId, name: &'name str) -> Cow<'name, str> {
         if is_private_name(name)
-            && let Some(class) = self.function_private_class(scope)
+            && let Some(class) = self.lexical_private_class(scope)
         {
             Cow::Owned(format!("_{class}{name}"))
         } else {
@@ -1403,7 +1402,7 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn private_function_spelling<'name>(
+    fn private_binding_spelling<'name>(
         &self,
         scope: ScopeId,
         key: &'name str,
@@ -1411,10 +1410,7 @@ impl<'a> Graph<'a> {
         if !key.starts_with('_') {
             return None;
         }
-        let class = self.function_private_class(scope)?;
-        key.strip_prefix('_')?
-            .strip_prefix(class)
-            .filter(|name| is_private_name(name))
+        private_source_spelling(self.lexical_private_class(scope)?, key)
     }
 
     fn supported_provider_wildcard(
@@ -1467,13 +1463,13 @@ impl<'a> Graph<'a> {
         let mut before = before;
         // Compile-time mangling belongs to the lookup's lexical class,
         // including when lookup proceeds to a function outside that class.
-        let key = self.function_binding_key(origin, name);
+        let key = self.lexical_binding_key(origin, name);
         if let Some(owner) = self.scopes[origin].owner
             && let Binding::Definition(definition, _) = self.symbols[owner].binding
             && definition
                 .global_reads
                 .iter()
-                .any(|global| self.function_binding_key(origin, global) == key)
+                .any(|global| self.lexical_binding_key(origin, global) == key)
         {
             scope = self.scopes[origin].file;
             before = END;
@@ -1487,7 +1483,20 @@ impl<'a> Graph<'a> {
                 if let Some(id) = self.local_by_key(scope, &key, before) {
                     return LexicalBinding::Found(id);
                 }
-                let private = self.private_function_spelling(scope, &key);
+                let private = self.private_binding_spelling(scope, &key);
+                if class
+                    && let Some(private) = private
+                    && (suite_binds_name(row.body, &key) || suite_binds_name(row.body, private))
+                {
+                    // A declared class-local private name falls back to the
+                    // module before its assignment. It does not capture an
+                    // enclosing function's binding of the mangled name.
+                    if !self.immediately_encloses_class_body(scope, row.file) {
+                        before = END;
+                    }
+                    scope = row.file;
+                    continue;
+                }
                 if row.owner.is_some()
                     && !class
                     && (row.names.contains_key(key.as_ref())
@@ -2347,6 +2356,20 @@ impl<'a> Graph<'a> {
         depth: usize,
     ) -> Option<Value> {
         let symbol = &self.symbols[id];
+        if self.scopes[symbol.scope]
+            .owner
+            .is_some_and(|owner| self.is_class(owner))
+        {
+            let key = self.lexical_binding_key(symbol.scope, &symbol.name.text);
+            if let Some(private) = self.private_binding_spelling(symbol.scope, &key)
+                && self.local_raw(symbol.scope, &key, before).is_some()
+                && self.local_raw(symbol.scope, private, before).is_some()
+            {
+                // This model tracks branches for one source spelling. A class
+                // read that can reach both spellings needs a shared branch set.
+                return None;
+            }
+        }
         let candidates = self.scopes[symbol.scope]
             .names
             .get(symbol.name.text.as_str())?;
@@ -3519,6 +3542,48 @@ impl<'a> Graph<'a> {
         self.class_member_at(id, name, depth, None)
     }
 
+    fn declared_class_member(
+        &mut self,
+        class: SymbolId,
+        class_scope: ScopeId,
+        name: &str,
+        depth: usize,
+        access: Option<(ScopeId, Location)>,
+    ) -> Option<Value> {
+        let class_name = self.symbols[class].name.text.trim_start_matches('_');
+        if !self.phase03 || class_name.is_empty() {
+            let attribute = self.local(class_scope, name, END)?;
+            return Some(self.binding(attribute, END, depth + 1));
+        }
+        // The class stores private declarations under their mangled keys.
+        // Keep each declaration's source spelling and location for reports.
+        if is_private_name(name) {
+            return None;
+        }
+        let explicit = self.local_raw(class_scope, name, END);
+        let private = private_source_spelling(class_name, name)
+            .and_then(|spelling| self.local_raw(class_scope, spelling, END));
+        let attribute = explicit
+            .into_iter()
+            .chain(private)
+            .max_by_key(|&id| position(self.symbols[id].name.at))?;
+        if explicit.is_some() && private.is_some() && self.binding_depends_on_branch(attribute, END)
+        {
+            // The conditional binding model follows one source spelling.
+            // It cannot establish the active declaration across both spellings.
+            if let Some((scope, at)) = access {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "ambiguous_binding",
+                    "a private attribute has conditional declarations under different spellings",
+                );
+            }
+            return Some(Value::Unknown);
+        }
+        Some(self.binding(attribute, END, depth + 1))
+    }
+
     fn class_member_at(
         &mut self,
         id: SymbolId,
@@ -3530,7 +3595,7 @@ impl<'a> Graph<'a> {
             return Some(Value::Unknown);
         }
         let symbol = &self.symbols[id];
-        let class_declaration_scope = symbol.scope;
+        let decl_scope = symbol.scope;
         let Binding::Definition(definition, class_scope) = symbol.binding else {
             unreachable!()
         };
@@ -3555,17 +3620,19 @@ impl<'a> Graph<'a> {
             }
             Some(mutations::MemberWriteValue::Deleted) => {}
             None => {
-                if let Some(attribute) = self
-                    .metaclass_member(id, name)
-                    .or_else(|| self.local(class_scope, name, END))
-                {
+                if let Some(attribute) = self.metaclass_member(id, name) {
                     return Some(self.binding(attribute, END, depth + 1));
+                }
+                if let Some(value) =
+                    self.declared_class_member(id, class_scope, name, depth, access)
+                {
+                    return Some(value);
                 }
             }
         }
         let inherited = match definition.bases.as_slice() {
             [] => None,
-            [base] => match self.class_base(symbol.scope, base, definition.name.at, depth + 1) {
+            [base] => match self.class_base(decl_scope, base, definition.name.at, depth + 1) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
@@ -3659,10 +3726,7 @@ impl<'a> Graph<'a> {
                                     .module_member_write(
                                         &provider,
                                         name,
-                                        access.unwrap_or((
-                                            class_declaration_scope,
-                                            definition.name.at,
-                                        )),
+                                        access.unwrap_or((decl_scope, definition.name.at)),
                                     )
                                     .is_none()
                         }) =>
@@ -3986,8 +4050,8 @@ impl<'a> Graph<'a> {
                     } else if let Some(call) = self.final_direct_closure_call(scope, binding_scope)
                     {
                         if let Some(write) = call.write
-                            && self.function_binding_key(write.setter, &write.name.text)
-                                == self.function_binding_key(scope, name)
+                            && self.lexical_binding_key(write.setter, &write.name.text)
+                                == self.lexical_binding_key(scope, name)
                             && position(self.symbols[id].name.at) < position(write.at)
                         {
                             self.read.insert(id);
@@ -3996,10 +4060,10 @@ impl<'a> Graph<'a> {
                         call.at
                     } else {
                         let names = &self.scopes[binding_scope].names;
-                        let key = self.function_binding_key(scope, name);
+                        let key = self.lexical_binding_key(scope, name);
                         let primary = names.get(key.as_ref()).map_or(0, Vec::len);
                         let private = self
-                            .private_function_spelling(binding_scope, &key)
+                            .private_binding_spelling(binding_scope, &key)
                             .and_then(|name| names.get(name))
                             .map_or(0, Vec::len);
                         if primary + private > 1 {
@@ -12015,8 +12079,10 @@ fn is_identity_decorator(definition: &Definition) -> bool {
     returns_parameter(definition, parameter)
 }
 
-fn is_private_name(name: &str) -> bool {
-    name.starts_with("__") && !name.ends_with("__")
+fn private_source_spelling<'name>(class: &str, key: &'name str) -> Option<&'name str> {
+    key.strip_prefix('_')?
+        .strip_prefix(class)
+        .filter(|name| is_private_name(name))
 }
 
 fn returns_parameter(definition: &Definition, parameter: &Name) -> bool {

@@ -19,6 +19,10 @@ use crate::{FrontendError, Lines, Location, parse_source};
 // Limit recursive walks and the depth of serialized facts.
 const MAX_NESTING: usize = 32;
 
+pub fn is_private_name(name: &str) -> bool {
+    name.starts_with("__") && !name.ends_with("__")
+}
+
 fn lambda_parameter(lambda: &ruff_python_ast::ExprLambda) -> Option<&str> {
     let parameters = lambda.parameters.as_ref()?;
     if parameters.len() != 1 || !parameters.kwonlyargs.is_empty() {
@@ -503,6 +507,7 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         BTreeMap::new(),
         &named_condition,
         project_wildcards,
+        None,
     )
     .suite(&syntax.body, 0)?;
     Ok(ModuleFacts {
@@ -579,6 +584,7 @@ struct Lowering<'a>(
     BTreeMap<String, Location>,
     &'a Cell<Option<Location>>,
     bool,
+    Option<&'a str>,
 );
 
 struct BodyCoverage<'a> {
@@ -698,6 +704,18 @@ impl Lowering<'_> {
         }
     }
 
+    fn attribute_name(&self, name: &str) -> String {
+        // Syntactic attribute names use the enclosing class, even when the
+        // receiver is unrelated to that class. Literal strings stay unchanged.
+        if let Some(class) = self.5
+            && is_private_name(name)
+        {
+            format!("_{class}{name}")
+        } else {
+            name.to_owned()
+        }
+    }
+
     fn write_target(
         &self,
         target: &Expr,
@@ -707,7 +725,7 @@ impl Lowering<'_> {
         match target {
             Expr::Attribute(node) => Ok(StatementKind::WriteAttribute {
                 receiver: self.expression(&node.value, depth)?,
-                member: node.attr.to_string(),
+                member: self.attribute_name(node.attr.as_str()),
                 value,
             }),
             Expr::Subscript(node) => {
@@ -962,6 +980,7 @@ impl Lowering<'_> {
                         BTreeMap::new(),
                         self.3,
                         self.4,
+                        self.5,
                     );
                     let mut global_reads = Vec::new();
                     let body = if !is_async
@@ -1124,6 +1143,7 @@ impl Lowering<'_> {
                             }))
                     }) =>
                 {
+                    let class = node.name.as_str().trim_start_matches('_');
                     StatementKind::Define(Definition {
                         name: self.binding_name(node.name.as_str(), &node.name)?,
                         kind: DefinitionKind::Class,
@@ -1153,8 +1173,15 @@ impl Lowering<'_> {
                             .map(|keyword| expression(&keyword.value))
                             .transpose()?,
                         is_generator: false,
-                        body: Lowering(self.0, SyntaxScope::Class, BTreeMap::new(), self.3, self.4)
-                            .suite(&node.body, next)?,
+                        body: Lowering(
+                            self.0,
+                            SyntaxScope::Class,
+                            BTreeMap::new(),
+                            self.3,
+                            self.4,
+                            (self.4 && !class.is_empty()).then_some(class),
+                        )
+                        .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
                         global_reads: Vec::new(),
                         decorators: node
@@ -1440,7 +1467,10 @@ impl Lowering<'_> {
                 |&target| ExpressionKind::IterationVariable(target),
             ),
             Expr::Attribute(node) => {
-                ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
+                ExpressionKind::Member(
+                    Box::new(lower(&node.value)?),
+                    self.attribute_name(node.attr.as_str()),
+                )
             }
             Expr::Call(node)
                 if let [Expr::Starred(positional)] = node.arguments.args.as_ref()
@@ -1708,7 +1738,7 @@ impl Lowering<'_> {
                 .or_insert_with(|| self.0.locate(target.start()));
             targets.push(target);
         }
-        let mut child = Self(self.0, self.1, self.2.clone(), self.3, self.4);
+        let mut child = Self(self.0, self.1, self.2.clone(), self.3, self.4, self.5);
         child.2.extend(local_targets);
         let iterators = generators
             .iter()
