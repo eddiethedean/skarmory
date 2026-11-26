@@ -214,9 +214,17 @@ impl<'a> Graph<'a> {
         });
         let write = cell_writes.next();
         if let Some(write) = &write {
-            // Track a single explicit write followed by a direct read of the
-            // same cell. A callable with other effects or escaped state needs
-            // evaluation across activation instances.
+            // Only the terminal closure read sees the updated cell. Require
+            // the setter to run immediately before that call, with no
+            // arguments or closure defaults that could introduce other reads
+            // or calls to the setter.
+            if !arguments.is_empty()
+                || !closure.defaults.is_empty()
+                || !matches!(prefix.last(), Some(Statement { kind: StatementKind::Evaluate(call), .. })
+                    if position(call.at) == position(write.at))
+            {
+                return None;
+            }
             let [
                 Statement {
                     kind:
@@ -297,6 +305,16 @@ impl<'a> Graph<'a> {
             arguments,
             write,
         })
+    }
+
+    pub(super) fn closure_reads_own_binding(&self, scope: ScopeId, closure: &Definition) -> bool {
+        let key = self.function_binding_key(scope, &closure.name.text);
+        let postponed = self.files[self.scopes[scope].file]
+            .facts
+            .postponed_annotations;
+        namespace_free_names(closure, postponed)
+            .into_iter()
+            .any(|name| self.function_binding_key(scope, name) == key)
     }
 
     fn local_cell_setter(

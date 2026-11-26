@@ -191,6 +191,10 @@ The installed SDK replays all 57 parametrized cases from
 each case's grep setting, and require runtime trace input to stay disabled.
 The cases distinguish creating a closure from calling it and cover nested
 ownership, captured bindings, callback escape, and private names.
+The bounded nonlocal write model requires a setter immediately before the
+final zero-argument closure call. Inferring a closure parameter's receiver from
+the initial call requires the closure body to have no reference to its own
+binding.
 The frozen fixtures refer to an absent `external` module. The reviewed inputs
 use CPython's `atexit.register` and `asyncio.run`, keep the list append and
 dictionary item assignment on real callback registries, and use `__debug__`
