@@ -5,8 +5,9 @@ use super::*;
 mod backend_writes;
 mod collections;
 
-const PROTOCOL_SETTINGS: [&str; 5] = [
+const PROTOCOL_SETTINGS: [&str; 6] = [
     "AUTHENTICATION_BACKENDS",
+    "REST_FRAMEWORK",
     "STORAGES",
     "LOGGING",
     "MIDDLEWARE",
@@ -52,6 +53,7 @@ const STORAGE_METHODS: &[&str] = &[
 enum Protocol {
     Auth,
     Storage,
+    Pagination,
     Filter { default_constructor: bool },
     Formatter { default_constructor: bool },
     Middleware { singleton: bool },
@@ -71,7 +73,7 @@ impl Protocol {
                 "formatMessage",
                 "formatStack",
             ],
-            Self::Middleware { .. } | Self::ContextProcessor => &[],
+            Self::Middleware { .. } | Self::ContextProcessor | Self::Pagination => &[],
         }
     }
 
@@ -79,6 +81,7 @@ impl Protocol {
         match self {
             Self::Auth => "django_auth_backend",
             Self::Storage => "django_storage_backend",
+            Self::Pagination => "drf_pagination_setting",
             Self::Filter { .. } | Self::Formatter { .. } => "django_logging_factory",
             Self::Middleware { .. } => "django_middleware",
             Self::ContextProcessor => "django_setting_reference",
@@ -709,6 +712,21 @@ impl Graph<'_> {
             }
             return;
         }
+        if matches!(protocol, Protocol::Pagination | Protocol::Storage)
+            && self.retain_static_settings_protocol(class, settings, protocol, &writes, roots)
+        {
+            self.read.extend(target.bindings);
+            return;
+        }
+        if matches!(protocol, Protocol::Pagination) {
+            self.scope_issue(
+                file,
+                self.symbols[binding].name.at,
+                "unresolved_registration",
+                "configured DRF pagination is outside the bounded protocol",
+            );
+            return;
+        }
         let allow_logging_base = matches!(
             protocol,
             Protocol::Filter {
@@ -800,6 +818,65 @@ impl Graph<'_> {
             self.read.extend(target.bindings);
             roots.push(possible_edge(target.target, protocol.evidence()));
         }
+    }
+
+    fn retain_static_settings_protocol(
+        &mut self,
+        class: SymbolId,
+        settings: ScopeId,
+        protocol: Protocol,
+        writes: &[&SettingsWrites],
+        roots: &mut Vec<Edge>,
+    ) -> bool {
+        let role = match protocol {
+            Protocol::Storage => FrameworkClassRole::DjangoManifestStorage,
+            Protocol::Pagination => FrameworkClassRole::DrfPageNumberPagination,
+            _ => return false,
+        };
+        let Some(body) = self.direct_framework_protocol_body(class, role, (settings, END)) else {
+            return false;
+        };
+        if writes
+            .iter()
+            .any(|writes| writes.classes.contains_key(&class))
+        {
+            return false;
+        }
+        if matches!(protocol, Protocol::Storage) {
+            if self.scopes[body].body.iter().any(|statement| {
+                !matches!(&statement.kind,
+                StatementKind::Evaluate(value) if matches!(value.kind, ExpressionKind::Text(_)))
+            }) {
+                return false;
+            }
+            roots.push(possible_edge(class, "django_setting_reference"));
+            return true;
+        }
+        if let Some(query) = self.local(body, "page_size_query_param", END) {
+            let Binding::Variable(Some(value), _) = self.symbols[query].binding else {
+                return false;
+            };
+            if self.binding_depends_on_branch(query, END) {
+                return false;
+            }
+            let enabled = match &value.kind {
+                ExpressionKind::Text(query) => !query.is_empty(),
+                ExpressionKind::None => false,
+                _ => return false,
+            };
+            if enabled && let Some(limit) = self.local(body, "max_page_size", END) {
+                if self.binding_depends_on_branch(limit, END)
+                    || !matches!(self.symbols[limit].binding, Binding::Variable(Some(value), _)
+                        if matches!(value.kind, ExpressionKind::Scalar(Some(_)) | ExpressionKind::None))
+                {
+                    return false;
+                }
+                roots.push(possible_edge(limit, "drf_pagination_option"));
+            }
+            roots.push(possible_edge(query, "drf_pagination_option"));
+        }
+        roots.push(possible_edge(class, protocol.evidence()));
+        true
     }
 
     fn conditional_auth_methods(
@@ -976,6 +1053,11 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                     },
                 ))
             }));
+        }
+        ("REST_FRAMEWORK", _) => {
+            if let Some(Value::Text(path)) = get(value, "DEFAULT_PAGINATION_CLASS") {
+                paths.push((path, Protocol::Pagination));
+            }
         }
         ("STORAGES", _) => {
             for entry in mapping(value).into_values() {

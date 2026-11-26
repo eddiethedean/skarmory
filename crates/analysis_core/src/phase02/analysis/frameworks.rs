@@ -363,11 +363,14 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoSimpleListFilter
                 | FrameworkClassRole::DjangoStorageBase
                 | FrameworkClassRole::DjangoS3Storage
+                | FrameworkClassRole::DjangoManifestStorage
                 | FrameworkClassRole::MarshmallowSchema
                 | FrameworkClassRole::ClickCommand
                 | FrameworkClassRole::DrfSerializer
                 | FrameworkClassRole::DrfField
                 | FrameworkClassRole::DrfAuthTokenView
+                | FrameworkClassRole::DrfApiException
+                | FrameworkClassRole::DrfPageNumberPagination
                 | FrameworkClassRole::DrfViewSet => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
@@ -3307,6 +3310,94 @@ impl Graph<'_> {
                 == Some(FrameworkClassRole::DjangoCommand)
     }
 
+    fn direct_framework_protocol_body(
+        &mut self,
+        class: SymbolId,
+        role: FrameworkClassRole,
+        access: (ScopeId, Location),
+    ) -> Option<ScopeId> {
+        let symbol = &self.symbols[class];
+        let Binding::Definition(definition, body) = symbol.binding else {
+            return None;
+        };
+        let [base] = definition.bases.as_slice() else {
+            return None;
+        };
+        let scope = symbol.scope;
+        let Value::Provider(provider) = self.probe_identity(scope, base, definition.name.at) else {
+            return None;
+        };
+        let methods: &[&str] = if role == FrameworkClassRole::DrfPageNumberPagination {
+            &["paginate_queryset", "get_page_size"]
+        } else {
+            &[]
+        };
+        (framework_class_provider(&provider) == Some(role)
+            && !definition.has_class_keywords()
+            && definition.decorators.is_empty()
+            && !self.has_unmodeled_class_write(class)
+            && self
+                .class_discovery_writes(class, self.scopes[access.0].file)
+                .is_empty()
+            && [
+                "__new__",
+                "__init__",
+                "__getattribute__",
+                "__getattr__",
+                "__setattr__",
+                "__slots__",
+                "__dict__",
+            ]
+            .into_iter()
+            .chain(methods.iter().copied())
+            .all(|name| {
+                self.local(body, name, END).is_none()
+                    && self.module_member_write(&provider, name, access).is_none()
+            }))
+        .then_some(body)
+    }
+
+    fn drf_exception_defaults(&mut self, class: SymbolId, call: CallArguments<'_>) -> bool {
+        let Some(body) = self.direct_framework_protocol_body(
+            class,
+            FrameworkClassRole::DrfApiException,
+            (call.scope, call.before),
+        ) else {
+            return false;
+        };
+        let Some(arguments) =
+            registration_arguments(call.positional, call.keywords, ["detail", "code"])
+        else {
+            return false;
+        };
+        let mut defaults = Vec::new();
+        for (argument, name) in arguments
+            .into_iter()
+            .zip(["default_detail", "default_code"])
+        {
+            if let Some(argument) = argument {
+                match self.identity(call.scope, argument, call.before, 0) {
+                    Value::Text(_) => continue,
+                    Value::None => {}
+                    _ => return false,
+                }
+            }
+            if let Some(binding) = self.local(body, name, END) {
+                if self.binding_depends_on_branch(binding, END)
+                    || !matches!(self.symbols[binding].binding, Binding::Variable(Some(value), _)
+                        if matches!(value.kind, ExpressionKind::Text(_)))
+                {
+                    return false;
+                }
+                defaults.push(binding);
+            }
+        }
+        for binding in defaults {
+            self.edge(call.scope, binding, "drf_exception_default", "possible");
+        }
+        true
+    }
+
     pub(super) fn framework_default_constructor(
         &mut self,
         class: SymbolId,
@@ -3341,6 +3432,9 @@ impl Graph<'_> {
             }
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
+            }
+            FrameworkClassRole::DrfApiException => {
+                return self.drf_exception_defaults(class, call);
             }
             FrameworkClassRole::TraitletsConfigurable => {
                 if self.bounded_traitlets_constructor(class, call) {
