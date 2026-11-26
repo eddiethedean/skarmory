@@ -124,17 +124,44 @@ def validate_inline_fixtures(before, after, rules):
         raise ValueError(f"{rules[0]['path']}: correction changed test code, assertions, or pytest IDs")
 
 
-def test_contract(source):
+def clear_reviewed_parameter_strings(test, columns):
+    [decorator] = [
+        node for node in test.decorator_list
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "pytest.mark.parametrize"
+        and len(node.args) == 2
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ]
+    names = [name.strip() for name in decorator.args[0].value.split(",")]
+    [keyword] = [keyword for keyword in decorator.keywords if keyword.arg == "ids"]
+    ids = ast.literal_eval(keyword.value)
+    rows = decorator.args[1]
+    if (not set(columns) <= set(names) or not isinstance(rows, (ast.List, ast.Tuple))
+            or not isinstance(ids, (list, tuple)) or len(ids) != len(rows.elts)
+            or not all(isinstance(case_id, str) for case_id in ids)):
+        raise ValueError(f"{test.name}: fixture columns require explicit pytest IDs")
+    for row in rows.elts:
+        if not isinstance(row, (ast.List, ast.Tuple)) or len(row.elts) != len(names):
+            raise ValueError(f"{test.name}: fixture input rows do not match their named columns")
+        for index, argument in enumerate(row.elts):
+            if names[index] in columns and isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                argument.value = ""
+
+
+def test_contract(source, fixture_columns):
     tree = ast.parse(source)
     assertions = [
         (node.lineno, ast.dump(node))
         for node in ast.walk(tree) if isinstance(node, ast.Assert)
     ]
-    tests = [
-        (node.name, node.lineno, ast.dump(node.args), tuple(map(ast.dump, node.decorator_list)))
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
-    ]
+    tests = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.name.startswith("test_"):
+            continue
+        if node.name in fixture_columns:
+            clear_reviewed_parameter_strings(node, fixture_columns[node.name])
+        tests.append((node.name, node.lineno, ast.dump(node.args), tuple(map(ast.dump, node.decorator_list))))
     return assertions, tests
 
 
@@ -148,7 +175,8 @@ def validate_fixture_setup(before, after, rule):
             or len(set(reviewed_lines)) != len(reviewed_lines)
             or changed_lines != set(reviewed_lines)):
         raise ValueError(f"{rule['path']}: fixture edit differs from the reviewed lines")
-    if test_contract(before) != test_contract(after):
+    fixture_columns = rule.get("parametrized_fixture_columns", {})
+    if test_contract(before, fixture_columns) != test_contract(after, fixture_columns):
         raise ValueError(f"{rule['path']}: fixture setup changed assertions or test collection")
 
 

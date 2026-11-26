@@ -71,6 +71,26 @@ def test_fixture(value):
                 with self.assertRaisesRegex(ValueError, "changed assertions or test collection"):
                     validate_fixture_setup(self.original, changed, {"path": "test/test_fixture.py", "lines": lines})
 
+    def test_reviewed_source_column_preserves_other_values_and_explicit_id(self):
+        original = """@pytest.mark.parametrize("source, expected", [("old", "value")], ids=["case"])
+def test_fixture(source, expected):
+    assert run(source) == expected
+"""
+        reviewed = {
+            "path": "test/test_fixture.py",
+            "lines": [1],
+            "parametrized_fixture_columns": {"test_fixture": ["source"]},
+        }
+        adjusted = original.replace('"old"', '"new"')
+        validate_fixture_setup(original, adjusted, reviewed)
+        for changed in (
+            adjusted.replace('"value"', '"different"'),
+            adjusted.replace('"case"', '"renamed"'),
+        ):
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(ValueError, "changed assertions or test collection"):
+                    validate_fixture_setup(original, changed, reviewed)
+
 
 class Phase03ReferenceTests(unittest.TestCase):
     def setUp(self):
