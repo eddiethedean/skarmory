@@ -472,7 +472,7 @@ index 3a3f6ea..ae07eca 100644
        "source": {
          "repo": "https://github.com/django/django",
 diff --git a/test/test_dead_code_framework_overrides.py b/test/test_dead_code_framework_overrides.py
-index 0feb0e1..0dc51b5 100644
+index 0feb0e1..5ca7642 100644
 --- a/test/test_dead_code_framework_overrides.py
 +++ b/test/test_dead_code_framework_overrides.py
 @@ -146,7 +146,7 @@ def test_third_party_overrides_read_from_site_packages(tmp_path, monkeypatch):
@@ -484,26 +484,6 @@ index 0feb0e1..0dc51b5 100644
 
      reported = _reported(root)
 
-@@ -211,8 +211,8 @@ def test_traitlets_handlers_and_dynamic_defaults(tmp_path):
-                 "from traitlets import Unicode, default, validate\n"
-                 "from app.base import Configurable\n\n\n"
-                 "class Manager(Configurable):\n"
--                "    root_dir = Unicode()\n\n"
--                "    @default('root_dir')\n"
-+                '    root_dir = Unicode()\n    alternate_dir = Unicode()\n\n'
-+                "    @default('alternate_dir')\n"
-                 "    def _default_root_dir(self):\n"
-                 "        return '/'\n\n"
-                 "    @validate('root_dir')\n"
-@@ -227,7 +227,7 @@ def test_traitlets_handlers_and_dynamic_defaults(tmp_path):
-                 "        return None\n\n"
-                 "    def stale_manager_helper(self):\n"
-                 "        return 1\n\n\n"
--                "MANAGER = Manager()\n"
-+                'MANAGER = Manager\n'
-             ),
-             "app/local.py": (
-                 "def default(name):\n"
 @@ -260,14 +260,14 @@ def test_drf_field_hooks_through_project_serializers(tmp_path):
          {
              "api/__init__.py": "",

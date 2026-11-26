@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "9999a45e68bca2125ff688ce364478f184d1f1a6"
+git_revision = "87ce593471736c72d9fc17223b25f8d76edf8eea"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "86a9d5e958663e50fd5995feec22f3d69176b04a84a6ed3d8cb86d5beb41d12f"
+patch_sha256 = "64039921d222557c67b5f90256528daf7775fc66fe3f956672bcee12ece0465b"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
@@ -97,8 +97,8 @@ runtime = "CPython 3.11 selects each fixture package, fails to import its absent
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_dead_code_framework_overrides.py"
-lines = [149, 214, 215, 230, 263, 265, 270, 284, 287, 312, 320]
-runtime = "CPython 3.11 resolves an absent child to its local fallback; Traitlets 5.14.3 consumes distinct defaults; DRF 3.16.1 and Guardian 3.2.0 load a configured Django application and real registered model"
+lines = [149, 263, 265, 270, 284, 287, 312, 320]
+runtime = "CPython 3.11 resolves an absent child to its local fallback; DRF 3.16.1 and Guardian 3.2.0 load a configured Django application and real registered model"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_admin_stubs.py"

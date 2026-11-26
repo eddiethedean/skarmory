@@ -1,7 +1,7 @@
 # Reviewed seed for the pinned dead-code release gate.
 # The complete case inventory and remaining ports are still required.
 schema_version = 1
-reference_revision = "9999a45e68bca2125ff688ce364478f184d1f1a6"
+reference_revision = "87ce593471736c72d9fc17223b25f8d76edf8eea"
 inventory_complete = false
 
 [[variants]]
@@ -18053,8 +18053,9 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:199."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = "tests/conformance/run_phase03_seed.py"
+port = ""
 omitted_assertions = []
+blocker = "The original constructs Manager(). Qualification requires native coverage of that construction and runtime-valid setup that exercises both defaults."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_drf_field_hooks_through_project_serializers"
