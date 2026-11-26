@@ -173,6 +173,75 @@ unused_generator()
 }
 
 #[test]
+fn direct_lambda_calls_resolve_private_captures_and_parameter_shadowing() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let source = r#"def captured(): return 'captured'
+def passed(): return 'passed'
+def shadowed(): return 'shadowed'
+
+class _Capture:
+    def run(self):
+        callback = lambda: _Capture__step()
+        def __step():
+            return captured()
+        return callback()
+
+class Shadow:
+    def run(self):
+        def __step():
+            return shadowed()
+        callback = lambda __step: _Shadow__step()
+        return callback(passed)
+
+_Capture().run()
+Shadow().run()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Shadow.run.__step", "app.shadowed"]
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &path,
+        source.replace("return callback(passed)", "return callback"),
+    )
+    .unwrap();
+    let escaped = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        escaped["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_lambda_execution" }),
+        "{escaped}"
+    );
+
+    let mutated = source.replace(
+        "        return callback()",
+        "        def replace():\n            nonlocal __step\n            __step = passed\n        replace()\n        return callback()",
+    );
+    fs::write(&path, mutated).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_lambda_execution" }),
+        "{report}"
+    );
+}
+
+#[test]
 fn private_attribute_lookup_uses_the_lexical_class_and_runtime_key() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

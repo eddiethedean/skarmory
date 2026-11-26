@@ -381,6 +381,7 @@ pub enum ExpressionKind {
     IdentityDecoratorLambda,
     DeferredLambda(Box<Expression>),
     DeferredBoolLambda,
+    DeferredCallbackLambda,
     EmptyListComprehension,
     Sequence {
         items: Vec<Expression>,
@@ -1605,6 +1606,18 @@ impl Lowering<'_> {
                     && matches!(node.body.as_ref(), Expr::BooleanLiteral(_)) =>
             {
                 ExpressionKind::DeferredBoolLambda
+            }
+            Expr::Lambda(node)
+                if self.4
+                    && let Some(parameter) = lambda_parameter(node)
+                    && parameter != "__debug__"
+                    && let Expr::Call(call) = node.body.as_ref()
+                    && call.arguments.args.is_empty()
+                    && call.arguments.keywords.is_empty()
+                    && matches!(&*call.func, Expr::Name(name)
+                        if self.attribute_name(name.id.as_str()) == self.attribute_name(parameter)) =>
+            {
+                ExpressionKind::DeferredCallbackLambda
             }
             Expr::NoneLiteral(_) => ExpressionKind::None,
             Expr::ListComp(node)

@@ -28,6 +28,139 @@ pub(super) struct RegistryUse {
 }
 
 impl<'a> Graph<'a> {
+    pub(super) fn walk_direct_lambda_call(
+        &mut self,
+        function: &Expression,
+        call: CallArguments<'_>,
+    ) -> bool {
+        let CallArguments {
+            scope,
+            before,
+            at,
+            positional,
+            keywords,
+        } = call;
+        if !self.in_function(scope) || !keywords.is_empty() {
+            return false;
+        }
+        let (lambda, local) = if let ExpressionKind::Name(name) = &function.kind {
+            let Some(local) = self.lexical(scope, name, before) else {
+                return false;
+            };
+            let Binding::Variable(Some(value), _) = self.symbols[local].binding else {
+                return false;
+            };
+            if self.symbols[local].scope != scope || self.binding_depends_on_branch(local, before) {
+                return false;
+            }
+            (value, Some(local))
+        } else {
+            (function, None)
+        };
+        let target = match (&lambda.kind, positional) {
+            (ExpressionKind::DeferredLambda(body), []) => {
+                let ExpressionKind::Call {
+                    function,
+                    arguments,
+                    keywords,
+                } = &body.kind
+                else {
+                    return false;
+                };
+                let ExpressionKind::Name(name) = &function.kind else {
+                    return false;
+                };
+                if !arguments.is_empty()
+                    || !keywords.is_empty()
+                    || !self.lexical(scope, name, before).is_some_and(|id| {
+                        self.symbols[id].scope == scope
+                            && matches!(self.symbols[id].binding, Binding::Definition(_, _))
+                    })
+                {
+                    return false;
+                }
+                // Captured locals are read when the lambda runs, including
+                // functions defined after the lambda expression was evaluated.
+                function
+            }
+            (
+                ExpressionKind::DeferredCallbackLambda,
+                [
+                    target @ Expression {
+                        kind: ExpressionKind::Name(_),
+                        ..
+                    },
+                ],
+            ) => target,
+            _ => return false,
+        };
+        // Only a direct call in a straight-line function suite proves that
+        // no intervening execution can replace the lambda or a captured cell.
+        let suite = self.scopes[scope].body;
+        let Some(index) = suite
+            .iter()
+            .position(|statement| position(statement.at) == position(before))
+        else {
+            return false;
+        };
+        if !matches!(&suite[index].kind,
+            StatementKind::Return(Some(value)) | StatementKind::Evaluate(value)
+                | StatementKind::Assign { value: Some(value), annotation: None, .. }
+                if position(value.at) == position(at))
+        {
+            return false;
+        }
+        for statement in &suite[..index] {
+            let inert = match &statement.kind {
+                StatementKind::Define(def) => {
+                    def.kind != DefinitionKind::Class
+                        && def.decorators.is_empty()
+                        && def.defaults.is_empty()
+                        && def.annotations.is_empty()
+                }
+                StatementKind::Assign {
+                    value: Some(value),
+                    annotation: None,
+                    ..
+                } => matches!(
+                    value.kind,
+                    ExpressionKind::Name(_)
+                        | ExpressionKind::DeferredLambda(_)
+                        | ExpressionKind::DeferredCallbackLambda
+                ),
+                StatementKind::Evaluate(value) => matches!(value.kind, ExpressionKind::Text(_)),
+                _ => false,
+            };
+            if !inert {
+                return false;
+            }
+        }
+        let Value::Callable(invocation) = self.probe_identity(scope, target, before) else {
+            return false;
+        };
+        if !matches!(invocation.receiver, Receiver::Ordinary)
+            || !matches!(self.symbols[invocation.target].binding, Binding::Definition(def, _)
+                if def.kind == DefinitionKind::Function && !def.is_generator
+                    && def.simple_positional_parameters && def.required_positional_parameter_count == 0)
+        {
+            return false;
+        }
+        self.walk(scope, target, before);
+        self.read.extend(local);
+        self.call_invocation(
+            invocation,
+            CallArguments {
+                scope,
+                before,
+                at,
+                positional: &[],
+                keywords: &[],
+            },
+            "certain",
+        );
+        true
+    }
+
     fn closure_registry_kind(&self, id: SymbolId) -> Option<RegistryKind> {
         // The source must own the unaliased built-in container. Cross-module
         // imports and attribute reads can observe mutations outside this model.
