@@ -14327,11 +14327,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:58", "test/test_django_hook_provenance.py:59", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture installs a genuine command export and selects it through Django's launcher. Django 5.2.1 dispatches the original handle with command options and leaves the abandoned method uncalled."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Constructing a genuine management command does not dispatch handle.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture and constructed the command without calling handle. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "evidence:direct_call:certain:app.Worker", "unused:unused_functions:app.Worker.handle", "no-evidence:direct_call:*:app.Worker.handle", "unused:unused_functions:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_genuine_imported_django_hooks_remain_recognized[django.forms-Form-clean]"
@@ -14340,11 +14339,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:58", "test/test_django_hook_provenance.py:59", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture binds form data and runs Django validation. Django 5.2.1 dispatches the original clean method, including the stored genuine base after provider rebinding."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Constructing an unbound form does not perform validation or dispatch clean.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture and constructed the unbound form without calling clean. https://docs.djangoproject.com/en/5.2/ref/forms/validation/", assertions = ["coverage:complete", "evidence:direct_call:certain:app.Worker", "unused:unused_functions:app.Worker.clean", "no-evidence:direct_call:*:app.Worker.clean", "unused:unused_functions:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_genuine_imported_django_hooks_remain_recognized[django.db.models-Model-save]"
@@ -14426,11 +14424,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:174", "test/test_django_hook_provenance.py:175", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture installs a genuine command export and selects it through Django's launcher. Django 5.2.1 dispatches the original handle with command options and leaves the abandoned method uncalled."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Constructing a genuine management command does not dispatch handle.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture and constructed the command without calling handle. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "evidence:direct_call:certain:app.Worker", "unused:unused_functions:app.Worker.handle", "no-evidence:direct_call:*:app.Worker.handle", "unused:unused_functions:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_rebinding_a_provider_keeps_only_captured_genuine_base[True]"
@@ -14439,11 +14436,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:199", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture binds form data and runs Django validation. Django 5.2.1 dispatches the original clean method, including the stored genuine base after provider rebinding."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Constructing an unbound form does not perform validation or dispatch clean.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture and constructed the unbound form without calling clean. https://docs.djangoproject.com/en/5.2/ref/forms/validation/", assertions = ["coverage:complete", "evidence:direct_call:certain:app.Contact", "unused:unused_functions:app.Contact.clean", "no-evidence:direct_call:*:app.Contact.clean"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_rebinding_a_provider_keeps_only_captured_genuine_base[False]"
