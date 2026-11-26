@@ -457,9 +457,15 @@ impl Graph<'_> {
             );
         let login_replacement = match (&receiver, value) {
             (ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager), Some(value))
-                if !conditional && flask_login_callback(member) =>
+                if !conditional =>
             {
-                self.flask_login_identity_replacement(file, at, value)
+                match member {
+                    "__new__" => self.flask_login_allocator_patch(file, at, value),
+                    name if flask_login_callback(name) => {
+                        self.flask_login_identity_replacement(file, at, value)
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         };
@@ -541,6 +547,63 @@ impl Graph<'_> {
             implicit_descriptor_receiver: true,
             ..call
         }))
+    }
+
+    fn flask_login_allocator_patch(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        value: &Expression,
+    ) -> Option<Value> {
+        if !matches!(value.kind, ExpressionKind::Name(_)) {
+            return None;
+        }
+        let Value::Callable(call) = self.probe_identity(file, value, at) else {
+            return None;
+        };
+        (self.symbols[call.target].scope == file
+            && self.flask_login_allocator_class(call).is_some())
+        .then_some(Value::Callable(call))
+    }
+
+    fn flask_login_allocator_class(&self, call: Invocation) -> Option<&str> {
+        let Binding::Definition(definition, _) = self.symbols[call.target].binding else {
+            return None;
+        };
+        if call.verified
+            || !matches!(call.receiver, Receiver::Ordinary)
+            || call.implicit_descriptor_receiver
+            || !field_dispatch::plain_method(definition, 1)
+            || !definition.annotations.is_empty()
+        {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::Return(Some(Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        ..
+                    })),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        if let ExpressionKind::Name(class) = &function.kind
+            && arguments.is_empty()
+            && keywords.is_empty()
+            && *class != definition.parameters[0].text
+        {
+            return Some(class);
+        }
+        None
     }
 
     fn index_command_global(
@@ -1392,6 +1455,45 @@ impl Graph<'_> {
                     self.class_member_at(class, member, 0, Some(access))
                         .is_none()
                 })
+    }
+
+    pub(super) fn flask_login_allocation(
+        &mut self,
+        scope: ScopeId,
+        before: Location,
+    ) -> Option<(Invocation, SymbolId)> {
+        let kind = ObjectKind::FlaskLoginManager;
+        let class = ReceiverKey::FlaskBase(kind);
+        let access = (scope, before);
+        if scope != self.scopes[scope].file
+            || self.framework_receiver_has_escaped(&class, None, access)
+            || self.member_write(&class, "__init__", access).is_some()
+        {
+            return None;
+        }
+        let MemberWriteValue::Replacement(Value::Callable(allocator)) =
+            self.member_write(&class, "__new__", access)?
+        else {
+            return None;
+        };
+        if self.symbols[allocator.target].scope != scope {
+            return None;
+        }
+        // The allocator reads this global when called, not when it is
+        // assigned to __new__. Resolve the class at that execution point.
+        let name = self.flask_login_allocator_class(allocator)?.to_owned();
+        let expression = Expression {
+            kind: ExpressionKind::Name(name),
+            at: before,
+        };
+        let Value::Callable(class) = self.probe_identity(scope, &expression, before) else {
+            return None;
+        };
+        (!class.verified
+            && matches!(class.receiver, Receiver::Ordinary)
+            && !class.implicit_descriptor_receiver
+            && self.closed_flask_login_layout(class.target, access))
+        .then_some((allocator, class.target))
     }
 
     pub(super) fn flask_constructor_changed(
