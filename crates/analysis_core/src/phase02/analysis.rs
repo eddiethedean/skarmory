@@ -6419,6 +6419,52 @@ impl<'a> Graph<'a> {
                     {
                         // Exact built-in scalars cannot call user-defined numeric conversions.
                     }
+                    Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
+                        if !matches!(self.identity(scope, expr, before, 0), Value::Object(_, ObjectKind::SanicApp)) {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Sanic app requires a supported literal name");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && starlette::is_constructor(&name) => {
+                        if !arguments.is_empty() || !keywords.is_empty() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "Starlette constructor arguments are outside the bounded model");
+                        }
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && name == "starlette.responses.PlainTextResponse"
+                            && registration_arguments(arguments, keywords, ["content"])
+                                .is_some_and(|[content]| content.is_none_or(|content|
+                                    matches!(self.identity(scope, content, before, 0), Value::None | Value::Text(_))
+                                )) =>
+                    {
+                        // With the default options, only the built-in text encoder can run.
+                    }
+                    Value::Provider(name) if self.phase03 && aiohttp::is_route_table(&name) => {
+                        if !arguments.is_empty() || !keywords.is_empty() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && mcp_tools::is_server_provider(&name) => {
+                        if !matches!(self.mcp_server(scope, expr.at, arguments, keywords), Value::McpServer(_)) {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "FastMCP server arguments are outside the bounded model");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && drf::is_method_field(&name) => {
+                        if drf::method_field_name(arguments, keywords).is_none() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF method field requires an omitted or literal callback name");
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && drf::is_field(&name) => {
+                        if self.drf_field_writable(scope, before, arguments, keywords).is_none() {
+                            self.scope_issue(scope, expr.at, "unresolved_constructor", "DRF serializer field arguments are outside the bounded model");
+                        }
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && name == "pathlib.Path"
+                            && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
+                    Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "json.dumps"
+                        && arguments.len() == 1 && keywords.is_empty()
+                        && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         if self.phase03 && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && let Some(receiver) = arguments.first()
