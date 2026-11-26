@@ -91,6 +91,968 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn traitlets_hooks_require_genuine_text_trait_declarations() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let source = r#"from traitlets import Unicode, default, observe, validate
+from traitlets.config import LoggingConfigurable
+
+def handler_body():
+    return "set"
+
+class Base(LoggingConfigurable):
+    pass
+
+class Settings(Base):
+    root = Unicode()
+    alternate = Unicode()
+
+    @default("alternate")
+    def modern(self):
+        return handler_body()
+
+    def _root_default(self):
+        return handler_body()
+
+    @validate("root")
+    def checked(self, proposal):
+        return proposal["value"]
+
+    @observe("root")
+    def changed(self, change):
+        return handler_body()
+
+    def _missing_default(self):
+        return None
+
+SETTINGS = Settings()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(unused.contains(&"app.Settings._missing_default"));
+    assert!(unused.contains(&"app.handler_body"));
+    for name in ["modern", "_root_default", "checked", "changed"] {
+        let qualified = format!("app.Settings.{name}");
+        assert_eq!(
+            evidence_certainties(&report, &qualified, "framework_class_attribute_declaration"),
+            ["possible"],
+        );
+        assert!(evidence_certainties(&report, &qualified, "direct_call").is_empty());
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    for construction in [
+        "SETTINGS = Settings(root='configured')",
+        "class Derived(Settings):\n    def __init__(self):\n        pass\n\nSETTINGS = Derived()",
+        "class Derived(Settings):\n    def setup_instance(self):\n        pass\n\nSETTINGS = Derived()",
+        "class Derived(Settings):\n    def _config_default(self):\n        return None\n\nSETTINGS = Derived()",
+        "class Derived(Settings):\n    def __getattribute__(self, name):\n        pass\n\nSETTINGS = Derived()",
+        "Settings.setup_instance = handler_body\nSETTINGS = Settings()",
+    ] {
+        fs::write(&path, source.replace("SETTINGS = Settings()", construction)).unwrap();
+        let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            incomplete["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_constructor"),
+            "{construction}\n{incomplete}",
+        );
+    }
+    fs::write(
+        &path,
+        source.replace("@default(\"alternate\")", "@default(\"root\")"),
+    )
+    .unwrap();
+    let conflict = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        evidence_certainties(
+            &conflict,
+            "app.Settings.modern",
+            "framework_class_attribute_declaration"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn missing_child_of_an_inert_package_selects_only_the_plain_optional_base() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let package = root.join("lookalike");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        root.join("app.py"),
+        r#"try:
+    from lookalike.backends.redis import RedisBackend
+except ImportError:
+    class RedisBackend:
+        pass
+
+class Backend(RedisBackend):
+    ResultConsumer = object
+    orphan = 1
+
+ENTRY = Backend()
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_variables");
+    assert!(unused.contains(&"app.Backend.ResultConsumer"));
+    assert!(unused.contains(&"app.Backend.orphan"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::create_dir(package.join("backends")).unwrap();
+    fs::write(package.join("backends/__init__.py"), "").unwrap();
+    fs::write(
+        package.join("backends/redis.py"),
+        "class RedisBackend: pass\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_optional_import" })
+    );
+}
+
+#[test]
+fn stdlib_override_declarations_keep_hooks_without_opening_their_bodies() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("app.py");
+    let source = r#"import ast
+import asyncio
+import ctypes
+
+def dormant_body():
+    return None
+
+class BaseVisitor(ast.NodeVisitor):
+    pass
+
+class Visitor(BaseVisitor):
+    def generic_visit(self, node):
+        return dormant_body()
+    def unused_helper(self):
+        return None
+
+class Protocol(asyncio.Protocol):
+    def eof_received(self):
+        return dormant_body()
+
+class Payload(ctypes.Structure):
+    _fields_ = [('size', ctypes.c_int)]
+    unused_field = 1
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Visitor.unused_helper", "app.dormant_body"]
+    );
+    assert!(findings(&report, "unused_variables").contains(&"app.Payload.unused_field"));
+    for name in [
+        "app.Visitor.generic_visit",
+        "app.Protocol.eof_received",
+        "app.Payload._fields_",
+    ] {
+        assert_eq!(
+            evidence_certainties(&report, name, "framework_class_attribute_declaration"),
+            ["possible"]
+        );
+    }
+    for source in [
+        source.replace("[('size', ctypes.c_int)]", "external_layout"),
+        source.replace("    unused_field = 1", "    _pack_ = '8'"),
+    ] {
+        fs::write(&path, source).unwrap();
+        let incomplete = scan_with_exit(root, None, None, 2);
+        assert!(
+            incomplete["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["kind"] == "unresolved_subclass_hook" })
+        );
+    }
+}
+
+#[test]
+fn drf_and_guardian_retain_only_proven_class_options() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("app.py");
+    let source = r#"from guardian.admin import GuardedModelAdmin
+from rest_framework import serializers
+from rest_framework.authtoken.views import ObtainAuthToken
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.viewsets import ModelViewSet
+
+class Field(serializers.Field):
+    default_error_messages = {'invalid': 'bad'}
+    unused_option = 1
+
+class Token(ObtainAuthToken):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
+    unused_option = 1
+
+class ViewSet(ModelViewSet):
+    http_method_names = ['get', 'post']
+    unused_option = 1
+
+class Admin(GuardedModelAdmin):
+    radio_fields = {}
+    unused_option = 1
+"#;
+    fs::write(&path, source).unwrap();
+    let shown = scan(root);
+    for name in [
+        "app.Field.default_error_messages",
+        "app.Token.throttle_scope",
+        "app.ViewSet.http_method_names",
+        "app.Admin.radio_fields",
+    ] {
+        assert_eq!(
+            evidence_certainties(&shown, name, "framework_class_attribute_declaration"),
+            ["possible"]
+        );
+    }
+    for name in ["app.Field", "app.Token", "app.ViewSet", "app.Admin"] {
+        assert!(
+            findings(&shown, "unused_variables")
+                .contains(&format!("{name}.unused_option").as_str())
+        );
+    }
+    fs::write(&path, source.replace("[ScopedRateThrottle]", "[]")).unwrap();
+    let dormant = scan(root);
+    assert!(findings(&dormant, "unused_variables").contains(&"app.Token.throttle_scope"));
+}
+
+#[test]
+fn builtin_dictionary_overrides_keep_only_declared_members() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let body = "class Store(Base):\n    def get(self, *args): return None\n    def keys(self, *args): return None\n    def unused_neighbor(self): return None\n";
+    fs::write(&path, format!("Base = dict\n{body}\nSTORE = Store()\n")).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Store.unused_neighbor"]
+    );
+    for name in ["app.Store.get", "app.Store.keys"] {
+        assert_eq!(
+            evidence_certainties(&report, name, "builtin_override_declaration"),
+            ["possible"]
+        );
+        assert!(evidence_certainties(&report, name, "direct_call").is_empty());
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        &path,
+        format!("class Base: pass\n{body}\nSTORE = Store()\n"),
+    )
+    .unwrap();
+    let shadowed = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&shadowed, "unused_functions"),
+        [
+            "app.Store.get",
+            "app.Store.keys",
+            "app.Store.unused_neighbor"
+        ]
+    );
+    fs::write(
+        &path,
+        format!("Base = dict\n{body}\nSTORE = Store(external)\n"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_constructor" })
+    );
+}
+
+#[test]
+fn selected_initializer_can_store_a_fresh_source_owned_hook_instance() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("base.py"),
+        "class FrameworkishBase:\n    def __init__(self):\n        self.hook = self.Hook()\n",
+    )
+    .unwrap();
+    fs::write(root.join("impl.py"), "class Impl: pass\n").unwrap();
+    let path = root.join("plugin.py");
+    fs::write(
+        &path,
+        "from base import FrameworkishBase\nfrom impl import Impl\nclass Plugin(FrameworkishBase):\n    Hook = Impl\n    orphan = 1\nRESULT = Plugin()\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_variables");
+    assert!(unused.contains(&"plugin.Plugin.orphan"));
+    assert!(!unused.contains(&"plugin.Plugin.Hook"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("impl.py"),
+        "class Impl:\n    def __init__(self): return None\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_attribute_write" })
+    );
+}
+
+#[test]
+fn framework_class_attributes_require_proven_provider_declarations() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        "from celery.backends import redis as backend\n\
+         class Intermediate(backend.RedisBackend): pass\n",
+    )
+    .unwrap();
+    let source = r#"from providers import Intermediate
+from django.contrib.admin import SimpleListFilter
+from storages.backends.s3 import S3Storage
+
+def body_only():
+    return 1
+
+class Queue(Intermediate):
+    def ResultConsumer(self, *args):
+        return body_only()
+    orphan = 1
+
+class Choice(SimpleListFilter):
+    parameter_name = "choice"
+    title = "Choice"
+    orphan = 1
+
+class Media(S3Storage):
+    bucket_name = "media"
+    location = "uploads"
+    orphan = 1
+
+class RedisBackend:
+    pass
+
+class Local(RedisBackend):
+    ResultConsumer = object
+    orphan = 1
+"#;
+    let app = root.join("app.py");
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    let declared = "framework_class_attribute_declaration";
+    let variables = findings(&report, "unused_variables");
+    let functions = findings(&report, "unused_functions");
+    assert!(functions.contains(&"app.body_only"));
+    assert!(!functions.contains(&"app.Queue.ResultConsumer"));
+    assert!(variables.contains(&"app.Local.ResultConsumer"));
+    for name in ["app.Queue.orphan", "app.Choice.orphan", "app.Media.orphan"] {
+        assert!(variables.contains(&name), "{name}");
+    }
+    for name in [
+        "app.Queue.ResultConsumer",
+        "app.Choice.parameter_name",
+        "app.Choice.title",
+        "app.Media.bucket_name",
+        "app.Media.location",
+    ] {
+        assert!(!variables.contains(&name), "{name}");
+        assert_eq!(
+            evidence_certainties(&report, name, declared),
+            ["possible"],
+            "{name}"
+        );
+    }
+    assert!(evidence_certainties(&report, "app.Local.ResultConsumer", declared).is_empty());
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(&app, format!("{source}\nChoice()\n")).unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(incomplete["coverage"]["status"], "incomplete");
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_constructor" })
+    );
+    assert_eq!(
+        evidence_certainties(&incomplete, "app.Choice.parameter_name", declared),
+        ["possible"]
+    );
+}
+
+#[test]
+fn django_model_construction_retains_the_explicit_save_and_reports_dormant_siblings() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let app = root.join("app.py");
+    fs::write(
+        root.join("settings.py"),
+        "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    let source = concat!(
+        "import django, os\n",
+        "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n",
+        "django.setup()\n",
+        "from django.db import models\n",
+        "class Worker(models.Model):\n",
+        "    class Meta: app_label = 'fixture'\n",
+        "    def save(self): return 1\n",
+        "    def get_queryset(self): return 2\n",
+        "Worker().save()\n",
+    );
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Worker.get_queryset"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.Worker.save", "direct_call"),
+        ["certain"],
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&app, source.replace("Worker()", "Worker(id=1)")).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "unresolved_constructor")
+    );
+}
+
+#[test]
+fn django_manager_all_dispatches_the_effective_queryset_override() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let declaration = concat!(
+        "from django.db.models import Manager\n",
+        "def load(): return 1\n",
+        "class Worker(Manager):\n",
+        "    def get_queryset(self): return load()\n",
+        "    def abandoned(self): return 2\n",
+    );
+    fs::write(&app, format!("{declaration}Worker()\n")).unwrap();
+    let dormant = scan(root);
+    assert_eq!(
+        findings(&dormant, "unused_functions"),
+        [
+            "app.Worker.abandoned",
+            "app.Worker.get_queryset",
+            "app.load"
+        ],
+    );
+    fs::write(&app, format!("{declaration}Worker().all()\n")).unwrap();
+    let active = scan(root);
+    assert_eq!(
+        findings(&active, "unused_functions"),
+        ["app.Worker.abandoned"]
+    );
+    assert_eq!(
+        evidence_certainties(
+            &active,
+            "app.Worker.get_queryset",
+            "django_manager_queryset"
+        ),
+        ["certain"],
+    );
+    fs::write(&app, format!("{declaration}Worker().all(1)\n")).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        evidence_certainties(
+            &incomplete,
+            "app.Worker.get_queryset",
+            "django_manager_queryset",
+        )
+        .is_empty(),
+    );
+}
+
+#[test]
+fn generic_django_storage_constructor_uses_empty_defaults() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let provider = "from storages.base import BaseStorage\n";
+    let declaration = "class Media(BaseStorage):\n    bucket_name = 'unused'\n    orphan = 1\n";
+    fs::write(&app, format!("{provider}{declaration}\nMedia()\n")).unwrap();
+    let report = scan(root);
+    let variables = findings(&report, "unused_variables");
+    assert!(variables.contains(&"app.Media.bucket_name"));
+    assert!(variables.contains(&"app.Media.orphan"));
+
+    for source in [
+        format!("{provider}{declaration}\nMedia(bucket_name='uploads')\n"),
+        format!(
+            "{provider}{declaration}    def get_default_settings(self): return {{'bucket_name': 'configured'}}\n\nMedia()\n"
+        ),
+    ] {
+        fs::write(&app, source).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["kind"] == "unresolved_constructor" })
+        );
+    }
+}
+
+#[test]
+fn explicitly_selected_django_settings_keep_declarations_without_a_launcher() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("conf")).unwrap();
+    for (name, source) in [
+        ("conf/__init__.py", ""),
+        (
+            "conf/base.py",
+            "INSTALLED_APPS = []\nROOT_URLCONF = 'conf.urls'\nCUSTOM_FLAG = True\n",
+        ),
+        (
+            "conf/settings_production.py",
+            "from conf.base import *\nPRODUCTION_ONLY = CUSTOM_FLAG\n",
+        ),
+        (
+            "conf/urls.py",
+            "from django.urls import path\ndef handler(request): pass\nurlpatterns = []\n",
+        ),
+        ("conf/ordinary.py", "STALE_CONSTANT = True\n"),
+    ] {
+        fs::write(root.join(name), source).unwrap();
+    }
+    let option = "conf.settings_production.PRODUCTION_ONLY";
+    let report = scan_with_settings(root, Some("conf.settings_production"), None);
+    assert_eq!(
+        evidence_certainties(&report, option, "django_setting"),
+        ["possible"]
+    );
+    assert!(!findings(&report, "unused_variables").contains(&option));
+    assert!(findings(&report, "unused_variables").contains(&"conf.ordinary.STALE_CONSTANT"));
+    assert!(evidence_certainties(&report, "conf.urls.handler", "django_registration").is_empty());
+    assert!(findings(&scan(root), "unused_variables").contains(&option));
+    for _ in 0..2 {
+        let mut cached =
+            scan_with_settings(root, Some("conf.settings_production"), Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn wagtail_snippet_options_require_registration_with_the_real_viewset_and_model() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let sources = r#"from django.db import models
+from wagtail.snippets.models import register_snippet
+from wagtail.snippets.views.snippets import SnippetViewSet
+
+class Person(models.Model):
+    name = models.CharField(max_length=20)
+    sort_order = models.IntegerField(default=0)
+
+class PersonViewSet(SnippetViewSet):
+    list_display = ("name",)
+    sort_order_field = "sort_order"
+    adjacent_option = 1
+"#;
+    let register = "register_snippet(Person, viewset=PersonViewSet)\n";
+    for (suffix, registered) in [
+        (register, true),
+        ("", false),
+        (
+            "def register_snippet(model, viewset): pass\nregister_snippet(Person, viewset=PersonViewSet)\n",
+            false,
+        ),
+    ] {
+        fs::write(root.join("app.py"), format!("{sources}{suffix}")).unwrap();
+        let scan_result = scan(root);
+        for option in ["list_display", "sort_order_field"] {
+            let name = format!("app.PersonViewSet.{option}");
+            assert_eq!(
+                findings(&scan_result, "unused_variables").contains(&name.as_str()),
+                !registered
+            );
+            assert_eq!(
+                evidence_certainties(&scan_result, &name, "wagtail_snippet_option"),
+                if registered { vec!["possible"] } else { vec![] }
+            );
+        }
+        assert!(
+            findings(&scan_result, "unused_variables")
+                .contains(&"app.PersonViewSet.adjacent_option")
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, scan_result);
+        }
+    }
+    fs::write(
+        root.join("app.py"),
+        format!("{sources}PersonViewSet.on_register = 1\n{register}"),
+    )
+    .unwrap();
+    assert_eq!(
+        scan_with_exit(root, None, None, 2)["coverage"]["status"],
+        "incomplete"
+    );
+}
+
+#[test]
+fn django_ready_import_requires_an_active_hook_and_a_proven_signal_registration() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    fs::write(root.join("shop/__init__.py"), "").unwrap();
+    fs::write(root.join("shop/helpers.py"), "def helper(): pass\n").unwrap();
+    fs::write(
+        root.join("shop/apps.py"),
+        r#"from django.apps import AppConfig
+class Config(AppConfig):
+    name = 'shop'
+    def initialize(self):
+        from . import helpers, signals as hooks
+    ready = initialize
+    def dormant(self):
+        from . import signals as unused_hooks
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("main.py"),
+        "import django, os\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+    )
+    .unwrap();
+    let registration = "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n\
+                        @receiver(post_save)\ndef register(sender, **kwargs): pass\n";
+    let cache = tempfile::tempdir().unwrap();
+    for (installed_apps, signals, retains_signal_import) in [
+        ("['shop.apps.Config']", registration, true),
+        ("[]", registration, false),
+        ("['shop.apps.Config']", "def lookalike(): pass\n", false),
+    ] {
+        fs::write(
+            root.join("settings.py"),
+            format!("INSTALLED_APPS = {installed_apps}\nSECRET_KEY = 'fixture'\n"),
+        )
+        .unwrap();
+        fs::write(root.join("shop/signals.py"), signals).unwrap();
+        let report = scan(root);
+        let imports = report["unused_imports"].as_array().unwrap();
+        assert!(imports.iter().any(|row| row["full_name"] == "shop.helpers"));
+        assert!(
+            imports
+                .iter()
+                .any(|row| row["full_name"] == "shop.signals" && row["line"] == 8),
+            "{report}"
+        );
+        assert_eq!(
+            imports
+                .iter()
+                .any(|row| row["full_name"] == "shop.signals" && row["line"] == 5),
+            !retains_signal_import,
+            "{report}"
+        );
+        assert_eq!(
+            evidence_certainties(
+                &report,
+                "shop.apps.Config.initialize.hooks",
+                "django_ready_signal_import"
+            ),
+            if retains_signal_import {
+                vec!["certain"]
+            } else {
+                vec![]
+            },
+            "{report}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn gin_bindings_keep_only_selected_registrations_and_leave_wrappers_unused() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("app")).unwrap();
+    fs::write(root.join("app/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("app/components.py"),
+        r#"from gin import configurable as register
+from functools import lru_cache
+from pydantic import validate_call
+from tenacity import retry, stop_after_attempt
+
+def helper():
+    return 1
+
+@register("optimizer")
+def optimizer(rate=0.1):
+    return helper()
+
+@register("network", denylist=["inputs"])
+def network(inputs, layers=2):
+    return layers
+
+@register("retired")
+def retired(value=0):
+    return value
+
+@retry(stop=stop_after_attempt(3))
+def retry_wrapper():
+    return 1
+
+@lru_cache(maxsize=4)
+def cache_wrapper():
+    return 1
+
+@validate_call()
+def validate_wrapper():
+    return 1
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("main.py"),
+        "import gin as registry\nfrom app import components\nregistry.parse_config_file('config.gin')\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("dormant.py"),
+        "def launch():\n    import gin\n    gin.parse_config_file('missing.gin')\n",
+    )
+    .unwrap();
+    let config = root.join("config.gin");
+    fs::write(
+        &config,
+        "optimizer.rate = 0.05 # comment\nnetwork.layers = 3\n",
+    )
+    .unwrap();
+
+    let cache = tempfile::tempdir().unwrap();
+    let compare = || {
+        let report = scan(root);
+        let mut warm = scan_with_settings(root, None, Some(cache.path()));
+        warm.as_object_mut().unwrap().remove("cache");
+        assert_eq!(warm, report);
+        report
+    };
+
+    let report = compare();
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "app.components.cache_wrapper",
+            "app.components.helper",
+            "app.components.retired",
+            "app.components.retry_wrapper",
+            "app.components.validate_wrapper",
+            "dormant.launch",
+        ],
+        "{report}"
+    );
+    for symbol in ["app.components.optimizer", "app.components.network"] {
+        assert_eq!(
+            evidence_certainties(&report, symbol, "gin_config_binding"),
+            ["possible"]
+        );
+    }
+
+    fs::write(&config, "retired.value = 4\n").unwrap();
+    let report = compare();
+    assert_eq!(
+        evidence_certainties(&report, "app.components.retired", "gin_config_binding"),
+        ["possible"]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"app.components.optimizer"));
+    assert!(findings(&report, "unused_functions").contains(&"app.components.network"));
+
+    for text in [
+        "network.inputs = 'denied'\n",
+        "include 'external.gin'\n",
+        "optimizer.rate = @unknown()\n",
+        "missing.param = 2\n",
+    ] {
+        fs::write(&config, text).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+    }
+    fs::remove_file(&config).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+}
+
+#[test]
+fn gin_registry_and_wrapper_lookalikes_need_resolved_providers() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("gin.py"),
+        "def configurable(name):\n    return lambda function: function\ndef parse_config_file(path): return None\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from gin import configurable, parse_config_file\n@configurable('optimizer')\ndef optimizer(rate=1): return rate\nparse_config_file('config.gin')\n",
+    )
+    .unwrap();
+    fs::write(root.join("config.gin"), "optimizer.rate = 2\n").unwrap();
+    let report = scan(root);
+    assert!(evidence_certainties(&report, "app.optimizer", "gin_config_binding").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.optimizer"));
+    fs::remove_file(root.join("gin.py")).unwrap();
+
+    fs::write(
+        root.join("app.py"),
+        "import gin\ngin.parse_config_file('config.gin')\n@gin.configurable('optimizer')\ndef optimizer(rate=1): return rate\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&report, "app.optimizer", "gin_config_binding").is_empty());
+
+    fs::write(
+        root.join("app.py"),
+        "from tenacity import retry\n@retry(stop=unresolved_stop)\ndef wrapped(): return 1\n",
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
+fn dictionary_type_alias_allows_a_bounded_logging_config_write() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("pkg/formatters.py"),
+        "class Active: pass\nclass Retired: pass\n",
+    )
+    .unwrap();
+    let lookalike = root.join("path_policy.py");
+    fs::write(&lookalike, "PathLike = dict\n").unwrap();
+    let source = "import logging.config\nimport path_policy as os\ndef unknown(config): config['formatters'] = {}\nCONFIG = {'version': 1, 'formatters': {'active': {'()': 'pkg.formatters.Active'}}}\nif isinstance(CONFIG, os.PathLike):\n    unknown(CONFIG)\nlogging.config.dictConfig(CONFIG)\n";
+    let app = root.join("app.py");
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["pkg.formatters.Active", "pkg.formatters.Retired"],
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::remove_file(&lookalike).unwrap();
+    let os_shadow = root.join("os.py");
+    fs::write(&os_shadow, "class PathLike: pass\n").unwrap();
+    let frozen_os_source = source
+        .replace("import path_policy as os", "import os")
+        .replace("def unknown(config): config['formatters'] = {}\n", "");
+    fs::write(&app, frozen_os_source).unwrap();
+    let stdlib = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&stdlib, "unused_classes"),
+        ["os.PathLike", "pkg.formatters.Retired"]
+    );
+
+    fs::remove_file(os_shadow).unwrap();
+    fs::write(&lookalike, "PathLike = dict\n").unwrap();
+    fs::write(
+        &app,
+        source.replace("config['formatters'] = {}", "mutate_unknown(config)"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn reached_stdlib_logging_binds_os_before_a_local_pathlike_stub() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -1957,6 +2919,316 @@ fn flask_failed_class_patches_leave_independent_receivers_unchanged() {
 }
 
 #[test]
+fn flask_login_allocator_replacement_resolves_the_class_at_call_time() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = r#"from flask_login import LoginManager
+control = LoginManager()
+def allocate(cls): return Selected()
+LoginManager.__new__ = allocate
+class Selected:
+    @staticmethod
+    def user_loader(callback): return callback
+"#;
+    fs::write(&provider, format!("{setup}login = LoginManager()\n")).unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login, control\n@login.user_loader\ndef replaced(value): return value\n@control.user_loader\ndef active(user_id): return user_id\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.allocate", "flask_login_allocator"),
+        ["certain"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "providers.Selected.user_loader", "decorator"),
+        ["certain"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.active", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"app.replaced"));
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(&provider, format!("{setup}login = LoginManager(None)\n")).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_constructor")
+    );
+    assert!(evidence_certainties(&report, "app.replaced", "flask_login_registration").is_empty());
+}
+
+#[test]
+fn flask_login_class_change_uses_the_replacement_layout_and_leaves_siblings_active() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup =
+        "from flask_login import LoginManager\nlogin = LoginManager()\ncontrol = LoginManager()\n";
+    let members = "    @staticmethod\n    def user_loader(callback): return callback\n";
+    let mutation = "login.__class__ = Replacement\n";
+    fs::write(
+        &provider,
+        format!("{setup}class Replacement:\n{members}{mutation}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login, control\n@login.user_loader\ndef replaced(value): return value\n@control.user_loader\ndef active(user_id): return user_id\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "app.active", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"app.replaced"));
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(
+        &provider,
+        format!("{setup}class Replacement:\n    __slots__ = ()\n{members}{mutation}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(
+        evidence_certainties(&report, "app.active", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
+fn flask_login_code_replacement_affects_captured_methods_only_after_the_write() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = r#"from flask_login import LoginManager
+login = LoginManager()
+saved = login.user_loader
+@saved
+def before(user_id): return user_id
+"#;
+    let write = "LoginManager.user_loader.__code__ = replacement.__code__\n";
+    fs::write(
+        &provider,
+        format!("{setup}def replacement(self, callback): return callback\n{write}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login, saved\n@login.user_loader\ndef replaced(user_id): return user_id\n@saved\ndef captured(user_id): return user_id\n@login.request_loader\ndef active(request): return request\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    for active in ["providers.before", "app.active"] {
+        assert_eq!(
+            evidence_certainties(&report, active, "flask_login_registration"),
+            ["certain"]
+        );
+    }
+    for unused in ["app.captured", "app.replaced"] {
+        assert!(findings(&report, "unused_functions").contains(&unused));
+    }
+    assert_eq!(
+        evidence_certainties(&report, "providers.replacement", "code_reference"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "providers.replacement", "direct_call").is_empty());
+    assert!(!findings(&report, "unused_functions").contains(&"providers.replacement"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(
+        &provider,
+        format!("{setup}def replacement(callback): return callback\n{write}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write")
+    );
+}
+
+#[test]
+fn flask_login_literal_mock_start_replaces_a_resolved_callback_decorator() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = "from flask_login import LoginManager\nfrom unittest.mock import patch\nlogin = LoginManager()\n";
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef replaced(value): return value\n@login.request_loader\ndef active(request): return request\n",
+    )
+    .unwrap();
+    for start in [
+        "def replacement(callback): return callback\npatch('providers.login.user_loader', replacement).start()\n",
+        "def replacement(self, callback): return callback\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
+    ] {
+        fs::write(&provider, format!("{setup}{start}")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            evidence_certainties(&report, "providers.replacement", "decorator"),
+            ["certain"]
+        );
+        assert_eq!(
+            evidence_certainties(&report, "app.active", "flask_login_registration"),
+            ["certain"]
+        );
+        assert!(
+            evidence_certainties(&report, "app.replaced", "flask_login_registration").is_empty()
+        );
+        assert!(findings(&report, "unused_functions").contains(&"app.replaced"));
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+
+        fs::write(&provider, format!("{setup}{start}patch.stopall()\n")).unwrap();
+        let report = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_call")
+        );
+    }
+}
+
+#[test]
+fn flask_login_instance_dictionary_replaces_only_the_selected_callback_decorator() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    let write =
+        "def identity(callback): return callback\nlogin.__dict__['user_loader'] = identity\n";
+    fs::write(&provider, format!("{setup}{write}")).unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef replaced(value): return value\n@login.request_loader\ndef active(request): return request\n",
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.identity", "decorator"),
+        ["certain"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.active", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.replaced", "flask_login_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.replaced"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &provider,
+        "class LoginManager: pass\nlogin = LoginManager()\ndef identity(callback): return callback\nlogin.__dict__['user_loader'] = identity\n",
+    )
+    .unwrap();
+    let mut report = scan_with_exit(root, None, Some(cache.path()), 2);
+    report.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, scan_with_exit(root, None, None, 2));
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write")
+    );
+}
+
+#[test]
+fn flask_login_class_replacement_binds_the_local_identity_decorator() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef callback(value): return value\n",
+    )
+    .unwrap();
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    let patch = "LoginManager.user_loader = prepare\n";
+    fs::write(
+        &provider,
+        format!("{setup}def prepare(self, callback): return callback\n{patch}"),
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.prepare", "decorator"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.callback", "flask_login_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.callback"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &provider,
+        format!("{setup}def prepare(self, callback): return callback(1)\n{patch}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write")
+    );
+    assert!(evidence_certainties(&report, "app.callback", "flask_login_registration").is_empty());
+
+    fs::write(&provider, setup).unwrap();
+    let report = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        evidence_certainties(&report, "app.callback", "flask_login_registration"),
+        ["certain"]
+    );
+}
+
+#[test]
 fn flask_failed_provider_import_cannot_supply_a_callback() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -2179,6 +3451,67 @@ fn flask_circular_named_exports_report_failed_imports_without_resolving_final_bi
 }
 
 #[test]
+fn circular_named_exports_reuse_the_same_published_binding_in_either_order() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("origin.py"),
+        "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nlogin = Replacement()\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("providers.py"),
+        "from origin import login\nfrom other import login\n",
+    )
+    .unwrap();
+    let peer = root.join("other.py");
+    fs::write(
+        &peer,
+        "from origin import login\nfrom providers import login\n",
+    )
+    .unwrap();
+    let app = root.join("app.py");
+    fs::write(
+        &app,
+        "from providers import login\n@login.user_loader\ndef callback(): return 1\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.callback"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        &app,
+        "from other import login\n@login.user_loader\ndef callback(): return 1\n",
+    )
+    .unwrap();
+    let entered_through_peer = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&entered_through_peer, "unused_functions"),
+        ["app.callback"]
+    );
+    fs::write(&peer, "from providers import login\n").unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                matches!(
+                    issue["kind"].as_str(),
+                    Some("cyclic_imports" | "unresolved_import")
+                )
+            }),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn flask_factory_stops_at_the_failed_blueprint_export() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -2267,6 +3600,135 @@ fn flask_factory_stops_at_the_failed_blueprint_export() {
 }
 
 #[test]
+fn flask_factory_calls_an_inert_replacement_after_initializing_blueprint_routes() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.join("app/views")).unwrap();
+    fs::write(
+        root.join("app/__init__.py"),
+        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    from app.views import bp\n    app.register_blueprint(bp)\n    return app\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app/views/routes.py"),
+        "from app.views import bp\n@bp.before_app_request\ndef prepare(): return helper()\ndef helper(): return 1\ndef retired(): return 2\n",
+    )
+    .unwrap();
+    let views = root.join("app/views/__init__.py");
+    let setup = "from flask import Blueprint\nbp = Blueprint('main', __name__)\nfrom app.views import routes\n";
+    fs::write(
+        &views,
+        format!(
+            "{setup}class Replacement:\n    def register(self, app, options): pass\nbp = Replacement()\n"
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "app.views.routes.helper",
+            "app.views.routes.prepare",
+            "app.views.routes.retired",
+        ],
+    );
+    assert!(
+        evidence_certainties(&report, "app.views.routes.prepare", "flask_registration").is_empty()
+    );
+    for _ in 0..2 {
+        let mut cached_report = scan_with_settings(root, None, Some(cache.path()));
+        cached_report.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached_report, report);
+    }
+
+    fs::write(
+        &views,
+        format!("{setup}class Replacement:\n    def register(self, app, options): unknown(app)\nbp = Replacement()\n"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["kind"] == "unresolved_registration"),
+        "{incomplete}"
+    );
+
+    fs::write(&views, setup).unwrap();
+    let mounted = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&mounted, "unused_functions"),
+        ["app.views.routes.retired"],
+    );
+}
+
+#[test]
+fn flask_factory_resolves_an_inert_lookalike_published_before_its_child_import() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.join("app/views")).unwrap();
+    fs::write(
+        root.join("app/__init__.py"),
+        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    from app.views import bp\n    app.register_blueprint(bp)\n    return app\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app/views/routes.py"),
+        "from app.views import bp\n@bp.before_app_request\ndef prepare(): return helper()\ndef helper(): return 1\ndef retired(): return 2\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("lookalike.py"),
+        "class Blueprint:\n    def __init__(self, name, import_name): pass\n    def before_app_request(self, callback): return callback\n    def register(self, app, options): pass\n",
+    )
+    .unwrap();
+    let initializer = root.join("app/views/__init__.py");
+    fs::write(
+        &initializer,
+        "from lookalike import Blueprint\nbp = Blueprint('main', __name__)\nfrom app.views import routes\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "app.views.routes.helper",
+            "app.views.routes.prepare",
+            "app.views.routes.retired",
+        ],
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &initializer,
+        "from lookalike import Blueprint\nfrom app.views import routes\nbp = Blueprint('main', __name__)\n",
+    )
+    .unwrap();
+    let late = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        late["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                matches!(
+                    issue["kind"].as_str(),
+                    Some("cyclic_imports" | "unresolved_import")
+                )
+            }),
+        "{late}"
+    );
+}
+
+#[test]
 fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -2346,6 +3808,61 @@ fn flask_login_empty_provider_lookalike_has_no_registration_method() {
     .unwrap();
     let report = scan(project.path());
     assert_eq!(findings(&report, "unused_functions"), ["app.handler"]);
+}
+
+#[test]
+fn flask_factory_decorator_keeps_its_closed_named_class_replacement() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = r#"from flask import Flask
+class Replacement:
+    @staticmethod
+    def shell_context_processor(callback): return callback
+def replace(factory): return Replacement
+"#;
+    let factory = "@replace\ndef create_app(): return Flask(__name__)\n";
+    fs::write(&provider, format!("{setup}{factory}")).unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import create_app\napp = create_app()\n@app.shell_context_processor\ndef context(): return {}\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.replace", "decorator"),
+        ["certain"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "providers.Replacement", "direct_call"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.context", "flask_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.context"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &provider,
+        format!(
+            "{setup}def overwrite():\n    global Replacement\n    Replacement = Flask\noverwrite()\n{factory}"
+        ),
+    )
+    .unwrap();
+    let mut report = scan_with_exit(root, None, Some(cache.path()), 2);
+    report.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, scan_with_exit(root, None, None, 2));
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
 }
 
 #[test]
@@ -2611,6 +4128,85 @@ def detached(): return {}
     .unwrap();
     let report = scan(project.path());
     assert_eq!(findings(&report, "unused_functions"), ["app.detached"]);
+}
+
+#[test]
+fn fastapi_long_boolean_aliases_preserve_route_activation() {
+    use std::fmt::Write as _;
+
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let app = root.join("app.py");
+
+    for (length, initial) in [(1100, false), (1101, false), (1101, true)] {
+        let initial_literal = if initial { "True" } else { "False" };
+        let mut source = format!(
+            "from fastapi import FastAPI\napp = FastAPI()\n\
+             def live(): return 1\ndef dormant(): return 2\n\
+             flag_0 = {initial_literal}\n"
+        );
+        for index in 1..=length {
+            writeln!(source, "flag_{index} = not flag_{}", index - 1).unwrap();
+        }
+        // Updating the first binding cannot affect the Boolean already captured by the last.
+        let next_literal = if initial { "False" } else { "True" };
+        writeln!(source, "flag_0 = {next_literal}").unwrap();
+        let (active, inactive) = if initial != (length % 2 == 1) {
+            ("and", "or")
+        } else {
+            ("or", "and")
+        };
+        writeln!(
+            source,
+            "flag_{length} {active} app.add_api_route('/live', live)"
+        )
+        .unwrap();
+        writeln!(
+            source,
+            "flag_{length} {inactive} app.add_api_route('/dormant', dormant)"
+        )
+        .unwrap();
+        fs::write(&app, source).unwrap();
+
+        let report = scan(root);
+        assert_eq!(findings(&report, "unused_functions"), ["app.dormant"]);
+        assert_eq!(
+            evidence_certainties(&report, "app.live", "fastapi_registration"),
+            ["certain"]
+        );
+        assert!(evidence_certainties(&report, "app.dormant", "fastapi_registration").is_empty());
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn fastapi_boolean_aliases_preserve_conditional_route_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        r#"from fastapi import FastAPI
+import os
+app = FastAPI()
+def endpoint(): return 1
+flag = False
+if os.getenv('ENABLE'):
+    flag = True
+alias = not flag
+alias and app.add_api_route('/', endpoint)
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "app.endpoint", "fastapi_registration"),
+        ["possible"]
+    );
 }
 
 #[test]
@@ -3412,6 +5008,173 @@ fn project_wildcard_reads_finite_settings_exports_from_a_selected_sibling() {
 }
 
 #[test]
+fn project_wildcards_follow_the_selected_nested_settings_branch() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let settings = root.join("project/settings");
+    fs::create_dir_all(&settings).unwrap();
+    fs::write(root.join("project/__init__.py"), "").unwrap();
+    fs::write(
+        settings.join("__init__.py"),
+        "import sys\nfrom .base import *\ntry:\n    from .local import *\nexcept ImportError:\n    pass\nif DEV:\n    from .dev import *\n",
+    ).unwrap();
+    fs::write(
+        settings.join("dev.py"),
+        "import project.settings.base as base\nAPPS = base.APPS + ('development',)\nCONFIG = {'flag': True}\n",
+    ).unwrap();
+    for dev in [true, false] {
+        fs::write(
+            settings.join("base.py"),
+            format!(
+                "DEV = {}\nAPPS = ('shop',)\nif DEV:\n    SESSION = True\nDORMANT = 'keep'\n",
+                if dev { "True" } else { "False" },
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("consumer.py"),
+            if dev {
+                "from project.settings import APPS, CONFIG, SESSION\nassert APPS\nassert CONFIG\nassert SESSION\n"
+            } else {
+                "from project.settings import APPS\nassert APPS\n"
+            },
+        ).unwrap();
+        let report = scan(root);
+        let used = findings(&report, "unused_variables");
+        assert!(used.contains(&"project.settings.base.DORMANT"), "{report}");
+        assert_eq!(
+            used.contains(&"project.settings.dev.CONFIG"),
+            !dev,
+            "{report}"
+        );
+        assert_eq!(
+            used.contains(&"project.settings.base.SESSION"),
+            !dev,
+            "{report}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn django_settings_replay_resolves_wildcard_collection_by_binding() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let conf = root.join("conf");
+    fs::create_dir(&conf).unwrap();
+    fs::write(conf.join("__init__.py"), "").unwrap();
+    fs::write(
+        conf.join("base.py"),
+        "INSTALLED_APPS = []\nROOT_URLCONF = 'conf.urls'\nMIDDLEWARE = ['handler.Middleware']\nSECRET_KEY = 'fixture'\n",
+    ).unwrap();
+    fs::write(conf.join("settings.py"), "from .base import *\n").unwrap();
+    fs::write(conf.join("urls.py"), "urlpatterns = []\n").unwrap();
+    fs::write(
+        root.join("wsgi.py"),
+        "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'conf.settings'\napplication = get_wsgi_application()\n",
+    ).unwrap();
+    fs::write(
+        root.join("handler.py"),
+        "class Middleware:\n    def __init__(self, get_response): self.get_response = get_response\n    def __call__(self, request): return self.get_response(request)\n",
+    ).unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "handler.Middleware", "django_setting_reference"),
+        ["possible"]
+    );
+}
+
+#[test]
+fn django_builtin_startup_app_support_requires_default_toolbar_panels() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("wsgi.py"),
+        "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n",
+    ).unwrap();
+    fs::write(root.join("urls.py"), "urlpatterns = []\n").unwrap();
+    let source = "INSTALLED_APPS = ['django.contrib.staticfiles.apps.StaticFilesConfig', 'debug_toolbar.apps.DebugToolbarConfig']\nROOT_URLCONF = 'urls'\nSTATIC_ROOT = 'staticfiles'\nSECRET_KEY = 'fixture'\n";
+    let settings = root.join("settings.py");
+    fs::write(&settings, source).unwrap();
+    scan(root);
+
+    let unresolved = |report: Value| {
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|error| {
+                    error["kind"] == "unresolved_registration"
+                        && error["file"] == "settings.py"
+                        && error["line"] == 1
+                }),
+            "{report}"
+        );
+    };
+    fs::write(
+        &settings,
+        format!("{source}DEBUG_TOOLBAR_PANELS = ['custom.Panel']\n"),
+    )
+    .unwrap();
+    unresolved(scan_with_exit(root, None, None, 2));
+    fs::write(&settings, source).unwrap();
+    fs::create_dir(root.join("debug_toolbar")).unwrap();
+    fs::write(root.join("debug_toolbar/__init__.py"), "").unwrap();
+    unresolved(scan_with_excludes(root, None, None, &["debug_toolbar/"], 2));
+}
+
+#[test]
+fn django_startup_replays_a_wildcard_selected_app_extension() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let settings = root.join("conf/settings");
+    fs::create_dir_all(&settings).unwrap();
+    fs::write(root.join("conf/__init__.py"), "").unwrap();
+    fs::write(root.join("conf/urls.py"), "urlpatterns = []\n").unwrap();
+    fs::write(
+        root.join("wsgi.py"),
+        "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'conf.settings'\napplication = get_wsgi_application()\n",
+    ).unwrap();
+    fs::write(
+        settings.join("__init__.py"),
+        "from .base import *\nif DEV:\n    from .dev import *\n",
+    )
+    .unwrap();
+
+    for (base, additional) in [
+        ("('django.contrib.staticfiles',)", "('debug_toolbar',)"),
+        ("['django.contrib.staticfiles']", "['debug_toolbar']"),
+    ] {
+        fs::write(settings.join("base.py"), format!("DEV = True\nINSTALLED_APPS = {base}\nROOT_URLCONF = 'conf.urls'\nSTATIC_ROOT = 'static'\nSECRET_KEY = 'fixture'\n")).unwrap();
+        fs::write(settings.join("dev.py"), format!("import conf.settings.base as base\nINSTALLED_APPS = base.INSTALLED_APPS + {additional}\n")).unwrap();
+        scan(root);
+    }
+    fs::write(
+        settings.join("dev.py"),
+        "import conf.settings.base as base\nINSTALLED_APPS = base.INSTALLED_APPS + ('debug_toolbar',)\n",
+    ).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| {
+                error["kind"] == "unsupported_construct"
+                    && error["file"] == "conf/settings/__init__.py"
+            }),
+        "{report}"
+    );
+}
+
+#[test]
 fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incomplete() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -3430,13 +5193,14 @@ fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incompl
     let report = scan(root);
     assert!(!findings(&report, "unused_variables").contains(&"conf.base.CUSTOM_FLAG"));
 
-    for guard in ["True", "False"] {
+    fs::write(conf.join("local.py"), "CUSTOM_FLAG = False\n").unwrap();
+    for guard in ["True", "False", "unknown"] {
         let body = format!(
             "{source}try:\n    from .local import *\nexcept ImportError:\n    pass\n\
              if {guard}:\n    from .dev import *\nRETAINED = True\n"
         );
         fs::write(&initializer, body).unwrap();
-        let uncached = scan_with_exit(root, None, None, 2);
+        let uncached = scan_with_excludes(root, None, None, &["conf/local.py"], 2);
         assert_eq!(uncached["coverage"]["status"], "incomplete", "{uncached}");
         assert_eq!(uncached["coverage"]["extracted_files"], 3, "{uncached}");
         assert!(
@@ -3481,7 +5245,8 @@ fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incompl
             "{uncached}"
         );
         for _ in 0..2 {
-            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            let mut cached =
+                scan_with_excludes(root, None, Some(cache.path()), &["conf/local.py"], 2);
             cached.as_object_mut().unwrap().remove("cache");
             assert_eq!(cached, uncached);
         }
@@ -3799,6 +5564,387 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
 }
 
 #[test]
+fn django_model_form_metaclass_reads_only_its_effective_help_texts() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("forms.py"),
+        concat!(
+            "from django.db.models import Model, CharField\n",
+            "from django.forms import ModelForm\n",
+            "class Product(Model):\n",
+            "    name = CharField(max_length=20)\n",
+            "class ProductForm(ModelForm):\n",
+            "    class Meta:\n",
+            "        model = Product\n",
+            "        fields = ['name']\n",
+            "        help_texts = {'name': 'Product name'}\n",
+            "        stale_option = True\n",
+            "class Lookalike:\n",
+            "    class Meta:\n",
+            "        help_texts = {'name': 'Unused'}\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    let selected = "forms.ProductForm.Meta.help_texts";
+    assert_eq!(
+        evidence_certainties(&report, selected, "django_model_form_help_texts"),
+        ["certain"]
+    );
+    assert!(!findings(&report, "unused_variables").contains(&selected));
+    assert!(
+        evidence_certainties(
+            &report,
+            "forms.Lookalike.Meta.help_texts",
+            "django_model_form_help_texts"
+        )
+        .is_empty()
+    );
+    assert!(findings(&report, "unused_variables").contains(&"forms.ProductForm.Meta.stale_option"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn django_date_format_uses_only_the_selected_source_locale() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let imports = "import os\nfrom django.core.wsgi import get_wsgi_application\nfrom django.utils.formats import get_format\n";
+    let setup =
+        "os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n";
+    let lookup = "print(get_format('DATE_FORMAT', lang='fr'))\n";
+    for (path, source) in [
+        ("locale_settings/__init__.py", ""),
+        ("locale_settings/fr/__init__.py", ""),
+        (
+            "locale_settings/fr/formats.py",
+            "DATE_FORMAT = 'j F Y'\nTIME_FORMAT = 'H:i'\n",
+        ),
+        ("locale_settings/en/__init__.py", ""),
+        ("locale_settings/en/formats.py", "DATE_FORMAT = 'N j, Y'\n"),
+        (
+            "settings.py",
+            "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\nFORMAT_MODULE_PATH = 'locale_settings'\n",
+        ),
+    ] {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, source).unwrap();
+    }
+    let wsgi = root.join("wsgi.py");
+    fs::write(&wsgi, format!("{imports}{setup}{lookup}")).unwrap();
+    let report = scan(root);
+    let selected = "locale_settings.fr.formats.DATE_FORMAT";
+    assert_eq!(
+        evidence_certainties(&report, selected, "django_format_setting"),
+        ["possible"]
+    );
+    let unused = findings(&report, "unused_variables");
+    assert!(!unused.contains(&selected));
+    assert!(unused.contains(&"locale_settings.fr.formats.TIME_FORMAT"));
+    assert!(unused.contains(&"locale_settings.en.formats.DATE_FORMAT"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&wsgi, format!("{imports}{lookup}{setup}")).unwrap();
+    let early = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&early, selected, "django_format_setting").is_empty());
+
+    fs::write(&wsgi, format!("{imports}{setup}{lookup}")).unwrap();
+    fs::write(
+        root.join("locale_settings/fr/__init__.py"),
+        "raise ImportError\n",
+    )
+    .unwrap();
+    let failed_parent = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&failed_parent, selected, "django_format_setting").is_empty());
+
+    fs::write(root.join("locale_settings/fr/__init__.py"), "").unwrap();
+    let source = root.join("locale_settings/fr/formats.py");
+    fs::write(&source, "DATE_FORMAT = 'j F Y'\nraise ImportError\n").unwrap();
+    let failed_module = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&failed_module, selected, "django_format_setting").is_empty());
+
+    fs::write(&source, "DATE_FORMAT = 'j F Y'\n").unwrap();
+    let edit = "import settings\nsettings.FORMAT_MODULE_PATH = 'alternate'\n";
+    fs::write(&wsgi, format!("{imports}{edit}{setup}{lookup}")).unwrap();
+    let edited = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&edited, selected, "django_format_setting").is_empty());
+}
+
+#[test]
+fn celery_logging_with_previously_imported_receivers_keeps_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let worker = root.join("worker.py");
+    let setup =
+        "from celery import Celery\napp = Celery('shop')\napp.log.setup_logging_subsystem()\n";
+    fs::write(
+        root.join("logging_hooks.py"),
+        "from celery.signals import setup_logging\n@setup_logging.connect\ndef configure_logging(**kwargs): return None\n",
+    )
+    .unwrap();
+    fs::write(root.join("hooks.py"), "import logging_hooks\n").unwrap();
+
+    for import in [
+        "import logging_hooks\n",
+        "import hooks\n",
+        "from os import getenv\nif getenv('LOAD_LOGGING'):\n    import logging_hooks\n",
+    ] {
+        fs::write(&worker, format!("{import}{setup}")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(report["coverage"]["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["path"] == "worker.py"
+                && issue["message"] == "Celery logging dispatch may reach receivers registered in an imported module"
+        }), "{report}");
+        assert!(!unreachable_functions(&report).contains(&"logging_hooks.configure_logging"));
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    for suffix in ["", "import logging_hooks\n"] {
+        fs::write(&worker, format!("{setup}{suffix}")).unwrap();
+        let report = scan(root);
+        assert!(unreachable_functions(&report).contains(&"logging_hooks.configure_logging"));
+    }
+}
+
+#[test]
+fn celery_logging_dispatch_uses_only_receivers_registered_before_stock_setup() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let provider = "from celery import Celery\nfrom celery.signals import setup_logging\n";
+    let register = "@setup_logging.connect\ndef configure_logging(*args, **kwargs):\n    return formatter()\ndef formatter(): return 'formatted'\n";
+    let setup = "app = Celery('shop')\napp.log.setup_logging_subsystem()\n";
+    let after = "@setup_logging.connect\ndef too_late(**kwargs):\n    return 2\n";
+    let launcher = root.join("entry.py");
+    fs::write(
+        &launcher,
+        format!("{provider}{register}{setup}{after}app.log.setup_logging_subsystem()\n"),
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "entry.configure_logging", "celery_setup_logging"),
+        ["possible"]
+    );
+    assert!(!unreachable_functions(&report).contains(&"entry.formatter"));
+    assert!(unreachable_functions(&report).contains(&"entry.too_late"));
+    let parameters = findings(&report, "unused_parameters");
+    assert!(!parameters.contains(&"entry.configure_logging.kwargs"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&launcher, format!("{provider}{register}app = Celery('shop', log='custom')\napp.log.setup_logging_subsystem()\n")).unwrap();
+    let custom = scan_with_exit(root, None, None, 2);
+    assert!(
+        evidence_certainties(&custom, "entry.configure_logging", "celery_setup_logging").is_empty()
+    );
+
+    fs::write(
+        &launcher,
+        format!("{provider}{register}app = Celery('shop')\napp.log = object()\napp.log.setup_logging_subsystem()\n"),
+    )
+    .unwrap();
+    let replaced = scan_with_exit(root, None, None, 2);
+    assert!(
+        evidence_certainties(&replaced, "entry.configure_logging", "celery_setup_logging")
+            .is_empty()
+    );
+
+    fs::write(&launcher, format!("{provider}{register}")).unwrap();
+    assert!(unreachable_functions(&scan(root)).contains(&"entry.configure_logging"));
+}
+
+#[test]
+fn django_standard_contrib_apps_allow_source_startup() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (path, source) in [
+        ("shop/__init__.py", ""),
+        (
+            "shop/apps.py",
+            "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from . import signals\n",
+        ),
+        (
+            "shop/signals.py",
+            "from django.db.models.signals import post_save\nfrom django.dispatch import receiver\n@receiver(post_save)\ndef update(sender, **kwargs): pass\n",
+        ),
+        (
+            "wsgi.py",
+            "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n",
+        ),
+    ] {
+        fs::write(root.join(path), source).unwrap();
+    }
+    for apps in [
+        "'django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions'",
+        "'django.contrib.auth.apps.AuthConfig', 'django.contrib.contenttypes.apps.ContentTypesConfig', 'django.contrib.sessions.apps.SessionsConfig'",
+    ] {
+        fs::write(
+            root.join("settings.py"),
+            format!("INSTALLED_APPS = [{apps}, 'shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert!(!unreachable_functions(&report).contains(&"shop.signals.update"));
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(
+        root.join("settings.py"),
+        "INSTALLED_APPS = ['django.contrib.auth.apps.LookalikeConfig', 'shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_registration"),
+        "{opaque}"
+    );
+    assert!(
+        !evidence_certainties(&opaque, "shop.signals.update", "django_signal_registration")
+            .contains(&"certain")
+    );
+}
+
+#[test]
+fn django_field_callbacks_follow_effective_model_and_form_fields() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("fields.py"),
+        r#"from django import forms
+from django.db import models
+
+class Converted(models.CharField):
+    def from_db_value(self, value, expression, connection):
+        return value
+
+class DormantConverter(models.CharField):
+    def from_db_value(self, value, expression, connection):
+        return value
+
+class Item(models.Model):
+    value = Converted(max_length=15)
+
+class Picker(forms.Widget):
+    def value_from_datadict(self, data, files, name):
+        return data.get(name)
+
+class MaskedPicker(forms.Widget):
+    def value_from_datadict(self, data, files, name):
+        return data.get(name)
+
+class Selection(forms.Form):
+    value = forms.CharField(widget=Picker)
+
+class Maskable(forms.Form):
+    value = forms.CharField(widget=MaskedPicker)
+
+class Masked(Maskable):
+    value = None
+
+class Disabled(forms.Form):
+    value = forms.CharField(widget=MaskedPicker, disabled=True)
+
+Disabled({'value': 'choose'}).is_valid()
+Selection({'value': 'choose'}).is_valid()
+Masked({'value': 'choose'}).is_valid()
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(
+            &report,
+            "fields.Converted.from_db_value",
+            "django_model_field_converter_declaration",
+        ),
+        ["possible"]
+    );
+    assert_eq!(
+        evidence_certainties(
+            &report,
+            "fields.Picker.value_from_datadict",
+            "django_widget_validation"
+        ),
+        ["possible"]
+    );
+    let unused = findings(&report, "unused_parameters");
+    for parameter in [
+        "fields.Converted.from_db_value.expression",
+        "fields.Converted.from_db_value.connection",
+        "fields.Picker.value_from_datadict.files",
+    ] {
+        assert!(!unused.contains(&parameter), "{parameter}: {report}");
+        assert_eq!(
+            evidence_certainties(&report, parameter, "django_field_parameter"),
+            ["possible"]
+        );
+    }
+    for parameter in [
+        "fields.DormantConverter.from_db_value.expression",
+        "fields.MaskedPicker.value_from_datadict.files",
+    ] {
+        assert!(unused.contains(&parameter), "{parameter}: {report}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("fields.py"))
+        .unwrap()
+        .write_all(b"payload = {'value': 'choose'}\nSelection(payload).is_valid()\n")
+        .unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_call"
+                    && issue["message"]
+                        == "Django widget data lookup requires a bounded form submission"
+            }),
+        "{opaque}"
+    );
+}
+
+#[test]
 fn django_admin_callbacks_need_an_effective_option_and_a_loaded_module() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -3836,13 +5982,22 @@ class ProductAdmin(admin.ModelAdmin):
     def old_display(self, obj):
         return 2
 
+    def get_list_select_related(self, current_request):
+        return select_related()
+
     def __str__(self):
         return admin_label()
+
+def select_related():
+    return ()
 
 class OtherAdmin(admin.ModelAdmin):
     list_display = ("tax_display",)
     def tax_display(self, obj):
         return 3
+
+    def get_list_select_related(self, current_request):
+        return ()
 
 def format_tax():
     return 1
@@ -3879,6 +6034,19 @@ def admin_label():
             !active
         );
         assert_eq!(unused.contains(&"shop.admin.format_tax"), !active);
+        assert_eq!(unused.contains(&"shop.admin.select_related"), !active);
+        assert_eq!(
+            evidence_certainties(
+                &serial,
+                "shop.admin.ProductAdmin.get_list_select_related.current_request",
+                "django_admin_parameter",
+            ),
+            if active { vec!["possible"] } else { vec![] }
+        );
+        assert!(
+            findings(&serial, "unused_parameters")
+                .contains(&"shop.admin.OtherAdmin.get_list_select_related.current_request")
+        );
         assert!(unused.contains(&"shop.admin.ProductAdmin.old_display"));
         assert!(unused.contains(&"shop.admin.OtherAdmin.tax_display"));
         assert_eq!(
@@ -4063,6 +6231,117 @@ app.teardown_appcontext(always)
     let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");
     assert_eq!(cached, report);
+}
+
+#[test]
+fn flask_login_bounded_namespace_writes_change_only_later_receiver_reads() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = r#"from flask_login import LoginManager
+login = LoginManager()
+class Replacement:
+    @staticmethod
+    def user_loader(callback): return callback
+replacement = Replacement()
+@login.user_loader
+def before(user_id): return user_id
+"#;
+    let update = "globals().update({'login': replacement})\n";
+    let setter = "def replace():\n    global login\n    login = replacement\nreplace()\n";
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef after(user_id): return user_id\n",
+    )
+    .unwrap();
+    for operation in [update, setter] {
+        fs::write(&provider, format!("{setup}{operation}")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            evidence_certainties(&report, "providers.before", "flask_login_registration"),
+            ["certain"]
+        );
+        assert!(evidence_certainties(&report, "app.after", "flask_login_registration").is_empty());
+        assert!(findings(&report, "unused_functions").contains(&"app.after"));
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(report, cached);
+        }
+    }
+
+    fs::write(
+        &provider,
+        format!("{setup}def globals(): return {{}}\n{update}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(
+        evidence_certainties(&report, "app.after", "flask_login_registration"),
+        ["certain"]
+    );
+
+    fs::write(
+        &provider,
+        format!("{setup}{setter}def later():\n    global replacement\n    replacement = login\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_global_binding")
+    );
+}
+
+#[test]
+fn flask_login_closed_helpers_apply_writes_at_their_initializer_call_sites() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let providers = root.join("providers.py");
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef callback(): return 1\n",
+    )
+    .unwrap();
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n@login.user_loader\ndef before(): return 1\n";
+    let cases = [
+        "def replacement(self, callback): return callback\ndef mutate(target): target.user_loader = replacement\nmutate(LoginManager)\n",
+        "def replacement(callback): return callback\ndef mutate(target): target.user_loader = replacement\nmutate(login)\n",
+        "def replacement(callback): return callback\ndef replace(): login.user_loader = replacement\ndef mutate(apply): apply()\nmutate(replace)\n",
+    ];
+    for effect in cases {
+        fs::write(&providers, format!("{setup}{effect}")).unwrap();
+        let report = scan(root);
+        assert_eq!(findings(&report, "unused_functions"), ["app.callback"]);
+        assert_eq!(
+            evidence_certainties(&report, "providers.before", "flask_login_registration"),
+            ["certain"],
+        );
+        assert!(
+            evidence_certainties(&report, "app.callback", "flask_login_registration").is_empty()
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(&providers, format!("{setup}{}mutate(object())\n", cases[1])).unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write"),
+        "{incomplete}"
+    );
 }
 
 #[test]
@@ -6340,6 +8619,132 @@ reload(main_func=start)
     assert!(!unused.contains(&"startup.helper"));
 }
 
+fn install_django_reloader_command(root: &Path, source: &str) {
+    let commands = root.join("shop/management/commands");
+    fs::create_dir_all(&commands).unwrap();
+    for package in ["shop", "shop/management", "shop/management/commands"] {
+        fs::write(root.join(package).join("__init__.py"), "").unwrap();
+    }
+    fs::write(root.join("settings.py"), "INSTALLED_APPS = ['shop']\n").unwrap();
+    fs::write(commands.join("hello.py"), source).unwrap();
+}
+
+#[test]
+fn django_selected_command_preserves_bound_autoreloader_capture_order() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("manage.py"),
+        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings'])\n",
+    )
+    .unwrap();
+    let callback = "shop.management.commands.hello.callback";
+    let capture = "        saved = self.start\n";
+    let replace = "        self.start = lambda target: None\n";
+    for (operations, expected) in [
+        (format!("{capture}{replace}"), &["certain"][..]),
+        (format!("{replace}{capture}"), &[][..]),
+    ] {
+        install_django_reloader_command(
+            root,
+            &format!(
+                r#"from django.core.management.base import BaseCommand
+from django.utils import autoreload
+
+def callback():
+    return 1
+
+class Command(BaseCommand):
+    def handle(self, **options):
+{operations}        saved(callback)
+
+    def start(self, target):
+        autoreload.run_with_reloader(target)
+"#
+            ),
+        );
+        let report = scan(root);
+        assert_eq!(
+            evidence_certainties(&report, callback, "django_autoreload"),
+            expected
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn django_selected_command_dispatches_reloader_only_with_bound_options() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"from django.core.management.base import BaseCommand
+from django.utils import autoreload
+
+def restart(name, queue):
+    print(f"{name} on {queue}")
+
+def dormant():
+    return 1
+
+class Command(BaseCommand):
+    help = "Restart a worker"
+
+    def add_arguments(self, parser):
+        parser.add_argument("-Q", "--queue", required=True)
+        parser.add_argument("-n", "--name", required=True)
+
+    def handle(self, *args, **options):
+        autoreload.run_with_reloader(restart, options["name"], options["queue"])
+"#;
+    install_django_reloader_command(root, source);
+    let launcher = |args| {
+        fs::write(
+            root.join("manage.py"),
+            format!(
+                "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings', {args}])\n"
+            ),
+        )
+        .unwrap();
+    };
+    let callback = "shop.management.commands.hello.restart";
+    launcher("'--name=night', '-Q', 'main'");
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, callback, "django_autoreload"),
+        ["certain"]
+    );
+    assert!(
+        findings(&report, "unused_functions").contains(&"shop.management.commands.hello.dormant")
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    for bad in [
+        "'--name=night'",
+        "'--name=night', '-Q', 'main', '--unknown'",
+    ] {
+        launcher(bad);
+        let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(evidence_certainties(&incomplete, callback, "django_autoreload").is_empty());
+    }
+    for reserved in ["args", "stdout", "stderr"] {
+        let source = source
+            .replace("\"--queue\"", &format!("\"--{reserved}\""))
+            .replace("options[\"queue\"]", &format!("options[\"{reserved}\"]"));
+        install_django_reloader_command(root, &source);
+        launcher("'--name=night', '-Q', 'main'");
+        let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+        assert!(evidence_certainties(&incomplete, callback, "django_autoreload").is_empty());
+    }
+}
+
 #[test]
 fn django_autoreload_wrapper_activates_only_bound_callbacks() {
     let project = tempfile::tempdir().unwrap();
@@ -7291,8 +9696,9 @@ def unused():
     )
     .unwrap();
     let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").is_empty());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        findings(&report, "whitelisted"),
         ["checks_test.unused"],
         "{report}"
     );
@@ -7337,8 +9743,9 @@ def sync_setup():
     )
     .unwrap();
     let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").is_empty());
     assert_eq!(
-        findings(&report, "unused_functions"),
+        findings(&report, "whitelisted"),
         [
             "test_setup.SyncExample.asyncSetUp",
             "test_setup.SyncExample.test_unawaited",
@@ -8557,6 +10964,63 @@ def malformed(sender, **kwargs):
 }
 
 #[test]
+fn django_signal_subclass_forwarding_preserves_runtime_condition_and_coverage() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let source = r#"import os
+from django.dispatch import Signal, receiver
+from django.db.models.signals import post_save
+
+def connector(callback):
+    if os.getenv('SIGNAL_ENABLED'):
+        post_save.connect(callback)
+
+class DomainSignal(Signal):
+    def connect(self, callback):
+        return connector(callback)
+
+saved = DomainSignal()
+
+@receiver(saved)
+def on_save(sender, instance, **kwargs):
+    return helper()
+
+def helper(): return 1
+def abandoned(): return 2
+"#;
+    django_signal_project(root, source);
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.on_save", "possible")],
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["inventory.signals.abandoned"]
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("inventory/signals.py"),
+        source.replace("os.getenv('SIGNAL_ENABLED')", "unknown_provider()"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "unresolved_registration"),
+    );
+}
+
+#[test]
 fn django_known_receiver_rejection_stops_following_registration() {
     for keyword in ["signal=post_save", "invalid=True"] {
         let project = tempfile::tempdir().unwrap();
@@ -8821,6 +11285,112 @@ def dormant():
     let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");
     assert_eq!(cached, updated);
+}
+
+#[test]
+fn atexit_forwarding_decorator_preserves_the_callback_in_a_local_stack() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        "from plugin import register_entry\nclass Local:\n    def get(self, path): return lambda fn: fn\nfake = Local()\n@register_entry\n@fake.get('/')\ndef endpoint(): return helper()\ndef helper(): return 1\ndef unused(): return 2\n",
+    )
+    .unwrap();
+    let plugin = root.join("plugin.py");
+    let wrapper = "from atexit import register\ndef register_entry(callback):\n    register(callback)\n    return callback\n";
+    fs::write(&plugin, wrapper).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.unused"],
+        "{report}"
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.endpoint", "atexit_registration"),
+        ["possible"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.helper", "direct_call"),
+        ["possible"]
+    );
+    assert!(evidence_certainties(&report, "app.endpoint", "fastapi_registration").is_empty());
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&plugin, wrapper.replace("register(callback)", "callback()")).unwrap();
+    let immediate = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(immediate["coverage"]["status"], "incomplete", "{immediate}");
+    assert!(evidence_certainties(&immediate, "app.endpoint", "atexit_registration").is_empty());
+}
+
+#[test]
+fn atexit_forwarding_decorator_checks_forwarded_literal_arguments() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        "from plugin import receiver\n@receiver\ndef saved(sender, instance, **kwargs): return helper()\ndef helper(): return 1\ndef abandoned(): return 2\n",
+    )
+    .unwrap();
+    let plugin = root.join("plugin.py");
+    let wrapper = "from atexit import register\ndef receiver(callback):\n    register(callback, None, None)\n    return callback\n";
+    fs::write(&plugin, wrapper).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.abandoned"]);
+    assert_eq!(
+        evidence_certainties(&report, "app.saved", "atexit_registration"),
+        ["possible"],
+    );
+    assert!(evidence_certainties(&report, "app.saved", "direct_call").is_empty());
+
+    for register in [
+        "register(callback, None)",
+        "register(callback, opaque(), None)",
+    ] {
+        fs::write(
+            &plugin,
+            wrapper.replace("register(callback, None, None)", register),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(evidence_certainties(&report, "app.saved", "atexit_registration").is_empty());
+    }
+}
+
+#[test]
+fn atexit_decorator_factory_retains_only_the_source_proven_returned_wrapper() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        "from plugin import select\nevent = 'saved'\n@select(event)\ndef saved(sender, instance, **kwargs): return helper()\ndef helper(): return 1\ndef abandoned(): return 2\n",
+    )
+    .unwrap();
+    let plugin = root.join("plugin.py");
+    let wrapper = "from atexit import register\ndef select(event):\n    return receiver\ndef receiver(callback):\n    register(callback, None, None)\n    return callback\n";
+    fs::write(&plugin, wrapper).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.abandoned"]);
+    assert_eq!(
+        evidence_certainties(&report, "app.saved", "atexit_registration"),
+        ["possible"],
+    );
+    assert!(evidence_certainties(&report, "app.saved", "direct_call").is_empty());
+
+    fs::write(
+        &plugin,
+        wrapper.replace(
+            "    return receiver",
+            "    opaque(event)\n    return receiver",
+        ),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&report, "app.saved", "atexit_registration").is_empty());
 }
 
 #[test]
@@ -10024,4 +12594,537 @@ with patch.object(Provider, 'execute', replacement):
     assert_provider_dispatch_unresolved(&report, "main.py", 7);
     assert!(!provider_call(&report, "main.Provider.execute", "certain"));
     assert!(!provider_call(&report, "main.Provider.execute", "possible"));
+}
+
+#[test]
+fn click_command_declarations_do_not_execute_a_short_circuited_callback() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = "from click import command\n@command()\ndef entry(): return helper()\ndef helper(): return 1\ndef unused_neighbor(): return 2\nflag = True\nflag = not flag\nflag and entry()\n";
+    fs::write(root.join("app.py"), source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.helper", "app.unused_neighbor"],
+        "{report}"
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.entry", "click_command_declaration"),
+        ["possible"]
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("app.py"),
+        source.replace(
+            "from click import command",
+            "def command(): return lambda callback: callback",
+        ),
+    )
+    .unwrap();
+    let shadowed = scan(root);
+    assert!(
+        findings(&shadowed, "unused_functions").contains(&"app.entry"),
+        "{shadowed}"
+    );
+    assert!(evidence_certainties(&shadowed, "app.entry", "click_command_declaration").is_empty());
+
+    fs::write(
+        root.join("app.py"),
+        source
+            .replace(
+                "from click import command",
+                "import click\ndef local_factory(): return lambda callback: callback\nclick.command = local_factory",
+            )
+            .replace("@command()", "@click.command()"),
+    )
+    .unwrap();
+    let rebound = scan(root);
+    assert!(
+        findings(&rebound, "unused_functions").contains(&"app.entry"),
+        "{rebound}"
+    );
+    assert!(evidence_certainties(&rebound, "app.entry", "click_command_declaration").is_empty());
+
+    fs::write(
+        root.join("app.py"),
+        source.replace("flag and entry()", "entry()"),
+    )
+    .unwrap();
+    let invocation = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        invocation["coverage"]["status"], "incomplete",
+        "{invocation}"
+    );
+    assert!(
+        evidence_certainties(&invocation, "app.entry", "direct_call").is_empty(),
+        "{invocation}"
+    );
+}
+
+#[test]
+fn source_owned_installers_replace_the_selected_django_command_handle() {
+    let workspace = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    fs::create_dir_all(root.join("shop/management/commands")).unwrap();
+    for path in [
+        "shop/__init__.py",
+        "shop/management/__init__.py",
+        "shop/management/commands/__init__.py",
+    ] {
+        fs::write(root.join(path), "").unwrap();
+    }
+    fs::write(
+        root.join("settings.py"),
+        "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("manage.py"),
+        "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n",
+    )
+    .unwrap();
+    let command = root.join("shop/management/commands/audit.py");
+    let source = "from django.core.management.base import BaseCommand\nfrom external_plugin import install\n\ndef prepare(): return 'ready'\n\nclass Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n";
+    let handle = "shop.management.commands.audit.Command.handle";
+    for (statement, replacement, kind) in [
+        (
+            "install(Command)\n",
+            "setattr(target, 'handle', replacement)",
+            "django_command",
+        ),
+        (
+            "selected = Command.handle\ninstall(selected)\n",
+            "setattr(target, '__code__', replacement.__code__)",
+            "code_reference",
+        ),
+    ] {
+        fs::write(
+            root.join("external_plugin.py"),
+            format!(
+                "def replacement(self, *args, **options): return None\ndef install(target): {replacement}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(&command, source).unwrap();
+        assert_eq!(
+            evidence_certainties(&scan(root), handle, "django_command"),
+            ["certain"]
+        );
+        fs::write(&command, format!("{source}{statement}")).unwrap();
+        let report = scan(root);
+        assert!(evidence_certainties(&report, handle, "django_command").is_empty());
+        assert!(
+            !evidence_certainties(&report, "external_plugin.replacement", kind).is_empty(),
+            "{report}",
+        );
+        if kind == "code_reference" {
+            assert!(
+                evidence_certainties(&report, "external_plugin.replacement", "direct_call")
+                    .is_empty()
+            );
+        }
+        for _ in 0..2 {
+            let mut warm = scan_with_settings(root, None, Some(cache.path()));
+            warm.as_object_mut().unwrap().remove("cache");
+            assert_eq!(report, warm);
+        }
+    }
+    fs::remove_file(root.join("external_plugin.py")).unwrap();
+    let frozen = scan_with_exit(root, None, None, 2);
+    assert!(
+        frozen["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call")
+    );
+    assert!(evidence_certainties(&frozen, handle, "django_command").is_empty());
+}
+
+#[test]
+fn django_management_check_keeps_unproved_dispatch_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (name, source) in [
+        ("shop/__init__.py", ""),
+        (
+            "shop/settings.py",
+            "INSTALLED_APPS = ['shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
+        ),
+        (
+            "shop/apps.py",
+            "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from . import checks\n",
+        ),
+        (
+            "shop/checks.py",
+            "from django.core.checks import Tags, register\n@register(Tags.security)\ndef check_store(app_configs, **kwargs): return []\n",
+        ),
+    ] {
+        fs::write(root.join(name), source).unwrap();
+    }
+    let launcher = root.join("manage.py");
+    let prefix = "import os\nfrom django.core.management import execute_from_command_line\nos.environ['DJANGO_SETTINGS_MODULE'] = 'shop.settings'\n";
+    for dispatch in [
+        "execute_from_command_line(['manage.py', 'check', '--settings=shop.settings'])\n",
+        "import sys\nexecute_from_command_line(sys.argv)\n",
+    ] {
+        fs::write(&launcher, format!("{prefix}{dispatch}")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(report["coverage"]["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["path"] == "manage.py"
+                && issue["message"] == "Django management dispatch of project system checks is outside the bounded model"
+        }), "{report}");
+        assert!(!unreachable_functions(&report).contains(&"shop.checks.check_store"));
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(
+        &launcher,
+        format!("{prefix}execute_from_command_line(['manage.py', 'check', '--help'])\n"),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(unreachable_functions(&report).contains(&"shop.checks.check_store"));
+
+    fs::write(
+        root.join("shop/settings.py"),
+        "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    fs::write(
+        &launcher,
+        format!("{prefix}execute_from_command_line(['manage.py', 'check'])\n"),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert!(unreachable_functions(&report).contains(&"shop.checks.check_store"));
+}
+
+#[test]
+fn django_system_checks_require_ordered_selected_registration_and_matching_tags() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (name, source) in [
+        ("shop/__init__.py", ""),
+        (
+            "manage.py",
+            "import os\nimport django\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+        ),
+        ("settings.py", "INSTALLED_APPS = ['shop.apps.Selected']\n"),
+        (
+            "shop/checks.py",
+            "from django.core.checks import Tags, register\n@register(Tags.security)\ndef checked(app_configs, **kwargs): return witness()\n@register(Tags.database)\ndef other(app_configs, **kwargs): return []\ndef witness(): return []\n",
+        ),
+        (
+            "shop/fields.py",
+            "def callback(app_configs, **kwargs): return []\ndef dead(arg): return None\ndead(1)\n",
+        ),
+    ] {
+        fs::write(root.join(name), source).unwrap();
+    }
+    let configure = |operations| {
+        fs::write(
+            root.join("shop/apps.py"),
+            format!(
+                "from django.apps import AppConfig\nclass Selected(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from django.core.checks import Tags, register, run_checks\n{operations}"
+            ),
+        )
+        .unwrap();
+    };
+    configure(
+        "        from . import checks, fields\n        register(fields.callback, Tags.security)\n        run_checks(tags=[Tags.security])\n",
+    );
+    let report = scan(root);
+    for expected in ["shop.checks.checked", "shop.fields.callback"] {
+        assert_eq!(
+            evidence_certainties(&report, expected, "django_system_check"),
+            ["possible"]
+        );
+    }
+    assert!(evidence_certainties(&report, "shop.checks.other", "django_system_check").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"shop.checks.other"));
+    let parameters = findings(&report, "unused_parameters");
+    assert!(parameters.contains(&"shop.fields.dead.arg"));
+    assert!(!parameters.contains(&"shop.checks.checked.app_configs"));
+    assert!(!parameters.contains(&"shop.fields.callback.kwargs"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    configure(
+        "        from . import checks, fields\n        register(fields.callback, Tags.security)\n        register(fields.callback, Tags.database)\n        run_checks(tags=[Tags.security])\n",
+    );
+    let retagged = scan(root);
+    assert!(
+        evidence_certainties(&retagged, "shop.fields.callback", "django_system_check").is_empty()
+    );
+
+    configure(
+        "        run_checks(tags=[Tags.security])\n        from . import checks, fields\n        register(fields.callback, Tags.security)\n",
+    );
+    let unordered = scan_with_exit(root, None, Some(cache.path()), 2);
+    for expected in ["shop.checks.checked", "shop.fields.callback"] {
+        assert!(evidence_certainties(&unordered, expected, "django_system_check").is_empty());
+    }
+}
+
+#[test]
+fn pontoon_settings_bind_genuine_storage_and_pagination_and_exception_defaults() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let settings = "SECRET_KEY = 'fixture'\nINSTALLED_APPS = []\nSTATIC_ROOT = 'static'\nSTATIC_URL = '/static/'\n";
+    let providers = "STORAGES = {'staticfiles': {'BACKEND': 'components.SelectedStorage'}}\nREST_FRAMEWORK = {'DEFAULT_PAGINATION_CLASS': 'components.SelectedPagination'}\n";
+    let launcher = "import os\nfrom django.core.wsgi import get_wsgi_application\nfrom components import ActiveError, ExplicitError\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\nActiveError()\nExplicitError(detail='overridden')\n";
+    fs::write(root.join("settings.py"), format!("{settings}{providers}")).unwrap();
+    fs::write(root.join("wsgi.py"), launcher).unwrap();
+    fs::write(
+        root.join("components.py"),
+        r#"from django.contrib.staticfiles.storage import ManifestStaticFilesStorage
+from rest_framework.exceptions import APIException
+from rest_framework.pagination import PageNumberPagination
+
+class SelectedStorage(ManifestStaticFilesStorage):
+    pass
+
+class DormantStorage(ManifestStaticFilesStorage):
+    pass
+
+class SelectedPagination(PageNumberPagination):
+    page_size_query_param = 'limit'
+    max_page_size = 1000
+    unused_option = 15
+
+class DormantPagination(PageNumberPagination):
+    page_size_query_param = 'unselected'
+    max_page_size = 22
+
+class ActiveError(APIException):
+    default_detail = 'used'
+    unrelated = 'unread'
+
+class ExplicitError(APIException):
+    default_detail = 'bypassed'
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    for (target, evidence) in [
+        ("components.SelectedStorage", "django_setting_reference"),
+        ("components.SelectedPagination", "drf_pagination_setting"),
+        (
+            "components.SelectedPagination.page_size_query_param",
+            "drf_pagination_option",
+        ),
+        (
+            "components.SelectedPagination.max_page_size",
+            "drf_pagination_option",
+        ),
+        (
+            "components.ActiveError.default_detail",
+            "drf_exception_default",
+        ),
+    ] {
+        assert_eq!(
+            evidence_certainties(&report, target, evidence),
+            ["possible"]
+        );
+    }
+    let classes = findings(&report, "unused_classes");
+    assert!(classes.contains(&"components.DormantStorage"));
+    assert!(classes.contains(&"components.DormantPagination"));
+    let variables = findings(&report, "unused_variables");
+    for target in [
+        "components.ExplicitError.default_detail",
+        "components.ActiveError.unrelated",
+        "components.SelectedPagination.unused_option",
+    ] {
+        assert!(variables.contains(&target), "{variables:?}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("settings.py"),
+        format!("{settings}{providers}REST_FRAMEWORK = {{}}\nSTORAGES = {{}}\n"),
+    )
+    .unwrap();
+    let replaced = scan_with_settings(root, None, Some(cache.path()));
+    assert!(
+        evidence_certainties(
+            &replaced,
+            "components.SelectedStorage",
+            "django_setting_reference"
+        )
+        .is_empty()
+    );
+    assert!(
+        evidence_certainties(
+            &replaced,
+            "components.SelectedPagination",
+            "drf_pagination_setting"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn django_settings_retain_only_the_selected_uppercase_aliases() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let settings = root.join("project/settings");
+    fs::create_dir_all(&settings).unwrap();
+    for (name, text) in [
+        ("project/__init__.py", ""),
+        ("project/urls.py", "urlpatterns = []\n"),
+        ("project/unused.py", "UNSELECTED = True\n"),
+        (
+            "project/settings/__init__.py",
+            "from .base import *\nif DEV:\n    from .dev import *\nfrom .base import _named_value as NAMED_SETTING\nREPLACED = 'chosen'\n",
+        ),
+        (
+            "project/settings/dev.py",
+            "INSTALLED_APPS = ['debug_toolbar']\nDEBUG_TOOLBAR_CONFIG = {'SHOW_TOOLBAR_CALLBACK': lambda request: True}\n",
+        ),
+        (
+            "wsgi.py",
+            "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'project.settings'\napplication = get_wsgi_application()\n",
+        ),
+    ] {
+        fs::write(root.join(name), text).unwrap();
+    }
+    for (dev, literal) in [(false, "False"), (true, "True")] {
+        fs::write(
+            settings.join("base.py"),
+            format!(
+                "DEV = {literal}\nINSTALLED_APPS = []\nSECRET_KEY = 'fixture'\nROOT_URLCONF = 'project.urls'\nSTATIC_ROOT = 'staticfiles'\nSTATIC_URL = '/static/'\nEMAIL_CONSENT_TITLE = 'Stay informed'\nREPLACED = 'shadowed'\n_named_value = 1\n_ignored = 2\nif DEV:\n    SESSION_COOKIE_SECURE = False\n"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        for target in [
+            "project.settings.base.EMAIL_CONSENT_TITLE",
+            "project.settings.base._named_value",
+            "project.settings.REPLACED",
+        ] {
+            assert_eq!(
+                evidence_certainties(&report, target, "django_setting"),
+                ["certain"]
+            );
+        }
+        let variables = findings(&report, "unused_variables");
+        for target in [
+            "project.settings.base.REPLACED",
+            "project.settings.base._ignored",
+            "project.unused.UNSELECTED",
+        ] {
+            assert!(variables.contains(&target), "{variables:?}");
+        }
+        for (target, selected) in [
+            ("project.settings.base.SESSION_COOKIE_SECURE", dev),
+            ("project.settings.dev.DEBUG_TOOLBAR_CONFIG", dev),
+        ] {
+            let expected: &[&str] = if selected { &["certain"] } else { &[] };
+            assert_eq!(
+                evidence_certainties(&report, target, "django_setting"),
+                expected
+            );
+            assert_eq!(variables.contains(&target), !selected, "{variables:?}");
+        }
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn django_settings_keep_launcher_free_backend_negatives_complete() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (name, text) in [
+        ("shop/__init__.py", ""),
+        (
+            "shop/settings.py",
+            concat!(
+                "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\nROOT_URLCONF = 'shop.urls'\n",
+                "AUTHENTICATION_BACKENDS = ['shop.backends.Configured']\n",
+                "AUTHENTICATION_BACKENDS.unknown_mutation()\n",
+            ),
+        ),
+        (
+            "shop/urls.py",
+            "from django.urls import path\nurlpatterns = []\n",
+        ),
+        (
+            "shop/backends.py",
+            "class Configured:\n    def get_user(self, user_id): return None\n",
+        ),
+    ] {
+        fs::write(root.join(name), text).unwrap();
+    }
+    let report = scan(root);
+    assert!(
+        evidence_certainties(
+            &report,
+            "shop.backends.Configured.get_user",
+            "django_auth_backend",
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn django_settings_cannot_read_aliases_from_a_failed_initializer() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (name, text) in [
+        ("providers.py", "FEATURE = True\nraise ImportError\n"),
+        (
+            "settings.py",
+            "from providers import FEATURE\nSECRET_KEY = 'fixture'\nINSTALLED_APPS = []\n",
+        ),
+        (
+            "wsgi.py",
+            "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n",
+        ),
+    ] {
+        fs::write(root.join(name), text).unwrap();
+    }
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["message"]
+                == "Django settings initialization terminates before exposing its values")
+    );
+    for target in ["settings.FEATURE", "providers.FEATURE"] {
+        assert!(evidence_certainties(&report, target, "django_setting").is_empty());
+    }
+    assert!(evidence_certainties(&report, "wsgi.application", "django_application").is_empty());
 }

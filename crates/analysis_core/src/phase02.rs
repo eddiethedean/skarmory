@@ -20,6 +20,7 @@ mod analysis;
 pub mod cleanup;
 pub(crate) mod config;
 mod dependencies;
+mod external_classes;
 mod javascript;
 mod package_entrypoints;
 mod runtime_evidence;
@@ -38,6 +39,8 @@ pub enum Profile {
 pub struct Options {
     pub profile: Profile,
     pub grep_verify: Option<bool>,
+    /// Ordered external dependency source paths for the Phase 0.3 model.
+    pub dependency_search_paths: Vec<PathBuf>,
     /// None uses the Phase 0.3 compatibility configuration.
     pub enable_quality: Option<bool>,
     pub quality_only: bool,
@@ -61,6 +64,7 @@ impl Default for Options {
         Self {
             profile: Profile::default(),
             grep_verify: None,
+            dependency_search_paths: Vec::new(),
             enable_quality: Some(false),
             quality_only: false,
             trace_file: EvidenceInput::Default,
@@ -153,12 +157,23 @@ struct Analysis {
     findings: Vec<Finding>,
     evidence: Vec<Evidence>,
     fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
+    #[cfg(test)]
+    fastapi_initializer_evidence: FastapiInitializerEvidence,
     issues: Vec<Issue>,
     uncertainties: Vec<Issue>,
     verification: Vec<VerificationEvidence>,
     rescued_count: usize,
     runtime_evidence: Vec<runtime_evidence::Evidence>,
     runtime_evidence_issues: Vec<Issue>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct FastapiInitializerEvidence {
+    call_events: usize,
+    limited: bool,
+    callback_parameters: usize,
+    injected_parameters: usize,
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -212,6 +227,10 @@ struct Diagnostic {
     category: Option<&'static str>,
     rule_id: &'static str,
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suppression_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder_role: Option<&'static str>,
     dead_code_disposition: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     dead_code_classification: Option<&'static str>,
@@ -271,6 +290,8 @@ impl Diagnostic {
             category: file.then_some("DEAD_CODE"),
             rule_id: finding.rule_id,
             reason,
+            suppression_code: None,
+            folder_role: None,
             dead_code_disposition: disposition,
             dead_code_classification: None,
             change_status: None,
@@ -499,6 +520,8 @@ pub struct Report {
     schema_version: u8,
     profile: &'static str,
     selected_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    external_dependency_roots: Vec<String>,
     exclusions: Vec<Exclusion>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     generated_sources: BTreeSet<String>,
@@ -747,6 +770,34 @@ fn artifact_uri(path: &str) -> String {
     uri
 }
 
+fn is_test_only_path(file: &str) -> bool {
+    let path = file.to_ascii_lowercase();
+    let (directories, basename) = path.rsplit_once('/').unwrap_or(("", &path));
+    let mut parent = "";
+    for directory in directories.split('/') {
+        // The reference uses the first non-library directory role.
+        match directory {
+            "test" | "tests" | "__tests__" => return true,
+            "example" if matches!(parent, "com" | "org" | "net") => {}
+            "example" | "examples" | "doc_src" | "docs_src" | "bench" | "benchmark"
+            | "benchmarks" => return false,
+            _ if ["_example", "_examples", "_benchmark", "_benchmarks"]
+                .iter()
+                .any(|suffix| directory.ends_with(suffix)) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        parent = directory;
+    }
+    basename == "conftest.py"
+        || basename.starts_with("test_")
+        || basename.ends_with("_test.py")
+        || basename.contains(".test.")
+        || basename.contains(".spec.")
+}
+
 fn validate_category(category: Option<&str>) -> Result<(), ConfigError> {
     let Some(value) = category else { return Ok(()) };
     let categories = value.split(',').map(str::trim);
@@ -804,6 +855,11 @@ fn scan_selected(
     let include_dead_code = !options.quality_only;
     let project_wildcards = phase03 && include_dead_code;
     let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
+    if !phase03 && !options.dependency_search_paths.is_empty() {
+        return Err(ConfigError::new(
+            "dependency source paths require the skylos-0.3 profile",
+        ));
+    }
     if enable_quality && !phase03 {
         return Err(ConfigError::new(
             "quality scanning requires the skylos-0.3 profile",
@@ -827,7 +883,7 @@ fn scan_selected(
         FactCache::for_project(
             directory,
             if project_wildcards {
-                "phase03-module-v40/ruff-0.0.12/py311/utf8-universal"
+                "phase03-module-v41/ruff-0.0.12/py311/utf8-universal"
             } else {
                 "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
             },
@@ -1000,11 +1056,12 @@ fn scan_selected(
         }
     }
 
-    let wildcard_issues = if project_wildcards {
+    let wildcard_resolution = if project_wildcards {
         wildcards::resolve(&project, &mut files)
     } else {
-        Vec::new()
+        wildcards::Resolution::default()
     };
+    let wildcard_issues = wildcard_resolution.issues;
     let dependency_sources_complete = issues.is_empty() && wildcard_issues.is_empty();
     let package_entrypoints = (include_dead_code && phase03 && dependency_sources_complete)
         .then(|| package_entrypoints::Snapshot::read(path, &files));
@@ -1028,11 +1085,24 @@ fn scan_selected(
         .flatten();
     let django_templates = (include_dead_code && phase03 && path.is_dir())
         .then(|| analysis::TemplateProject::new(&project, &config.selection));
+    let gin = (include_dead_code && phase03 && path.is_dir())
+        .then(|| analysis::GinProject::new(&project, &config.selection));
+    let external_classes = (phase03 && include_dead_code && path.is_dir()).then(|| {
+        external_classes::ExternalClassIndex::new(external_classes::search_roots(
+            path,
+            &options.dependency_search_paths,
+        ))
+    });
     let framework = analysis::FrameworkInputs {
+        external_classes: external_classes.as_ref(),
         settings: django_settings.as_deref(),
         templates: django_templates.as_ref(),
+        gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
+        wildcard_guards: Some(&wildcard_resolution.guards),
+        #[cfg(test)]
+        fastapi_call_event_limit: None,
     };
     let mut analysis = if include_dead_code && issues.is_empty() {
         if local_configs.is_empty() {
@@ -1101,6 +1171,9 @@ fn scan_selected(
         if let Some(templates) = &django_templates {
             inputs.policy.extend(templates.input_digests());
         }
+        if let Some(gin) = &gin {
+            inputs.policy.extend(gin.input_digests());
+        }
         for config in std::iter::once(&config).chain(&local_configs) {
             inputs.policy.extend(
                 config
@@ -1130,6 +1203,31 @@ fn scan_selected(
             }
         }
     }
+    let external_dependency_roots = external_classes.as_ref().map_or_else(Vec::new, |index| {
+        issues.extend(index.changed_sources().iter().map(|path| {
+            Issue::new(
+                "source_changed",
+                &preview_source::display(path),
+                "dependency source changed during analysis",
+            )
+        }));
+        if let Some(inputs) = cleanup_inputs.as_deref_mut() {
+            for (path, stamp) in index.input_stamps().iter() {
+                let label = preview_source::display(path);
+                match preview_source::read_snapshot(path, &label, Some(stamp)) {
+                    Ok((bytes, _)) => {
+                        inputs.policy.insert(label, blake3::hash(&bytes));
+                    }
+                    Err(issue) => issues.push(issue),
+                }
+            }
+        }
+        index
+            .roots_used()
+            .iter()
+            .map(|path| preview_source::display(path))
+            .collect()
+    });
     issues.append(&mut analysis.issues);
     if let Some(verification) = verification {
         issues.extend(verification.finish(&project, Some(&config.selection)));
@@ -1167,6 +1265,9 @@ fn scan_selected(
     let mut snapshot_issues = project.verify(stamps);
     if let Some(templates) = django_templates {
         snapshot_issues.extend(templates.verify());
+    }
+    if let Some(gin) = gin {
+        snapshot_issues.extend(gin.verify());
     }
     if !snapshot_issues.is_empty()
         && dependency_result.is_some()
@@ -1249,6 +1350,11 @@ fn scan_selected(
         .iter()
         .map(|file| (file.path.as_str(), &file.facts))
         .collect();
+    let test_only_paths: BTreeSet<_> = file_facts
+        .keys()
+        .copied()
+        .filter(|file| phase03 && is_test_only_path(file))
+        .collect();
     if python_complete {
         for mut finding in analysis.findings {
             if generated_sources.contains(&finding.file) {
@@ -1295,6 +1401,16 @@ fn scan_selected(
                     finding.confidence = finding.confidence.saturating_sub(amount)
                 }
                 config::Decision::Keep => {}
+            }
+            if finding.category != Category::File && test_only_paths.contains(finding.file.as_str())
+            {
+                // Keep non-use evidence while presenting a test-path policy decision.
+                let mut diagnostic =
+                    Diagnostic::new(finding, "test-only path".into(), "whitelisted", source);
+                diagnostic.suppression_code = Some("non_library_path");
+                diagnostic.folder_role = Some("test");
+                whitelisted.push(diagnostic);
+                continue;
             }
             if let Some(reason) = finding.declaration_whitelist {
                 whitelisted.push(Diagnostic::new(
@@ -1432,6 +1548,7 @@ fn scan_selected(
             issues,
         },
         selected_paths,
+        external_dependency_roots,
         exclusions: project.exclusions,
         generated_sources,
         config_sources: config.sources,

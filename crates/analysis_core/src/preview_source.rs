@@ -716,32 +716,55 @@ impl Project {
         package: &str,
         module: &str,
     ) -> bool {
-        let package_path = Path::new(package);
-        let source_name = format!("{module}.py");
+        !package.contains('.')
+            && Path::new(initializer) == Path::new(package).join("__init__.py")
+            && self.package_source_unambiguous(package, module, Some(source))
+    }
+
+    pub(super) fn package_source_unambiguous(
+        &self,
+        package: &str,
+        module: &str,
+        source: Option<&str>,
+    ) -> bool {
+        if self.search.iter().any(|root| root != &self.base)
+            || !skarmory_python::simple_name(module)
+        {
+            return false;
+        }
         let no_competitor = |directory: &Path, module, chosen, kind| {
             self.directories.get(directory).is_some_and(|entries| {
-                entries.iter().all(|(name, entry)| {
-                    (name == OsStr::new(chosen) && *entry == kind)
-                        || !entry_may_supply_module(name, *entry, module)
-                })
+                entries
+                    .iter()
+                    .any(|(name, entry)| name == OsStr::new(chosen) && *entry == kind)
+                    && entries.iter().all(|(name, entry)| {
+                        (name == OsStr::new(chosen) && *entry == kind)
+                            || !entry_may_supply_module(name, *entry, module)
+                    })
             })
         };
-        Path::new(initializer) == package_path.join("__init__.py")
-            && Path::new(source) == package_path.join(&source_name)
-            && self.search.iter().all(|root| root == &self.base)
-            && no_competitor(&self.base, package, package, SeenEntry::Directory)
-            && no_competitor(
-                &self.base.join(package),
-                "__init__",
-                "__init__.py",
-                SeenEntry::SourceFile,
-            )
-            && no_competitor(
-                &self.base.join(package),
-                module,
-                &source_name,
-                SeenEntry::SourceFile,
-            )
+        let mut directory = self.base.clone();
+        for name in package.split('.') {
+            if !skarmory_python::simple_name(name)
+                || !no_competitor(&directory, name, name, SeenEntry::Directory)
+            {
+                return false;
+            }
+            directory.push(name);
+            if !no_competitor(&directory, "__init__", "__init__.py", SeenEntry::SourceFile) {
+                return false;
+            }
+        }
+        let name = format!("{module}.py");
+        match source {
+            Some(source) => {
+                directory.join(&name) == self.base.join(source)
+                    && no_competitor(&directory, module, &name, SeenEntry::SourceFile)
+            }
+            None => directory
+                .strip_prefix(&self.base)
+                .is_ok_and(|package| self.package_submodule_absent(package, module)),
+        }
     }
 
     pub(super) fn root_flat_module_unambiguous(&self, source: &str, module: &str) -> bool {
@@ -754,6 +777,16 @@ impl Project {
                     name != OsStr::new(source) && entry_may_supply_module(name, *kind, module)
                 })
             })
+    }
+
+    pub(super) fn top_level_module_absent(&self, module: &str) -> bool {
+        std::iter::once(&self.base).chain(&self.search).all(|root| {
+            self.directories.get(root).is_some_and(|entries| {
+                !entries
+                    .iter()
+                    .any(|(name, kind)| entry_may_supply_module(name, *kind, module))
+            })
+        })
     }
 
     fn package_submodule_absent(&self, package: &Path, module: &str) -> bool {
@@ -888,7 +921,7 @@ fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<S
     }
 }
 
-fn opaque_python_module(path: &Path) -> bool {
+pub(super) fn opaque_python_module(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
         .is_some_and(|suffix| {

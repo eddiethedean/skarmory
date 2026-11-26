@@ -5,8 +5,9 @@ use super::*;
 mod backend_writes;
 mod collections;
 
-const PROTOCOL_SETTINGS: [&str; 5] = [
+const PROTOCOL_SETTINGS: [&str; 6] = [
     "AUTHENTICATION_BACKENDS",
+    "REST_FRAMEWORK",
     "STORAGES",
     "LOGGING",
     "MIDDLEWARE",
@@ -52,6 +53,7 @@ const STORAGE_METHODS: &[&str] = &[
 enum Protocol {
     Auth,
     Storage,
+    Pagination,
     Filter { default_constructor: bool },
     Formatter { default_constructor: bool },
     Middleware { singleton: bool },
@@ -71,7 +73,7 @@ impl Protocol {
                 "formatMessage",
                 "formatStack",
             ],
-            Self::Middleware { .. } | Self::ContextProcessor => &[],
+            Self::Middleware { .. } | Self::ContextProcessor | Self::Pagination => &[],
         }
     }
 
@@ -79,6 +81,7 @@ impl Protocol {
         match self {
             Self::Auth => "django_auth_backend",
             Self::Storage => "django_storage_backend",
+            Self::Pagination => "drf_pagination_setting",
             Self::Filter { .. } | Self::Formatter { .. } => "django_logging_factory",
             Self::Middleware { .. } => "django_middleware",
             Self::ContextProcessor => "django_setting_reference",
@@ -93,7 +96,221 @@ struct SettingsWrites {
     modules: BTreeSet<ScopeId>,
 }
 
+pub(in crate::phase02::analysis) struct DjangoFormatLookup {
+    at: Location,
+    settings: String,
+    language: String,
+}
+
+fn literal_format_module(body: &[Statement]) -> bool {
+    body.iter().all(|statement| match &statement.kind {
+        StatementKind::Evaluate(expression) => matches!(expression.kind, ExpressionKind::Text(_)),
+        StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation: None,
+        } => names.iter().all(|name| !name.text.starts_with("__")) && inert_format_literal(value),
+        _ => false,
+    })
+}
+
+fn inert_format_literal(expression: &Expression) -> bool {
+    match &expression.kind {
+        ExpressionKind::Text(_)
+        | ExpressionKind::Bool(_)
+        | ExpressionKind::None
+        | ExpressionKind::Scalar(_) => true,
+        ExpressionKind::Sequence { items, .. } => items.iter().all(inert_format_literal),
+        ExpressionKind::Dictionary(items) => {
+            let (pairs, rest) = items.as_chunks::<2>();
+            rest.is_empty()
+                && pairs.iter().all(|[key, value]| {
+                    matches!(key.kind, ExpressionKind::Text(_)) && inert_format_literal(value)
+                })
+        }
+        _ => false,
+    }
+}
+
 impl Graph<'_> {
+    pub(in crate::phase02::analysis) fn record_django_format_lookup(
+        &mut self,
+        call: CallArguments<'_>,
+    ) {
+        let selected = self.scopes[call.scope]
+            .starts_django
+            .iter()
+            .find(|startup| startup.definite_setup)
+            .and_then(|startup| startup.settings.clone());
+        let bound = registration_arguments(call.positional, call.keywords, ["format_type", "lang"]);
+        if let Some(settings) = selected
+            && let Some([Some(key), Some(lang)]) = bound
+            && matches!(self.identity(call.scope, key, call.before, 0), Value::Text(key) if key == "DATE_FORMAT")
+            && let Value::Text(language) = self.identity(call.scope, lang, call.before, 0)
+            && matches!(language.as_str(), "en" | "fr")
+        {
+            self.scopes[call.scope]
+                .django_formats
+                .push(DjangoFormatLookup {
+                    at: call.at,
+                    settings,
+                    language,
+                });
+        } else {
+            self.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_call",
+                "Django format lookup requires an earlier resolved setup and a supported literal format and language",
+            );
+        }
+    }
+
+    pub(super) fn collect_django_format_lookups(&mut self) {
+        for scope in 0..self.scopes.len() {
+            for lookup in std::mem::take(&mut self.scopes[scope].django_formats) {
+                if let Some(binding) = self.django_date_format_binding(scope, &lookup) {
+                    self.edge(scope, binding, "django_format_setting", "possible");
+                } else {
+                    self.scope_issue(
+                        scope,
+                        lookup.at,
+                        "unresolved_call",
+                        "Django DATE_FORMAT lookup could not resolve the configured source locale",
+                    );
+                }
+            }
+        }
+    }
+
+    fn django_date_format_binding(
+        &mut self,
+        scope: ScopeId,
+        lookup: &DjangoFormatLookup,
+    ) -> Option<SymbolId> {
+        let &settings = self.modules.get(lookup.settings.as_str())?;
+        if !literal_format_module(self.scopes[settings].body)
+            || self.local(settings, "USE_I18N", END).is_some()
+        {
+            return None;
+        }
+        let paths = self.local(settings, "FORMAT_MODULE_PATH", END)?;
+        // Follow a single explicit locale path with stock translation enabled.
+        // Ordered paths, custom translation and dynamic format modules need
+        // their own initialization and fallback proofs.
+        let Value::Text(base) = self.binding(paths, END, 0) else {
+            return None;
+        };
+        let package = format!("{base}.{}", lookup.language);
+        let module = format!("{package}.formats");
+        let &file = self.modules.get(module.as_str())?;
+        if !self.discovery?.package_source_unambiguous(
+            &package,
+            "formats",
+            Some(&self.files[file].path),
+        ) {
+            return None;
+        }
+        let mut parent = package.as_str();
+        loop {
+            let &initializer = self.modules.get(parent)?;
+            if !self.files[initializer].is_package || !self.scopes[initializer].body.is_empty() {
+                return None;
+            }
+            let Some((outer, _)) = parent.rsplit_once('.') else {
+                break;
+            };
+            parent = outer;
+        }
+        let binding = self.local(file, "DATE_FORMAT", END)?;
+        let writes = self.django_settings_initializer_writes(scope)?;
+        if !literal_format_module(self.scopes[file].body)
+            || !matches!(self.binding(binding, END, 0), Value::Text(_))
+            || writes.modules.contains(&settings)
+            || writes.modules.contains(&file)
+        {
+            return None;
+        }
+        Some(binding)
+    }
+
+    pub(super) fn django_default_toolbar_panels(
+        &mut self,
+        settings: ScopeId,
+        access: (ScopeId, Location),
+    ) -> bool {
+        // DebugToolbarConfig.ready runs each panel's startup hook. Custom
+        // panel declarations are outside the bounded default-provider model.
+        self.discovery.is_some_and(|project| {
+            project.top_level_module_absent("debug_toolbar")
+                && project.top_level_module_absent("django")
+        }) && self.local(settings, "DEBUG_TOOLBAR_PANELS", END).is_none()
+            && self
+                .module_member_write(&self.files[settings].module, "DEBUG_TOOLBAR_PANELS", access)
+                .is_none()
+            && self
+                .django_settings_initializer_writes(settings)
+                .is_some_and(|writes| writes.modules.is_empty())
+    }
+
+    pub(in crate::phase02::analysis) fn external_django_setting_declarations(
+        &mut self,
+        reach: &Reachability,
+    ) -> Vec<Edge> {
+        if !self.django_startup_scopes.is_disjoint(&reach.scopes)
+            || self.modules.contains_key("django")
+        {
+            return Vec::new();
+        }
+        let DjangoSettings::Module(name) = &self.initial_django_settings else {
+            return Vec::new();
+        };
+        let Some(&settings) = self.modules.get(name.as_str()) else {
+            return Vec::new();
+        };
+        let [Some(apps), Some(root)] =
+            ["INSTALLED_APPS", "ROOT_URLCONF"].map(|name| self.local(settings, name, END))
+        else {
+            return Vec::new();
+        };
+        if !matches!(self.binding(apps, END, 0), Value::Sequence(apps)
+            if apps.iter().all(|app| matches!(app, Value::Text(_))))
+        {
+            return Vec::new();
+        }
+        let Value::Text(root) = self.binding(root, END, 0) else {
+            return Vec::new();
+        };
+        let Some(&urls) = self.modules.get(root.as_str()) else {
+            return Vec::new();
+        };
+        if self
+            .local(urls, "urlpatterns", END)
+            .is_none_or(|patterns| !matches!(self.binding(patterns, END, 0), Value::Sequence(_)))
+            || self
+                .django_settings_initializer_writes(settings)
+                .is_none_or(|writes| !writes.modules.is_empty())
+        {
+            return Vec::new();
+        }
+        // The external selection identifies the settings namespace. It does
+        // not establish that an application or a route has started.
+        let Some(bindings) = self.django_setting_bindings(settings) else {
+            self.scope_issue(
+                settings,
+                self.symbols[apps].name.at,
+                "unresolved_registration",
+                "Django settings initialization terminates before exposing its values",
+            );
+            return Vec::new();
+        };
+        bindings
+            .into_keys()
+            .filter(|&binding| !self.binding_depends_on_branch(binding, END))
+            .map(|binding| possible_edge(binding, "django_setting"))
+            .collect()
+    }
+
     pub(in crate::phase02::analysis) fn django_template_setting(
         &mut self,
         settings: ScopeId,
@@ -524,6 +741,21 @@ impl Graph<'_> {
             }
             return;
         }
+        if matches!(protocol, Protocol::Pagination | Protocol::Storage)
+            && self.retain_static_settings_protocol(class, settings, protocol, &writes, roots)
+        {
+            self.read.extend(target.bindings);
+            return;
+        }
+        if matches!(protocol, Protocol::Pagination) {
+            self.scope_issue(
+                file,
+                self.symbols[binding].name.at,
+                "unresolved_registration",
+                "configured DRF pagination is outside the bounded protocol",
+            );
+            return;
+        }
         let allow_logging_base = matches!(
             protocol,
             Protocol::Filter {
@@ -562,6 +794,21 @@ impl Graph<'_> {
         for name in protocol.methods() {
             let Some(Some(method)) = self.django_protocol_member(&mro, name, settings, &writes)
             else {
+                if matches!(protocol, Protocol::Auth)
+                    && let Some(methods) =
+                        self.conditional_auth_methods(&mro, class, name, settings, &writes)
+                    && methods
+                        .iter()
+                        .all(|&method| !modified_callback_body(method, &writes, replaced_bodies))
+                {
+                    for method in methods {
+                        self.method_receivers
+                            .entry(method)
+                            .or_default()
+                            .insert(class);
+                        roots.push(possible_edge(method, "django_auth_possible_dispatch"));
+                    }
+                }
                 continue;
             };
             let Some(target) = self.probe_callable_binding(method) else {
@@ -600,6 +847,125 @@ impl Graph<'_> {
             self.read.extend(target.bindings);
             roots.push(possible_edge(target.target, protocol.evidence()));
         }
+    }
+
+    fn retain_static_settings_protocol(
+        &mut self,
+        class: SymbolId,
+        settings: ScopeId,
+        protocol: Protocol,
+        writes: &[&SettingsWrites],
+        roots: &mut Vec<Edge>,
+    ) -> bool {
+        let role = match protocol {
+            Protocol::Storage => FrameworkClassRole::DjangoManifestStorage,
+            Protocol::Pagination => FrameworkClassRole::DrfPageNumberPagination,
+            _ => return false,
+        };
+        let Some(body) = self.direct_framework_protocol_body(class, role, (settings, END)) else {
+            return false;
+        };
+        if writes
+            .iter()
+            .any(|writes| writes.classes.contains_key(&class))
+        {
+            return false;
+        }
+        if matches!(protocol, Protocol::Storage) {
+            if self.scopes[body].body.iter().any(|statement| {
+                !matches!(&statement.kind,
+                StatementKind::Evaluate(value) if matches!(value.kind, ExpressionKind::Text(_)))
+            }) {
+                return false;
+            }
+            roots.push(possible_edge(class, "django_setting_reference"));
+            return true;
+        }
+        if let Some(query) = self.local(body, "page_size_query_param", END) {
+            let Binding::Variable(Some(value), _) = self.symbols[query].binding else {
+                return false;
+            };
+            if self.binding_depends_on_branch(query, END) {
+                return false;
+            }
+            let enabled = match &value.kind {
+                ExpressionKind::Text(query) => !query.is_empty(),
+                ExpressionKind::None => false,
+                _ => return false,
+            };
+            if enabled && let Some(limit) = self.local(body, "max_page_size", END) {
+                if self.binding_depends_on_branch(limit, END)
+                    || !matches!(self.symbols[limit].binding, Binding::Variable(Some(value), _)
+                        if matches!(value.kind, ExpressionKind::Scalar(Some(_)) | ExpressionKind::None))
+                {
+                    return false;
+                }
+                roots.push(possible_edge(limit, "drf_pagination_option"));
+            }
+            roots.push(possible_edge(query, "drf_pagination_option"));
+        }
+        roots.push(possible_edge(class, protocol.evidence()));
+        true
+    }
+
+    fn conditional_auth_methods(
+        &self,
+        mro: &[ConverterBase],
+        receiver: SymbolId,
+        name: &str,
+        settings: ScopeId,
+        writes: &[&SettingsWrites],
+    ) -> Option<Vec<SymbolId>> {
+        for (index, base) in mro.iter().enumerate() {
+            let ConverterBase::Source(class) = *base else {
+                return None;
+            };
+            if writes.iter().any(|writes| {
+                writes
+                    .classes
+                    .get(&class)
+                    .is_some_and(|members| members.contains(name))
+            }) || self.class_discovery_write(class, name, settings).is_some()
+                || self.metaclass_member(class, name).is_some()
+            {
+                return None;
+            }
+            let Binding::Definition(_, body) = self.symbols[class].binding else {
+                return None;
+            };
+            let Some(bindings) = self.scopes[body].names.get(name) else {
+                continue;
+            };
+            let methods = self.effective_bindings(bindings);
+            if class == receiver
+                || !methods
+                    .last()
+                    .is_some_and(|&last| self.binding_depends_on_branch(last, END))
+            {
+                return None;
+            }
+            let mut candidates = methods.to_vec();
+            if methods
+                .iter()
+                .all(|method| self.conditional.contains_key(method))
+            {
+                candidates.extend(self.django_protocol_member(
+                    &mro[index + 1..],
+                    name,
+                    settings,
+                    writes,
+                )?);
+            }
+            if !candidates.iter().all(|&id| {
+                matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+                    if definition.kind == DefinitionKind::Function
+                        && !definition.is_generator && definition.decorators.is_empty())
+            }) {
+                return None;
+            }
+            return Some(candidates);
+        }
+        None
     }
 
     // The inner option denotes an absent member. The outer option denotes a
@@ -716,6 +1082,11 @@ fn collect_settings_paths<'a>(name: &str, value: &'a Value, paths: &mut Vec<(&'a
                     },
                 ))
             }));
+        }
+        ("REST_FRAMEWORK", _) => {
+            if let Some(Value::Text(path)) = get(value, "DEFAULT_PAGINATION_CLASS") {
+                paths.push((path, Protocol::Pagination));
+            }
         }
         ("STORAGES", _) => {
             for entry in mapping(value).into_values() {

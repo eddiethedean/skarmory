@@ -30,20 +30,30 @@ struct Write {
     value: MemberWriteValue,
 }
 
+struct FlaskLoginEffectCall {
+    callee: SymbolId,
+    forwarded: Option<Invocation>,
+}
+
 #[derive(Default)]
 pub(super) struct Mutations {
     members: BTreeMap<ReceiverKey, BTreeMap<String, Vec<Write>>>,
     modules: BTreeMap<String, Vec<Write>>,
     command_namespaces: BTreeSet<ScopeId>,
-    command_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
+    module_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
+    flask_global_setters: BTreeSet<ScopeId>,
     command_code: BTreeMap<SymbolId, Vec<Write>>,
+    django_command_installers: BTreeSet<(ScopeId, [usize; 2])>,
+    flask_login_code: BTreeMap<String, Vec<Write>>,
+    flask_login_writers: BTreeMap<SymbolId, Location>,
+    flask_login_effect_calls: BTreeMap<(ScopeId, [usize; 2]), FlaskLoginEffectCall>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     unmodeled_class_writes: BTreeSet<SymbolId>,
     framework_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
 
-impl Graph<'_> {
+impl<'a> Graph<'a> {
     pub(super) fn index_framework_mutations(&mut self) {
         let track_framework_escapes = self.symbols.iter().any(|symbol| {
             matches!(symbol.binding, Binding::Import(import) if import.level == 0
@@ -105,7 +115,7 @@ impl Graph<'_> {
             )
     }
 
-    pub(super) fn command_global_value(
+    pub(super) fn module_global_value(
         &mut self,
         scope: ScopeId,
         at: Location,
@@ -119,7 +129,7 @@ impl Graph<'_> {
                     scope,
                     at,
                     "unresolved_attribute_write",
-                    "Django command module lookup depends on an unresolved namespace write",
+                    "module lookup depends on an unresolved namespace write",
                 );
                 Value::Unknown
             }
@@ -164,6 +174,35 @@ impl Graph<'_> {
                     self.index_django_form_table_field(file, at, class, field, value, conditional);
                 }
                 StatementKind::WriteModuleEntry {
+                    mapping:
+                        Expression {
+                            kind: ExpressionKind::Member(receiver, table),
+                            ..
+                        },
+                    module: member,
+                    value: Some(value),
+                } if table == "__dict__" && flask_login_callback(member) => {
+                    let kind = ObjectKind::FlaskLoginManager;
+                    if let Value::Object(site, ObjectKind::FlaskLoginManager) =
+                        self.probe_identity(file, receiver, at)
+                        && matches!(
+                            self.flask_member(site, kind, member, (file, at)),
+                            Value::Method(..)
+                        )
+                    {
+                        // An unmodified LoginManager callback is a non-data
+                        // descriptor. A literal instance slot shadows it.
+                        self.index_member_write(
+                            file,
+                            at,
+                            receiver,
+                            member,
+                            Some(value),
+                            conditional,
+                        );
+                    }
+                }
+                StatementKind::WriteModuleEntry {
                     mapping,
                     module,
                     value: Some(value),
@@ -198,15 +237,45 @@ impl Graph<'_> {
                         }
                     }
                 }
-                StatementKind::Evaluate(Expression {
-                    kind:
-                        ExpressionKind::Call {
+                StatementKind::Evaluate(expression)
+                    if track_framework_escapes
+                        && (self.index_flask_login_mock_start(
+                            file,
+                            at,
+                            expression,
+                            conditional,
+                        ) || !conditional
+                            && (self.index_flask_global_setter(file, at, expression)
+                                || self.index_flask_login_effect_call(file, at, expression))) => {}
+                StatementKind::Evaluate(
+                    expression @ Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        ..
+                    },
+                ) if !arguments.is_empty() || !keywords.is_empty() => {
+                    if self.has_command_namespace(file) {
+                        if self.index_django_command_installer(
+                            file,
+                            at,
                             function,
                             arguments,
                             keywords,
-                        },
-                    ..
-                }) if !arguments.is_empty() || !keywords.is_empty() => {
+                            conditional,
+                        ) {
+                            continue;
+                        }
+                        self.index_opaque_command_escape(file, at, function, arguments, keywords);
+                    }
+                    if track_framework_escapes
+                        && self.index_flask_globals_update(file, at, expression, conditional)
+                    {
+                        continue;
+                    }
                     if keywords.is_empty()
                         && let [receiver, name, rest @ ..] = arguments.as_slice()
                         && let ExpressionKind::Text(member) = &name.kind
@@ -373,6 +442,12 @@ impl Graph<'_> {
         value: Option<&Expression>,
         conditional: bool,
     ) {
+        if member == "__code__"
+            && let Some(value) = value
+            && self.index_flask_login_code(file, at, receiver, value, conditional)
+        {
+            return;
+        }
         let receiver = self.probe_identity(file, receiver, at);
         if member == "__code__"
             && let Value::Callable(invocation) = receiver
@@ -409,12 +484,29 @@ impl Graph<'_> {
                 self.member_write(&receiver, member, (file, at)),
                 Some(MemberWriteValue::Replacement(_))
             );
-        let value = if conditional
+        let login_replacement = match (&receiver, value) {
+            (ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager), Some(value))
+                if !conditional =>
+            {
+                match member {
+                    "__new__" => self.flask_login_allocator_patch(file, at, value),
+                    name if flask_login_callback(name) => {
+                        self.flask_login_identity_replacement(file, at, value)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let value = if let Some(replacement) = login_replacement {
+            MemberWriteValue::Replacement(replacement)
+        } else if conditional
             || deletes_inherited_method
             || matches!(
                 receiver,
                 ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_) | ReceiverKey::McpServerBase
-            ) {
+            )
+        {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
             let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
@@ -456,6 +548,191 @@ impl Graph<'_> {
             .push(Write { file, at, value });
     }
 
+    fn index_flask_login_code(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        receiver: &Expression,
+        value: &Expression,
+        conditional: bool,
+    ) -> bool {
+        let ExpressionKind::Member(class, method) = &receiver.kind else {
+            return false;
+        };
+        let ExpressionKind::Member(replacement, member) = &value.kind else {
+            return false;
+        };
+        let class_key = ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager);
+        let access = (file, at);
+        if member != "__code__"
+            || !flask_login_callback(method)
+            || !matches!(self.probe_identity(file, class, at), Value::Provider(name)
+                if is_flask_login_constructor(&name))
+            || self.member_write(&class_key, method, access).is_some()
+            || self.framework_receiver_has_escaped(&class_key, None, access)
+        {
+            return false;
+        }
+        let Some(Value::Callable(replacement)) =
+            self.flask_login_identity_replacement(file, at, replacement)
+        else {
+            return false;
+        };
+        let value = if conditional {
+            MemberWriteValue::Ambiguous
+        } else {
+            // The framework function keeps its identity and globals. These
+            // replacement instructions only return the bound callback parameter.
+            self.mutations.modeled.insert((file, position(at)));
+            MemberWriteValue::Replacement(Value::FrameworkCode(replacement.target))
+        };
+        self.mutations
+            .flask_login_code
+            .entry(method.clone())
+            .or_default()
+            .push(Write { file, at, value });
+        true
+    }
+
+    pub(super) fn retain_flask_login_code_source(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        receiver: &Expression,
+    ) {
+        let ExpressionKind::Member(_, method) = &receiver.kind else {
+            return;
+        };
+        let write = self
+            .mutations
+            .flask_login_code
+            .get(method)
+            .and_then(|writes| {
+                writes
+                    .iter()
+                    .find(|write| write.file == scope && position(write.at) == position(at))
+            });
+        if let Some(Write {
+            value: MemberWriteValue::Replacement(Value::FrameworkCode(source)),
+            ..
+        }) = write
+        {
+            self.edge(scope, *source, "code_reference", "certain");
+        }
+    }
+
+    pub(super) fn flask_login_code_at_call(
+        &self,
+        site: Object,
+        method: &str,
+        access: (ScopeId, Location),
+    ) -> Option<Value> {
+        let writes = self.mutations.flask_login_code.get(method)?;
+        let code = self.write_value(writes, Some(site.0), access)?;
+        let class = ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager);
+        // A class slot write may change which function receives the code
+        // assignment. A later slot write leaves an earlier bound alias intact.
+        if self.framework_receiver_has_escaped(&class, None, access)
+            || writes.iter().any(|write| {
+                self.member_write(&class, method, (write.file, write.at))
+                    .is_some()
+            })
+        {
+            return Some(Value::Unknown);
+        }
+        Some(match code {
+            MemberWriteValue::Replacement(Value::FrameworkCode(_)) => Value::IdentityFunction,
+            _ => Value::Unknown,
+        })
+    }
+
+    fn flask_login_identity_replacement(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        value: &Expression,
+    ) -> Option<Value> {
+        if !matches!(value.kind, ExpressionKind::Name(_)) {
+            return None;
+        }
+        let Value::Callable(call) = self.probe_identity(file, value, at) else {
+            return None;
+        };
+        let symbol = &self.symbols[call.target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return None;
+        };
+        // Assigning a plain function to LoginManager's class dictionary
+        // binds its first parameter when read through a manager instance.
+        (!call.verified
+            && matches!(call.receiver, Receiver::Ordinary)
+            && !call.implicit_descriptor_receiver
+            && symbol.scope == file
+            && field_dispatch::plain_method(definition, 2)
+            && returns_parameter(definition, &definition.parameters[1]))
+        .then_some(Value::Callable(Invocation {
+            implicit_descriptor_receiver: true,
+            ..call
+        }))
+    }
+
+    fn flask_login_allocator_patch(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        value: &Expression,
+    ) -> Option<Value> {
+        if !matches!(value.kind, ExpressionKind::Name(_)) {
+            return None;
+        }
+        let Value::Callable(call) = self.probe_identity(file, value, at) else {
+            return None;
+        };
+        (self.symbols[call.target].scope == file
+            && self.flask_login_allocator_class(call).is_some())
+        .then_some(Value::Callable(call))
+    }
+
+    fn flask_login_allocator_class(&self, call: Invocation) -> Option<&str> {
+        let Binding::Definition(definition, _) = self.symbols[call.target].binding else {
+            return None;
+        };
+        if call.verified
+            || !matches!(call.receiver, Receiver::Ordinary)
+            || call.implicit_descriptor_receiver
+            || !field_dispatch::plain_method(definition, 1)
+            || !definition.annotations.is_empty()
+        {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::Return(Some(Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        ..
+                    })),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        if let ExpressionKind::Name(class) = &function.kind
+            && arguments.is_empty()
+            && keywords.is_empty()
+            && *class != definition.parameters[0].text
+        {
+            return Some(class);
+        }
+        None
+    }
+
     fn index_command_global(
         &mut self,
         file: ScopeId,
@@ -471,6 +748,18 @@ impl Graph<'_> {
             return false;
         }
         let replacement = self.probe_identity(file, value, at);
+        self.index_module_global_value(file, at, name, replacement, conditional);
+        true
+    }
+
+    fn index_module_global_value(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        name: &str,
+        replacement: Value,
+        conditional: bool,
+    ) {
         let value = if conditional || replacement.contains_unknown() {
             MemberWriteValue::Ambiguous
         } else {
@@ -478,13 +767,656 @@ impl Graph<'_> {
             MemberWriteValue::Replacement(replacement)
         };
         self.mutations
-            .command_globals
+            .module_globals
             .entry(file)
             .or_default()
             .entry(name.into())
             .or_default()
             .push(Write { file, at, value });
+    }
+
+    fn index_flask_globals_update(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+        conditional: bool,
+    ) -> bool {
+        let Some((globals, name, replacement)) = flask_globals_update(expression) else {
+            return false;
+        };
+        let current = Expression {
+            kind: ExpressionKind::Name(name.to_owned()),
+            at,
+        };
+        if name.starts_with("__")
+            || !matches!(self.probe_identity(file, globals, at), Value::Provider(provider)
+                if provider == "builtins.globals")
+            || !matches!(
+                self.probe_identity(file, &current, at),
+                Value::Object(_, ObjectKind::FlaskLoginManager)
+            )
+        {
+            return false;
+        }
+        let Value::Instance(class) = self.probe_identity(file, replacement, at) else {
+            return false;
+        };
+        if !self.plain_default_provider(class, (file, at), &BTreeSet::new()) {
+            return false;
+        }
+        self.index_module_global_value(file, at, name, Value::Instance(class), conditional);
         true
+    }
+
+    fn index_flask_global_setter(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &expression.kind
+        else {
+            return false;
+        };
+        if !arguments.is_empty()
+            || !keywords.is_empty()
+            || !matches!(function.kind, ExpressionKind::Name(_))
+        {
+            return false;
+        }
+        let Value::Callable(invocation) = self.probe_identity(file, function, at) else {
+            return false;
+        };
+        let symbol = &self.symbols[invocation.target];
+        let Binding::Definition(setter, scope) = symbol.binding else {
+            return false;
+        };
+        let [
+            Statement {
+                kind: StatementKind::SetGlobalName { name, value },
+                ..
+            },
+        ] = setter.body.as_slice()
+        else {
+            return false;
+        };
+        let ExpressionKind::Name(replacement) = &value.kind else {
+            return false;
+        };
+        if invocation.verified
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || symbol.scope != file
+            || setter.kind != DefinitionKind::Function
+            || !setter.decorators.is_empty()
+            || !setter.parameters.is_empty()
+            || !setter.defaults.is_empty()
+            || !setter.annotations.is_empty()
+            || !self.scopes[file].names.get(replacement.as_str()).is_some_and(|ids| ids.len() == 1)
+            || !self.scopes[file].body.windows(2).any(|pair| {
+                matches!(&pair[0].kind, StatementKind::Define(definition)
+                    if std::ptr::eq(definition, setter))
+                    && position(pair[1].at) == position(at)
+            })
+            || self.scopes.iter().enumerate().any(|(other, row)| {
+                other != scope && row.file == file
+                    && matches!(row.body, [Statement { kind: StatementKind::SetGlobalName { name: other, .. }, .. }]
+                        if other.text == *replacement || other.text == name.text)
+            })
+        {
+            return false;
+        }
+
+        // The immediately invoked helper can only assign the same bounded
+        // instance when called again. Earlier lexical reads see the old slot.
+        let current = Expression {
+            kind: ExpressionKind::Name(name.text.clone()),
+            at,
+        };
+        if !matches!(self.probe_identity(file, &current, at),
+            Value::Object(site, ObjectKind::FlaskLoginManager) if site.0 == file)
+        {
+            return false;
+        }
+        let Value::Instance(class) = self.probe_identity(file, value, at) else {
+            return false;
+        };
+        if !self.plain_default_provider(class, (file, at), &BTreeSet::new()) {
+            return false;
+        }
+        self.index_module_global_value(file, at, &name.text, Value::Instance(class), false);
+        self.mutations.flask_global_setters.insert(scope);
+        true
+    }
+
+    pub(super) fn modeled_flask_global_setter(&self, scope: ScopeId) -> bool {
+        self.mutations.flask_global_setters.contains(&scope)
+    }
+
+    fn index_flask_login_effect_call(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &expression.kind
+        else {
+            return false;
+        };
+        if !keywords.is_empty() {
+            return false;
+        }
+        let Some((callee, call_scope, function)) =
+            self.flask_login_effect_function(file, at, function)
+        else {
+            return false;
+        };
+        let (writer, scope, definition, arguments) = if let (
+            [parameter],
+            [argument],
+            [
+                Statement {
+                    kind:
+                        StatementKind::Evaluate(Expression {
+                            kind:
+                                ExpressionKind::Call {
+                                    function: forwarded,
+                                    arguments: forwarded_args,
+                                    keywords: forwarded_keywords,
+                                },
+                            ..
+                        }),
+                    ..
+                },
+            ],
+        ) = (
+            function.parameters.as_slice(),
+            arguments.as_slice(),
+            body_without_docstring(function),
+        ) && matches!(&forwarded.kind, ExpressionKind::Name(name) if *name == parameter.text)
+            && forwarded_args.is_empty()
+            && forwarded_keywords.is_empty()
+        {
+            let Some((writer, scope, definition)) =
+                self.flask_login_effect_function(file, at, argument)
+            else {
+                return false;
+            };
+            (writer, scope, definition, &[][..])
+        } else {
+            (callee, call_scope, function, arguments.as_slice())
+        };
+        let [
+            Statement {
+                at: write_at,
+                kind:
+                    StatementKind::WriteAttribute {
+                        receiver,
+                        member,
+                        value: Some(value),
+                    },
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return false;
+        };
+        let ExpressionKind::Name(name) = &receiver.kind else {
+            return false;
+        };
+        let receiver = match (definition.parameters.as_slice(), arguments) {
+            ([], []) => receiver,
+            ([parameter], [argument]) if parameter.text == *name => argument,
+            _ => return false,
+        };
+        if !flask_login_callback(member)
+            || !matches!(&value.kind, ExpressionKind::Name(replacement)
+                if definition.parameters.iter().all(|parameter| parameter.text != *replacement))
+        {
+            return false;
+        }
+        let resolved = self.probe_identity(file, receiver, at);
+        if !match resolved {
+            Value::Provider(provider) if is_flask_login_constructor(&provider) => self
+                .flask_login_identity_replacement(file, at, value)
+                .is_some(),
+            Value::Object(_, ObjectKind::FlaskLoginManager) => matches!(
+                self.flask_login_effect_function(file, at, value),
+                Some((_, _, replacement)) if replacement.parameters.len() == 1
+                    && returns_parameter(replacement, &replacement.parameters[0])
+            ),
+            _ => false,
+        } {
+            return false;
+        }
+
+        self.index_member_write(file, at, receiver, member, Some(value), false);
+        if !self.modeled_framework_write(file, at) {
+            return false;
+        }
+        self.mutations.modeled.insert((scope, position(*write_at)));
+        self.mutations
+            .flask_login_writers
+            .insert(writer.target, *write_at);
+        self.mutations.flask_login_effect_calls.insert(
+            (file, position(at)),
+            FlaskLoginEffectCall {
+                callee: callee.target,
+                forwarded: (writer.target != callee.target).then_some(writer),
+            },
+        );
+        true
+    }
+
+    fn flask_login_effect_function(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+    ) -> Option<(Invocation, ScopeId, &'a Definition)> {
+        if !matches!(expression.kind, ExpressionKind::Name(_)) {
+            return None;
+        }
+        let Value::Callable(invocation) = self.probe_identity(file, expression, at) else {
+            return None;
+        };
+        let symbol = &self.symbols[invocation.target];
+        let Binding::Definition(function, scope) = symbol.binding else {
+            return None;
+        };
+        (symbol.scope == file
+            && !invocation.verified
+            && matches!(invocation.receiver, Receiver::Ordinary)
+            && !invocation.implicit_descriptor_receiver
+            && function.annotations.is_empty()
+            && field_dispatch::plain_method(function, function.parameters.len()))
+        .then_some((invocation, scope, function))
+    }
+
+    pub(super) fn flask_login_mutator_dispatch(
+        &mut self,
+        callee: SymbolId,
+        call: CallArguments<'_>,
+    ) -> Option<Invocation> {
+        let modeled = self
+            .mutations
+            .flask_login_effect_calls
+            .get(&(call.scope, position(call.at)))
+            .filter(|effect| effect.callee == callee);
+        let forwarded = modeled.and_then(|effect| effect.forwarded);
+        if modeled.is_none() && self.mutations.flask_login_writers.contains_key(&callee) {
+            self.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_attribute_write",
+                "Flask callback mutation is outside the bounded initializer",
+            );
+        }
+        forwarded
+    }
+
+    pub(super) fn report_escaped_flask_login_mutators(&mut self, reach: &Reachability) {
+        self.issues.extend(
+            self.mutations
+                .flask_login_writers
+                .iter()
+                .filter(|&(&target, _)| {
+                    reach
+                        .evidence
+                        .range((target, "", "")..)
+                        .take_while(|(id, _, _)| *id == target)
+                        .any(|(_, kind, _)| !matches!(*kind, "direct_call" | "type_reference"))
+                })
+                .map(|(&target, &at)| {
+                    Issue::new(
+                        "unresolved_attribute_write",
+                        &self.files[self.symbols[target].scope].path,
+                        "Flask callback mutation can escape the bounded initializer",
+                    )
+                    .at(at)
+                }),
+        );
+    }
+
+    pub(super) fn walk_flask_globals_update(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        at: Location,
+    ) -> bool {
+        if self.modeled_framework_write(scope, at)
+            && let Some((_, _, replacement)) = flask_globals_update(expression)
+        {
+            self.walk(scope, replacement, at);
+            return true;
+        }
+        false
+    }
+
+    fn index_flask_login_mock_start(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+        conditional: bool,
+    ) -> bool {
+        let Some((constructor, arguments)) = mock_start(expression) else {
+            return false;
+        };
+        let Value::Provider(provider) = self.probe_identity(file, constructor, at) else {
+            return false;
+        };
+        let dotted_receiver;
+        let (receiver, member, replacement) = match (provider.as_str(), arguments) {
+            (
+                "unittest.mock.patch",
+                [
+                    Expression {
+                        kind: ExpressionKind::Text(target),
+                        ..
+                    },
+                    value,
+                ],
+            ) => {
+                let Some(rest) = target
+                    .strip_prefix(self.files[file].module.as_str())
+                    .and_then(|rest| rest.strip_prefix('.'))
+                else {
+                    return false;
+                };
+                let Some((name, member)) = rest.split_once('.') else {
+                    return false;
+                };
+                dotted_receiver = Expression {
+                    kind: ExpressionKind::Name(name.to_owned()),
+                    at,
+                };
+                (&dotted_receiver, member, value)
+            }
+            (
+                "unittest.mock.patch.object",
+                [
+                    receiver,
+                    Expression {
+                        kind: ExpressionKind::Text(member),
+                        ..
+                    },
+                    value,
+                ],
+            ) => (receiver, member.as_str(), value),
+            _ => return false,
+        };
+        if !flask_login_callback(member) {
+            return false;
+        }
+        let kind = ObjectKind::FlaskLoginManager;
+        let known_target = match self.probe_identity(file, receiver, at) {
+            Value::Object(site, ObjectKind::FlaskLoginManager) => matches!(
+                self.flask_member(site, kind, member, (file, at)),
+                Value::Method(..)
+            ),
+            Value::Provider(name)
+                if provider == "unittest.mock.patch.object"
+                    && is_flask_login_constructor(&name) =>
+            {
+                let class = ReceiverKey::FlaskBase(kind);
+                !self.framework_receiver_has_escaped(&class, None, (file, at))
+                    && self.member_write(&class, member, (file, at)).is_none()
+            }
+            _ => false,
+        };
+        if known_target {
+            self.index_member_write(file, at, receiver, member, Some(replacement), conditional);
+        }
+        known_target
+    }
+
+    pub(super) fn walk_flask_login_mock_start(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        at: Location,
+    ) -> bool {
+        if self.modeled_framework_write(scope, at)
+            && let Some((constructor, arguments)) = mock_start(expression)
+        {
+            self.walk(scope, constructor, at);
+            for argument in arguments {
+                self.walk(scope, argument, at);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn index_opaque_command_escape(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        function: &Expression,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+    ) {
+        let opaque = match self.probe_identity(file, function, at) {
+            Value::Unknown => true,
+            Value::Provider(provider) => !is_known_call(&provider, true),
+            _ => false,
+        };
+        if !opaque {
+            return;
+        }
+        for argument in arguments
+            .iter()
+            .chain(keywords.iter().map(|(_, value)| value))
+        {
+            let Value::Callable(target) = self.probe_identity(file, argument, at) else {
+                continue;
+            };
+            if target.verified {
+                continue;
+            }
+            let write = Write {
+                file,
+                at,
+                value: MemberWriteValue::Ambiguous,
+            };
+            if self.is_django_command_class(target.target) {
+                self.mutations
+                    .members
+                    .entry(ReceiverKey::Class(target.target))
+                    .or_default()
+                    .entry("handle".into())
+                    .or_default()
+                    .push(write);
+            } else if self.symbols[target.target].name.text == "handle"
+                && let Some(owner) = self.scopes[self.symbols[target.target].scope].owner
+                && self.is_django_command_class(owner)
+            {
+                self.mutations
+                    .command_code
+                    .entry(target.target)
+                    .or_default()
+                    .push(write);
+            }
+        }
+    }
+
+    fn index_django_command_installer(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        function: &Expression,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        conditional: bool,
+    ) -> bool {
+        let ([supplied], []) = (arguments, keywords) else {
+            return false;
+        };
+        let Value::Callable(callee) = self.probe_identity(file, function, at) else {
+            return false;
+        };
+        let Binding::Definition(definition, body) = self.symbols[callee.target].binding else {
+            return false;
+        };
+        if callee.verified
+            || !matches!(callee.receiver, Receiver::Ordinary)
+            || callee.implicit_descriptor_receiver
+            || !field_dispatch::plain_method(definition, 1)
+            || !definition.annotations.is_empty()
+            || self.symbols[callee.target].scope != self.scopes[body].file
+        {
+            return false;
+        }
+        let [statement] = body_without_docstring(definition) else {
+            return false;
+        };
+        let StatementKind::Evaluate(Expression {
+            kind:
+                ExpressionKind::Call {
+                    function,
+                    arguments,
+                    keywords,
+                },
+            ..
+        }) = &statement.kind
+        else {
+            return false;
+        };
+        let ([receiver, field, value], []) = (arguments.as_slice(), keywords.as_slice()) else {
+            return false;
+        };
+        let ExpressionKind::Text(field) = &field.kind else {
+            return false;
+        };
+        if !matches!(&receiver.kind, ExpressionKind::Name(parameter) if parameter == &definition.parameters[0].text)
+            || !matches!(self.probe_identity(body, function, statement.at),
+                Value::Provider(provider) if provider == "builtins.setattr")
+        {
+            return false;
+        }
+
+        let Value::Callable(target) = self.probe_identity(file, supplied, at) else {
+            return false;
+        };
+        if target.verified || target.implicit_descriptor_receiver {
+            return false;
+        }
+        if field == "__code__" {
+            let ExpressionKind::Member(code, attribute) = &value.kind else {
+                return false;
+            };
+            let symbol = &self.symbols[target.target];
+            if symbol.name.text != "handle"
+                || matches!(target.receiver, Receiver::Bound(_))
+                || attribute != "__code__"
+            {
+                return false;
+            }
+            let Some(owner) = self.scopes[symbol.scope].owner else {
+                return false;
+            };
+            if !self.plain_installer_command(owner) {
+                return false;
+            }
+            let Value::Callable(replacement) = self.probe_identity(body, code, statement.at) else {
+                return false;
+            };
+            if replacement.verified
+                || !matches!(replacement.receiver, Receiver::Ordinary)
+                || replacement.implicit_descriptor_receiver
+                || !self.closed_django_command_code(
+                    target.target,
+                    replacement.target,
+                    self.scopes[body].file,
+                )
+            {
+                return false;
+            }
+            // The code retains the old function's globals and needs no
+            // calling edge in the installer.
+            self.edge(body, replacement.target, "code_reference", "possible");
+            self.mutations
+                .command_code
+                .entry(target.target)
+                .or_default()
+                .push(Write {
+                    file,
+                    at,
+                    value: if conditional {
+                        MemberWriteValue::Ambiguous
+                    } else {
+                        MemberWriteValue::Replacement(Value::FrameworkCode(replacement.target))
+                    },
+                });
+            self.mutations
+                .django_command_installers
+                .insert((file, position(at)));
+            return true;
+        }
+        if field != "handle"
+            || !matches!(target.receiver, Receiver::Ordinary)
+            || !self.plain_installer_command(target.target)
+        {
+            return false;
+        }
+        let Value::Callable(replacement) = self.probe_identity(body, value, statement.at) else {
+            return false;
+        };
+        if replacement.verified
+            || !matches!(replacement.receiver, Receiver::Ordinary)
+            || replacement.implicit_descriptor_receiver
+            || !self.bounded_framework_function(replacement.target)
+        {
+            return false;
+        }
+        self.mutations
+            .members
+            .entry(ReceiverKey::Class(target.target))
+            .or_default()
+            .entry(field.clone())
+            .or_default()
+            .push(Write {
+                file,
+                at,
+                value: if conditional {
+                    MemberWriteValue::Ambiguous
+                } else {
+                    MemberWriteValue::Replacement(Value::Callable(replacement))
+                },
+            });
+        self.mutations
+            .django_command_installers
+            .insert((file, position(at)));
+        true
+    }
+
+    fn plain_installer_command(&mut self, class: SymbolId) -> bool {
+        let scope = self.symbols[class].scope;
+        let Binding::Definition(definition, _) = self.symbols[class].binding else {
+            return false;
+        };
+        let [base] = definition.bases.as_slice() else {
+            return false;
+        };
+        self.is_django_command_class(class)
+            && !definition.has_class_keywords()
+            && definition.decorators.is_empty()
+            && matches!(self.probe_identity(scope, base, definition.name.at), Value::Provider(provider)
+                if framework_class_provider(&provider) == Some(FrameworkClassRole::DjangoCommand))
+    }
+
+    pub(super) fn modeled_django_command_installer(&self, scope: ScopeId, at: Location) -> bool {
+        self.mutations
+            .django_command_installers
+            .contains(&(scope, position(at)))
     }
 
     fn index_django_command_code(
@@ -618,8 +1550,10 @@ impl Graph<'_> {
         }
         let replacement = self.probe_identity(file, value, at);
         let value = if conditional
-            || !matches!(replacement, Value::DjangoField(django_forms::Field::Form))
-        {
+            || !matches!(
+                replacement,
+                Value::DjangoField(django_forms::Field::Form { widget: None })
+            ) {
             MemberWriteValue::Ambiguous
         } else {
             self.mutations.modeled.insert((file, position(at)));
@@ -657,14 +1591,14 @@ impl Graph<'_> {
         Some(fields)
     }
 
-    pub(super) fn command_global_write(
+    pub(super) fn module_global_write(
         &self,
         file: ScopeId,
         name: &str,
         before: Location,
         access: (ScopeId, Location),
     ) -> Option<MemberWriteValue> {
-        let writes = self.mutations.command_globals.get(&file)?.get(name)?;
+        let writes = self.mutations.module_globals.get(&file)?.get(name)?;
         let before = if access.0 == file && position(access.1) < position(before) {
             access.1
         } else {
@@ -786,7 +1720,12 @@ impl Graph<'_> {
                         | "flask.Blueprint"
                         | "flask.blueprints.Blueprint"
                         | "celery.Celery"
+                        | "celery.signals.setup_logging"
+                        | celery::LOGGING_CONNECT
                 ) || is_flask_login_constructor(&qualified)
+                    || gin::tracks_provider_member(&qualified)
+                    || traitlets::tracks_provider_member(&qualified)
+                    || click_command_provider(&qualified)
                     || mcp_tools::is_server_provider(&qualified)
                     || is_typer_constructor(&qualified)
                     || is_django_receiver(&qualified)
@@ -871,7 +1810,11 @@ impl Graph<'_> {
             Value::Provider(provider) if flask::provider_kind(provider).is_some() => {
                 flask::provider_kind(provider).map(ReceiverKey::FlaskBase)
             }
-            Value::Provider(module) if provider_module(module) || is_django_signal(module) => {
+            Value::Provider(module)
+                if provider_module(module)
+                    || is_django_signal(module)
+                    || module == "celery.signals.setup_logging" =>
+            {
                 Some(ReceiverKey::Module(module.clone()))
             }
             Value::DjangoSignal(site) => Some(ReceiverKey::Signal(*site)),
@@ -977,7 +1920,7 @@ impl Graph<'_> {
     }
 
     pub(super) fn flask_member(
-        &self,
+        &mut self,
         site: Object,
         kind: ObjectKind,
         name: &str,
@@ -991,34 +1934,115 @@ impl Graph<'_> {
         let class = ReceiverKey::FlaskBase(kind);
         if self.framework_receiver_has_escaped(&receiver, Some(site.0), access)
             || self.framework_receiver_has_escaped(&class, None, access)
-            || self.member_write(&receiver, "__class__", access).is_some()
             || ["__getattr__", "__getattribute__"]
                 .iter()
                 .any(|member| self.member_write(&class, member, access).is_some())
         {
             return Value::Unknown;
         }
+        if let Some(class_write) = self.member_write(&receiver, "__class__", access) {
+            if matches!(kind, ObjectKind::FlaskLoginManager)
+                && flask_login_callback(name)
+                && self.member_write(&receiver, name, access).is_none()
+                && let MemberWriteValue::Replacement(Value::Callable(replacement)) = class_write
+                && !replacement.verified
+                && matches!(replacement.receiver, Receiver::Ordinary)
+                && !replacement.implicit_descriptor_receiver
+                && self.closed_flask_login_layout(replacement.target, access)
+            {
+                return self.member(Value::Instance(replacement.target), name, access, 0);
+            }
+            return Value::Unknown;
+        }
         match self.member_write(&receiver, name, access) {
             Some(MemberWriteValue::Replacement(value)) => value,
             Some(MemberWriteValue::Ambiguous) => Value::Unknown,
             Some(MemberWriteValue::Deleted) | None => {
-                if self.member_write(&class, name, access).is_some() {
-                    Value::Unknown
+                // An imported manager can only expose this class method after
+                // the module that created the instance has initialized.
+                let class_write = if matches!(kind, ObjectKind::FlaskLoginManager)
+                    && flask_login_callback(name)
+                {
+                    self.mutations
+                        .members
+                        .get(&class)
+                        .and_then(|members| members.get(name))
+                        .and_then(|writes| self.write_value(writes, Some(site.0), access))
                 } else {
-                    if kind == ObjectKind::FlaskApp
+                    self.member_write(&class, name, access)
+                };
+                match class_write {
+                    Some(MemberWriteValue::Replacement(value)) => value,
+                    Some(_) => Value::Unknown,
+                    None if kind == ObjectKind::FlaskApp
                         && name == "config"
                         && ["config_class", "make_config"].iter().all(|name| {
                             self.member_write(&class, name, access).is_none()
                                 && self.member_write(&receiver, name, access).is_none()
-                        })
+                        }) =>
                     {
                         Value::FlaskConfig
-                    } else {
-                        Value::Method(site, kind, name.into())
                     }
+                    None => Value::Method(site, kind, name.into()),
                 }
             }
         }
+    }
+
+    fn closed_flask_login_layout(&mut self, class: SymbolId, access: (ScopeId, Location)) -> bool {
+        // Flask-Login's plain Python manager has the ordinary object layout.
+        // Only a class with that same layout can replace it here.
+        matches!(self.symbols[class].binding, Binding::Definition(definition, _)
+            if definition.kind == DefinitionKind::Class && definition.bases.is_empty())
+            && self.plain_default_provider(class, access, &BTreeSet::new())
+            && ["__slots__", "__dict__", "__weakref__"]
+                .iter()
+                .all(|member| {
+                    self.class_member_at(class, member, 0, Some(access))
+                        .is_none()
+                })
+    }
+
+    pub(super) fn flask_login_allocation(
+        &mut self,
+        scope: ScopeId,
+        before: Location,
+    ) -> Option<(Invocation, SymbolId)> {
+        let kind = ObjectKind::FlaskLoginManager;
+        let class = ReceiverKey::FlaskBase(kind);
+        let access = (scope, before);
+        if scope != self.scopes[scope].file
+            || self.framework_receiver_has_escaped(&class, None, access)
+            || self.member_write(&class, "__init__", access).is_some()
+        {
+            return None;
+        }
+        let MemberWriteValue::Replacement(Value::Callable(allocator)) =
+            self.member_write(&class, "__new__", access)?
+        else {
+            return None;
+        };
+        if self.symbols[allocator.target].scope != scope {
+            return None;
+        }
+        // The allocator reads this global when called, not when it is
+        // assigned to __new__. Resolve the class at that execution point.
+        let name = self.flask_login_allocator_class(allocator)?.to_owned();
+        if self.scopes[scope].names.get(name.as_str())?.len() != 1 {
+            return None;
+        }
+        let expression = Expression {
+            kind: ExpressionKind::Name(name),
+            at: before,
+        };
+        let Value::Callable(class) = self.probe_identity(scope, &expression, before) else {
+            return None;
+        };
+        (!class.verified
+            && matches!(class.receiver, Receiver::Ordinary)
+            && !class.implicit_descriptor_receiver
+            && self.closed_flask_login_layout(class.target, access))
+        .then_some((allocator, class.target))
     }
 
     pub(super) fn flask_constructor_changed(
@@ -1177,6 +2201,77 @@ impl Graph<'_> {
     }
 }
 
+fn mock_start(expression: &Expression) -> Option<(&Expression, &[Expression])> {
+    let ExpressionKind::Call {
+        function,
+        arguments,
+        keywords,
+    } = &expression.kind
+    else {
+        return None;
+    };
+    let ExpressionKind::Member(patch, method) = &function.kind else {
+        return None;
+    };
+    let ExpressionKind::Call {
+        function: constructor,
+        arguments: target,
+        keywords: patch_keywords,
+    } = &patch.kind
+    else {
+        return None;
+    };
+    (method == "start" && arguments.is_empty() && keywords.is_empty() && patch_keywords.is_empty())
+        .then_some((constructor, target))
+}
+
+fn flask_globals_update(expression: &Expression) -> Option<(&Expression, &str, &Expression)> {
+    let ExpressionKind::Call {
+        function,
+        arguments,
+        keywords,
+    } = &expression.kind
+    else {
+        return None;
+    };
+    let ExpressionKind::Member(namespace, update) = &function.kind else {
+        return None;
+    };
+    let [
+        Expression {
+            kind: ExpressionKind::Dictionary(items),
+            ..
+        },
+    ] = arguments.as_slice()
+    else {
+        return None;
+    };
+    let [
+        Expression {
+            kind: ExpressionKind::Text(name),
+            ..
+        },
+        value,
+    ] = items.as_slice()
+    else {
+        return None;
+    };
+    let ExpressionKind::Call {
+        function: globals,
+        arguments: namespace_arguments,
+        keywords: namespace_keywords,
+    } = &namespace.kind
+    else {
+        return None;
+    };
+    (update == "update"
+        && keywords.is_empty()
+        && namespace_arguments.is_empty()
+        && namespace_keywords.is_empty()
+        && matches!(&globals.kind, ExpressionKind::Name(name) if name == "globals"))
+    .then_some((globals, name, value))
+}
+
 fn provider_module(name: &str) -> bool {
     matches!(
         name,
@@ -1206,8 +2301,18 @@ fn provider_module(name: &str) -> bool {
             | "mcp.server.fastmcp"
             | "mcp.server.fastmcp.server"
             | "celery"
+            | "gin"
+            | "gin.config"
+            | "pydantic"
+            | "pydantic.validate_call_decorator"
+            | "tenacity"
+            | "tenacity.stop"
             | "typer"
             | "typer.main"
+            | "traitlets"
+            | "traitlets.traitlets"
+            | "click"
+            | "click.decorators"
             | "django.utils.autoreload"
             | "pathlib"
             | "pathlib.Path"

@@ -27,6 +27,42 @@ pub(super) struct ParameterHook {
 }
 
 impl Graph<'_> {
+    pub(super) fn call_inert_flask_blueprint(
+        &mut self,
+        class: SymbolId,
+        scope: ScopeId,
+        before: Location,
+        at: Location,
+    ) -> bool {
+        let access = (scope, before);
+        let inert_lookalike = matches!(
+            self.symbols[class].binding,
+            Binding::Definition(definition, _) if inert_blueprint_lookalike(definition)
+        ) && !self.has_unmodeled_class_write(class)
+            && self.class_discovery_writes(class, scope).is_empty();
+        if !inert_lookalike && !self.plain_default_provider(class, access, &BTreeSet::new()) {
+            return false;
+        }
+        let Value::Callable(method) = self.member(Value::Instance(class), "register", access, 0)
+        else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = self.symbols[method.target].binding else {
+            return false;
+        };
+        if method.verified
+            || !matches!(method.receiver, Receiver::Bound(receiver) if receiver == class)
+            || !field_dispatch::plain_method(definition, 3)
+            || !body_without_docstring(definition).is_empty()
+        {
+            return false;
+        }
+        // Flask delegates to blueprint.register(app, options). A local
+        // no-op method executes without mounting a framework Blueprint.
+        self.invoke(scope, method, "direct_call", "certain", at);
+        true
+    }
+
     pub(super) fn flask_instance(
         &self,
         scope: ScopeId,
@@ -1321,9 +1357,9 @@ impl Graph<'_> {
             return None;
         }
 
-        // A package can publish its Blueprint before importing the module that
-        // decorates its callbacks. That child observes the initialized prefix,
-        // even when Python originally entered through the child module name.
+        // A package can publish its Blueprint or a closed lookalike before
+        // importing the module that decorates its callbacks. That child
+        // observes the initialized prefix, including when it is the entry.
         let mut constructor = None;
         let mut assigned = false;
         for statement in self.scopes[parent].body {
@@ -1338,6 +1374,11 @@ impl Graph<'_> {
                         && import.module == "flask"
                         && import.member.as_deref() == Some("Blueprint")
                         && !self.modules.contains_key("flask") =>
+                {
+                    constructor = Some(import.local.text.as_str());
+                }
+                StatementKind::Import(import)
+                    if !assigned && self.flask_lookalike_constructor(parent, import) =>
                 {
                     constructor = Some(import.local.text.as_str());
                 }
@@ -1369,6 +1410,42 @@ impl Graph<'_> {
             }
         }
         None
+    }
+
+    fn flask_lookalike_constructor(&self, scope: ScopeId, import: &Import) -> bool {
+        let Some((name, provider)) = import
+            .member
+            .as_deref()
+            .zip(self.import_module(scope, import))
+        else {
+            return false;
+        };
+        let Some(&file) = self.modules.get(provider.as_str()) else {
+            return false;
+        };
+        !self.files[file].is_package
+            && !provider.contains('.')
+            && self
+                .local(file, name, END)
+                .is_some_and(|class| matches!(
+                    self.symbols[class].binding,
+                    Binding::Definition(definition, _) if inert_blueprint_lookalike(definition)
+                ))
+            && self.scopes[file].body.iter().all(|statement| match &statement.kind {
+                StatementKind::Evaluate(Expression { kind: ExpressionKind::Text(_), .. }) => true,
+                StatementKind::Define(definition)
+                    if definition.kind == DefinitionKind::Class
+                        && definition.bases.is_empty() && definition.decorators.is_empty()
+                        && !definition.has_class_keywords() =>
+                {
+                    body_without_docstring(definition).iter().all(|statement| {
+                        matches!(&statement.kind, StatementKind::Define(method)
+                            if method.kind == DefinitionKind::Function && method.decorators.is_empty()
+                                && method.annotations.is_empty() && method.defaults.is_empty())
+                    })
+                }
+                _ => false,
+            })
     }
 
     pub(super) fn collect_flask_cli_factory(&mut self) {
@@ -1536,6 +1613,36 @@ impl Graph<'_> {
             }
         }
     }
+}
+
+fn inert_blueprint_lookalike(definition: &Definition) -> bool {
+    if definition.kind != DefinitionKind::Class
+        || !definition.bases.is_empty()
+        || !definition.decorators.is_empty()
+        || definition.has_class_keywords()
+    {
+        return false;
+    }
+    let body = body_without_docstring(definition);
+    body.len() == 3
+        && ["__init__", "before_app_request", "register"]
+            .into_iter()
+            .all(|name| {
+                body.iter().any(|statement| {
+                    let StatementKind::Define(method) = &statement.kind else {
+                        return false;
+                    };
+                    method.name.text == name
+                        && method.annotations.is_empty()
+                        && if name == "before_app_request" {
+                            field_dispatch::plain_method(method, 2)
+                                && returns_parameter(method, &method.parameters[1])
+                        } else {
+                            field_dispatch::plain_method(method, 3)
+                                && body_without_docstring(method).is_empty()
+                        }
+                })
+            })
 }
 
 impl Graph<'_> {

@@ -255,6 +255,11 @@ FastAPI instance contributes possible deployment evidence. A plain async
 function used as a lifespan provider does not enter its coroutine body.
 Source-owned no-op ASGI middleware receives possible-use evidence and leaves
 an ignored `dispatch` option unrooted.
+FastAPI activation bounds the expansion of resolved synchronous calls from
+application initializers. Repeated call sites on an acyclic path consume the
+call-event budget. An exhausted budget preserves declaration information,
+reports incomplete coverage, and withholds activation through the affected
+initializer.
 [Uvicorn factory setting](https://uvicorn.dev/settings/#application)
 
 FastAPI supports imperative endpoint registration and literal `Depends` or
@@ -319,7 +324,13 @@ Django URL discovery follows a reachable, recognized launcher. An explicit
 management `--settings` option takes precedence over the launcher's environment.
 The environment starts with the scan process's `DJANGO_SETTINGS_MODULE`. A
 literal assignment to the genuine `os.environ` entry overrides it, and
-`setdefault` fills an unset entry. Without a reachable launcher or environment
+`setdefault` fills an unset entry. With an explicit settings module and
+literal app and URL configuration, a launcher-free scan records possible
+reads of closed uppercase settings declarations. The proof follows effective
+named and finite wildcard imports back to their source values and respects
+the selected configuration branch. Application startup and URL dispatch
+require their own evidence.
+Without a reachable launcher or environment
 selection, one conventional `package.settings` module with literal `INSTALLED_APPS` and
 `ROOT_URLCONF = 'package.urls'` can describe an externally configured project
 when the sibling URL module imports the genuine Django URL API and defines
@@ -359,7 +370,10 @@ inherit the namespace rewrite. Opaque metaclass hooks leave coverage incomplete.
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
 AppConfig. It accepts explicit config class paths and resolves default selection
-in a local `apps.py`. A management launcher exposes local `BaseCommand`
+in a local `apps.py`. A reached `ready()` hook retains an unconditional
+import that establishes a resolved signal receiver. The report records this
+import-time registration separately from ordinary binding reads. A
+management launcher exposes local `BaseCommand`
 subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen
@@ -369,6 +383,9 @@ exiting. The built-in command listing and version paths need no local command.
 A literal `call_command` after a resolved `django.setup()` in the same scope
 uses programmatic dispatch through parser setup and `execute`.
 The selected command follows its effective lifecycle after module initialization.
+A module-level call to a resolved source installer can update the selected
+command's handle or copy compatible inert code to a captured handle. The
+supported installer has one parameter and one literal `setattr` operation.
 Ordered writes through the command module's own globals dictionary or module
 object can replace the export before Django reads it. Later ordinary assignments
 can replace it again.
@@ -380,7 +397,10 @@ Custom dispatch that may delegate through an unresolved path produces a coverage
 diagnostic. An isolated command module does not establish an installed app.
 An activated command can forward an autoreload callback through a resolved
 bound method or captured bound alias. Argument binding accounts for the
-implicit receiver.
+implicit receiver. A bounded instance write preserves the original bound
+method if capture happened first. Stock command dispatch can bind required
+literal parser options and pass them through `handle` to an autoreload
+callback. Unresolved parser or argument effects keep coverage incomplete.
 An explicit call on a resolved `BaseCommand` instance can identify `handle`
 parameters as part of its callback contract. Bounded zero-argument Manager
 and QuerySet construction follows actual initializer hooks. ORM operations
@@ -439,12 +459,81 @@ constructor. Selected formatter overrides can format a standard log record
 and serialize its literal string fields. An opaque configuration or consumer
 leaves coverage incomplete.
 
+Django supports zero-argument construction for a direct source model with a
+literal app label and the provider's implicit primary key after selected
+startup. Explicit fields, constructor arguments, and dynamic class changes
+remain outside this allocation model. A call to the inherited manager
+`all()` reaches a resolved source `get_queryset` override with the manager
+as receiver.
+
 Wagtail settings registration supports direct subclasses of the standard site or
 generic settings base and a literal registration icon. The analyzer also
 recognizes bounded Wagtail StructBlock and StreamBlock field declarations and
 literal block metadata. Direct concrete Page, Orderable, and Task models
 retain bounded model fields and options. Documented page preview and task
 permission callbacks can receive possible-use and parameter evidence.
+The Wagtail 7.2 snippet registry can retain literal list-display and sort-order
+options from a direct SnippetViewSet with a resolved Django model. The report
+keeps configuration use separate from view dispatch.
+
+Resolved Celery Redis backends, Django admin list filters, and django-storages
+S3 backends receive possible declaration evidence for their documented class
+attributes. The declaration leaves constructor and callback execution to the
+call analysis. The generic django-storages base supports a zero-argument call
+when the inherited empty defaults and ordinary attribute lookup are preserved.
+
+The selected Django `STORAGES` mapping can name a direct, uncustomized
+`ManifestStaticFilesStorage` subclass. A selected DRF
+`DEFAULT_PAGINATION_CLASS` can retain stock `PageNumberPagination` options
+for a literal page-size query parameter and limit. Calls to a direct
+`APIException` subclass retain literal defaults used by the inherited
+constructor when the corresponding arguments are omitted or `None`.
+Related controls cover project-local lookalikes, provider aliases, and unknown
+constructor behavior.
+[Celery Redis backend](https://docs.celeryq.dev/en/v5.5.3/_modules/celery/backends/redis.html) ·
+[Django admin list filters](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/filters/) ·
+[django-storages base and S3 settings](https://github.com/jschneier/django-storages/blob/1.14.6/storages/base.py)
+
+The native analyzer also records possible declarations for selected standard
+library visitor and protocol overrides, literal integer `ctypes.Structure`
+layouts, DRF field error tables and view options, and Guardian model admin
+options. The DRF token-view scope declaration requires a resolved
+`ScopedRateThrottle` on the class. Calls, unsupported layout expressions,
+and unrelated options retain their existing evidence and coverage rules.
+[DRF throttling](https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle) ·
+[Django Guardian admin](https://django-guardian.readthedocs.io/en/stable/api/admin/)
+
+The Phase 0.3 profile can index bounded external class declarations from
+dependency source. For a directory scan, the first project virtual environment
+with a supported site-packages layout supplies dependency roots. Otherwise
+the CLI accepts ordered `--dependency-root` site-packages or dist-packages paths,
+and the SDK forwards matching entries from its interpreter search path.
+Selected local packages keep precedence. Vendored directories inside the
+project remain outside the dependency index.
+
+The index follows supported imports, re-exports, aliases, and single-base
+inheritance without executing package code. It records matched project
+overrides as possible declarations. Ordinary inherited construction can
+complete when the source metadata resolves the default lifecycle. Opaque
+initializers, class creation, and constructor behavior remain incomplete.
+The optional `external_dependency_roots` report field lists roots whose
+source was read. Dependency files stay outside project findings.
+
+Resolved Traitlets configurable classes support zero-argument text trait
+declarations and their named default, validation, and observation hooks.
+The analyzer records possible declarations when a named trait resolves.
+Zero-argument construction is supported for a bounded configurable
+lineage with the provider's empty config and known declarations. Construction
+registers hooks. A trait operation or independent call can activate their bodies.
+An ambiguous default or unmodeled setup keeps coverage incomplete.
+[Traitlets callbacks](https://traitlets.readthedocs.io/en/stable/api.html)
+
+A module-level optional import can select a plain class from an
+`except ImportError` handler when source discovery proves the requested
+member is absent from an inert, selected regular package. This proof
+uses the verified directory snapshot, including opaque import candidates.
+An unresolved package, an active initializer, or a present member keeps
+coverage incomplete.
 
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
@@ -465,15 +554,43 @@ field selections. Plain `Form` instances use literal edits to `base_fields`
 or `declared_fields` made before the instance copies its field table. A
 resolved Form or ModelForm initializer can add literal fields to its own
 instance after forwarding its arguments to the framework initializer.
-Other dynamic field tables or validation dispatch produce
+A direct source Widget selected by an effective field table can receive
+possible validation evidence for its value-from-data method and the arguments
+Django supplies. Other dynamic field tables or validation dispatch produce
 coverage diagnostics.
+A plain source ModelForm on a known model retains literal `Meta.help_texts`
+when Django's stock metaclass reads the options.
+
+A literal CharField constructor with a direct source converter can register
+the converter as part of a source model's field declaration. Its contract
+retains the parameters Django supplies when adapting database results.
+Declaration evidence does not imply that a query ran.
+
+A first zero-argument Celery logging setup on a stock application can
+retain an earlier same-module `@setup_logging.connect` receiver as possible.
+The bounded proof accepts plain synchronous receivers with a keyword
+argument collector. Receivers imported before setup require cross-module
+ordering, so that path reports incomplete coverage. Custom applications and
+opaque setup also keep incomplete coverage.
+
+Selected Django startup accepts the standard auth, content types, and session
+apps and their explicit default AppConfig classes. Discovery continues through
+the source-owned apps in the same installed list.
+
+A literal `get_format("DATE_FORMAT", lang=...)` call after selected Django
+startup can retain the requested source format from a single literal
+`FORMAT_MODULE_PATH`. The bounded lookup supports stock English and French
+locales with a verified regular package path. Dynamic settings, packages and
+lookups keep incomplete coverage.
 
 Django admin discovery follows installed apps when `django.contrib.admin` or
 `AdminConfig` is selected. `SimpleAdminConfig` leaves the per-app admin modules
 dormant unless the selected application imports them. The analyzer resolves
 the default site's `register` decorator or method and follows the registered
 `ModelAdmin`'s effective literal `list_display`, `readonly_fields`, and `actions`
-entries that select local callbacks. A local getter can supply a literal
+entries that select local callbacks. The registered list-select-related
+override receives the request through its positional callback contract. A
+local getter can supply a literal
 display or readonly list. `@admin.display` and `@admin.action` attach
 metadata to a callback. A loaded registration with opaque options or an
 unresolved condition produces a coverage diagnostic.
@@ -492,7 +609,10 @@ Django's `connect()` method. It accepts `@receiver`, a stored receiver
 decorator, and `connect()`, including the named signal and callback arguments
 and literal lists or tuples of signals. A local signal with a resolved Django
 `connect()` method can establish registration. Registrations inside unresolved
-branches contribute possible-use evidence. A proven registration
+branches contribute possible-use evidence. A source signal subclass can
+forward a callback through a source helper that registers it with a resolved
+standard signal under a literal environment guard. That registration remains
+possible. A proven registration
 whose module is outside the known load path of an externally configured project
 contributes `django_signal_unknown_loading` possible-use evidence. Opaque
 registrations in loaded modules and registrations without a selected setup produce
@@ -502,6 +622,17 @@ possible. Opaque registrations on those paths also produce coverage
 diagnostics. Bound receivers contribute to method dispatch when their
 registration is reached. The model does not prove which dispatches occur.
 [Django signal registration](https://docs.djangoproject.com/en/5.2/topics/signals/#connecting-receiver-functions)
+
+A reached Django system-check dispatch can retain synchronous checks registered
+earlier in the same scope or in a selected module imported directly by that
+scope. The bounded model accepts stock `register` decorators and calls, along
+with the default `run_checks` arguments and literal tag selections. Matching
+checks receive possible-use evidence and retain their framework-supplied
+`app_configs` and keyword arguments. Unsupported registration or dispatch
+forms and unresolved registration order produce coverage diagnostics.
+A selected management `check` command or unresolved command selection reports
+incomplete coverage when it can reach project checks outside the bounded
+dispatch model.
 
 The profile also recognizes selected Celery task registrations, including
 reached `register_task` calls on a resolved app. Bounded Celery backend
@@ -513,6 +644,21 @@ Literal routing map keys are task selectors. A configuration subscript write
 uses the key resolved at that statement. An opaque key leaves both the earlier
 and proposed settings possible and coverage incomplete.
 [Celery task routing](https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-routes)
+
+A reached module initializer can load a literal project-root `.gin` file
+through the resolved `gin.parse_config_file` API. The profile follows scalar
+`selector.parameter` assignments to uniquely resolved `@gin.configurable`
+functions declared before the call or initialized by earlier imports. It honors
+literal parameter denylists and records possible declaration evidence without
+entering the function body. A registration by itself leaves the definition
+eligible for unused findings. Missing files, unsupported configuration syntax,
+and unresolved or ambiguous bindings leave coverage incomplete.
+
+The profile models passive construction of a single Tenacity decorator with a
+literal `stop_after_attempt` argument and an empty `pydantic.validate_call()`
+decorator on an unannotated nullary function. Applying these wrappers leaves the
+function eligible for unused findings. Calls through the replaced function
+require separate execution evidence.
 
 The profile models SQLAlchemy listeners
 and declared fields through a resolved SQLAlchemy or SQLModel base, including
@@ -542,6 +688,9 @@ DRF serializer declarations retain the bounded getter selected by a
 `SerializerMethodField`, including a compatible source mixin. The getter
 receives possible protocol evidence.
 
+Resolved module-level Click `@command()` decorators retain possible callback
+declaration evidence. The resulting command object requires a separate
+invocation model. A short-circuited call leaves the callback body dormant.
 Public Click command overrides and source-owned Celery task libraries can
 contribute protocol declaration evidence. Execution evidence requires a reached command or task. A selected Celery app
 uses the reached task registration as its execution root. The pinned reporting policy records
@@ -555,9 +704,16 @@ The standalone `django-class-based-view`, `django-management-command`, and
 registration or launcher. The pinned `starlette-add-route` fixture supplies an
 `endpoint` keyword to Starlette 1.3.1's `add_route`, which takes `route`.
 The installed framework raises before registering the handler. The `python-unittest-lifecycle` fixture expects hooks
-to be retained without a discovered test method and an unrelated helper to be
-whitelisted by path. These expectations remain required differences in the
-reviewed inventory and do not receive pass credit.
+to be retained without a discovered test method. These expectations remain
+required differences in the reviewed inventory and do not receive pass credit.
+
+The Phase 0.3 report places unused Python bindings in recognized test paths in
+`whitelisted` with the reason `test-only path`. This includes the unrelated
+helper in `python-unittest-lifecycle`. The default policy recognizes `test`,
+`tests`, and `__tests__` directories and conventional test filenames such as
+`test_*.py`, `*_test.py`, and `conftest.py`. Test-path policy leaves the dead-code
+evidence intact and creates no call or registration evidence.
+[Pinned path classification](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/constants.py#L165-L211)
 
 The Starlette preview records possible HTTP route use through the supported
 `add_route` call on a resolved conventional ASGI application. The aiohttp
@@ -581,6 +737,12 @@ In the `skylos-0.3` profile, a reached call to the resolved standard-library
 `atexit.register` retains a selected synchronous function or bound method
 passed as its first positional argument. Import aliases, finite callback
 alternatives, and bare function decorators preserve that relationship. A
+declared module-level decorator can forward an unchanged callback to a
+resolved shutdown registrar, with literal arguments that fit the callback's
+signature. A source factory called with a known scalar can return this
+decorator. A bounded identity layer underneath it preserves the original
+callback. Shutdown evidence remains possible, including when
+the callback reads a helper defined later in the module. A
 lexically shadowed provider or callback requires a resolved local binding. The
 callback and code reached only through its body carry possible-use evidence.
 Forwarded values can supply possible-use evidence for known callable arguments.

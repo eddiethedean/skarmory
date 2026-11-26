@@ -2,6 +2,10 @@
 
 use super::*;
 
+pub(super) const CLASS_ATTRIBUTE_DECLARATION: &str = "framework_class_attribute_declaration";
+pub(super) const BUILTIN_OVERRIDE_DECLARATION: &str = "builtin_override_declaration";
+pub(super) const STDLIB_PROTOCOL_DECLARATION: &str = "stdlib_protocol_declaration";
+
 fn django_unconditionally_raises(body: &[Statement]) -> bool {
     body.iter()
         .find(|statement| {
@@ -16,7 +20,16 @@ fn django_unconditionally_raises(body: &[Statement]) -> bool {
         .is_some_and(|statement| matches!(statement.kind, StatementKind::Raise(_)))
 }
 
+mod django_commands;
 mod django_settings;
+
+enum DjangoSettingAliasError {
+    Unresolved,
+    FailedInitializer,
+}
+
+pub(super) use django_commands::DjangoCommandDispatch;
+pub(super) use django_settings::DjangoFormatLookup;
 
 pub(super) struct DjangoStartup {
     pub(super) at: Location,
@@ -29,9 +42,15 @@ pub(super) struct DjangoStartup {
 pub(super) enum DjangoCommands {
     None,
     Available,
-    Selected(String),
+    Selected {
+        name: String,
+        literal_args: Option<Vec<String>>,
+    },
     Programmatic(String),
-    Help { name: String, through_argv: bool },
+    Help {
+        name: String,
+        through_argv: bool,
+    },
     UnresolvedHelp,
 }
 
@@ -51,7 +70,16 @@ impl DjangoCommands {
                 {
                     Self::Help { name: command.clone(), through_argv: true }
                 } else {
-                    Self::Selected(command.clone())
+                    Self::Selected {
+                        name: command.clone(),
+                        literal_args: tail
+                            .iter()
+                            .map(|arg| match arg {
+                                Value::Text(text) => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect(),
+                    }
                 }
             }
             Some(Value::Text(_)) | None => Self::None,
@@ -293,6 +321,7 @@ impl Graph<'_> {
 
     pub(super) fn collect_phase03_frameworks(&mut self) {
         self.collect_django_urlconfs();
+        self.collect_django_format_lookups();
         self.collect_django_migration_declarations();
         self.retain_django_configured_class_declarations();
         self.collect_flask_cli_factory();
@@ -302,6 +331,7 @@ impl Graph<'_> {
             .collect();
         for class in classes {
             self.collect_wagtail_declaration(class);
+            self.retain_dependency_overrides(class);
             let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
                 continue;
             };
@@ -310,7 +340,12 @@ impl Graph<'_> {
                     .insert(class, "Django framework class");
             }
             let (root, lifecycle, fields) = match role {
-                FrameworkClassRole::Unittest
+                FrameworkClassRole::BuiltinDict
+                | FrameworkClassRole::StdlibAstVisitor
+                | FrameworkClassRole::StdlibAsyncProtocol
+                | FrameworkClassRole::StdlibCtypesStructure
+                | FrameworkClassRole::TraitletsConfigurable
+                | FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync
                 | FrameworkClassRole::DjangoTestCase
                 | FrameworkClassRole::DjangoDatabaseTestCase => (None, &[][..], false),
@@ -328,9 +363,19 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask
+                | FrameworkClassRole::DjangoGuardianAdmin
+                | FrameworkClassRole::CeleryRedisBackend
+                | FrameworkClassRole::DjangoSimpleListFilter
+                | FrameworkClassRole::DjangoStorageBase
+                | FrameworkClassRole::DjangoS3Storage
+                | FrameworkClassRole::DjangoManifestStorage
                 | FrameworkClassRole::MarshmallowSchema
                 | FrameworkClassRole::ClickCommand
                 | FrameworkClassRole::DrfSerializer
+                | FrameworkClassRole::DrfField
+                | FrameworkClassRole::DrfAuthTokenView
+                | FrameworkClassRole::DrfApiException
+                | FrameworkClassRole::DrfPageNumberPagination
                 | FrameworkClassRole::DrfViewSet => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
@@ -361,6 +406,13 @@ impl Graph<'_> {
             let Binding::Definition(_, class_scope) = self.symbols[class].binding else {
                 continue;
             };
+            self.collect_framework_class_attributes(class, class_scope, role);
+            if role == FrameworkClassRole::DjangoModelForm {
+                self.retain_django_model_form_help_texts(class);
+            }
+            if role == FrameworkClassRole::TraitletsConfigurable {
+                self.collect_traitlets_legacy_defaults(class, class_scope);
+            }
             if role == FrameworkClassRole::PydanticModel {
                 self.collect_pydantic_schema_build(class, class_scope);
             }
@@ -415,6 +467,102 @@ impl Graph<'_> {
         self.collect_test_frameworks();
     }
 
+    fn collect_framework_class_attributes(
+        &mut self,
+        class: SymbolId,
+        body: ScopeId,
+        role: FrameworkClassRole,
+    ) {
+        let (names, kind): (&[&str], _) = match role {
+            FrameworkClassRole::BuiltinDict => (&["get", "keys"], BUILTIN_OVERRIDE_DECLARATION),
+            FrameworkClassRole::StdlibAstVisitor => {
+                (&["generic_visit"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::StdlibAsyncProtocol => {
+                (&["eof_received"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::StdlibCtypesStructure => {
+                (&["_fields_"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoGuardianAdmin => (
+                &["radio_fields", "sortable_by", "date_hierarchy"],
+                CLASS_ATTRIBUTE_DECLARATION,
+            ),
+            FrameworkClassRole::DrfField => {
+                (&["default_error_messages"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DrfViewSet => (&["http_method_names"], CLASS_ATTRIBUTE_DECLARATION),
+            FrameworkClassRole::DrfAuthTokenView => {
+                let Some(throttles) = self.local(body, "throttle_classes", END) else {
+                    return;
+                };
+                if self.binding_depends_on_branch(throttles, END)
+                    || self
+                        .class_discovery_write(class, "throttle_classes", self.symbols[class].scope)
+                        .is_some()
+                    || !matches!(self.binding(throttles, END, 0), Value::Sequence(classes)
+                        if matches!(classes.as_slice(), [Value::Provider(provider)]
+                            if provider == "rest_framework.throttling.ScopedRateThrottle"))
+                {
+                    return;
+                }
+                (&["throttle_scope"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::CeleryRedisBackend => {
+                (&["ResultConsumer"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoSimpleListFilter => {
+                (&["parameter_name", "title"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoS3Storage => (
+                &[
+                    "bucket_name",
+                    "location",
+                    "custom_domain",
+                    "default_acl",
+                    "file_overwrite",
+                    "object_parameters",
+                    "querystring_auth",
+                    "gzip",
+                    "region_name",
+                    "endpoint_url",
+                    "addressing_style",
+                    "signature_version",
+                ],
+                CLASS_ATTRIBUTE_DECLARATION,
+            ),
+            _ => return,
+        };
+        if self.has_unmodeled_class_write(class) {
+            return;
+        }
+        let scope = self.symbols[class].scope;
+        let stdlib_namespace = matches!(
+            role,
+            FrameworkClassRole::StdlibAstVisitor | FrameworkClassRole::StdlibAsyncProtocol
+        )
+        .then(|| self.public_protocol_module_scope(class))
+        .flatten();
+        for name in names {
+            if let Some(target) = self.local(body, name, END)
+                && !self.binding_depends_on_branch(target, END)
+                && self.class_discovery_write(class, name, scope).is_none()
+                && matches!(
+                    self.symbols[target].binding,
+                    Binding::Variable(..) | Binding::Definition(..)
+                )
+                && (role != FrameworkClassRole::BuiltinDict
+                    || matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function && !definition.is_generator))
+            {
+                self.edge(body, target, kind, "possible");
+                if let Some(namespace) = stdlib_namespace {
+                    self.edge(namespace, class, STDLIB_PROTOCOL_DECLARATION, "possible");
+                }
+            }
+        }
+    }
+
     pub(super) fn public_protocol_module_scope(&self, class: SymbolId) -> Option<ScopeId> {
         let symbol = &self.symbols[class];
         let scope = symbol.scope;
@@ -425,6 +573,57 @@ impl Graph<'_> {
             && !self.binding_depends_on_branch(class, END)
             && matches!(symbol.binding, Binding::Definition(definition, _) if definition.decorators.is_empty()))
         .then_some(scope)
+    }
+
+    pub(super) fn is_ctypes_structure_base(&mut self, base: &Value) -> bool {
+        match base {
+            Value::Provider(name) => {
+                framework_class_provider(name) == Some(FrameworkClassRole::StdlibCtypesStructure)
+            }
+            Value::Callable(invocation) if self.is_class(invocation.target) => {
+                self.framework_class_role(invocation.target, &mut BTreeSet::new(), 0)
+                    == Some(FrameworkClassRole::StdlibCtypesStructure)
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn bounded_ctypes_layout(&mut self, scope: ScopeId, class: &Definition) -> bool {
+        if class.has_class_keywords() {
+            return false;
+        }
+        body_without_docstring(class).iter().all(|statement| {
+            let StatementKind::Assign { names, value, .. } = &statement.kind else {
+                return matches!(statement.kind, StatementKind::Define(_));
+            };
+            if names.iter().any(|name| {
+                matches!(
+                    name.text.as_str(),
+                    "_pack_" | "_align_" | "_anonymous_" | "_layout_" | "__slots__"
+                )
+            }) {
+                return false;
+            }
+            if !names.iter().any(|name| name.text == "_fields_") {
+                return true;
+            }
+            let Some(Expression {
+                kind: ExpressionKind::Sequence { items, list: true },
+                ..
+            }) = value
+            else {
+                return false;
+            };
+            items.iter().all(|field| {
+                let ExpressionKind::Sequence { items, list: false } = &field.kind else {
+                    return false;
+                };
+                matches!(items.as_slice(), [name, ctype]
+                    if matches!(name.kind, ExpressionKind::Text(_))
+                        && matches!(self.probe_identity(scope, ctype, statement.at),
+                            Value::Provider(provider) if provider == "ctypes.c_int"))
+            })
+        })
     }
 
     fn collect_dispatch_declaration(
@@ -1688,7 +1887,7 @@ impl Graph<'_> {
         result
     }
 
-    fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
+    pub(super) fn bounded_framework_function(&mut self, target: SymbolId) -> bool {
         let symbol = &self.symbols[target];
         let Binding::Definition(definition, _) = symbol.binding else {
             return false;
@@ -2137,7 +2336,9 @@ impl Graph<'_> {
                     );
                     continue;
                 };
-                self.activate_django_settings(scope, settings, &startup.commands);
+                if !self.activate_django_settings(scope, settings, &startup.commands, startup.at) {
+                    continue;
+                }
                 if startup.creates_application
                     && scope == self.scopes[scope].file
                     && matches!(
@@ -2185,8 +2386,12 @@ impl Graph<'_> {
         };
         self.django_configured_settings = Some(settings);
         self.django_startup_scopes.insert(settings);
-        self.activate_django_settings(settings, settings, &DjangoCommands::None);
-        true
+        self.activate_django_settings(
+            settings,
+            settings,
+            &DjangoCommands::None,
+            Location { line: 1, column: 1 },
+        )
     }
 
     fn collect_django_root_patterns(&mut self) {
@@ -2314,27 +2519,36 @@ impl Graph<'_> {
         scope: ScopeId,
         settings: usize,
         commands: &DjangoCommands,
-    ) {
+        at: Location,
+    ) -> bool {
+        let Some(bindings) = self.django_setting_bindings(settings) else {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_registration",
+                "Django settings initialization terminates before exposing its values",
+            );
+            return false;
+        };
+        if matches!(commands, DjangoCommands::Available)
+            || matches!(commands,
+                DjangoCommands::Selected { name, .. } | DjangoCommands::Programmatic(name)
+                    if name == "check")
+        {
+            self.record_django_management_check(scope, at);
+        }
         self.django_settings_sources.insert((scope, settings));
         let row = &mut self.scopes[scope];
         row.activated_apps.extend([
             django_loaded_module(settings),
             django_loaded_module(row.file),
         ]);
-        let settings_bindings: Vec<_> = self.scopes[settings]
-            .names
-            .iter()
-            .filter(|(name, _)| {
-                name.chars().any(char::is_uppercase) && !name.chars().any(char::is_lowercase)
-            })
-            .flat_map(|(_, bindings)| self.effective_bindings(bindings).iter().copied())
-            .filter(|&binding| matches!(self.symbols[binding].binding, Binding::Variable(..)))
-            .collect();
-        for binding in settings_bindings {
-            self.edge(scope, binding, "django_setting", "certain");
+        for (binding, definite) in bindings {
+            let certainty = if definite { "certain" } else { "possible" };
+            self.edge(scope, binding, "django_setting", certainty);
         }
         if !self.collect_django_apps(scope, settings, commands) {
-            return;
+            return true;
         }
         if let Some(binding) = self.local(settings, "ROOT_URLCONF", END) {
             if let Value::Text(module) = self.binding(binding, END, 0)
@@ -2351,6 +2565,108 @@ impl Graph<'_> {
                 );
             }
         }
+        true
+    }
+
+    fn django_setting_bindings(&self, settings: ScopeId) -> Option<BTreeMap<SymbolId, bool>> {
+        // Other terminal proofs already govern their framework effects. In
+        // particular, an inferred settings namespace does not start Django.
+        if self.django_setting_initializer_raises(settings) {
+            return None;
+        }
+        let mut selected = BTreeMap::new();
+        let namespace = &self.scopes[settings];
+        let closed = !namespace.open_wildcard && self.local(settings, "__dir__", END).is_none();
+        for (&name, bindings) in &namespace.names {
+            if !name.chars().any(char::is_uppercase) || name.chars().any(char::is_lowercase) {
+                continue;
+            }
+            let candidates = self.effective_bindings(bindings);
+            for &binding in candidates {
+                if !closed && matches!(self.symbols[binding].binding, Binding::Import(_)) {
+                    continue;
+                }
+                let definite =
+                    candidates.len() == 1 && !self.binding_depends_on_branch(binding, END);
+                let chain = match self.django_setting_alias_chain(binding) {
+                    Ok(chain) => chain,
+                    Err(DjangoSettingAliasError::Unresolved) => continue,
+                    Err(DjangoSettingAliasError::FailedInitializer) if definite => return None,
+                    Err(DjangoSettingAliasError::FailedInitializer) => continue,
+                };
+                for binding in chain {
+                    *selected.entry(binding).or_default() |= definite;
+                }
+            }
+        }
+        Some(selected)
+    }
+
+    fn django_setting_initializer_raises(&self, file: ScopeId) -> bool {
+        self.scopes[file]
+            .body
+            .iter()
+            .any(|statement| matches!(statement.kind, StatementKind::Raise(_)))
+    }
+
+    fn django_setting_alias_chain(
+        &self,
+        mut binding: SymbolId,
+    ) -> Result<Vec<SymbolId>, DjangoSettingAliasError> {
+        use DjangoSettingAliasError::{FailedInitializer, Unresolved};
+
+        let mut aliases = Vec::new();
+        let mut visited = BTreeSet::new();
+        while visited.insert(binding) {
+            aliases.push(binding);
+            let symbol = &self.symbols[binding];
+            match symbol.binding {
+                Binding::Variable(Some(_), _) | Binding::UnpackItem { .. } => return Ok(aliases),
+                Binding::Variable(None, _) if aliases.len() == 1 => return Ok(aliases),
+                Binding::Import(import) => {
+                    let member = import.member.as_deref().ok_or(Unresolved)?;
+                    let module = self
+                        .import_module(self.scopes[symbol.scope].file, import)
+                        .ok_or(Unresolved)?;
+                    let &source = self.modules.get(module.as_str()).ok_or(Unresolved)?;
+                    let access = (symbol.scope, import.local.at);
+                    let before = self
+                        .import_member_position(symbol.scope, &module, import)
+                        .unwrap_or(END);
+                    if self.imported_module_write(&module, access).is_some() {
+                        return Err(Unresolved);
+                    }
+                    if self.failed_terminal_modules.contains(&source)
+                        || self.django_setting_initializer_raises(source)
+                    {
+                        return Err(FailedInitializer);
+                    }
+                    if self.scopes[source].open_wildcard
+                        || self.module_member_write(&module, member, access).is_some()
+                        || self
+                            .module_global_write(source, member, before, access)
+                            .is_some()
+                    {
+                        return Err(Unresolved);
+                    }
+                    let ModuleMember::Binding(origin, None) = self.selected_module_member(
+                        source,
+                        member,
+                        before,
+                        access,
+                        ModuleMemberAccess::FromImport,
+                    ) else {
+                        return Err(Unresolved);
+                    };
+                    if self.binding_depends_on_branch(origin, before) {
+                        return Err(Unresolved);
+                    }
+                    binding = origin;
+                }
+                _ => return Err(Unresolved),
+            }
+        }
+        Err(Unresolved)
     }
 
     pub(super) fn report_django_startup_coverage(&mut self, reach: &Reachability) {
@@ -2415,6 +2731,48 @@ impl Graph<'_> {
             .filter(|(_, target)| self.failed_terminal_modules.contains(target))
             .map(|(import, _)| position(self.symbols[*import].name.at))
             .min()
+    }
+
+    pub(super) fn retain_django_ready_signal_imports(&self, reach: &mut Reachability) {
+        let mut imports = BTreeSet::new();
+        for &(hook, kind, certainty) in &reach.evidence {
+            if kind != "django_app_config"
+                || certainty != "certain"
+                || !self.django_ready_hooks.contains(&hook)
+            {
+                continue;
+            }
+            let Binding::Definition(_, body) = self.symbols[hook].binding else {
+                continue;
+            };
+            let first_failure = self.first_terminal_signal_import(body);
+            for &(import, module) in &self.scopes[body].initializer_imports {
+                if first_failure.is_some_and(|at| position(self.symbols[import].name.at) >= at)
+                    || !reach.active_objects.contains(&django_loaded_module(module))
+                {
+                    continue;
+                }
+                let module_failure = self.first_terminal_signal_import(module);
+                if self.scopes[module]
+                    .django_signals
+                    .iter()
+                    .any(|registration| {
+                        registration.issue.is_none()
+                            && registration.precedes(module_failure)
+                            && registration.callbacks.iter().any(|callback| {
+                                let edge = callback.edge;
+                                edge.certainty == "certain"
+                                    && reach
+                                        .evidence
+                                        .contains(&(edge.target, edge.kind, "certain"))
+                            })
+                    })
+                {
+                    imports.insert((import, "django_ready_signal_import", "certain"));
+                }
+            }
+        }
+        reach.evidence.extend(imports);
     }
 
     pub(super) fn activate_django_signals(
@@ -2589,7 +2947,12 @@ impl Graph<'_> {
         };
         let at = self.symbols[binding].name.at;
         let object = django_loaded_module(settings);
-        let Value::Sequence(apps) = self.binding(binding, END, 0) else {
+        let apps = match self.binding(binding, END, 0) {
+            Value::Sequence(apps) => Some(apps),
+            Value::OperatorResult => self.django_wildcard_app_extension(settings, binding),
+            _ => None,
+        };
+        let Some(apps) = apps else {
             self.django_registration_issue(
                 object,
                 at,
@@ -2607,6 +2970,8 @@ impl Graph<'_> {
             ) && external_django
         };
         let mut admin_ready = None;
+        let mut staticfiles_started = false;
+        let mut toolbar_started = false;
         let mut selected = Vec::new();
         for app in apps {
             let resolved = if let Value::Text(entry) = app {
@@ -2614,6 +2979,44 @@ impl Graph<'_> {
                     if entry != "django.contrib.admin.apps.SimpleAdminConfig" {
                         admin_ready.get_or_insert(selected.len());
                     }
+                    continue;
+                }
+                if external_django
+                    && matches!(
+                        entry.as_str(),
+                        "django.contrib.auth"
+                            | "django.contrib.auth.apps.AuthConfig"
+                            | "django.contrib.contenttypes"
+                            | "django.contrib.contenttypes.apps.ContentTypesConfig"
+                            | "django.contrib.sessions"
+                            | "django.contrib.sessions.apps.SessionsConfig"
+                    )
+                {
+                    // These standard apps contribute no source modules to discovery.
+                    continue;
+                }
+                if external_django
+                    && matches!(
+                        entry.as_str(),
+                        "django.contrib.staticfiles"
+                            | "django.contrib.staticfiles.apps.StaticFilesConfig"
+                    )
+                    && self
+                        .discovery
+                        .is_some_and(|project| project.top_level_module_absent("django"))
+                    && !std::mem::replace(&mut staticfiles_started, true)
+                {
+                    // The built-in ready hook registers Django's own system checks.
+                    continue;
+                }
+                if external_django
+                    && matches!(
+                        entry.as_str(),
+                        "debug_toolbar" | "debug_toolbar.apps.DebugToolbarConfig"
+                    )
+                    && self.django_default_toolbar_panels(settings, (scope, at))
+                    && !std::mem::replace(&mut toolbar_started, true)
+                {
                     continue;
                 }
                 if external_django
@@ -2733,13 +3136,13 @@ impl Graph<'_> {
             );
         }
         for (name, file) in registered_commands {
-            if matches!(commands, DjangoCommands::Selected(command) | DjangoCommands::Programmatic(command) | DjangoCommands::Help { name: command, .. } if *command != name)
+            if matches!(commands, DjangoCommands::Selected { name: command, .. } | DjangoCommands::Programmatic(command) | DjangoCommands::Help { name: command, .. } if *command != name)
             {
                 continue;
             }
             let module = &self.files[file].module;
             let command = match self
-                .command_global_write(file, "Command", END, (file, END))
+                .module_global_write(file, "Command", END, (file, END))
                 .or_else(|| self.module_member_write(module, "Command", (file, END)))
             {
                 Some(mutations::MemberWriteValue::Replacement(Value::Callable(invocation)))
@@ -2788,6 +3191,96 @@ impl Graph<'_> {
         true
     }
 
+    fn django_wildcard_app_extension(
+        &self,
+        settings: ScopeId,
+        binding: SymbolId,
+    ) -> Option<Vec<Value>> {
+        let name = "INSTALLED_APPS";
+        let Binding::Import(import) = self.symbols[binding].binding else {
+            return None;
+        };
+        if !import.wildcard_member || !self.files[settings].is_package {
+            return None;
+        }
+        let provider = *self
+            .modules
+            .get(self.import_module(settings, import)?.as_str())?;
+        let extension = self.local(provider, name, END)?;
+        let Binding::Variable(
+            Some(Expression {
+                kind: ExpressionKind::Addition(items),
+                ..
+            }),
+            before,
+        ) = self.symbols[extension].binding
+        else {
+            return None;
+        };
+        let [
+            Expression {
+                kind: ExpressionKind::Member(receiver, member),
+                ..
+            },
+            extra,
+        ] = items.as_slice()
+        else {
+            return None;
+        };
+        let ExpressionKind::Name(alias) = &receiver.kind else {
+            return None;
+        };
+        let alias = self.local(provider, alias, before)?;
+        let Binding::Import(import) = self.symbols[alias].binding else {
+            return None;
+        };
+        let base_name = self.import_module(provider, import)?;
+        let base = *self.modules.get(base_name.as_str())?;
+        let original = self.local(base, name, END)?;
+        let Binding::Variable(Some(original_value), _) = self.symbols[original].binding else {
+            return None;
+        };
+        let (
+            ExpressionKind::Sequence { list, items },
+            ExpressionKind::Sequence {
+                list: extra_list,
+                items: extra,
+            },
+        ) = (&original_value.kind, &extra.kind)
+        else {
+            return None;
+        };
+        if member != name
+            || import.level != 0
+            || import.member.is_some()
+            || import.exposes_top_level
+            || list != extra_list
+            || items.len().saturating_add(extra.len()) > 4096
+            || self.binding_depends_on_branch(binding, END)
+            || self.binding_depends_on_branch(extension, END)
+            || self.binding_depends_on_branch(alias, before)
+            || self.binding_depends_on_branch(original, END)
+            || self
+                .module_member_write(&base_name, name, (provider, before))
+                .is_some()
+            || self
+                .module_member_write(&self.files[provider].module, name, (settings, END))
+                .is_some()
+        {
+            return None;
+        }
+        // The wildcard proof bounds the provider's initialization. Preserve
+        // the exact source container kinds when replaying this consumer.
+        items
+            .iter()
+            .chain(extra)
+            .map(|item| match &item.kind {
+                ExpressionKind::Text(name) => Some(Value::Text(name.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn invalid_explicit_django_app_export(&mut self, entry: &str) -> Option<ScopeId> {
         if self.modules.contains_key(entry) {
             // Django first tries the entire entry as an application module.
@@ -2830,6 +3323,7 @@ impl Graph<'_> {
     ) {
         let kind = "django_command";
         self.scopes[launcher].routes.push((object, class, kind));
+        let option_replay = self.django_command_option_replay(class, commands);
         // Django constructs the exported class before dispatch. The default
         // run_from_argv path creates the parser before invoking execute.
         for (name, positional) in [
@@ -2926,6 +3420,15 @@ impl Graph<'_> {
                         ));
                     }
                 }
+                if matches!(name, "add_arguments" | "handle") {
+                    self.record_django_command_dispatch(
+                        launcher,
+                        object,
+                        name,
+                        invocation.target,
+                        option_replay.as_ref(),
+                    );
+                }
                 let body = body_without_docstring(definition);
                 if django_unconditionally_raises(body) {
                     break;
@@ -3006,20 +3509,219 @@ impl Graph<'_> {
                 == Some(FrameworkClassRole::DjangoCommand)
     }
 
-    pub(super) fn django_default_constructor(
+    fn direct_framework_protocol_body(
+        &mut self,
+        class: SymbolId,
+        role: FrameworkClassRole,
+        access: (ScopeId, Location),
+    ) -> Option<ScopeId> {
+        let symbol = &self.symbols[class];
+        let Binding::Definition(definition, body) = symbol.binding else {
+            return None;
+        };
+        let [base] = definition.bases.as_slice() else {
+            return None;
+        };
+        let scope = symbol.scope;
+        let Value::Provider(provider) = self.probe_identity(scope, base, definition.name.at) else {
+            return None;
+        };
+        let methods: &[&str] = if role == FrameworkClassRole::DrfPageNumberPagination {
+            &["paginate_queryset", "get_page_size"]
+        } else {
+            &[]
+        };
+        (framework_class_provider(&provider) == Some(role)
+            && !definition.has_class_keywords()
+            && definition.decorators.is_empty()
+            && !self.has_unmodeled_class_write(class)
+            && self
+                .class_discovery_writes(class, self.scopes[access.0].file)
+                .is_empty()
+            && [
+                "__new__",
+                "__init__",
+                "__getattribute__",
+                "__getattr__",
+                "__setattr__",
+                "__slots__",
+                "__dict__",
+            ]
+            .into_iter()
+            .chain(methods.iter().copied())
+            .all(|name| {
+                self.local(body, name, END).is_none()
+                    && self.module_member_write(&provider, name, access).is_none()
+            }))
+        .then_some(body)
+    }
+
+    fn retain_django_model_form_help_texts(&mut self, class: SymbolId) {
+        let symbol = &self.symbols[class];
+        let access = (symbol.scope, symbol.name.at);
+        let Binding::Definition(form, _) = symbol.binding else {
+            return;
+        };
+        if !matches!(body_without_docstring(form), [Statement { kind: StatementKind::Define(meta), .. }]
+            if meta.name.text == "Meta")
+        {
+            return;
+        }
+        let Some(body) =
+            self.direct_framework_protocol_body(class, FrameworkClassRole::DjangoModelForm, access)
+        else {
+            return;
+        };
+        let Some(meta) = self.local(body, "Meta", END) else {
+            return;
+        };
+        let Binding::Definition(definition, options) = self.symbols[meta].binding else {
+            return;
+        };
+        if definition.kind != DefinitionKind::Class
+            || !definition.bases.is_empty()
+            || !definition.decorators.is_empty()
+            || definition.has_class_keywords()
+            || self.binding_depends_on_branch(meta, END)
+            || self.has_unmodeled_class_write(meta)
+            || !body_without_docstring(definition).iter().all(|statement| {
+                matches!(
+                    statement.kind,
+                    StatementKind::Assign {
+                        value: Some(_),
+                        annotation: None,
+                        ..
+                    }
+                )
+            })
+        {
+            return;
+        }
+        let Some(target) = self.local(options, "help_texts", END) else {
+            return;
+        };
+        let Some(model) = self.local(options, "model", END) else {
+            return;
+        };
+        let Value::Callable(model) = self.binding(model, END, 0) else {
+            return;
+        };
+        if self.framework_class_role(model.target, &mut BTreeSet::new(), 0)
+            != Some(FrameworkClassRole::DjangoModel)
+            || self.binding_depends_on_branch(target, END)
+            || !matches!(self.symbols[target].binding,
+            Binding::Variable(Some(Expression { kind: ExpressionKind::Dictionary(items), .. }), _)
+                if {
+                    let (pairs, rest) = items.as_chunks::<2>();
+                    rest.is_empty() && pairs.iter().all(|[key, value]|
+                        matches!((&key.kind, &value.kind),
+                            (ExpressionKind::Text(_), ExpressionKind::Text(_))))
+                })
+        {
+            return;
+        }
+        // Django's stock ModelFormMetaclass reads ModelFormOptions while
+        // creating this class, before any form instance or validation.
+        self.edge(body, target, "django_model_form_help_texts", "certain");
+    }
+
+    fn drf_exception_defaults(&mut self, class: SymbolId, call: CallArguments<'_>) -> bool {
+        let Some(body) = self.direct_framework_protocol_body(
+            class,
+            FrameworkClassRole::DrfApiException,
+            (call.scope, call.before),
+        ) else {
+            return false;
+        };
+        let Some(arguments) =
+            registration_arguments(call.positional, call.keywords, ["detail", "code"])
+        else {
+            return false;
+        };
+        let mut defaults = Vec::new();
+        for (argument, name) in arguments
+            .into_iter()
+            .zip(["default_detail", "default_code"])
+        {
+            if let Some(argument) = argument {
+                match self.identity(call.scope, argument, call.before, 0) {
+                    Value::Text(_) => continue,
+                    Value::None => {}
+                    _ => return false,
+                }
+            }
+            if let Some(binding) = self.local(body, name, END) {
+                if self.binding_depends_on_branch(binding, END)
+                    || !matches!(self.symbols[binding].binding, Binding::Variable(Some(value), _)
+                        if matches!(value.kind, ExpressionKind::Text(_)))
+                {
+                    return false;
+                }
+                defaults.push(binding);
+            }
+        }
+        for binding in defaults {
+            self.edge(call.scope, binding, "drf_exception_default", "possible");
+        }
+        true
+    }
+
+    pub(super) fn framework_default_constructor(
         &mut self,
         class: SymbolId,
         call: CallArguments<'_>,
         certainty: &'static str,
     ) -> bool {
+        if let Some((_, hook)) = self.django_model_field_converter(class, call) {
+            self.edge(
+                call.scope,
+                hook,
+                "django_model_field_converter_declaration",
+                "possible",
+            );
+            self.record_django_field_parameters(call.scope, hook);
+            return true;
+        }
         let Some(role) = self.framework_class_role(class, &mut BTreeSet::new(), 0) else {
             return false;
         };
         let slots: &[&str] = match role {
+            FrameworkClassRole::DjangoModel => {
+                if self.bounded_django_model_constructor(class, call) {
+                    return true;
+                }
+                self.scope_issue(
+                    call.scope,
+                    call.at,
+                    "unresolved_constructor",
+                    "Django model setup, fields, or constructor are outside the bounded model",
+                );
+                return true;
+            }
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
             }
-            FrameworkClassRole::DjangoView => &[],
+            FrameworkClassRole::DrfApiException => {
+                return self.drf_exception_defaults(class, call);
+            }
+            FrameworkClassRole::TraitletsConfigurable => {
+                if self.bounded_traitlets_constructor(class, call) {
+                    return true;
+                }
+                if self.allocation_class(class, 0).is_some() {
+                    self.scope_issue(
+                        call.scope,
+                        call.at,
+                        "unresolved_constructor",
+                        "Traitlets initialization is outside the bounded class model",
+                    );
+                }
+                return false;
+            }
+            FrameworkClassRole::BuiltinDict | FrameworkClassRole::DjangoView => &[],
+            // The generic implementation's get_default_settings returns an
+            // empty dictionary. A zero-argument call performs no setting writes.
+            FrameworkClassRole::DjangoStorageBase => &["get_default_settings"],
             FrameworkClassRole::DjangoCommand => {
                 &["stdout", "stderr", "style", "requires_system_checks"]
             }
@@ -3088,7 +3790,12 @@ impl Graph<'_> {
                 _ => {}
             }
         }
-        self.scope_issue(call.scope, call.at, "unresolved_constructor", "Django initializer arguments or attribute dispatch are outside the bounded default constructor model");
+        let reason = if role == FrameworkClassRole::BuiltinDict {
+            "dictionary subclass initialization requires ordinary empty allocation"
+        } else {
+            "Django initializer arguments or attribute dispatch are outside the bounded default constructor model"
+        };
+        self.scope_issue(call.scope, call.at, "unresolved_constructor", reason);
         true
     }
 
@@ -3253,8 +3960,10 @@ impl Graph<'_> {
             return;
         }
         if !self.is_class(target)
-            || self.framework_class_role(target, &mut BTreeSet::new(), 0)
-                != Some(FrameworkClassRole::DjangoAdmin)
+            || !matches!(
+                self.framework_class_role(target, &mut BTreeSet::new(), 0),
+                Some(FrameworkClassRole::DjangoAdmin | FrameworkClassRole::DjangoGuardianAdmin)
+            )
         {
             self.django_registration_issue(object, at, "Django ModelAdmin could not be resolved");
             return;
@@ -3276,7 +3985,12 @@ impl Graph<'_> {
         self.scopes[scope]
             .routes
             .push((object, target, "django_admin_registration"));
-        for name in ["get_queryset", "save_model", "delete_model"] {
+        for name in [
+            "get_queryset",
+            "save_model",
+            "delete_model",
+            "get_list_select_related",
+        ] {
             self.django_admin_method(scope, object, target, name, at);
         }
         for (name, getter) in [
@@ -3379,6 +4093,26 @@ impl Graph<'_> {
         };
         match attribute {
             Value::Callable(callback) if !self.is_class(callback.target) => {
+                if name == "get_list_select_related" {
+                    let Binding::Definition(definition, body) =
+                        self.symbols[callback.target].binding
+                    else {
+                        return true;
+                    };
+                    if !field_dispatch::plain_method(definition, 2) {
+                        self.django_registration_issue(
+                            object,
+                            option_at,
+                            "Django ModelAdmin list-select-related signature could not be resolved",
+                        );
+                        return true;
+                    }
+                    let request = definition.parameters[1].at;
+                    let parameter = self.by_location[&(body, request.line, request.column)];
+                    self.scopes[scope]
+                        .routes
+                        .push((object, parameter, "django_admin_parameter"));
+                }
                 self.scopes[scope].routes.push((
                     object,
                     callback.target,
@@ -3614,6 +4348,9 @@ impl Graph<'_> {
             return;
         };
         if let Value::Callable(invocation) = value {
+            if kind == "django_app_config" && name == "ready" {
+                self.django_ready_hooks.insert(invocation.target);
+            }
             self.record_django_hook(scope, object, class, invocation, kind);
         } else if !matches!(value, Value::ConstantFunction) {
             self.django_registration_issue(
@@ -3657,7 +4394,163 @@ impl Graph<'_> {
             return DjangoReceiver::Invalid;
         };
         let value = self.identity(scope, signal, before, depth + 1);
+        if keywords.is_empty()
+            && let Some(wrappers) =
+                self.conditional_django_signal_forwarders(&value, (scope, before))
+        {
+            for target in wrappers {
+                self.edge(scope, target, mcp_tools::DECORATOR_APPLICATION, "certain");
+            }
+            return DjangoReceiver::Possible;
+        }
         self.django_signal_sources(&value, (scope, before))
+    }
+
+    fn conditional_django_signal_forwarders(
+        &mut self,
+        value: &Value,
+        access: (ScopeId, Location),
+    ) -> Option<[SymbolId; 2]> {
+        let Value::Instance(class) = value else {
+            return None;
+        };
+        if self.framework_class_role(*class, &mut BTreeSet::new(), 0)
+            != Some(FrameworkClassRole::DjangoSignal)
+            || self.class_lineage(*class).0.iter().any(|&body| {
+                self.scopes[body].owner.is_none_or(|owner| {
+                    self.has_unmodeled_class_write(owner)
+                        || ["__getattribute__", "__getattr__"].into_iter().any(|name| {
+                            self.local(body, name, END).is_some()
+                                || self.class_member_write(owner, name, access).is_some()
+                        })
+                })
+            })
+        {
+            return None;
+        }
+        let Value::Callable(wrapper) = self.member(value.clone(), "connect", access, 0) else {
+            return None;
+        };
+        let Binding::Definition(definition, body) = self.symbols[wrapper.target].binding else {
+            return None;
+        };
+        if wrapper.verified || !field_dispatch::plain_method(definition, 2) {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::Return(Some(Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        ..
+                    })),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        let ExpressionKind::Name(helper_name) = &function.kind else {
+            return None;
+        };
+        let module = self.scopes[body].file;
+        if !keywords.is_empty()
+            || !matches!(arguments.as_slice(), [arg]
+                if matches!(&arg.kind, ExpressionKind::Name(name) if name == &definition.parameters[1].text))
+            || definition
+                .parameters
+                .iter()
+                .any(|parameter| parameter.text == *helper_name)
+            || self
+                .module_member_write(&self.files[module].module, helper_name, access)
+                .is_some()
+        {
+            return None;
+        }
+        let before = if module == self.scopes[access.0].file {
+            access.1
+        } else {
+            END
+        };
+        let Value::Callable(helper) = self.probe_identity(module, function, before) else {
+            return None;
+        };
+        let Binding::Definition(definition, body) = self.symbols[helper.target].binding else {
+            return None;
+        };
+        if helper.verified
+            || !matches!(helper.receiver, Receiver::Ordinary)
+            || self.symbols[helper.target].scope != module
+            || !field_dispatch::plain_method(definition, 1)
+        {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::If {
+                        test,
+                        body: branch,
+                        otherwise,
+                    },
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        if !otherwise.is_empty() || !self.closed_django_signal_environment_guard(body, test) {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::Evaluate(Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        at,
+                    }),
+                ..
+            },
+        ] = branch.as_slice()
+        else {
+            return None;
+        };
+        (keywords.is_empty()
+            && matches!(arguments.as_slice(), [arg]
+                if matches!(&arg.kind, ExpressionKind::Name(name) if name == &definition.parameters[0].text))
+            && matches!(self.probe_identity(body, function, *at), Value::Provider(provider)
+                if provider.strip_suffix(".connect").is_some_and(is_django_signal)))
+        .then_some([wrapper.target, helper.target])
+    }
+
+    fn closed_django_signal_environment_guard(&mut self, body: ScopeId, test: &Expression) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &test.kind
+        else {
+            return false;
+        };
+        keywords.is_empty()
+            && matches!(
+                arguments.as_slice(),
+                [Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }]
+            )
+            && matches!(self.probe_identity(body, function, test.at), Value::Provider(provider) if provider == "os.getenv")
     }
 
     pub(super) fn django_receiver_rejects_definition(

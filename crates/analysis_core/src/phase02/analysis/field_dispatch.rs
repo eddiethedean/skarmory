@@ -13,6 +13,14 @@ pub(super) struct FreshFieldInvocation {
     dependencies: [SymbolId; 3],
 }
 
+pub(super) struct ConstructorHookStore {
+    scope: ScopeId,
+    initializer: SymbolId,
+    at: Location,
+    field: String,
+    factory: String,
+}
+
 enum ConstructorField<'a> {
     FromArgument(&'a str),
     Literal,
@@ -268,6 +276,147 @@ impl Graph<'_> {
                 .body
                 .iter()
                 .any(|entry| std::ptr::eq(entry, statement))
+    }
+
+    pub(super) fn defer_constructor_hook_store(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+    ) -> bool {
+        let Some(initializer) = self.scopes[scope].owner else {
+            return false;
+        };
+        let symbol = &self.symbols[initializer];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return false;
+        };
+        let [only] = body_without_docstring(definition) else {
+            return false;
+        };
+        if symbol.name.text != "__init__"
+            || !self.scopes[symbol.scope]
+                .owner
+                .is_some_and(|class| self.is_class(class))
+            || !plain_method(definition, 1)
+            || !std::ptr::eq(only, statement)
+        {
+            return false;
+        }
+        let StatementKind::WriteAttribute {
+            receiver,
+            member,
+            value: Some(value),
+        } = &statement.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &value.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Member(factory_receiver, factory) = &function.kind else {
+            return false;
+        };
+        let parameter = &definition.parameters[0].text;
+        if member.starts_with("__")
+            || factory.starts_with("__")
+            || member == factory
+            || !arguments.is_empty()
+            || !keywords.is_empty()
+            || !matches!(&receiver.kind, ExpressionKind::Name(name) if name == parameter)
+            || !matches!(&factory_receiver.kind, ExpressionKind::Name(name) if name == parameter)
+        {
+            return false;
+        }
+        self.constructor_hook_stores.push(ConstructorHookStore {
+            scope,
+            initializer,
+            at: statement.at,
+            field: member.clone(),
+            factory: factory.clone(),
+        });
+        true
+    }
+
+    pub(super) fn report_constructor_hook_stores(&mut self, reach: &Reachability) {
+        for store in std::mem::take(&mut self.constructor_hook_stores) {
+            if !reach.scopes.contains(&store.scope) {
+                continue;
+            }
+            let receivers: BTreeSet<_> = self
+                .method_receivers
+                .get(&store.initializer)
+                .into_iter()
+                .chain(reach.deferred_method_receivers.get(&store.initializer))
+                .flatten()
+                .copied()
+                .collect();
+            if receivers.is_empty()
+                || !receivers
+                    .into_iter()
+                    .all(|class| self.prove_constructor_hook_store(class, &store))
+            {
+                self.issues.push(
+                    Issue::new(
+                        "unresolved_attribute_write",
+                        &self.files[self.scopes[store.scope].file].path,
+                        "constructor hook storage requires ordinary source-owned allocation and attribute lookup",
+                    )
+                    .at(store.at),
+                );
+            }
+        }
+    }
+
+    fn prove_constructor_hook_store(
+        &mut self,
+        class: SymbolId,
+        store: &ConstructorHookStore,
+    ) -> bool {
+        let (lineage, complete) = self.class_lineage(class);
+        if !complete
+            || !lineage.into_iter().all(|body| {
+                let owner = self.scopes[body].owner.expect("class body has an owner");
+                let Binding::Definition(class, _) = self.symbols[owner].binding else {
+                    unreachable!();
+                };
+                !class.has_class_keywords()
+                    && class.decorators.is_empty()
+                    && !self.has_unmodeled_class_write(owner)
+                    && self.class_discovery_writes(owner, store.scope).is_empty()
+                    && [
+                        "__new__",
+                        "__getattribute__",
+                        "__getattr__",
+                        "__setattr__",
+                        "__slots__",
+                        &store.field,
+                    ]
+                    .into_iter()
+                    .all(|name| self.local(body, name, END).is_none())
+            })
+        {
+            return false;
+        }
+        let Some(Value::Callable(factory)) =
+            self.class_member_at(class, &store.factory, 0, Some((store.scope, store.at)))
+        else {
+            return false;
+        };
+        !factory.verified
+            && matches!(factory.receiver, Receiver::Ordinary)
+            && !self.has_unmodeled_class_write(factory.target)
+            && self
+                .class_discovery_writes(factory.target, store.scope)
+                .is_empty()
+            && matches!(self.symbols[factory.target].binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Class
+                    && definition.decorators.is_empty() && definition.bases.is_empty()
+                    && !definition.has_class_keywords() && body_without_docstring(definition).is_empty())
     }
 
     pub(super) fn defer_fresh_field_call(&mut self, scope: ScopeId, call: &Expression) -> bool {

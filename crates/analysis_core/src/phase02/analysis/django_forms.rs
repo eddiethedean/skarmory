@@ -7,6 +7,8 @@ pub(super) const VALIDATION_HOOK: &str = "django_form_validation";
 const WIDGET: &str = "django.forms.widgets.Widget";
 const CHAR_FIELD: &str = "django.db.models.fields.CharField";
 
+type DeclaredFields = BTreeMap<String, Option<SymbolId>>;
+
 pub(super) fn is_declaration_provider(provider: &str) -> bool {
     matches!(
         provider,
@@ -55,7 +57,7 @@ impl Graph<'_> {
 
 #[derive(Clone, Copy)]
 pub(super) enum Field {
-    Form,
+    Form { widget: Option<SymbolId> },
     Model { editable: bool },
 }
 
@@ -286,6 +288,207 @@ impl Graph<'_> {
         })
     }
 
+    fn django_direct_field_hook(
+        &mut self,
+        class: SymbolId,
+        providers: [&str; 2],
+        name: &str,
+        parameters: usize,
+        scope: ScopeId,
+    ) -> Option<SymbolId> {
+        let symbol = &self.symbols[class];
+        let Binding::Definition(definition, body) = symbol.binding else {
+            return None;
+        };
+        let [base] = definition.bases.as_slice() else {
+            return None;
+        };
+        let Value::Provider(provider) = self.probe_identity(symbol.scope, base, symbol.name.at)
+        else {
+            return None;
+        };
+        if !providers.contains(&provider.as_str())
+            || !self.django_plain_widget_or_field(&provider, definition)
+            || self.has_unmodeled_class_write(class)
+            || !self.class_discovery_writes(class, scope).is_empty()
+            || self.scopes[body].names.values().any(|ids| ids.len() > 1)
+        {
+            return None;
+        }
+        let target = self.local(body, name, END)?;
+        let Binding::Definition(hook, _) = self.symbols[target].binding else {
+            return None;
+        };
+        field_dispatch::plain_method(hook, parameters).then_some(target)
+    }
+
+    pub(super) fn django_model_field_converter(
+        &mut self,
+        class: SymbolId,
+        call: CallArguments<'_>,
+    ) -> Option<(Field, SymbolId)> {
+        let model = self.scopes[call.scope].owner?;
+        let Binding::Definition(model_definition, _) = self.symbols[model].binding else {
+            return None;
+        };
+        let [base] = model_definition.bases.as_slice() else {
+            return None;
+        };
+        if model_definition.kind != DefinitionKind::Class
+            || !matches!(self.probe_identity(self.symbols[model].scope, base, self.symbols[model].name.at),
+                Value::Provider(provider) if framework_class_provider(&provider) == Some(FrameworkClassRole::DjangoModel))
+            || model_definition.has_class_keywords()
+            || !model_definition.decorators.is_empty()
+            || self.has_unmodeled_class_write(model)
+            || !self.class_discovery_writes(model, call.scope).is_empty()
+            || !body_without_docstring(model_definition).iter().any(|statement| {
+                matches!(&statement.kind, StatementKind::Assign { names, value: Some(value), annotation: None, .. }
+                    if position(value.at) == position(call.at)
+                    && names.len() == 1
+                    && self.scopes[call.scope].names[names[0].text.as_str()].len() == 1)
+            })
+        {
+            return None;
+        }
+        let hook = self.django_direct_field_hook(
+            class,
+            [CHAR_FIELD, "django.db.models.CharField"],
+            "from_db_value",
+            4,
+            call.scope,
+        )?;
+        let body = self.django_class_body(class);
+        if self.local(body, "get_db_converters", END).is_some() {
+            return None;
+        }
+        Some((self.django_field_value(CHAR_FIELD, call)?, hook))
+    }
+
+    pub(super) fn defer_django_widget_data_get(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+    ) -> bool {
+        let Some(target) = self.scopes[scope].owner else {
+            return false;
+        };
+        let Binding::Definition(hook, _) = self.symbols[target].binding else {
+            return false;
+        };
+        if hook.name.text != "value_from_datadict" || !field_dispatch::plain_method(hook, 4) {
+            return false;
+        }
+        let [
+            Statement {
+                kind: StatementKind::Return(Some(returned)),
+                ..
+            },
+        ] = body_without_docstring(hook)
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &returned.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Member(base, member) = &function.kind else {
+            return false;
+        };
+        if position(returned.at) == position(expression.at)
+            && member == "get"
+            && keywords.is_empty()
+            && matches!(&base.kind, ExpressionKind::Name(name) if *name == hook.parameters[1].text)
+            && matches!(arguments.as_slice(), [item] if matches!(&item.kind, ExpressionKind::Name(name) if *name == hook.parameters[3].text))
+            && let Some(class) = self.scopes[self.symbols[target].scope].owner
+            && self.django_direct_field_hook(
+                class,
+                [WIDGET, "django.forms.Widget"],
+                "value_from_datadict",
+                4,
+                scope,
+            ) == Some(target)
+        {
+            self.django_widget_data_gets.insert(scope, expression.at);
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn report_django_widget_data_gets(&mut self, reach: &Reachability) {
+        for (&scope, &at) in &self.django_widget_data_gets {
+            if !reach.scopes.contains(&scope) {
+                continue;
+            }
+            let target = self.scopes[scope].owner.expect("widget method scope");
+            if reach.has_evidence(target, "django_widget_validation")
+                && reach
+                    .evidence
+                    .range((target, "", "")..)
+                    .take_while(|&&(id, _, _)| id == target)
+                    .all(|&(_, kind, _)| {
+                        matches!(kind, "django_widget_validation" | "type_reference")
+                    })
+            {
+                continue;
+            }
+            self.issues.push(
+                Issue::new(
+                    "unresolved_call",
+                    &self.files[self.scopes[scope].file].path,
+                    "Django widget data lookup requires a bounded form submission",
+                )
+                .at(at),
+            );
+        }
+    }
+
+    fn django_widget_literal_submission(
+        &mut self,
+        form_validation: &Expression,
+        call: CallArguments<'_>,
+    ) -> bool {
+        let ExpressionKind::Member(form, _) = &form_validation.kind else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            arguments,
+            keywords,
+            ..
+        } = &form.kind
+        else {
+            return false;
+        };
+        let Some([Some(data)]) = registration_arguments(arguments, keywords, ["data"]) else {
+            return false;
+        };
+        if !matches!(data.kind, ExpressionKind::Dictionary(_)) {
+            return false;
+        }
+        let Value::Mapping(items) = self.probe_identity(call.scope, data, call.before) else {
+            return false;
+        };
+        let (entries, remainder) = items.as_chunks::<2>();
+        remainder.is_empty()
+            && entries
+                .iter()
+                .all(|[key, value]| matches!(key, Value::Text(_)) && inert_submission(value))
+    }
+
+    pub(super) fn record_django_field_parameters(&mut self, scope: ScopeId, target: SymbolId) {
+        let Binding::Definition(definition, body) = self.symbols[target].binding else {
+            return;
+        };
+        for parameter in definition.parameters.iter().skip(1) {
+            let at = parameter.at;
+            let binding = self.by_location[&(body, at.line, at.column)];
+            self.edge(scope, binding, "django_field_parameter", "possible");
+        }
+    }
+
     pub(super) fn django_field_value(
         &mut self,
         provider: &str,
@@ -295,6 +498,8 @@ impl Graph<'_> {
         let mut auto_updated = false;
         let mut names = BTreeSet::new();
         let form = provider_field_role(provider).is_some();
+        let mut widget = None;
+        let mut widget_reads_data = true;
         if !call.positional.is_empty() {
             return None;
         }
@@ -306,12 +511,31 @@ impl Graph<'_> {
                 self.django_direct_field_choices(call, expression)?;
                 continue;
             }
+            if form && name == "widget" {
+                let Value::Callable(widget_class) =
+                    self.probe_identity(call.scope, expression, call.before)
+                else {
+                    return None;
+                };
+                self.django_direct_field_hook(
+                    widget_class.target,
+                    [WIDGET, "django.forms.Widget"],
+                    "value_from_datadict",
+                    4,
+                    call.scope,
+                )?;
+                widget = Some(widget_class.target);
+                continue;
+            }
             if !field_option(provider, name, form) {
                 return None;
             }
             let value = self.probe_identity(call.scope, expression, call.before);
             if !value.is_builtin_scalar() {
                 return None;
+            }
+            if form && name == "disabled" {
+                widget_reads_data = matches!(value, Value::Bool(false));
             }
             if name == "editable" {
                 let Value::Bool(value) = value else {
@@ -327,7 +551,9 @@ impl Graph<'_> {
             }
         }
         if form {
-            Some(Field::Form)
+            Some(Field::Form {
+                widget: widget.filter(|_| widget_reads_data),
+            })
         } else if is_model_field(provider) {
             Some(Field::Model {
                 editable: editable && !auto_updated,
@@ -573,8 +799,8 @@ impl Graph<'_> {
         lineage: &Lineage,
         model: bool,
         access: (ScopeId, Location),
-    ) -> Option<BTreeSet<String>> {
-        let mut tables: BTreeMap<_, BTreeSet<String>> = BTreeMap::new();
+    ) -> Option<DeclaredFields> {
+        let mut tables: BTreeMap<_, DeclaredFields> = BTreeMap::new();
         let mut removals: BTreeMap<_, BTreeSet<String>> = BTreeMap::new();
         for &owner in lineage.mros[&class].iter().rev() {
             let body = self.django_class_body(owner);
@@ -587,11 +813,15 @@ impl Graph<'_> {
             {
                 return None;
             }
-            let mut fields = BTreeSet::new();
+            let mut fields = BTreeMap::new();
             // Django's form metaclass updates from each ancestor's effective
             // declared_fields and then applies that ancestor's None masks.
             for parent in lineage.mros[&owner][1..].iter().rev() {
-                fields.extend(tables[parent].iter().cloned());
+                fields.extend(
+                    tables[parent]
+                        .iter()
+                        .map(|(name, widget)| (name.clone(), *widget)),
+                );
                 for name in &removals[parent] {
                     fields.remove(name);
                 }
@@ -614,20 +844,20 @@ impl Graph<'_> {
                 let value = if matches!(value, Value::Scalar) && !model {
                     match self.django_literal_none(id, 0) {
                         Some(true) => Value::None,
-                        None if fields.contains(name) => return None,
+                        None if fields.contains_key(name) => return None,
                         _ => value,
                     }
                 } else {
                     value
                 };
                 let used_field = match value {
-                    Value::DjangoField(Field::Form) if !model => {
-                        fields.insert(name.to_owned());
+                    Value::DjangoField(Field::Form { widget }) if !model => {
+                        fields.insert(name.to_owned(), widget);
                         true
                     }
                     Value::DjangoField(Field::Model { editable }) if model => {
                         if editable {
-                            fields.insert(name.to_owned());
+                            fields.insert(name.to_owned(), None);
                         }
                         true
                     }
@@ -650,7 +880,7 @@ impl Graph<'_> {
                         if !bounded {
                             return None;
                         }
-                        fields.insert(name.to_owned());
+                        fields.insert(name.to_owned(), None);
                         true
                     }
                     Value::None if !model => {
@@ -726,7 +956,10 @@ impl Graph<'_> {
         }) {
             return None;
         }
-        let mut fields = self.django_declared_fields(model.target, &lineage, true, access)?;
+        let mut fields: BTreeSet<_> = self
+            .django_declared_fields(model.target, &lineage, true, access)?
+            .into_keys()
+            .collect();
         let excluded = match self.django_model_meta_option(meta.target, "exclude", access) {
             None | Some(Value::None) => None,
             Some(Value::Sequence(exclude)) => Some(string_set(exclude)?),
@@ -907,7 +1140,7 @@ impl Graph<'_> {
                 if name == "fields" && matches!(&base.kind, ExpressionKind::Name(name) if name == &receiver.text))
                 || !matches!(
                     self.probe_identity(scope, value, statement.at),
-                    Value::DjangoField(Field::Form)
+                    Value::DjangoField(Field::Form { widget: None })
                 )
             {
                 return None;
@@ -987,7 +1220,22 @@ impl Graph<'_> {
         }) {
             return None;
         }
-        let mut fields = self.django_declared_fields(class, &lineage, false, access)?;
+        let declarations = self.django_declared_fields(class, &lineage, false, access)?;
+        let mut fields: BTreeSet<_> = declarations.keys().cloned().collect();
+        let widgets: BTreeSet<_> = declarations.into_values().flatten().collect();
+        if !widgets.is_empty()
+            && (dynamic_fields.is_some()
+                || self.has_django_form_table_edits(class)
+                || mro.iter().any(|&owner| {
+                    ["__getitem__", "_widget_data_value"].iter().any(|name| {
+                        self.local(self.django_class_body(owner), name, END)
+                            .is_some()
+                            || self.class_member_write(owner, name, access).is_some()
+                    })
+                }))
+        {
+            return None;
+        }
         if lineage.role == Some(FrameworkClassRole::DjangoModelForm) {
             let generated = self.django_model_form_fields(class, &fields)?;
             fields.extend(generated);
@@ -1047,6 +1295,29 @@ impl Graph<'_> {
                 "possible",
                 call.at,
             );
+        }
+        let literal_submission =
+            !widgets.is_empty() && self.django_widget_literal_submission(function, call);
+        for widget in widgets {
+            let callback = self.django_direct_field_hook(
+                widget,
+                [WIDGET, "django.forms.Widget"],
+                "value_from_datadict",
+                4,
+                call.scope,
+            )?;
+            self.invoke(
+                call.scope,
+                Invocation::ordinary(callback).bind_receiver(Receiver::Bound(widget)),
+                if literal_submission {
+                    "django_widget_validation"
+                } else {
+                    "django_widget_opaque_submission"
+                },
+                "possible",
+                call.at,
+            );
+            self.record_django_field_parameters(call.scope, callback);
         }
         Some(())
     }

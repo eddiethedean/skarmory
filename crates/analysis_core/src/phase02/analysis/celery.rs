@@ -2,6 +2,10 @@
 
 use super::{celery_routes::RouteOperation, *};
 
+pub(super) const LOGGING_CONNECT: &str = "celery.signals.setup_logging.connect";
+pub(super) const LOGGING_CALLBACK: &str = "celery_setup_logging";
+pub(super) const LOGGING_PARAMETER: &str = "celery_setup_logging_parameter";
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Setting {
     Builtin,
@@ -27,6 +31,144 @@ struct Event {
 pub(super) struct Backends(BTreeMap<Object, Vec<Event>>);
 
 impl Graph<'_> {
+    pub(super) fn register_celery_logging(
+        &mut self,
+        scope: ScopeId,
+        target: SymbolId,
+        decorator: &Expression,
+    ) -> bool {
+        let Binding::Definition(definition, body) = self.symbols[target].binding else {
+            return false;
+        };
+        if self.branch_depth != 0
+            || scope != self.scopes[scope].file
+            || matches!(decorator.kind, ExpressionKind::Call { .. })
+            || definition.kind != DefinitionKind::Function
+            || definition.is_generator
+            || definition.decorators.len() != 1
+            || !definition.has_variadic_keyword_parameter
+            || definition.required_positional_parameter_count != 0
+            || !definition.required_keyword_only_parameters.is_empty()
+        {
+            return false;
+        }
+        let kwargs = definition
+            .parameters
+            .last()
+            .expect("keyword collector is last");
+        let parameter = self.by_location[&(body, kwargs.at.line, kwargs.at.column)];
+        self.scopes[scope]
+            .celery_logging_receivers
+            .push((target, parameter));
+        true
+    }
+
+    pub(super) fn dispatch_celery_logging(&mut self, object: Object, call: CallArguments<'_>) {
+        if self.branch_depth != 0
+            || call.scope != self.scopes[call.scope].file
+            || call.scope != object.0
+            || !self.stock_celery_logging.contains(&object)
+            || !call.positional.is_empty()
+            || !call.keywords.is_empty()
+            || self
+                .module_member_write("celery.signals", "setup_logging", (call.scope, call.before))
+                .is_some()
+        {
+            self.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_call",
+                "Celery logging requires a same-module stock application and a zero-argument setup",
+            );
+            return;
+        }
+
+        // The stock Logging class suppresses subsequent setup calls in
+        // this process. Only receivers already registered here can be
+        // proved in source order. Earlier external setup is still possible.
+        let row = &mut self.scopes[call.scope];
+        if row.celery_logging_setup.is_none() {
+            row.celery_logging_setup = Some(call.at);
+            for &(target, parameter) in &row.celery_logging_receivers {
+                row.edges.extend([
+                    Edge {
+                        target,
+                        kind: LOGGING_CALLBACK,
+                        certainty: "possible",
+                    },
+                    Edge {
+                        target: parameter,
+                        kind: LOGGING_PARAMETER,
+                        certainty: "possible",
+                    },
+                ]);
+            }
+        }
+    }
+
+    pub(super) fn report_celery_logging_imports(&mut self, reach: &Reachability) {
+        for &scope in &reach.scopes {
+            let Some(at) = self.scopes[scope].celery_logging_setup else {
+                continue;
+            };
+            let mut imported = self.celery_logging_imports_before(scope, at);
+            let mut visited = BTreeSet::from([scope]);
+            while let Some(module) = imported.pop() {
+                if !reach.scopes.contains(&module) || !visited.insert(module) {
+                    continue;
+                }
+                let row = &self.scopes[module];
+                if !row.celery_logging_receivers.is_empty() {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_registration",
+                        "Celery logging dispatch may reach receivers registered in an imported module",
+                    );
+                    break;
+                }
+                imported.extend(&row.imports);
+            }
+        }
+    }
+
+    fn celery_logging_imports_before(&self, scope: ScopeId, at: Location) -> Vec<ScopeId> {
+        let row = &self.scopes[scope];
+        let mut imported: Vec<_> = row
+            .initializer_imports
+            .iter()
+            .filter_map(|&(id, module)| {
+                (position(self.symbols[id].name.at) < position(at)).then_some(module)
+            })
+            .collect();
+        // Conditional imports can publish receivers before the first setup.
+        // Include only modules selected by an evaluated import in this scope.
+        for &id in &row.evaluated_imports {
+            let symbol = &self.symbols[id];
+            if symbol.scope != scope
+                || position(symbol.name.at) >= position(at)
+                || !self.conditional.contains_key(&id)
+            {
+                continue;
+            }
+            let Binding::Import(import) = symbol.binding else {
+                continue;
+            };
+            let Some(module) = self.import_module(row.file, import) else {
+                continue;
+            };
+            let child = import
+                .member
+                .as_ref()
+                .map(|name| format!("{module}.{name}"));
+            imported.extend(row.imports.iter().copied().filter(|&file| {
+                let name = &self.files[file].module;
+                name == &module || Some(name) == child.as_ref() || within_package(&module, name)
+            }));
+        }
+        imported
+    }
+
     pub(super) fn record_celery_expanded_config(
         &mut self,
         object: Object,
@@ -75,6 +217,20 @@ impl Graph<'_> {
         object: Object,
         call: CallArguments<'_>,
     ) {
+        if self.branch_depth == 0
+            && call.scope == object.0
+            && call.keywords.is_empty()
+            && matches!(
+                call.positional,
+                [] | [Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }]
+            )
+        {
+            self.stock_celery_logging.insert(object);
+        }
+
         let kwarg = |key| {
             call.keywords
                 .iter()
@@ -245,6 +401,15 @@ impl Graph<'_> {
             _ => return false,
         };
         let receiver = self.identity(scope, receiver, at, 0);
+        match receiver {
+            Value::Object(object, ObjectKind::CeleryApp) if member == "log" => {
+                self.stock_celery_logging.remove(&object);
+            }
+            Value::CeleryLogging(object) if member == "setup_logging_subsystem" => {
+                self.stock_celery_logging.remove(&object);
+            }
+            _ => {}
+        }
         self.record_celery_config_entry(scope, at, receiver, member, value.as_ref())
     }
 

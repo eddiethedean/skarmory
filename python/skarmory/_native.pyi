@@ -34,6 +34,7 @@ class _WorkflowOptions(TypedDict):
 class _SkylosOptions(TypedDict):
     phase03: bool
     enable_quality: bool
+    dependency_search_paths: Sequence[str]
     config_file: str | None
     exclude_folders: Sequence[str]
     skip_generated: bool

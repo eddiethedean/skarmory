@@ -253,8 +253,15 @@ impl<'a> Replay<'_, 'a> {
                     if source == self.module || import.member.is_none() {
                         return None;
                     }
-                    let binding = self.graph.by_location
-                        [&(scope, import.local.at.line, import.local.at.column)];
+                    let binding = self.graph.scopes[scope]
+                        .names
+                        .get(import.local.text.as_str())?
+                        .iter()
+                        .copied()
+                        .find(|&binding| {
+                            matches!(self.graph.symbols[binding].binding, Binding::Import(indexed)
+                                if std::ptr::eq(indexed, import))
+                        })?;
                     // This branch has reached the import. Resolve the source
                     // member directly and keep the other branches' prior values.
                     let value = self.graph.binding_value(binding, 0);

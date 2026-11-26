@@ -6,7 +6,9 @@ pub(super) const FIELD_DECLARATION: &str = "wagtail_field_declaration";
 pub(super) const BLOCK_METADATA: &str = "wagtail_block_metadata";
 pub(super) const MODEL_OPTION: &str = "wagtail_model_option";
 pub(super) const CALLBACK_PARAMETER: &str = "wagtail_callback_parameter";
+pub(super) const SNIPPET_OPTION: &str = "wagtail_snippet_option";
 const SETTING_REGISTRATION: &str = "wagtail_setting_registration";
+const SNIPPET_REGISTRATION: &str = "wagtail_snippet_registration";
 const SNIPPET_VIEWSET: &str = "wagtail.snippets.views.snippets.SnippetViewSet";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,6 +52,10 @@ pub(super) fn is_setting_registrar(provider: &str) -> bool {
     )
 }
 
+pub(super) fn is_snippet_registrar(provider: &str) -> bool {
+    provider == "wagtail.snippets.models.register_snippet"
+}
+
 impl Graph<'_> {
     pub(super) fn wagtail_declaration_base(&self, provider: &str) -> bool {
         !self.modules.contains_key("wagtail")
@@ -81,6 +87,80 @@ impl Graph<'_> {
                         || matches!(&value.kind, ExpressionKind::Sequence { items, .. }
                             if items.iter().all(is_snippet_literal)))
             })
+    }
+
+    pub(super) fn register_wagtail_snippet(&mut self, call: CallArguments<'_>) {
+        let issue = |graph: &mut Self| {
+            graph.scope_issue(
+                call.scope,
+                call.at,
+                "unresolved_registration",
+                "Wagtail snippet registration requires a resolved model and literal viewset options",
+            );
+        };
+        let ([model], [(key, viewset)]) = (call.positional, call.keywords) else {
+            issue(self);
+            return;
+        };
+        if key != "viewset" {
+            issue(self);
+            return;
+        }
+        let Value::Callable(model) = self.identity(call.scope, model, call.before, 0) else {
+            issue(self);
+            return;
+        };
+        let Value::Callable(viewset) = self.identity(call.scope, viewset, call.before, 0) else {
+            issue(self);
+            return;
+        };
+        let model = model.target;
+        let viewset = viewset.target;
+        let Binding::Definition(definition, body) = self.symbols[viewset].binding else {
+            issue(self);
+            return;
+        };
+        let display = self.local(body, "list_display", END);
+        let order = self.local(body, "sort_order_field", END);
+        let literal_options = display.is_none_or(|id| {
+            matches!(self.symbols[id].binding,
+                Binding::Variable(Some(Expression { kind: ExpressionKind::Sequence { items, .. }, .. }), _)
+                    if items.iter().all(|item| matches!(item.kind, ExpressionKind::Text(_))))
+        }) && order.is_none_or(|id| {
+            matches!(self.symbols[id].binding,
+                Binding::Variable(Some(Expression { kind: ExpressionKind::Text(_) | ExpressionKind::None, .. }), _))
+        });
+        let bounded = self.public_protocol_module_scope(model).is_some()
+            && self.framework_class_role(model, &mut BTreeSet::new(), 0)
+                == Some(FrameworkClassRole::DjangoModel)
+            && !self.has_unmodeled_class_write(model)
+            && self.public_protocol_module_scope(viewset).is_some()
+            && !self.has_unmodeled_class_write(viewset)
+            && self.class_discovery_writes(viewset, call.scope).is_empty()
+            && literal_options
+            && self.scopes[body].names.keys().all(|name| {
+                !name.starts_with("get_")
+                    && !name.starts_with("register_")
+                    && !matches!(
+                        *name,
+                        "model" | "on_register" | "construct_view" | "UNDEFINED"
+                    )
+            })
+            && match definition.bases.as_slice() {
+                [base] => matches!(
+                    self.probe_identity(self.symbols[viewset].scope, base, definition.name.at),
+                    Value::Provider(name) if self.wagtail_plain_snippet_base(&name, definition)
+                ),
+                _ => false,
+            };
+        if !bounded {
+            issue(self);
+            return;
+        }
+        self.edge(call.scope, viewset, SNIPPET_REGISTRATION, "possible");
+        for option in [display, order].into_iter().flatten() {
+            self.edge(call.scope, option, SNIPPET_OPTION, "possible");
+        }
     }
 
     fn wagtail_declaration(&mut self, class: SymbolId) -> Option<(Declaration, ScopeId)> {
