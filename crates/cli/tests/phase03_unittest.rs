@@ -325,6 +325,10 @@ def tearDownModule(): return 4
             "{name}"
         );
         assert!(!unused(&report, "unused_functions", name), "{name}");
+        assert!(
+            !test_only_whitelisted(&report, "test_service.py", name),
+            "{name}"
+        );
     }
 
     fs::write(&pytest_loader, format!("{source}\nImportedCase = None\n")).unwrap();
@@ -333,10 +337,20 @@ def tearDownModule(): return 4
         "service_cases.prepare",
         "service_cases.seed",
         "service_cases.tearDownModule",
-        "test_service.setUpModule",
-        "test_service.tearDownModule",
     ] {
         assert!(unused(&report, "unused_functions", name), "{name}");
+    }
+    for name in ["test_service.setUpModule", "test_service.tearDownModule"] {
+        assert!(!unused(&report, "unused_functions", name), "{name}");
+        assert!(!discovery(&report, name), "{name}");
+        assert!(
+            !certain_evidence(&report, name, "pytest_xunit_fixture"),
+            "{name}"
+        );
+        assert!(
+            test_only_whitelisted(&report, "test_service.py", name),
+            "{report}"
+        );
     }
     let mut cached = scan(root, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");
