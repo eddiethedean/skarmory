@@ -21,6 +21,13 @@ RESULT_STATUSES = {
 REVIEW_PORT = "tests/conformance/run_phase03_seed.py"
 FRAMEWORK_CORPUS_SOURCE = "corpus/manifest.json"
 REVIEW_COVERAGE_ASSERTION = "test/web_framework_fixtures.py:16"
+APPROVED_EXCEPTION_TESTS = {
+    "test/test_fastapi_truth_cycles.py::test_non_fastapi_click_scan_survives_reassigned_truth_alias":
+        "phase02::analysis::tests::pinned_click_dead_code_control",
+    "test/test_fastapi_route_precision.py::test_incomplete_fastapi_proofs_preserve_all_legacy_hints":
+        "phase02::analysis::tests::pinned_fastapi_initializer_call_budget",
+}
+CLICK_CONTROL = "phase02::analysis::tests::pinned_click_dead_code_control"
 
 
 def sha256(path):
@@ -157,6 +164,20 @@ def read_inventory(path):
             raise ValueError(f"{case_id}: port must be a string")
         if "blocker" in case:
             require_string(case, "blocker")
+        if "reviewed_exception" in case:
+            exception = case["reviewed_exception"]
+            if (case_id not in APPROVED_EXCEPTION_TESTS or milestone != MILESTONE
+                    or case["port"] != REVIEW_PORT
+                    or not isinstance(exception, dict)
+                    or set(exception) != {"reason", "approval", "tracking_issue", "fixture_sha256"}
+                    or {"reference_xfail", "runtime_review", "blocker"} & case.keys()):
+                raise ValueError(f"{case_id}: invalid approved compatibility exception")
+            require_string(exception, "reason")
+            if not re.fullmatch(r"[0-9a-f]{64}", require_string(exception, "fixture_sha256")):
+                raise ValueError(f"{case_id}: approved exception must pin the original fixture bytes")
+            if (exception["approval"] != "approved in the issue 43 implementation request"
+                    or exception["tracking_issue"] != "https://github.com/eddiethedean/skarmory/issues/41"):
+                raise ValueError(f"{case_id}: exception must identify the Phase 0.3 release review")
         if "runtime_review" in case:
             review = case["runtime_review"]
             if not isinstance(review, dict) or set(review) != {"reason", "evidence", "assertions"}:
@@ -191,6 +212,8 @@ def read_inventory(path):
                 raise ValueError(f"{case_id}: unknown variant {variant!r}")
             if "runtime_review" in case and variants[variant]["layer"] != "sdk":
                 raise ValueError(f"{case_id}: reviewed runtime controls require the installed SDK")
+            if "reviewed_exception" in case and variants[variant]["layer"] != "engine":
+                raise ValueError(f"{case_id}: the approved native control requires an engine artifact")
             by_variant[variant][case_id] = case
     if unused := [variant for variant, mapped in by_variant.items() if not mapped]:
         raise ValueError(f"variants without inventory cases: {', '.join(unused)}")
@@ -254,6 +277,9 @@ def verify_preview_result(result, case):
     reference_assertions = string_list(result, "reference_assertions", unique=True)
     if reference_assertions != required_reference:
         reasons.append("completed reference assertions do not match the inventory")
+    if "reviewed_exception" in case:
+        reasons.extend(verify_exception_control(result, case))
+        return reasons
     review = case.get("runtime_review")
     if not review and status != "passed":
         if status not in RESULT_STATUSES:
@@ -282,6 +308,52 @@ def verify_preview_result(result, case):
     ):
         reasons.append("required prerequisites were not all verified")
     return reasons
+
+
+def verify_exception_control(result, case):
+    if result["status"] != "blocked" or string_list(result, "assertions", unique=True):
+        return ["approved exception must preserve the original candidate case without pass credit"]
+    prerequisites = result.get("prerequisites")
+    if prerequisites != dict.fromkeys(case["prerequisites"], "passed"):
+        return ["approved exception control did not verify its original setup"]
+    evidence = result.get("native_test")
+    expected = APPROVED_EXCEPTION_TESTS[case["id"]]
+    if not isinstance(evidence, dict) or evidence.get("returncode") != 0:
+        return ["approved exception control did not pass"]
+    argv = string_list(evidence, "argv", required=True)
+    fixtures = evidence.get("fixture_sha256")
+    stdout = require_string(evidence, "stdout")
+    if (argv[1:4] != ["--ignored", "--exact", expected]
+            or not isinstance(fixtures, dict) or set(fixtures) != {"app.py"}
+            or not re.search(rf"^test {re.escape(expected)} \.\.\. ok$", stdout, re.MULTILINE)):
+        return ["approved exception did not run the named native control on its staged fixture"]
+    if fixtures["app.py"] != case["reviewed_exception"]["fixture_sha256"]:
+        return ["approved exception fixture bytes differ from the review"]
+    control = evidence.get("exception_control")
+    if not isinstance(control, dict):
+        return ["approved exception native observations are missing"]
+    if expected == CLICK_CONTROL:
+        verified = (
+            control.get("complete") is True
+            and string_list(control, "unused", unique=True) == ["app.unused_neighbor"]
+            and control.get("entry_declarations") == ["possible"]
+            and control.get("entry_called") is False
+        )
+    else:
+        verified = (
+            control.get("complete") is False
+            and control.get("incomplete_reason") == "call_event_budget"
+            and control.get("call_events") == 200
+            and control.get("roots") == []
+            and control.get("callback_parameters") == 0
+            and control.get("injected_parameters") == 0
+            and control.get("issues") == [{
+                "kind": "analysis_limit",
+                "path": "app.py",
+                "message": "FastAPI initializer call-event budget exceeded",
+            }]
+        )
+    return [] if verified else ["approved exception native observations did not satisfy the control"]
 
 
 def matches_reviewed_failure(case, assertion):
@@ -381,6 +453,7 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
         "errors": [],
         "cases": [],
         "deferred_cases": [],
+        "reviewed_exceptions": [],
         "artifacts": {},
         "fixtures": {},
         "ledgers": [],
@@ -494,6 +567,22 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
                     reasons.append(str(error))
             preview_status = "blocked" if reasons else "passed"
             candidate_status = result.get("status")
+            if "reviewed_exception" in case:
+                report["reviewed_exceptions"].append({
+                    "case_id": case_id,
+                    "variant": variant_id,
+                    "status": "blocked" if reasons else "accepted",
+                    "preview_status": preview_status,
+                    "reasons": reasons,
+                    "review": case["reviewed_exception"],
+                    "original_assertions": case["assertions"],
+                    "original_reference_status": result.get("reference_status"),
+                    "original_candidate_status": candidate_status,
+                    "native_control": result.get("native_test"),
+                })
+                if reasons:
+                    errors.append(f"{case_id}: approved exception control is missing or invalid")
+                continue
             if preview_status == "passed" and candidate_status != "passed":
                 reasons.append(f"Skarmory outcome {candidate_status!r} is not an ordinary pass")
             decision = {

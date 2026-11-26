@@ -152,6 +152,78 @@ port = "crates/analysis_core/tests/resolve.rs"
         self.assertEqual(report["ledgers"][1]["results"][0]["reference_status"], "xfailed")
         self.assertEqual(report["artifacts"]["candidate"]["sha256"], digest(self.artifact))
 
+    def approved_click_receipt(self):
+        case = "test/test_fastapi_truth_cycles.py::test_non_fastapi_click_scan_survives_reassigned_truth_alias"
+        test = "phase02::analysis::tests::pinned_click_dead_code_control"
+        fixture_hash = "b" * 64
+        self.write_inventory(deferred=f"""
+[[cases]]
+id = "{case}"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_truth_cycles.py"
+provenance = "original fixture"
+assertions = ["{ASSERTION}"]
+prerequisites = ["{PREREQUISITE}"]
+omitted_assertions = []
+variants = ["python-engine"]
+port = "tests/conformance/run_phase03_seed.py"
+reviewed_exception = {{ reason = "combined scan outside Phase 0.3", approval = "approved in the issue 43 implementation request", tracking_issue = "https://github.com/eddiethedean/skarmory/issues/41", fixture_sha256 = "{fixture_hash}" }}
+""")
+        receipt = self.receipt("python-engine")
+        receipt["results"].append({
+            "case_id": case,
+            "reference_status": "passed",
+            "reference_assertions": [ASSERTION],
+            "status": "blocked",
+            "assertions": [],
+            "prerequisites": {PREREQUISITE: "passed"},
+            "native_test": {
+                "argv": ["native-test", "--ignored", "--exact", test],
+                "fixture_sha256": {"app.py": fixture_hash},
+                "stdout": f"test {test} ... ok",
+                "returncode": 0,
+                "exception_control": {
+                    "complete": True,
+                    "unused": ["app.unused_neighbor"],
+                    "entry_declarations": ["possible"],
+                    "entry_called": False,
+                },
+            },
+        })
+        return receipt
+
+    def test_approved_exception_preserves_original_outcomes_without_pass_credit(self):
+        engine = self.approved_click_receipt()
+        run, report = self.run_gate(engine, self.receipt("python-sdk"))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(report["counts"], {"passed": 2, "blocked": 0})
+        [exception] = report["reviewed_exceptions"]
+        self.assertEqual(exception["status"], "accepted")
+        self.assertEqual(exception["original_reference_status"], "passed")
+        self.assertEqual(exception["original_candidate_status"], "blocked")
+        self.assertEqual(exception["original_assertions"], [ASSERTION])
+
+    def test_approved_exception_requires_reference_assertions_and_exact_native_control(self):
+        for change in ("missing", "reference", "fixture", "evidence", "original_pass"):
+            with self.subTest(change=change):
+                engine = self.approved_click_receipt()
+                result = engine["results"][-1]
+                if change == "missing":
+                    engine["results"].pop()
+                elif change == "reference":
+                    result["reference_assertions"] = []
+                elif change == "fixture":
+                    result["native_test"]["fixture_sha256"]["app.py"] = "c" * 64
+                elif change == "evidence":
+                    result["native_test"]["exception_control"]["entry_called"] = True
+                elif change == "original_pass":
+                    result["status"] = "passed"
+                report = self.assert_blocked(
+                    [engine, self.receipt("python-sdk")], "approved exception control"
+                )
+                self.assertEqual(report["reviewed_exceptions"][0]["status"], "blocked")
+
     def reviewed_receipt(self, checks=None):
         if checks is None:
             checks = ["coverage:incomplete", "issue:unresolved_import:app.py:2"]

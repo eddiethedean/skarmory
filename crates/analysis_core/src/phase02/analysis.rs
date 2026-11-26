@@ -12144,6 +12144,34 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the original mixed Click analysis fixture"]
+    fn pinned_click_dead_code_control() {
+        let fixture = std::env::var_os("SKARMORY_PHASE03_CLICK_CONTROL_FIXTURE").unwrap();
+        let output = std::env::var_os("SKARMORY_PHASE03_CLICK_CONTROL_REPORT").unwrap();
+        let source = std::fs::read_to_string(fixture).unwrap();
+        let report = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+        let declarations: BTreeSet<_> = report
+            .evidence
+            .iter()
+            .filter(|row| row.full_name == "app.entry" && row.kind == "click_command_declaration")
+            .map(|row| row.certainty)
+            .collect();
+        let entry_called = report.evidence.iter().any(|row| {
+            row.full_name == "app.entry" && matches!(row.kind, "direct_call" | "grep_dynamic_call")
+        });
+        let result = serde_json::json!({
+            "complete": report.issues.is_empty(),
+            "unused": report.findings.iter()
+                .filter(|row| row.category == Category::Function)
+                .map(|row| &row.full_name)
+                .collect::<BTreeSet<_>>(),
+            "entry_declarations": declarations,
+            "entry_called": entry_called,
+        });
+        std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
+    #[test]
     fn fastapi_initializer_limit_withholds_affected_routes_and_preserves_an_independent_app() {
         let route =
             "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/')\ndef route(): return 1\n";
