@@ -91,6 +91,126 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn framework_class_attributes_require_proven_provider_declarations() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("providers.py"),
+        "from celery.backends import redis as backend\n\
+         class Intermediate(backend.RedisBackend): pass\n",
+    )
+    .unwrap();
+    let source = r#"from providers import Intermediate
+from django.contrib.admin import SimpleListFilter
+from storages.backends.s3 import S3Storage
+
+def body_only():
+    return 1
+
+class Queue(Intermediate):
+    def ResultConsumer(self, *args):
+        return body_only()
+    orphan = 1
+
+class Choice(SimpleListFilter):
+    parameter_name = "choice"
+    title = "Choice"
+    orphan = 1
+
+class Media(S3Storage):
+    bucket_name = "media"
+    location = "uploads"
+    orphan = 1
+
+class RedisBackend:
+    pass
+
+class Local(RedisBackend):
+    ResultConsumer = object
+    orphan = 1
+"#;
+    let app = root.join("app.py");
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    let declared = "framework_class_attribute_declaration";
+    let variables = findings(&report, "unused_variables");
+    let functions = findings(&report, "unused_functions");
+    assert!(functions.contains(&"app.body_only"));
+    assert!(!functions.contains(&"app.Queue.ResultConsumer"));
+    assert!(variables.contains(&"app.Local.ResultConsumer"));
+    for name in ["app.Queue.orphan", "app.Choice.orphan", "app.Media.orphan"] {
+        assert!(variables.contains(&name), "{name}");
+    }
+    for name in [
+        "app.Queue.ResultConsumer",
+        "app.Choice.parameter_name",
+        "app.Choice.title",
+        "app.Media.bucket_name",
+        "app.Media.location",
+    ] {
+        assert!(!variables.contains(&name), "{name}");
+        assert_eq!(
+            evidence_certainties(&report, name, declared),
+            ["possible"],
+            "{name}"
+        );
+    }
+    assert!(evidence_certainties(&report, "app.Local.ResultConsumer", declared).is_empty());
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(&app, format!("{source}\nChoice()\n")).unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(incomplete["coverage"]["status"], "incomplete");
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_constructor" })
+    );
+    assert_eq!(
+        evidence_certainties(&incomplete, "app.Choice.parameter_name", declared),
+        ["possible"]
+    );
+}
+
+#[test]
+fn generic_django_storage_constructor_uses_empty_defaults() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let provider = "from storages.base import BaseStorage\n";
+    let declaration = "class Media(BaseStorage):\n    bucket_name = 'unused'\n    orphan = 1\n";
+    fs::write(&app, format!("{provider}{declaration}\nMedia()\n")).unwrap();
+    let report = scan(root);
+    let variables = findings(&report, "unused_variables");
+    assert!(variables.contains(&"app.Media.bucket_name"));
+    assert!(variables.contains(&"app.Media.orphan"));
+
+    for source in [
+        format!("{provider}{declaration}\nMedia(bucket_name='uploads')\n"),
+        format!(
+            "{provider}{declaration}    def get_default_settings(self): return {{'bucket_name': 'configured'}}\n\nMedia()\n"
+        ),
+    ] {
+        fs::write(&app, source).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["kind"] == "unresolved_constructor" })
+        );
+    }
+}
+
+#[test]
 fn gin_bindings_keep_only_selected_registrations_and_leave_wrappers_unused() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

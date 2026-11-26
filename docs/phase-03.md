@@ -446,6 +446,17 @@ literal block metadata. Direct concrete Page, Orderable, and Task models
 retain bounded model fields and options. Documented page preview and task
 permission callbacks can receive possible-use and parameter evidence.
 
+Resolved Celery Redis backends, Django admin list filters, and django-storages
+S3 backends receive possible declaration evidence for their documented class
+attributes. The declaration leaves constructor and callback execution to the
+call analysis. The generic django-storages base supports a zero-argument call
+when the inherited empty defaults and ordinary attribute lookup are preserved.
+Related controls cover project-local lookalikes, provider aliases, and unknown
+constructor behavior.
+[Celery Redis backend](https://docs.celeryq.dev/en/v5.5.3/_modules/celery/backends/redis.html) ·
+[Django admin list filters](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/filters/) ·
+[django-storages base and S3 settings](https://github.com/jschneier/django-storages/blob/1.14.6/storages/base.py)
+
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
 Django template directories, literal inheritance and includes, and supported

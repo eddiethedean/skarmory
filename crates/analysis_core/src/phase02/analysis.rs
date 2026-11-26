@@ -286,10 +286,14 @@ enum FrameworkClassRole {
     DjangoRelationshipField,
     DjangoSignal,
     DjangoAdmin,
+    DjangoSimpleListFilter,
+    DjangoStorageBase,
+    DjangoS3Storage,
     ClickCommand,
     DrfSerializer,
     DrfViewSet,
     CeleryTask,
+    CeleryRedisBackend,
     SqlAlchemyModel,
     SqlModel,
     PydanticModel,
@@ -3237,6 +3241,7 @@ impl<'a> Graph<'a> {
                                 | FrameworkClassRole::DjangoManager
                                 | FrameworkClassRole::DjangoQuerySet
                                 | FrameworkClassRole::DjangoRelationshipField
+                                | FrameworkClassRole::DjangoStorageBase
                                 | FrameworkClassRole::DjangoView,
                             ),
                             "__new__",
@@ -9919,6 +9924,7 @@ impl<'a> Graph<'a> {
                         | "click_command_declaration"
                         | "celery_task_declaration"
                         | "django_relationship_field_declaration"
+                        | frameworks::CLASS_ATTRIBUTE_DECLARATION
                 ) {
                     continue;
                 }
@@ -10396,6 +10402,7 @@ impl<'a> Graph<'a> {
             if matches!(
                 kind,
                 "attrs_field"
+                    | frameworks::CLASS_ATTRIBUTE_DECLARATION
                     | "marshmallow_schema_options"
                     | "django_setting"
                     | "django_application"
@@ -11478,6 +11485,14 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
+        "django.contrib.admin.SimpleListFilter"
+        | "django.contrib.admin.filters.SimpleListFilter" => {
+            Some(FrameworkClassRole::DjangoSimpleListFilter)
+        }
+        "storages.backends.s3.S3Storage" | "storages.backends.s3boto3.S3Boto3Storage" => {
+            Some(FrameworkClassRole::DjangoS3Storage)
+        }
+        "storages.base.BaseStorage" => Some(FrameworkClassRole::DjangoStorageBase),
         "click.Command" | "click.core.Command" => Some(FrameworkClassRole::ClickCommand),
         "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
             Some(FrameworkClassRole::DrfSerializer)
@@ -11487,6 +11502,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         | "rest_framework.viewsets.ModelViewSet"
         | "rest_framework.viewsets.ReadOnlyModelViewSet" => Some(FrameworkClassRole::DrfViewSet),
         "celery.Task" | "celery.app.task.Task" => Some(FrameworkClassRole::CeleryTask),
+        "celery.backends.redis.RedisBackend" => Some(FrameworkClassRole::CeleryRedisBackend),
         "sqlalchemy.orm.DeclarativeBase"
         | "sqlalchemy.orm.decl_api.DeclarativeBase"
         | "sqlalchemy.orm.declarative_base.result" => Some(FrameworkClassRole::SqlAlchemyModel),
