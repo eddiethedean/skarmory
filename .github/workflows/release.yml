@@ -493,6 +493,7 @@ jobs:
           gate_status=0
           python scripts/check_dead_code_gate.py \
             --inventory tests/conformance/phase03-inventory.toml \
+            --diagnostic-inventory tests/conformance/phase03-closure-safety-audit.toml \
             --candidate-revision "$(git rev-parse HEAD)" \
             --fixture-root phase03-skylos \
             --report phase03-evidence/gate.json "${evidence[@]}" || gate_status=$?
