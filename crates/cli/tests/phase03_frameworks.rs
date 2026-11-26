@@ -10553,6 +10553,23 @@ fn click_command_declarations_do_not_execute_a_short_circuited_callback() {
 
     fs::write(
         root.join("app.py"),
+        source
+            .replace(
+                "from click import command",
+                "import click\ndef local_factory(): return lambda callback: callback\nclick.command = local_factory",
+            )
+            .replace("@command()", "@click.command()"),
+    )
+    .unwrap();
+    let rebound = scan(root);
+    assert!(
+        findings(&rebound, "unused_functions").contains(&"app.entry"),
+        "{rebound}"
+    );
+    assert!(evidence_certainties(&rebound, "app.entry", "click_command_declaration").is_empty());
+
+    fs::write(
+        root.join("app.py"),
         source.replace("flag and entry()", "entry()"),
     )
     .unwrap();
