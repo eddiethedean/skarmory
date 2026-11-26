@@ -3480,6 +3480,72 @@ fn flask_factory_stops_at_the_failed_blueprint_export() {
 }
 
 #[test]
+fn flask_factory_calls_an_inert_replacement_after_initializing_blueprint_routes() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.join("app/views")).unwrap();
+    fs::write(
+        root.join("app/__init__.py"),
+        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    from app.views import bp\n    app.register_blueprint(bp)\n    return app\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app/views/routes.py"),
+        "from app.views import bp\n@bp.before_app_request\ndef prepare(): return helper()\ndef helper(): return 1\ndef retired(): return 2\n",
+    )
+    .unwrap();
+    let views = root.join("app/views/__init__.py");
+    let setup = "from flask import Blueprint\nbp = Blueprint('main', __name__)\nfrom app.views import routes\n";
+    fs::write(
+        &views,
+        format!(
+            "{setup}class Replacement:\n    def register(self, app, options): pass\nbp = Replacement()\n"
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        [
+            "app.views.routes.helper",
+            "app.views.routes.prepare",
+            "app.views.routes.retired",
+        ],
+    );
+    assert!(
+        evidence_certainties(&report, "app.views.routes.prepare", "flask_registration").is_empty()
+    );
+    for _ in 0..2 {
+        let mut cached_report = scan_with_settings(root, None, Some(cache.path()));
+        cached_report.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached_report, report);
+    }
+
+    fs::write(
+        &views,
+        format!("{setup}class Replacement:\n    def register(self, app, options): unknown(app)\nbp = Replacement()\n"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["kind"] == "unresolved_registration"),
+        "{incomplete}"
+    );
+
+    fs::write(&views, setup).unwrap();
+    let mounted = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&mounted, "unused_functions"),
+        ["app.views.routes.retired"],
+    );
+}
+
+#[test]
 fn flask_unbound_initializer_stops_before_a_decorator_or_factory_body() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

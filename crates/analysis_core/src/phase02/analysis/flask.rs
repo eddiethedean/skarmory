@@ -27,6 +27,37 @@ pub(super) struct ParameterHook {
 }
 
 impl Graph<'_> {
+    pub(super) fn call_inert_flask_blueprint(
+        &mut self,
+        class: SymbolId,
+        scope: ScopeId,
+        before: Location,
+        at: Location,
+    ) -> bool {
+        let access = (scope, before);
+        if !self.plain_default_provider(class, access, &BTreeSet::new()) {
+            return false;
+        }
+        let Value::Callable(method) = self.member(Value::Instance(class), "register", access, 0)
+        else {
+            return false;
+        };
+        let Binding::Definition(definition, _) = self.symbols[method.target].binding else {
+            return false;
+        };
+        if method.verified
+            || !matches!(method.receiver, Receiver::Bound(receiver) if receiver == class)
+            || !field_dispatch::plain_method(definition, 3)
+            || !body_without_docstring(definition).is_empty()
+        {
+            return false;
+        }
+        // Flask delegates to blueprint.register(app, options). A local
+        // no-op method executes without mounting a framework Blueprint.
+        self.invoke(scope, method, "direct_call", "certain", at);
+        true
+    }
+
     pub(super) fn flask_instance(
         &self,
         scope: ScopeId,
