@@ -572,6 +572,12 @@ the converter as part of a source model's field declaration. Its contract
 retains the parameters Django supplies when adapting database results.
 Declaration evidence does not imply that a query ran.
 
+A first zero-argument Celery logging setup on a stock application can
+retain an earlier same-module `@setup_logging.connect` receiver as possible.
+The bounded proof accepts plain synchronous receivers with a keyword
+argument collector. Custom applications and opaque setup keep incomplete
+coverage.
+
 Selected Django startup accepts the standard auth, content types, and session
 apps and their explicit default AppConfig classes. Discovery continues through
 the source-owned apps in the same installed list.
