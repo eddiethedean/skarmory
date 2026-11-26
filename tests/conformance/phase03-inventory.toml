@@ -14342,11 +14342,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:58", "test/test_django_hook_provenance.py:59", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture starts Django, labels the concrete model, and calls its save API. Django 5.2.1 reaches the original save override while abandoned stays dormant."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The selected project does not establish a registered model or dispatch a model method. Keep the unresolved constructor visible without reporting dead methods from incomplete coverage.", evidence = "Django 4.2.1 and 5.2.1 rejected the unchanged model declaration on import with INSTALLED_APPS empty. It supplies neither an app label nor a registered application. The import trace reached no model method. https://docs.djangoproject.com/en/5.2/ref/applications/", assertions = ["coverage:incomplete", "issue:unresolved_constructor:app.py:7", "definition:app.Worker.save", "definition:app.Worker.abandoned", "no-evidence:direct_call:*:app.Worker.save", "no-evidence:direct_call:*:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_form_clean_hook_requires_a_corresponding_field[True]"
@@ -14775,11 +14774,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:587", "test/test_django_hook_provenance.py:588", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture calls the queryset delete API. Django 5.2.1 reaches the original override and leaves abandoned dormant."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Constructing a queryset does not dispatch delete.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture and constructed the queryset without calling delete. https://docs.djangoproject.com/en/5.2/ref/models/querysets/#delete", assertions = ["coverage:complete", "evidence:direct_call:certain:app.Worker", "unused:unused_functions:app.Worker.delete", "no-evidence:direct_call:*:app.Worker.delete", "unused:unused_functions:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.forms-Form-save-False]"
@@ -14800,11 +14798,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:587", "test/test_django_hook_provenance.py:588", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture starts Django and constructs a concrete model with a literal app label. Django 5.2.1 leaves get_queryset and abandoned dormant."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The selected project does not establish a registered model or dispatch a model method. Keep the unresolved constructor visible without reporting dead methods from incomplete coverage.", evidence = "Django 4.2.1 and 5.2.1 rejected the unchanged model declaration on import with INSTALLED_APPS empty. It supplies neither an app label nor a registered application. The import trace reached no model method. https://docs.djangoproject.com/en/5.2/ref/applications/", assertions = ["coverage:incomplete", "issue:unresolved_constructor:app.py:7", "definition:app.Worker.get_queryset", "definition:app.Worker.abandoned", "no-evidence:direct_call:*:app.Worker.get_queryset", "no-evidence:direct_call:*:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.db.models-Manager-get_queryset-True]"
@@ -14813,11 +14810,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:587", "test/test_django_hook_provenance.py:588", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture calls the inherited manager all API. Django 5.2.1 reaches the get_queryset override while abandoned stays dormant."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Constructing a manager does not request a queryset.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture and constructed the manager without calling get_queryset. https://docs.djangoproject.com/en/5.2/topics/db/managers/", assertions = ["coverage:complete", "evidence:direct_call:certain:app.Worker", "unused:unused_functions:app.Worker.get_queryset", "no-evidence:direct_call:*:app.Worker.get_queryset", "unused:unused_functions:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.db.models-Model-save-True]"
@@ -14826,11 +14822,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:587", "test/test_django_hook_provenance.py:588", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture starts Django, labels the concrete model, and calls its save API. Django 5.2.1 reaches the original save override while abandoned stays dormant."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The selected project does not establish a registered model or dispatch a model method. Keep the unresolved constructor visible without reporting dead methods from incomplete coverage.", evidence = "Django 4.2.1 and 5.2.1 rejected the unchanged model declaration on import with INSTALLED_APPS empty. It supplies neither an app label nor a registered application. The import trace reached no model method. https://docs.djangoproject.com/en/5.2/ref/applications/", assertions = ["coverage:incomplete", "issue:unresolved_constructor:app.py:7", "definition:app.Worker.save", "definition:app.Worker.abandoned", "no-evidence:direct_call:*:app.Worker.save", "no-evidence:direct_call:*:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_hook_provenance.py::test_framework_hooks_match_the_specific_provider_role[django.forms-ModelForm-save-True]"
@@ -14839,11 +14834,10 @@ languages = ["python"]
 source = "test/test_django_hook_provenance.py"
 assertions = ["test/test_django_hook_provenance.py:587", "test/test_django_hook_provenance.py:588", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed fixture supplies a concrete model and a valid field list. Bound validation succeeds on Django 5.2.1 and the original save override runs."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "A model form without a model fails construction before any save method can execute.", evidence = "Django 4.2.1 and 5.2.1 raised ValueError when importing the unchanged fixture, where Worker constructs a ModelForm without a model class. https://docs.djangoproject.com/en/5.2/topics/forms/modelforms/", assertions = ["coverage:complete", "evidence:direct_call:certain:app.Worker", "unused:unused_functions:app.Worker.save", "no-evidence:direct_call:*:app.Worker.save", "unused:unused_functions:app.Worker.abandoned"] }
 
 [[cases]]
 id = "test/test_django_template_liveness.py::test_routed_detail_template_resolves_specific_model_and_helpers"
