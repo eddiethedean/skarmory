@@ -884,7 +884,11 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v13/ruff-0.0.12/py311/utf8-universal",
+            if project_wildcards {
+                "phase03-module-v41/ruff-0.0.12/py311/utf8-universal"
+            } else {
+                "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
+            },
             path,
             &roots,
         )
