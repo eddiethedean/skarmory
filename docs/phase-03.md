@@ -560,7 +560,9 @@ whitelisted by path. These expectations remain required differences in the
 reviewed inventory and do not receive pass credit.
 
 The Starlette preview records possible HTTP route use through the supported
-`add_route` call on a resolved conventional ASGI application. The aiohttp
+`add_route` call on a resolved conventional ASGI application. A resolved
+`starlette.responses.PlainTextResponse` call with known text or `None` content
+and default response options stays within the analysis model. The aiohttp
 preview records the callback captured by a genuine route table decorator.
 Mounting and serving an aiohttp table requires a separate activation proof.
 Recognized Gunicorn config files contribute possible-use evidence for supported
