@@ -857,6 +857,11 @@ fn scan_selected(
     let include_dead_code = !options.quality_only;
     let project_wildcards = phase03 && include_dead_code;
     let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
+    if !phase03 && !options.dependency_search_paths.is_empty() {
+        return Err(ConfigError::new(
+            "dependency source paths require the skylos-0.3 profile",
+        ));
+    }
     if options.experimental_javascript && !(phase03 && include_dead_code) {
         return Err(ConfigError::new(
             "experimental JavaScript and TypeScript analysis requires a skylos-0.3 dead-code scan",
@@ -1089,6 +1094,12 @@ fn scan_selected(
         .then(|| analysis::TemplateProject::new(&project, &config.selection));
     let gin = (include_dead_code && phase03 && path.is_dir())
         .then(|| analysis::GinProject::new(&project, &config.selection));
+    let external_classes = (phase03 && include_dead_code && path.is_dir()).then(|| {
+        external_classes::ExternalClassIndex::new(external_classes::search_roots(
+            path,
+            &options.dependency_search_paths,
+        ))
+    });
     let framework = analysis::FrameworkInputs {
         external_classes: external_classes.as_ref(),
         settings: django_settings.as_deref(),

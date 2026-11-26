@@ -628,7 +628,6 @@ pub(super) fn analyze_with_verification(
         files,
         discovery: framework.discovery,
         external_classes: framework.external_classes,
-        wildcard_guards: framework.wildcard_guards,
         modules: BTreeMap::new(),
         nested_packages: if phase03 {
             NestedPackages::index(files)
@@ -877,7 +876,6 @@ struct Graph<'a> {
     files: &'a [AnalyzedFile],
     discovery: Option<&'a crate::preview_source::Project>,
     external_classes: Option<&'a external_classes::ExternalClassIndex>,
-    wildcard_guards: Option<&'a super::wildcards::Guards>,
     modules: BTreeMap<&'a str, usize>,
     nested_packages: NestedPackages<'a>,
     scopes: Vec<Scope<'a>>,
@@ -3343,7 +3341,7 @@ impl<'a> Graph<'a> {
         {
             return None;
         }
-        index.class_with_bounded_initializers(provider)
+        index.class(provider)
     }
 
     fn dependency_ancestor(
@@ -6886,7 +6884,18 @@ impl<'a> Graph<'a> {
             } else {
                 ("constructor", certainty)
             };
-            if !self.phase03 || !self.framework_default_constructor(id, call, certainty) {
+            if self.phase03
+                && (!positional.is_empty() || !keywords.is_empty())
+                && self.dependency_ancestor(id, 0).is_some()
+                && self.class_member(id, "__init__", 0).is_none()
+            {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_constructor",
+                    "dependency superclass allocation requires a zero-argument constructor",
+                );
+            } else if !self.phase03 || !self.framework_default_constructor(id, call, certainty) {
                 self.constructor(scope, id, kind, certainty, at);
             }
             if self.phase03 {
