@@ -17910,6 +17910,86 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 
+# Provider liveness and external dependency discovery require separate ports.
+
+[[cases]]
+id = "test/test_framework_class_attr_liveness.py::test_stub_base_reads_hook_keeps_attr_and_reports_orphan"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_framework_class_attr_liveness.py"
+assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framework_class_attr_liveness.py:68", "test/test_framework_class_attr_liveness.py:69", "test/test_framework_class_attr_liveness.py:70"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22"]
+provenance = "Pinned test/test_framework_class_attr_liveness.py:43."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The selected base constructor reaches self.hook = self.Hook(). The native scan reports unresolved_attribute_write at base.py:3. The port needs bounded instance-field writes while retaining the actual class-attribute read."
+
+[[cases]]
+id = "test/test_framework_class_attr_liveness.py::test_unrelated_celery_name_keeps_result_consumer_reported"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_framework_class_attr_liveness.py"
+assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framework_class_attr_liveness.py:97", "test/test_framework_class_attr_liveness.py:98", "test/test_framework_class_attr_liveness.py:99"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22"]
+provenance = "Pinned test/test_framework_class_attr_liveness.py:73."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The fixture imports the unavailable notinstalled_celery base. The native scan reports unresolved_subclass_hook at backend.py:9 and cannot prove the original unread-attribute assertions."
+
+[[cases]]
+id = "test/test_framework_class_attr_liveness.py::test_unrelated_django_name_keeps_filter_attributes_reported"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_framework_class_attr_liveness.py"
+assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framework_class_attr_liveness.py:124", "test/test_framework_class_attr_liveness.py:125", "test/test_framework_class_attr_liveness.py:126"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22"]
+provenance = "Pinned test/test_framework_class_attr_liveness.py:102."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The fixture imports the unavailable notinstalled_django base. The native scan reports unresolved_subclass_hook at filters.py:4 and cannot prove the original unread-attribute assertions."
+
+[[cases]]
+id = "test/test_framework_class_attr_liveness.py::test_unrelated_storages_name_keeps_bucket_name_reported"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_framework_class_attr_liveness.py"
+assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framework_class_attr_liveness.py:144", "test/test_framework_class_attr_liveness.py:145"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22"]
+provenance = "Pinned test/test_framework_class_attr_liveness.py:129."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The fixture imports the unavailable notinstalled_storages base. The native scan reports unresolved_subclass_hook at storage.py:4 and cannot prove the original unread-attribute assertions."
+
+[[cases]]
+id = "test/test_framework_class_attr_liveness.py::test_project_venv_site_packages_are_external_search_dirs"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_framework_class_attr_liveness.py"
+assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framework_class_attr_liveness.py:180", "test/test_framework_class_attr_liveness.py:192", "test/test_framework_class_attr_liveness.py:193"]
+prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22", "test/test_framework_class_attr_liveness.py:180"]
+provenance = "Pinned test/test_framework_class_attr_liveness.py:148."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The original private search-directory assertion includes a project venv and then checks liveness through the public API. The SDK selects only app.py and reports unresolved_subclass_hook and unresolved_constructor for the excluded external base. A qualification port needs both the search prerequisite and the original liveness checks."
+
+[[cases]]
+id = "test/test_framework_class_attr_liveness.py::test_vendored_site_packages_inside_scan_still_excluded"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_framework_class_attr_liveness.py"
+assertions = ["test/test_framework_class_attr_liveness.py:200"]
+prerequisites = []
+provenance = "Pinned test/test_framework_class_attr_liveness.py:196."
+variants = ["linux-x86_64-cp311-python-engine"]
+port = ""
+omitted_assertions = []
+blocker = "The original directly tests Skylos's private default_search_dirs result without a public scan. Scope review is pending for an equivalent native dependency-discovery assertion."
+
 [[fixtures]]
 path = "corpus/fixtures/django_appconfig/demo/__init__.py"
 sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

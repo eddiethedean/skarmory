@@ -98,6 +98,13 @@ case retains its original zero-argument construction and unread S3 settings.
 Eight original controls cover local lookalikes, shadowed imports, and a
 source package named like Celery.
 
+A separate liveness suite contributes six pending cases. The native scan
+reports unresolved instance writes in the local constructor fixture and
+incomplete subclass resolution in three unavailable lookalike fixtures.
+The venv case checks private dependency search before its public liveness
+assertions. The vendored-package case checks only the private search list
+and still needs scope review for a corresponding native assertion.
+
 ### Runtime-derived test expectations
 
 The release workflow tests nine discrepancies directly through the installed
