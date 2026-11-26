@@ -557,6 +557,9 @@ DRF serializer declarations retain the bounded getter selected by a
 `SerializerMethodField`, including a compatible source mixin. The getter
 receives possible protocol evidence.
 
+Resolved module-level Click `@command()` decorators retain possible callback
+declaration evidence. The resulting command object requires a separate
+invocation model. A short-circuited call leaves the callback body dormant.
 Public Click command overrides and source-owned Celery task libraries can
 contribute protocol declaration evidence. Execution evidence requires a reached command or task. A selected Celery app
 uses the reached task registration as its execution root. The pinned reporting policy records
