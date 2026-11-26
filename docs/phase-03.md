@@ -576,9 +576,16 @@ The standalone `django-class-based-view`, `django-management-command`, and
 registration or launcher. The pinned `starlette-add-route` fixture supplies an
 `endpoint` keyword to Starlette 1.3.1's `add_route`, which takes `route`.
 The installed framework raises before registering the handler. The `python-unittest-lifecycle` fixture expects hooks
-to be retained without a discovered test method and an unrelated helper to be
-whitelisted by path. These expectations remain required differences in the
-reviewed inventory and do not receive pass credit.
+to be retained without a discovered test method. These expectations remain
+required differences in the reviewed inventory and do not receive pass credit.
+
+The Phase 0.3 report places unused Python bindings in recognized test paths in
+`whitelisted` with the reason `test-only path`. This includes the unrelated
+helper in `python-unittest-lifecycle`. The default policy recognizes `test`,
+`tests`, and `__tests__` directories and conventional test filenames such as
+`test_*.py`, `*_test.py`, and `conftest.py`. Test-path policy leaves the dead-code
+evidence intact and creates no call or registration evidence.
+[Pinned path classification](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/constants.py#L165-L211)
 
 The Starlette preview records possible HTTP route use through the supported
 `add_route` call on a resolved conventional ASGI application. A resolved
