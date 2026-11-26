@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "49a1266c4c8d8cc19e76a54c5f18984c149f1851"
+git_revision = "5ba1c3230ebdd19b2a5cb2b53d6fba54f0ecd1bc"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "42daeadf36bbf332dec9696705bbfac68e516cf8d46b8676a667fd34f0b69179"
+patch_sha256 = "bc979356f5287ae900f0a46a48f859a7c6f4fe631925d5198475c0804fb90574"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
@@ -80,6 +80,11 @@ path = "test/test_closure_reachability.py"
 lines = [100, 101, 111, 288, 315, 399, 443]
 parametrized_fixture_columns = { test_mutable_or_conditional_bindings_keep_possible_live_targets = ["source"] }
 runtime = "CPython 3.11 exercises atexit registration, live list and dictionary callback registries, asyncio.run, and opposite captured branches in normal and optimized interpreter modes."
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_closure_reachability_safety.py"
+lines = [11, 327]
+runtime = "CPython 3.11 imports the local external provider. Normal and optimized runs exercise dispatch with and without invoking the callback, and both choose branches."
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_fastapi_nested_projects.py"
