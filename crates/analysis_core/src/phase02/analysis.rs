@@ -1526,9 +1526,72 @@ impl<'a> Graph<'a> {
             && scope == file
             && let Some(member) = &import.member
         {
-            return self.flask_blueprint_import_position(file, module, member);
+            return self
+                .initialized_peer_reexport_position(file, module, member, import)
+                .or_else(|| self.flask_blueprint_import_position(file, module, member));
         }
         None
+    }
+
+    fn initialized_peer_reexport_position(
+        &self,
+        file: ScopeId,
+        module: &str,
+        member: &str,
+        import: &Import,
+    ) -> Option<Location> {
+        let &peer = self.modules.get(module)?;
+        if peer == file {
+            return None;
+        }
+        let (initial, reexport) = self.peer_reexport_imports(file, member)?;
+        let (peer_initial, peer_reexport) = self.peer_reexport_imports(peer, member)?;
+        let source = self.import_module(file, initial)?;
+        let &source_file = self.modules.get(source.as_str())?;
+        if !std::ptr::eq(reexport, import)
+            || self.import_module(peer, peer_reexport).as_deref()
+                != Some(self.files[file].module.as_str())
+            || self.import_module(peer, peer_initial).as_deref() != Some(source.as_str())
+            || initial.member.is_none()
+            || initial.member != peer_initial.member
+            || source_file == file
+            || source_file == peer
+            || self.files[source_file].is_package
+            || source.contains('.')
+        {
+            return None;
+        }
+        // Both initializers publish the same selected value before importing
+        // it from each other. Either entry order reads that published prefix;
+        // the peer contributes no other initialization effects.
+        Some(peer_reexport.local.at)
+    }
+
+    fn peer_reexport_imports(
+        &self,
+        file: ScopeId,
+        member: &str,
+    ) -> Option<(&'a Import, &'a Import)> {
+        if self.files[file].is_package || self.files[file].module.contains('.') {
+            return None;
+        }
+        let [
+            Statement {
+                kind: StatementKind::Import(initial),
+                ..
+            },
+            Statement {
+                kind: StatementKind::Import(reexport),
+                ..
+            },
+        ] = self.scopes[file].body
+        else {
+            return None;
+        };
+        (initial.local.text == member
+            && reexport.local.text == member
+            && reexport.member.as_deref() == Some(member))
+        .then_some((initial, reexport))
     }
 
     fn index_submodule_imports(&mut self) {
