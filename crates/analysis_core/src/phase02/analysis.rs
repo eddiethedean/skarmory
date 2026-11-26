@@ -2201,6 +2201,12 @@ impl<'a> Graph<'a> {
                         id,
                         definition.name.at,
                         depth + 1,
+                    ) || self.click_command_replaces_function(
+                        scope,
+                        decorator,
+                        id,
+                        definition.name.at,
+                        depth + 1,
                     ))
                 {
                     return Value::Unknown;
@@ -7786,6 +7792,13 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && !reads_rebound_global
                     && self.record_gin_decorator(scope, decorator, target, before, &name) => {}
+            Value::Provider(name)
+                if self.phase03
+                    && !reads_rebound_global
+                    && self.is_click_command_declaration(scope, decorator, target, &name) =>
+            {
+                self.edge(scope, target, "click_command_declaration", "possible");
+            }
             Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
                 let signal = self.django_receiver(scope, args, keywords, before, 0);
                 self.record_django_signal(
@@ -8083,6 +8096,48 @@ impl<'a> Graph<'a> {
             }
         };
         false
+    }
+
+    fn is_click_command_declaration(
+        &self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        name: &str,
+    ) -> bool {
+        click_command_provider(name)
+            && scope == self.scopes[scope].file
+            && matches!(
+                &decorator.kind,
+                ExpressionKind::Call { arguments, keywords, .. }
+                    if arguments.is_empty() && keywords.is_empty()
+            )
+            && matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Function
+                    && !definition.is_generator
+                    && definition.decorators.len() == 1)
+    }
+
+    fn click_command_replaces_function(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+        depth: usize,
+    ) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &decorator.kind
+        else {
+            return false;
+        };
+        arguments.is_empty()
+            && keywords.is_empty()
+            && matches!(self.identity(scope, function, before, depth), Value::Provider(name)
+                if self.is_click_command_declaration(scope, decorator, target, &name))
     }
 
     fn opaque_decorator_receives_function(
@@ -11275,6 +11330,10 @@ fn is_django_signal_constructor(provider: &str) -> bool {
         provider,
         "django.dispatch.Signal" | "django.dispatch.dispatcher.Signal"
     )
+}
+
+fn click_command_provider(provider: &str) -> bool {
+    matches!(provider, "click.command" | "click.decorators.command")
 }
 
 fn is_django_receiver(provider: &str) -> bool {
