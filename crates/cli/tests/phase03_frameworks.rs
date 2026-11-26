@@ -6358,6 +6358,53 @@ def before(user_id): return user_id
 }
 
 #[test]
+fn flask_login_closed_helpers_apply_writes_at_their_initializer_call_sites() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let providers = root.join("providers.py");
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef callback(): return 1\n",
+    )
+    .unwrap();
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n@login.user_loader\ndef before(): return 1\n";
+    let cases = [
+        "def replacement(self, callback): return callback\ndef mutate(target): target.user_loader = replacement\nmutate(LoginManager)\n",
+        "def replacement(callback): return callback\ndef mutate(target): target.user_loader = replacement\nmutate(login)\n",
+        "def replacement(callback): return callback\ndef replace(): login.user_loader = replacement\ndef mutate(apply): apply()\nmutate(replace)\n",
+    ];
+    for effect in cases {
+        fs::write(&providers, format!("{setup}{effect}")).unwrap();
+        let report = scan(root);
+        assert_eq!(findings(&report, "unused_functions"), ["app.callback"]);
+        assert_eq!(
+            evidence_certainties(&report, "providers.before", "flask_login_registration"),
+            ["certain"],
+        );
+        assert!(
+            evidence_certainties(&report, "app.callback", "flask_login_registration").is_empty()
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(&providers, format!("{setup}{}mutate(object())\n", cases[1])).unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn flask_login_global_rebind_does_not_prove_registration() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
