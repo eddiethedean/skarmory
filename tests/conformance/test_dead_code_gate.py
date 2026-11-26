@@ -116,7 +116,7 @@ port = "crates/analysis_core/tests/resolve.rs"
             }],
         }
 
-    def run_gate(self, *receipts, artifacts=True, fixture_root=None):
+    def run_gate(self, *receipts, artifacts=True, fixture_root=None, diagnostic_inventory=None):
         command = [
             sys.executable, str(GATE), "--inventory", str(self.inventory),
             "--candidate-revision", CANDIDATE, "--report", str(self.report),
@@ -125,6 +125,8 @@ port = "crates/analysis_core/tests/resolve.rs"
             command.extend(["--artifact", f"candidate={self.artifact}"])
         if fixture_root is not None:
             command.extend(["--fixture-root", str(fixture_root)])
+        if diagnostic_inventory is not None:
+            command.extend(["--diagnostic-inventory", str(diagnostic_inventory)])
         for index, receipt in enumerate(receipts):
             path = self.folder / f"ledger-{index}.json"
             serialized = receipt if isinstance(receipt, str) else json.dumps(receipt)
@@ -482,6 +484,32 @@ port = ""
             "inventory is not complete",
         )
         self.assertIn("fixture unavailable", report["cases"][0]["reasons"])
+
+    def test_diagnostic_cases_block_publication_with_a_complete_main_inventory(self):
+        self.write_inventory()
+        diagnostic = self.folder / "diagnostic.toml"
+        diagnostic.write_text(
+            self.inventory.read_text(encoding="utf-8")
+            .replace(CASE_ID, "test/test_exports.py::test_pending_export")
+            .replace(NATIVE_CASE, "native:python_engine::resolve::pending"),
+            encoding="utf-8",
+        )
+        receipts = [self.receipt("python-engine"), self.receipt("python-sdk")]
+        report = self.assert_blocked(
+            receipts, "2 required case variants remain in the diagnostic inventory",
+            diagnostic_inventory=diagnostic,
+        )
+        self.assertTrue(report["inventory_complete"])
+        self.assertEqual(report["counts"], {"passed": 2, "blocked": 0})
+        self.assertTrue(all(row["preview_status"] == "passed" for row in report["cases"]))
+
+    def test_missing_diagnostic_inventory_blocks_publication(self):
+        self.write_inventory()
+        self.assert_blocked(
+            [self.receipt("python-engine"), self.receipt("python-sdk")],
+            "unable to read diagnostic inventory",
+            diagnostic_inventory=self.folder / "missing.toml",
+        )
 
     def test_missing_and_unreviewed_fixture_block_even_with_passing_results(self):
         self.write_inventory(

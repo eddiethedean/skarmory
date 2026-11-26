@@ -21,6 +21,7 @@ on:
       - 'tests/conformance/baselines/skylos-5.7.0-phase03-fixtures.patch'
       - 'tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt'
       - 'tests/conformance/phase03-inventory.toml'
+      - 'tests/conformance/phase03-closure-safety-audit.toml'
       - 'tests/conformance/phase03_*.py'
       - 'tests/conformance/run_phase03_seed.py'
   workflow_dispatch:
@@ -362,6 +363,59 @@ jobs:
           "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
             test/test_closure_reachability.py \
             --junitxml="$GITHUB_WORKSPACE/phase03-evidence/closure-frozen-reference.xml"
+          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
+            test/test_closure_reachability_safety.py \
+            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/closure-safety-frozen-reference.xml"
+      - name: Record unqualified closure safety cases
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          wheels=(phase03-wheel/*.whl)
+          test "${#wheels[@]}" -eq 1
+          cmp phase03-skylos-frozen/test/test_closure_reachability_safety.py \
+            phase03-skylos/test/test_closure_reachability_safety.py
+          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
+            --upstream phase03-skylos \
+            --inventory tests/conformance/phase03-closure-safety-audit.toml \
+            --variant "$DEAD_CODE_SDK_VARIANT" \
+            --sdk-python "$RUNNER_TEMP/phase03-sdk/bin/python" \
+            --artifact "${wheels[0]}" \
+            --candidate-revision "$(git rev-parse HEAD)" \
+            --output phase03-evidence/closure-safety-audit.json
+
+          python - <<'PY'
+          from collections import Counter
+          import json
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          evidence = Path("phase03-evidence")
+          source = "test/test_closure_reachability_safety.py"
+          sdk = json.loads((evidence / "sdk.receipt.json").read_text())
+          audit = json.loads((evidence / "closure-safety-audit.json").read_text())
+          if audit["runner_status"] != "passed" or audit["runner_errors"]:
+              raise SystemExit(f"Closure safety audit could not run: {audit['runner_errors']}")
+          if any(audit[key] != sdk[key] for key in
+                 ("artifact_sha256", "candidate_revision", "reference_revision")):
+              raise SystemExit("Closure safety audit used a different candidate or reference")
+          if any(
+              row["reference_status"] != "passed"
+              or row["status"] not in {"passed", "failed", "blocked"}
+              for row in audit["results"]
+          ):
+              raise SystemExit("Missing or unverified closure safety audit results")
+
+          frozen = ElementTree.parse(evidence / "closure-safety-frozen-reference.xml")
+          frozen_ids = {f"{source}::{case.attrib['name']}" for case in frozen.iter("testcase")}
+          qualified_ids = {row["case_id"] for row in sdk["results"]
+                           if row["case_id"].startswith(f"{source}::")}
+          audit_ids = {row["case_id"] for row in audit["results"]}
+          if qualified_ids & audit_ids or (qualified_ids | audit_ids) != frozen_ids:
+              raise SystemExit("Gate and audit case IDs must partition the frozen closure safety suite")
+          print(f"Closure safety cases in release reconciliation: {len(qualified_ids)}")
+          print(f"Diagnostic SDK outcomes: {dict(Counter(row['status'] for row in audit['results']))}")
+          PY
       - name: Check reviewed framework runtime controls
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |
@@ -439,6 +493,7 @@ jobs:
           gate_status=0
           python scripts/check_dead_code_gate.py \
             --inventory tests/conformance/phase03-inventory.toml \
+            --diagnostic-inventory tests/conformance/phase03-closure-safety-audit.toml \
             --candidate-revision "$(git rev-parse HEAD)" \
             --fixture-root phase03-skylos \
             --report phase03-evidence/gate.json "${evidence[@]}" || gate_status=$?
@@ -480,6 +535,7 @@ jobs:
           name: release-dead-code-gate
           path: |
             tests/conformance/phase03-inventory.toml
+            tests/conformance/phase03-closure-safety-audit.toml
             phase03-skylos/uv.lock
             tests/conformance/baselines/skylos-5.7.0.toml
             tests/conformance/baselines/skylos-5.7.0-phase03-fixtures.patch
