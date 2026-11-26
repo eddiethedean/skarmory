@@ -12755,3 +12755,106 @@ fn django_system_checks_require_ordered_selected_registration_and_matching_tags(
         assert!(evidence_certainties(&unordered, expected, "django_system_check").is_empty());
     }
 }
+
+#[test]
+fn pontoon_settings_bind_genuine_storage_and_pagination_and_exception_defaults() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let settings = "SECRET_KEY = 'fixture'\nINSTALLED_APPS = []\nSTATIC_ROOT = 'static'\nSTATIC_URL = '/static/'\n";
+    let providers = "STORAGES = {'staticfiles': {'BACKEND': 'components.SelectedStorage'}}\nREST_FRAMEWORK = {'DEFAULT_PAGINATION_CLASS': 'components.SelectedPagination'}\n";
+    let launcher = "import os\nfrom django.core.wsgi import get_wsgi_application\nfrom components import ActiveError, ExplicitError\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\nActiveError()\nExplicitError(detail='overridden')\n";
+    fs::write(root.join("settings.py"), format!("{settings}{providers}")).unwrap();
+    fs::write(root.join("wsgi.py"), launcher).unwrap();
+    fs::write(
+        root.join("components.py"),
+        r#"from django.contrib.staticfiles.storage import ManifestStaticFilesStorage
+from rest_framework.exceptions import APIException
+from rest_framework.pagination import PageNumberPagination
+
+class SelectedStorage(ManifestStaticFilesStorage):
+    pass
+
+class DormantStorage(ManifestStaticFilesStorage):
+    pass
+
+class SelectedPagination(PageNumberPagination):
+    page_size_query_param = 'limit'
+    max_page_size = 1000
+    unused_option = 15
+
+class DormantPagination(PageNumberPagination):
+    page_size_query_param = 'unselected'
+    max_page_size = 22
+
+class ActiveError(APIException):
+    default_detail = 'used'
+    unrelated = 'unread'
+
+class ExplicitError(APIException):
+    default_detail = 'bypassed'
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    for (target, evidence) in [
+        ("components.SelectedStorage", "django_setting_reference"),
+        ("components.SelectedPagination", "drf_pagination_setting"),
+        (
+            "components.SelectedPagination.page_size_query_param",
+            "drf_pagination_option",
+        ),
+        (
+            "components.SelectedPagination.max_page_size",
+            "drf_pagination_option",
+        ),
+        (
+            "components.ActiveError.default_detail",
+            "drf_exception_default",
+        ),
+    ] {
+        assert_eq!(
+            evidence_certainties(&report, target, evidence),
+            ["possible"]
+        );
+    }
+    let classes = findings(&report, "unused_classes");
+    assert!(classes.contains(&"components.DormantStorage"));
+    assert!(classes.contains(&"components.DormantPagination"));
+    let variables = findings(&report, "unused_variables");
+    for target in [
+        "components.ExplicitError.default_detail",
+        "components.ActiveError.unrelated",
+        "components.SelectedPagination.unused_option",
+    ] {
+        assert!(variables.contains(&target), "{variables:?}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("settings.py"),
+        format!("{settings}{providers}REST_FRAMEWORK = {{}}\nSTORAGES = {{}}\n"),
+    )
+    .unwrap();
+    let replaced = scan_with_settings(root, None, Some(cache.path()));
+    assert!(
+        evidence_certainties(
+            &replaced,
+            "components.SelectedStorage",
+            "django_setting_reference"
+        )
+        .is_empty()
+    );
+    assert!(
+        evidence_certainties(
+            &replaced,
+            "components.SelectedPagination",
+            "drf_pagination_setting"
+        )
+        .is_empty()
+    );
+}

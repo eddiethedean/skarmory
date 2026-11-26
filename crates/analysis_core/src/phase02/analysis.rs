@@ -300,11 +300,14 @@ enum FrameworkClassRole {
     DjangoSimpleListFilter,
     DjangoStorageBase,
     DjangoS3Storage,
+    DjangoManifestStorage,
     ClickCommand,
     DrfSerializer,
     DrfViewSet,
     DrfField,
     DrfAuthTokenView,
+    DrfApiException,
+    DrfPageNumberPagination,
     CeleryTask,
     CeleryRedisBackend,
     SqlAlchemyModel,
@@ -11181,6 +11184,8 @@ impl<'a> Graph<'a> {
                     | "fastapi_parameter"
                     | gunicorn::DECLARATION
                     | drf::FIELD_DECLARATION
+                    | "drf_exception_default"
+                    | "drf_pagination_option"
                     | wagtail::FIELD_DECLARATION
                     | wagtail::BLOCK_METADATA
                     | wagtail::MODEL_OPTION
@@ -12250,6 +12255,13 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
             Some(FrameworkClassRole::DjangoS3Storage)
         }
         "storages.base.BaseStorage" => Some(FrameworkClassRole::DjangoStorageBase),
+        "django.contrib.staticfiles.storage.ManifestStaticFilesStorage" => {
+            Some(FrameworkClassRole::DjangoManifestStorage)
+        }
+        "rest_framework.exceptions.APIException" => Some(FrameworkClassRole::DrfApiException),
+        "rest_framework.pagination.PageNumberPagination" => {
+            Some(FrameworkClassRole::DrfPageNumberPagination)
+        }
         "click.Command" | "click.core.Command" => Some(FrameworkClassRole::ClickCommand),
         "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
             Some(FrameworkClassRole::DrfSerializer)

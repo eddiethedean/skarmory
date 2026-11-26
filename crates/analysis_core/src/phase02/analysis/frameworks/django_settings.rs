@@ -820,6 +820,65 @@ impl Graph<'_> {
         }
     }
 
+    fn retain_static_settings_protocol(
+        &mut self,
+        class: SymbolId,
+        settings: ScopeId,
+        protocol: Protocol,
+        writes: &[&SettingsWrites],
+        roots: &mut Vec<Edge>,
+    ) -> bool {
+        let role = match protocol {
+            Protocol::Storage => FrameworkClassRole::DjangoManifestStorage,
+            Protocol::Pagination => FrameworkClassRole::DrfPageNumberPagination,
+            _ => return false,
+        };
+        let Some(body) = self.direct_framework_protocol_body(class, role, (settings, END)) else {
+            return false;
+        };
+        if writes
+            .iter()
+            .any(|writes| writes.classes.contains_key(&class))
+        {
+            return false;
+        }
+        if matches!(protocol, Protocol::Storage) {
+            if self.scopes[body].body.iter().any(|statement| {
+                !matches!(&statement.kind,
+                StatementKind::Evaluate(value) if matches!(value.kind, ExpressionKind::Text(_)))
+            }) {
+                return false;
+            }
+            roots.push(possible_edge(class, "django_setting_reference"));
+            return true;
+        }
+        if let Some(query) = self.local(body, "page_size_query_param", END) {
+            let Binding::Variable(Some(value), _) = self.symbols[query].binding else {
+                return false;
+            };
+            if self.binding_depends_on_branch(query, END) {
+                return false;
+            }
+            let enabled = match &value.kind {
+                ExpressionKind::Text(query) => !query.is_empty(),
+                ExpressionKind::None => false,
+                _ => return false,
+            };
+            if enabled && let Some(limit) = self.local(body, "max_page_size", END) {
+                if self.binding_depends_on_branch(limit, END)
+                    || !matches!(self.symbols[limit].binding, Binding::Variable(Some(value), _)
+                        if matches!(value.kind, ExpressionKind::Scalar(Some(_)) | ExpressionKind::None))
+                {
+                    return false;
+                }
+                roots.push(possible_edge(limit, "drf_pagination_option"));
+            }
+            roots.push(possible_edge(query, "drf_pagination_option"));
+        }
+        roots.push(possible_edge(class, protocol.evidence()));
+        true
+    }
+
     fn conditional_auth_methods(
         &self,
         mro: &[ConverterBase],
