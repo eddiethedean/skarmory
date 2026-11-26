@@ -35,7 +35,12 @@ impl Graph<'_> {
         at: Location,
     ) -> bool {
         let access = (scope, before);
-        if !self.plain_default_provider(class, access, &BTreeSet::new()) {
+        let inert_lookalike = matches!(
+            self.symbols[class].binding,
+            Binding::Definition(definition, _) if inert_blueprint_lookalike(definition)
+        ) && !self.has_unmodeled_class_write(class)
+            && self.class_discovery_writes(class, scope).is_empty();
+        if !inert_lookalike && !self.plain_default_provider(class, access, &BTreeSet::new()) {
             return false;
         }
         let Value::Callable(method) = self.member(Value::Instance(class), "register", access, 0)
