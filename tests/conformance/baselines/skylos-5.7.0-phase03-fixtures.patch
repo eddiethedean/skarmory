@@ -472,9 +472,18 @@ index 3a3f6ea..ae07eca 100644
        "source": {
          "repo": "https://github.com/django/django",
 diff --git a/test/test_dead_code_framework_overrides.py b/test/test_dead_code_framework_overrides.py
-index 0feb0e1..4985e30 100644
+index 0feb0e1..0dc51b5 100644
 --- a/test/test_dead_code_framework_overrides.py
 +++ b/test/test_dead_code_framework_overrides.py
+@@ -146,7 +146,7 @@ def test_third_party_overrides_read_from_site_packages(tmp_path, monkeypatch):
+
+
+ def test_unresolvable_external_base_keeps_reporting(tmp_path):
+-    root = _project(tmp_path, _RENDERER_APP)
++    root = _project(tmp_path, {**_RENDERER_APP, "docs/markdown.py": _RENDERER_APP["docs/markdown.py"].replace("import fakelib", 'try:\n    from fakelib import HTMLRenderer\nexcept ImportError:\n    class HTMLRenderer: pass').replace("fakelib.HTMLRenderer", "HTMLRenderer"), "fakelib/__init__.py": ""})
+
+     reported = _reported(root)
+
 @@ -211,8 +211,8 @@ def test_traitlets_handlers_and_dynamic_defaults(tmp_path):
                  "from traitlets import Unicode, default, validate\n"
                  "from app.base import Configurable\n\n\n"
@@ -1045,10 +1054,10 @@ index e44ba3a..3858059 100644
  @pytest.mark.parametrize(
      "condition",
 diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
-index 2386a5c..71b74ac 100644
+index 2386a5c..f284ef7 100644
 --- a/test/test_flask_callback_providers.py
 +++ b/test/test_flask_callback_providers.py
-@@ -39,16 +39,16 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
+@@ -39,24 +39,24 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
      "provider",
      [
          "class LoginManager: pass\nlogin = LoginManager()\n",
@@ -1062,6 +1071,7 @@ index 2386a5c..71b74ac 100644
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n',
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n',
 +        'def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n',
@@ -1072,10 +1082,10 @@ index 2386a5c..71b74ac 100644
 +        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
 +        "def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
 +        "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
-         "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n",
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n',
          "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
-@@ -56,7 +56,7 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
+         "from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
@@ -1100,6 +1110,68 @@ index 2386a5c..71b74ac 100644
  )
  def test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks(
      tmp_path, factory
+diff --git a/test/test_framework_class_attr_liveness.py b/test/test_framework_class_attr_liveness.py
+index ed79beb..5b6652f 100644
+--- a/test/test_framework_class_attr_liveness.py
++++ b/test/test_framework_class_attr_liveness.py
+@@ -75,8 +75,8 @@ def test_unrelated_celery_name_keeps_result_consumer_reported(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "backend.py": """\
+-from notinstalled_celery.backends.redis import RedisBackend
++            "backend.py": 'try:\n    from notinstalled_celery.backends.redis import RedisBackend\nexcept ImportError:\n    class RedisBackend: pass\n' """\
++
+
+
+ class _ClusterResultConsumer:
+@@ -90,7 +90,7 @@ class RedisClusterBackend(RedisBackend):
+
+
+ ENTRY = RedisClusterBackend
+-""",
++""", "notinstalled_celery/__init__.py": "",
+         },
+     )
+     unused = _names(result, "unused_variables")
+@@ -103,8 +103,8 @@ def test_unrelated_django_name_keeps_filter_attributes_reported(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "filters.py": """\
+-from notinstalled_django.contrib.admin import SimpleListFilter
++            "filters.py": 'try:\n    from notinstalled_django.contrib.admin import SimpleListFilter\nexcept ImportError:\n    class SimpleListFilter: pass\n' """\
++
+
+
+ class StatusFilter(SimpleListFilter):
+@@ -117,7 +117,7 @@ class StatusFilter(SimpleListFilter):
+
+     def queryset(self, request, queryset):
+         return queryset
+-""",
++""", "notinstalled_django/__init__.py": "",
+         },
+     )
+     unused = _names(result, "unused_variables")
+@@ -130,14 +130,14 @@ def test_unrelated_storages_name_keeps_bucket_name_reported(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "storage.py": """\
+-from notinstalled_storages.backends.s3boto3 import S3Boto3Storage
++            "storage.py": 'try:\n    from notinstalled_storages.backends.s3boto3 import S3Boto3Storage\nexcept ImportError:\n    class S3Boto3Storage: pass\n' """\
++
+
+
+ class CVStorage(S3Boto3Storage):
+     bucket_name = "cv-bucket"
+     orphan = 1
+-""",
++""", "notinstalled_storages/__init__.py": "",
+         },
+     )
+     unused = _names(result, "unused_variables")
 diff --git a/test/test_framework_class_attr_providers.py b/test/test_framework_class_attr_providers.py
 index a6efeb9..abcac71 100644
 --- a/test/test_framework_class_attr_providers.py
