@@ -296,11 +296,9 @@ enum FrameworkClassRole {
     DjangoRelationshipField,
     DjangoSignal,
     DjangoAdmin,
-    DjangoGuardianAdmin,
     DjangoSimpleListFilter,
     DjangoStorageBase,
     DjangoS3Storage,
-    DjangoManifestStorage,
     ClickCommand,
     DrfSerializer,
     DrfViewSet,
@@ -3501,7 +3499,6 @@ impl<'a> Graph<'a> {
                                 | FrameworkClassRole::DjangoQuerySet
                                 | FrameworkClassRole::DjangoRelationshipField
                                 | FrameworkClassRole::DjangoStorageBase
-                                | FrameworkClassRole::BuiltinDict
                                 | FrameworkClassRole::DjangoView,
                             ),
                             "__new__",
@@ -10453,10 +10450,7 @@ impl<'a> Graph<'a> {
                         | "click_command_declaration"
                         | "celery_task_declaration"
                         | "django_relationship_field_declaration"
-                        | "django_model_field_converter_declaration"
                         | frameworks::CLASS_ATTRIBUTE_DECLARATION
-                        | frameworks::BUILTIN_OVERRIDE_DECLARATION
-                        | frameworks::STDLIB_PROTOCOL_DECLARATION
                 ) {
                     continue;
                 }
@@ -10956,7 +10950,26 @@ impl<'a> Graph<'a> {
             if is_verification_edge(kind) {
                 continue;
             }
-            if kind == "django_setting" {
+            if matches!(
+                kind,
+                "attrs_field"
+                    | frameworks::CLASS_ATTRIBUTE_DECLARATION
+                    | "marshmallow_schema_options"
+                    | "django_setting"
+                    | "django_application"
+                    | "django_converter_regex"
+                    | "django_migration_parameter"
+                    | django_migrations::DECLARATION
+                    | "django_command_parameter"
+                    | celery_routes::ROUTER_PARAMETER
+                    | "fastapi_parameter"
+                    | gunicorn::DECLARATION
+                    | drf::FIELD_DECLARATION
+                    | wagtail::FIELD_DECLARATION
+                    | wagtail::BLOCK_METADATA
+                    | wagtail::MODEL_OPTION
+                    | wagtail::CALLBACK_PARAMETER
+            ) {
                 self.read.insert(id);
             }
             let symbol = &self.symbols[id];
@@ -12011,7 +12024,6 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
-        "guardian.admin.GuardedModelAdmin" => Some(FrameworkClassRole::DjangoGuardianAdmin),
         "django.contrib.admin.SimpleListFilter"
         | "django.contrib.admin.filters.SimpleListFilter" => {
             Some(FrameworkClassRole::DjangoSimpleListFilter)
@@ -12020,13 +12032,6 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
             Some(FrameworkClassRole::DjangoS3Storage)
         }
         "storages.base.BaseStorage" => Some(FrameworkClassRole::DjangoStorageBase),
-        "django.contrib.staticfiles.storage.ManifestStaticFilesStorage" => {
-            Some(FrameworkClassRole::DjangoManifestStorage)
-        }
-        "rest_framework.exceptions.APIException" => Some(FrameworkClassRole::DrfApiException),
-        "rest_framework.pagination.PageNumberPagination" => {
-            Some(FrameworkClassRole::DrfPageNumberPagination)
-        }
         "click.Command" | "click.core.Command" => Some(FrameworkClassRole::ClickCommand),
         "rest_framework.serializers.Serializer" | "rest_framework.serializers.ModelSerializer" => {
             Some(FrameworkClassRole::DrfSerializer)

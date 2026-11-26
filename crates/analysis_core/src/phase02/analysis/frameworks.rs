@@ -3,8 +3,6 @@
 use super::*;
 
 pub(super) const CLASS_ATTRIBUTE_DECLARATION: &str = "framework_class_attribute_declaration";
-pub(super) const BUILTIN_OVERRIDE_DECLARATION: &str = "builtin_override_declaration";
-pub(super) const STDLIB_PROTOCOL_DECLARATION: &str = "stdlib_protocol_declaration";
 
 fn django_unconditionally_raises(body: &[Statement]) -> bool {
     body.iter()
@@ -363,12 +361,10 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask
-                | FrameworkClassRole::DjangoGuardianAdmin
                 | FrameworkClassRole::CeleryRedisBackend
                 | FrameworkClassRole::DjangoSimpleListFilter
                 | FrameworkClassRole::DjangoStorageBase
                 | FrameworkClassRole::DjangoS3Storage
-                | FrameworkClassRole::DjangoManifestStorage
                 | FrameworkClassRole::MarshmallowSchema
                 | FrameworkClassRole::ClickCommand
                 | FrameworkClassRole::DrfSerializer
@@ -407,12 +403,6 @@ impl Graph<'_> {
                 continue;
             };
             self.collect_framework_class_attributes(class, class_scope, role);
-            if role == FrameworkClassRole::DjangoModelForm {
-                self.retain_django_model_form_help_texts(class);
-            }
-            if role == FrameworkClassRole::TraitletsConfigurable {
-                self.collect_traitlets_legacy_defaults(class, class_scope);
-            }
             if role == FrameworkClassRole::PydanticModel {
                 self.collect_pydantic_schema_build(class, class_scope);
             }
@@ -473,76 +463,29 @@ impl Graph<'_> {
         body: ScopeId,
         role: FrameworkClassRole,
     ) {
-        let (names, kind): (&[&str], _) = match role {
-            FrameworkClassRole::BuiltinDict => (&["get", "keys"], BUILTIN_OVERRIDE_DECLARATION),
-            FrameworkClassRole::StdlibAstVisitor => {
-                (&["generic_visit"], CLASS_ATTRIBUTE_DECLARATION)
-            }
-            FrameworkClassRole::StdlibAsyncProtocol => {
-                (&["eof_received"], CLASS_ATTRIBUTE_DECLARATION)
-            }
-            FrameworkClassRole::StdlibCtypesStructure => {
-                (&["_fields_"], CLASS_ATTRIBUTE_DECLARATION)
-            }
-            FrameworkClassRole::DjangoGuardianAdmin => (
-                &["radio_fields", "sortable_by", "date_hierarchy"],
-                CLASS_ATTRIBUTE_DECLARATION,
-            ),
-            FrameworkClassRole::DrfField => {
-                (&["default_error_messages"], CLASS_ATTRIBUTE_DECLARATION)
-            }
-            FrameworkClassRole::DrfViewSet => (&["http_method_names"], CLASS_ATTRIBUTE_DECLARATION),
-            FrameworkClassRole::DrfAuthTokenView => {
-                let Some(throttles) = self.local(body, "throttle_classes", END) else {
-                    return;
-                };
-                if self.binding_depends_on_branch(throttles, END)
-                    || self
-                        .class_discovery_write(class, "throttle_classes", self.symbols[class].scope)
-                        .is_some()
-                    || !matches!(self.binding(throttles, END, 0), Value::Sequence(classes)
-                        if matches!(classes.as_slice(), [Value::Provider(provider)]
-                            if provider == "rest_framework.throttling.ScopedRateThrottle"))
-                {
-                    return;
-                }
-                (&["throttle_scope"], CLASS_ATTRIBUTE_DECLARATION)
-            }
-            FrameworkClassRole::CeleryRedisBackend => {
-                (&["ResultConsumer"], CLASS_ATTRIBUTE_DECLARATION)
-            }
-            FrameworkClassRole::DjangoSimpleListFilter => {
-                (&["parameter_name", "title"], CLASS_ATTRIBUTE_DECLARATION)
-            }
-            FrameworkClassRole::DjangoS3Storage => (
-                &[
-                    "bucket_name",
-                    "location",
-                    "custom_domain",
-                    "default_acl",
-                    "file_overwrite",
-                    "object_parameters",
-                    "querystring_auth",
-                    "gzip",
-                    "region_name",
-                    "endpoint_url",
-                    "addressing_style",
-                    "signature_version",
-                ],
-                CLASS_ATTRIBUTE_DECLARATION,
-            ),
+        let names: &[&str] = match role {
+            FrameworkClassRole::CeleryRedisBackend => &["ResultConsumer"],
+            FrameworkClassRole::DjangoSimpleListFilter => &["parameter_name", "title"],
+            FrameworkClassRole::DjangoS3Storage => &[
+                "bucket_name",
+                "location",
+                "custom_domain",
+                "default_acl",
+                "file_overwrite",
+                "object_parameters",
+                "querystring_auth",
+                "gzip",
+                "region_name",
+                "endpoint_url",
+                "addressing_style",
+                "signature_version",
+            ],
             _ => return,
         };
         if self.has_unmodeled_class_write(class) {
             return;
         }
         let scope = self.symbols[class].scope;
-        let stdlib_namespace = matches!(
-            role,
-            FrameworkClassRole::StdlibAstVisitor | FrameworkClassRole::StdlibAsyncProtocol
-        )
-        .then(|| self.public_protocol_module_scope(class))
-        .flatten();
         for name in names {
             if let Some(target) = self.local(body, name, END)
                 && !self.binding_depends_on_branch(target, END)
@@ -551,14 +494,8 @@ impl Graph<'_> {
                     self.symbols[target].binding,
                     Binding::Variable(..) | Binding::Definition(..)
                 )
-                && (role != FrameworkClassRole::BuiltinDict
-                    || matches!(self.symbols[target].binding, Binding::Definition(definition, _)
-                        if definition.kind == DefinitionKind::Function && !definition.is_generator))
             {
-                self.edge(body, target, kind, "possible");
-                if let Some(namespace) = stdlib_namespace {
-                    self.edge(namespace, class, STDLIB_PROTOCOL_DECLARATION, "possible");
-                }
+                self.edge(body, target, CLASS_ATTRIBUTE_DECLARATION, "possible");
             }
         }
     }
@@ -3759,24 +3696,7 @@ impl Graph<'_> {
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
             }
-            FrameworkClassRole::DrfApiException => {
-                return self.drf_exception_defaults(class, call);
-            }
-            FrameworkClassRole::TraitletsConfigurable => {
-                if self.bounded_traitlets_constructor(class, call) {
-                    return true;
-                }
-                if self.allocation_class(class, 0).is_some() {
-                    self.scope_issue(
-                        call.scope,
-                        call.at,
-                        "unresolved_constructor",
-                        "Traitlets initialization is outside the bounded class model",
-                    );
-                }
-                return false;
-            }
-            FrameworkClassRole::BuiltinDict | FrameworkClassRole::DjangoView => &[],
+            FrameworkClassRole::DjangoView => &[],
             // The generic implementation's get_default_settings returns an
             // empty dictionary. A zero-argument call performs no setting writes.
             FrameworkClassRole::DjangoStorageBase => &["get_default_settings"],
