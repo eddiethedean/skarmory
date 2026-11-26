@@ -1746,6 +1746,60 @@ fn click_command_declarations_and_reference_safe_helpers_have_distinct_dispositi
 }
 
 #[test]
+fn click_command_declarations_do_not_execute_a_short_circuited_callback() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = "from click import command\n@command()\ndef entry(): return helper()\ndef helper(): return 1\ndef unused_neighbor(): return 2\nflag = True\nflag = not flag\nflag and entry()\n";
+    fs::write(root.join("app.py"), source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.helper", "app.unused_neighbor"],
+        "{report}"
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.entry", "click_command_declaration"),
+        ["possible"]
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("app.py"),
+        source.replace(
+            "from click import command",
+            "def command(): return lambda callback: callback",
+        ),
+    )
+    .unwrap();
+    let shadowed = scan(root);
+    assert!(
+        findings(&shadowed, "unused_functions").contains(&"app.entry"),
+        "{shadowed}"
+    );
+    assert!(evidence_certainties(&shadowed, "app.entry", "click_command_declaration").is_empty());
+
+    fs::write(
+        root.join("app.py"),
+        source.replace("flag and entry()", "entry()"),
+    )
+    .unwrap();
+    let invocation = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        invocation["coverage"]["status"], "incomplete",
+        "{invocation}"
+    );
+    assert!(
+        evidence_certainties(&invocation, "app.entry", "direct_call").is_empty(),
+        "{invocation}"
+    );
+}
+
+#[test]
 fn starlette_plain_text_responses_require_bounded_content() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

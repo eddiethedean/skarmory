@@ -2363,6 +2363,12 @@ impl<'a> Graph<'a> {
                         id,
                         definition.name.at,
                         depth + 1,
+                    ) || self.click_command_replaces_function(
+                        scope,
+                        decorator,
+                        id,
+                        definition.name.at,
+                        depth + 1,
                     ))
                 {
                     return Value::Unknown;
@@ -8040,6 +8046,13 @@ impl<'a> Graph<'a> {
                 if self.phase03
                     && !reads_rebound_global
                     && self.record_gin_decorator(scope, decorator, target, before, &name) => {}
+            Value::Provider(name)
+                if self.phase03
+                    && !reads_rebound_global
+                    && self.is_click_command_declaration(scope, decorator, target, &name) =>
+            {
+                self.edge(scope, target, "click_command_declaration", "possible");
+            }
             Value::Provider(name) if self.phase03 && is_django_receiver(&name) => {
                 let signal = self.django_receiver(scope, args, keywords, before, 0);
                 self.record_django_signal(
