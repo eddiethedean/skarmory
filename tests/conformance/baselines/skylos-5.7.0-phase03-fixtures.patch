@@ -1000,9 +1000,82 @@ index cff9b2d..960821d 100644
          configured = "{'default': {'BACKEND': 'app.protocols.Storage'}}"
      parameters = ""
 diff --git a/test/test_django_quiet_dead_code.py b/test/test_django_quiet_dead_code.py
-index e25651a..2bc8f3c 100644
+index e25651a..18b7af2 100644
 --- a/test/test_django_quiet_dead_code.py
 +++ b/test/test_django_quiet_dead_code.py
+@@ -49,14 +49,14 @@ PONTOON_SHAPED = {
+             from .local import *  # noqa
+         except ImportError:
+             pass
+-        if DEV and "pytest" not in sys.modules:  # noqa
++        if DEV:  # noqa
+             from .dev import *  # noqa
+     """,
+     "project/settings/base.py": """
+-        DEV = False
++        DEV = True
+         SECRET_KEY = "x"
+         EMAIL_CONSENT_TITLE = "Stay informed"
+-        INSTALLED_APPS = ("django.contrib.admin", "shop")
++        INSTALLED_APPS = ("django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes", "django.contrib.staticfiles", "shop")
+         MIDDLEWARE = (
+             "django.middleware.common.CommonMiddleware",
+             "shop.middleware.ConsentMiddleware",
+@@ -72,17 +72,17 @@ PONTOON_SHAPED = {
+         }]
+         if DEV:
+             SESSION_COOKIE_SECURE = False
+-    """,
++    """ "\n        STATIC_URL = '/static/'\n        STATIC_ROOT = 'staticfiles'\n        ALLOWED_HOSTS = ['localhost']\n        DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}\n",
+     "project/settings/dev.py": """
+-        from . import base
++        import project.settings.base as base
+         INSTALLED_APPS = base.INSTALLED_APPS + ("debug_toolbar",)
+         DEBUG_TOOLBAR_CONFIG = {"SHOW_TOOLBAR_CALLBACK": lambda request: True}
+     """,
+     "project/urls.py": """
+         from django.urls import path
+-        urlpatterns = []
+-    """,
+-    "shop/__init__.py": "",
++        from shop.views import consent_form
++    """ "\n        urlpatterns = [path('', consent_form)]\n",
++    "shop/__init__.py": "from . import celeryapp\n",
+     "shop/middleware.py": """
+         class ConsentMiddleware:
+             def __init__(self, get_response):
+@@ -162,21 +162,21 @@ PONTOON_SHAPED = {
+         @setup_logging.connect
+         def configure_logging(*args, **kwargs):
+             return None
+-    """,
++    """ "\n        from celery import Celery\n        app = Celery('shop')\n        app.log.setup_logging_subsystem()\n",
+     "shop/utils.py": """
+         OLD_LIMIT = 5
+         def unused_helper():
+             return 1
+     """,
+-    "shop/views.py": """
+-        from shop.exceptions import UploadConflict
+-        from shop.models import Priority, Product
+-        from shop.serializers import ProductSerializer
+-        def product_json(request):
+-            if request.method != "GET":
+-                raise UploadConflict()
+-            return ProductSerializer(Product(), context={"p": Priority}).data
+-    """,
++    "shop/views.py": (
++        "from django.conf import settings\nfrom django.http import HttpResponse\n"
++        "from shop.exceptions import UploadConflict\nfrom shop.forms import ProductForm\n"
++        "from shop.models import Priority, Product\nfrom shop.serializers import ProductSerializer\n"
++        "def product_json(request):\n    if request.method != 'GET':\n        raise UploadConflict()\n"
++        "    return ProductSerializer(Product(), context={'p': Priority}).data\n"
++        "def consent_form(request):\n    if request.method != 'GET':\n        raise UploadConflict()\n"
++        "    ProductForm()\n    return HttpResponse(settings.EMAIL_CONSENT_TITLE)\n"
++    ),
+     "shop/migrations/__init__.py": "",
+     "shop/migrations/0001_initial.py": """
+         from django.db import migrations
 @@ -238,27 +238,27 @@ def test_django_framework_names_are_live_and_real_dead_code_remains(tmp_path):
 
 
@@ -1093,7 +1166,7 @@ index 0888139..ca8f202 100644
          assert "shop.signals.helper" not in _unused(result)
          assert "shop.signals.Handlers.on_save.instance" not in _unused(
 diff --git a/test/test_django_wagtail_conventions.py b/test/test_django_wagtail_conventions.py
-index 28388fb..0d56d91 100644
+index 28388fb..fe1760c 100644
 --- a/test/test_django_wagtail_conventions.py
 +++ b/test/test_django_wagtail_conventions.py
 @@ -36,7 +36,7 @@ def _reported(root: Path) -> set[str]:
@@ -1127,6 +1200,112 @@ index 28388fb..0d56d91 100644
 +        "    unrelated_option = 1\n\nregister_snippet(Person, viewset=PersonViewSet)\n"
      ),
  }
+
+@@ -129,56 +129,56 @@ def test_django_signatures_and_format_files(tmp_path):
+     _write(
+         tmp_path,
+         {
+-            "site/__init__.py": "",
+-            "site/locale/fr/formats.py": "DATE_FORMAT = 'j F Y'\n",
+-            "site/checks.py": (
+-                "from django.core.checks import register, Tags\n\n\n"
+-                "@register(Tags.security)\n"
+-                "def check_x(app_configs, **kwargs):\n"
+-                "    return []\n"
+-            ),
+-            "site/views.py": (
+-                "from django.views import View\n"
+-                "from django.contrib import admin\n"
+-                "from django import forms\n\n\n"
+-                "class Thing(View):\n"
++            "signature_probe/__init__.py": "",
++            "signature_probe/locale/__init__.py": "",
++            "signature_probe/locale/fr/__init__.py": "",
++            "signature_probe/locale/fr/formats.py": "DATE_FORMAT = 'j F Y'\n",
++            "signature_probe/checks.py": ("from django.core.checks import register, Tags\n\n\n@register(Tags.security)\n"
++                "def check_x(app_configs, **kwargs):\n    return []\n"),
++            "signature_probe/views.py": ("from django.views import View\nfrom django.contrib import admin\n"
++                "from django import forms\nfrom django.http import HttpResponse\n"
++                "from .models import Sample\n\n\nclass Thing(View):\n"
+                 "    def get(self, request, *args, **kwargs):\n"
+-                "        return None\n\n"
+-                "    def helper(self, unused_arg):\n"
+-                "        return None\n\n\n"
+-                "class ThingAdmin(admin.ModelAdmin):\n"
+-                "    def get_list_select_related(self, request):\n"
+-                "        return ()\n\n\n"
+-                "class PickerWidget(forms.Widget):\n"
+-                "    def value_from_datadict(self, data, files, name):\n"
+-                "        return data.get(name)\n\n\n"
+-                "def use():\n"
+-                "    return Thing, ThingAdmin, PickerWidget\n\n\n"
+-                "use()\n"
+-            ),
+-            "site/helpers.py": "LOCAL_CONSTANT = 3\n",
+-            "site/context_processors.py": (
+-                "from django.conf import settings\n\n\n"
+-                "def site_name(request):\n"
+-                "    return {'site_name': settings.SITE_NAME}\n"
+-            ),
+-            "site/signals.py": (
+-                "from django.db.models.signals import post_save\n\n\n"
+-                "def on_save(sender, instance, **kwargs):\n"
+-                "    return instance\n\n\n"
+-                "post_save.connect(on_save)\n"
+-            ),
+-            "site/fields.py": (
+-                "from django.db import models\n\n\n"
+-                "class Upper(models.CharField):\n"
+-                "    def from_db_value(self, value, expression, connection):\n"
+-                "        return value\n\n\n"
+-                "def call_checks(app_configs, **kwargs):\n"
+-                "    return []\n\n\n"
+-                "def _private(value, unused_flag):\n"
+-                "    return value\n\n\n"
+-                "_private(1, 2)\n"
+-            ),
++                "        PickForm({'value': 'pick'}).is_valid()\n        return HttpResponse('ready')\n"
++                "\n    def helper(self, unused_arg):\n        return None\n\n\n"
++                "class ThingAdmin(admin.ModelAdmin):\n    def get_list_select_related(self, request):\n"
++                "        return ()\n\n\nclass PickerWidget(forms.Widget):\n"
++                "    def value_from_datadict(self, data, files, name):\n        return data.get(name)\n"
++                "\n\ndef use():\n    return Thing, ThingAdmin, PickerWidget\n\n\nuse()\n\n"
++                "class PickForm(forms.Form):\n    value = forms.CharField(widget=PickerWidget)\n\n"
++                "admin.site.register(Sample, ThingAdmin)\n"),
++            "signature_probe/helpers.py": "LOCAL_CONSTANT = 3\n",
++            "signature_probe/context_processors.py": ("from django.conf import settings\n\n\ndef site_name(request):\n"
++                "    return {'site_name': settings.SITE_NAME}\n"),
++            "signature_probe/signals.py": ("from django.db.models.signals import post_save\n\n\n"
++                "def on_save(sender, instance, **kwargs):\n    return instance\n\n\n"
++                "post_save.connect(on_save)\n"),
++            "signature_probe/fields.py": ("from django.db import models\n\n\nclass Upper(models.CharField):\n"
++                "    def from_db_value(self, value, expression, connection):\n        return value\n\n"
++                "\ndef call_checks(app_configs, **kwargs):\n    return []\n\n\n"
++                "def _private(value, unused_flag):\n    return value\n\n\n_private(1, 2)\n"),
++
++            "signature_probe/models.py": ("from django.db import models\nfrom .fields import Upper\nclass Sample(models.Model):\n"
++                "    value = Upper(max_length=15)\n"),
++            "signature_probe/apps.py": ("from django.apps import AppConfig\nclass SignatureConfig(AppConfig):\n"
++                "    name = 'signature_probe'\n    def ready(self):\n"
++                "        from django.core.checks import Tags, register, run_checks\n"
++                "        from . import checks, fields, signals\n"
++                "        register(fields.call_checks, Tags.security)\n"
++                "        run_checks(tags=[Tags.security])\n"),
++            "signature_probe/settings.py": ("\nSECRET_KEY = 'fixture'\n"
++                "INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions', 'django.contrib.admin', 'signature_probe.apps.SignatureConfig']\n"
++                "DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}\n"
++                "ROOT_URLCONF = 'signature_probe.urls'\nALLOWED_HOSTS = ['testserver']\n"
++                "SITE_NAME = 'probe'\nLANGUAGE_CODE = 'fr'\n"
++                "FORMAT_MODULE_PATH = 'signature_probe.locale'\n"
++                "TEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', 'OPTIONS': {'context_processors': ['signature_probe.context_processors.site_name']}}]\n"),
++            "signature_probe/urls.py": ("from django.urls import re_path\nfrom .views import Thing\n"
++                "urlpatterns = [re_path(r'^thing/([0-9]+)/$', Thing.as_view())]\n"),
++            "wsgi.py": ("\nimport os\nfrom django.core.wsgi import get_wsgi_application\n"
++                "os.environ['DJANGO_SETTINGS_MODULE'] = 'signature_probe.settings'\n"
++                "application = get_wsgi_application()\nfrom django.utils.formats import get_format\n"
++                "date_format = get_format(\"DATE_FORMAT\", lang=\"fr\")\n"),
+         },
+     )
 
 diff --git a/test/test_fastapi_evidence_boundaries.py b/test/test_fastapi_evidence_boundaries.py
 index f488b5c..6dd5224 100644
