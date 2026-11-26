@@ -3518,6 +3518,11 @@ impl<'a> Graph<'a> {
         depth: usize,
     ) -> Value {
         let value = self.identity(scope, expression, before, depth);
+        if let Value::Method(site, ObjectKind::FlaskLoginManager, method) = &value
+            && let Some(code) = self.flask_login_code_at_call(*site, method, (scope, before))
+        {
+            return code;
+        }
         if self.phase03
             && !self.check_dormant_declarations
             && matches!(&value, Value::Provider(name) if name == "atexit.register")
