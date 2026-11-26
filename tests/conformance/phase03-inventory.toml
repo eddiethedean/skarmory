@@ -1,7 +1,7 @@
 # Reviewed seed for the pinned dead-code release gate.
 # The complete case inventory and remaining ports are still required.
 schema_version = 1
-reference_revision = "b979ee83989289c962dae15e4856f5fbbfb6a6bd"
+reference_revision = "7812cded3a6918ec6a83b64fb3ca51d2aeb713ee"
 inventory_complete = false
 
 [[variants]]
@@ -10366,8 +10366,7 @@ assertions = ["absent:unused_functions:setUpClass", "absent:unused_functions:tea
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/python_unittest_lifecycle; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-blocker = "The corrected fixture requires automatic test-path report treatment."
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/python_unittest_lifecycle/support.py", "corpus/fixtures/python_unittest_lifecycle/test_case.py"]
 
@@ -10419,8 +10418,7 @@ assertions = ["absent:unused_functions:build_optimizer", "absent:unused_function
 prerequisites = ["installed-sdk", "pinned-framework-corpus"]
 provenance = "Original corpus expectation for corpus/fixtures/python_decorator_factory_registration; fixture provenance and hashes recorded separately"
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-blocker = "The corrected fixture requires Gin configuration and wrapper coverage."
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 fixtures = ["corpus/fixtures/python_decorator_factory_registration/config.gin", "corpus/fixtures/python_decorator_factory_registration/trainer/__init__.py", "corpus/fixtures/python_decorator_factory_registration/trainer/components.py", "corpus/fixtures/python_decorator_factory_registration/trainer/main.py", "corpus/fixtures/python_decorator_factory_registration/trainer/wrappers.py"]
 

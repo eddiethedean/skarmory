@@ -471,3 +471,20 @@ index 3a3f6ea..ae07eca 100644
        "description": "Django AppConfig classes and ready hooks are framework lifecycle entrypoints.",
        "source": {
          "repo": "https://github.com/django/django",
+diff --git a/test/test_fastapi_truth_cycles.py b/test/test_fastapi_truth_cycles.py
+index e44ba3a..3858059 100644
+--- a/test/test_fastapi_truth_cycles.py
++++ b/test/test_fastapi_truth_cycles.py
+@@ -27,9 +27,9 @@ def _collect(root, assignments, condition):
+ @pytest.mark.parametrize(
+     "assignments",
+     [
+-        "flag = True\nflag = not flag\n",
+-        "first = True\nsecond = not first\nfirst = second\nflag = first\n",
+-    ],
++        'from os import getenv\nflag = getenv("FASTAPI_ROUTE") == "on"\nflag = not flag\n',
++        'from os import getenv\nfirst = getenv("FASTAPI_ROUTE") == "on"\nsecond = not first\nfirst = second\nflag = first\n',
++    ], ids=["flag = True\nflag = not flag\n", "first = True\nsecond = not first\nfirst = second\nflag = first\n"],
+ )
+ @pytest.mark.parametrize(
+     "condition",
