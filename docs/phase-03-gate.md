@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,417 cases to Phase 0.3 and defers 41 to later language
+inventory assigns 1,417 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -81,6 +81,8 @@ The 35 cases in `test/test_django_static_entrypoints.py` build JavaScript
 assets and HTML templates with Django static tags. They assert browser-script
 entrypoints and JavaScript file, export, and handler liveness. The review
 assigns all 35 to Phase 0.7 and retains every assertion and parametrized ID.
+The unconsumed browser export in `test_django_app_repro_liveness.py` also
+belongs to Phase 0.7. It checks the JavaScript export and browser reachability.
 The native frontend or installed SDK variant follows the original entry point.
 This family contributes neither required results nor pass credit to Phase 0.3.
 

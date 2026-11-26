@@ -16914,6 +16914,18 @@ omitted_assertions = []
 # The Python test runner builds the fixtures; no assertion analyzes Python source.
 
 [[cases]]
+id = "test/test_django_app_repro_liveness.py::test_repro_07_unconsumed_static_script_export_is_unused"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_app_repro_liveness.py"
+assertions = ["test/test_django_app_repro_liveness.py:56", "test/test_django_app_repro_liveness.py:146"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_app_repro_liveness.py:143 scans a browser script loaded from a Django template and reports its unused export."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
 id = "test/test_django_static_entrypoints.py::test_literal_static_script_is_a_file_entrypoint[-static/widget.js]"
 milestone = "0.7"
 languages = ["typescript"]
