@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "4ded0870f2a4eab8170424e6d21e28117492a5ba"
+git_revision = "aa7a996dfb83ac14d24a459264b963d06ab5b020"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "c3299500110aa6c9cb96d99fa082fed1cd6dfedae910695e8b28c9d73458a348"
+patch_sha256 = "09b2603f0ce24663f804658f772d40209879507a183fbd040f8c6cd8727cde7e"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
@@ -132,8 +132,13 @@ runtime = "Django 5.2.1 dispatches the installed management command with the dec
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_signal_liveness.py"
-lines = [200, 210]
-runtime = "Django 5.2.1 verifies both outcomes of an independently selected third-party signal provider"
+lines = [199, 200, 210, 225, 521, 676, 678]
+runtime = "CPython 3.11 and Django 5.2.1 exercise finite signal sources, deferred external decorators, and a source-owned handler before an optional inherited member"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_django_auth_backend_liveness.py"
+lines = [233]
+runtime = "Django 5.2.1 selects the earlier provider or later fallback based on target runtime configuration"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_flask_blueprint_exports.py"
@@ -157,9 +162,14 @@ runtime = "Django 5.2.1 with command dispatch, model registration and saving, Qu
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_management_command_reachability.py"
-lines = [13, 16, 17, 43, 51, 61, 67, 73, 81, 107, 133, 149, 338, 362]
+lines = [13, 16, 17, 43, 51, 61, 67, 73, 81, 107, 133, 149, 221, 338, 362, 380]
 parametrized_fixture_columns = { test_discovered_handle_roots_only_its_called_helpers = ["body", "helpers"] }
-runtime = "Django 5.2.1 with explicit app installation and selection of audit"
+runtime = "Django 5.2.1 selects audit and observes the source-owned installer replacements"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_logging_config_liveness.py"
+lines = [275, 278]
+runtime = "CPython 3.11 selects an explicit local PathLike provider and applies the bounded formatter configuration mutation"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_named_setting_imports.py"
