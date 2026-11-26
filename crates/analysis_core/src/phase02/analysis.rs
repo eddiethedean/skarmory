@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use skarmory_python::Location;
 use skarmory_python::phase02::{
     ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, DjangoBackendListEdit,
-    Expression, ExpressionKind, Import, Name, Statement, StatementKind,
+    Expression, ExpressionKind, Import, Name, Statement, StatementKind, is_private_name,
 };
 
 use super::config::{Entrypoint, FastapiRouterMode};
@@ -1411,10 +1411,7 @@ impl<'a> Graph<'a> {
         if !key.starts_with('_') {
             return None;
         }
-        let class = self.function_private_class(scope)?;
-        key.strip_prefix('_')?
-            .strip_prefix(class)
-            .filter(|name| is_private_name(name))
+        private_source_spelling(self.function_private_class(scope)?, key)
     }
 
     fn supported_provider_wildcard(
@@ -3519,6 +3516,48 @@ impl<'a> Graph<'a> {
         self.class_member_at(id, name, depth, None)
     }
 
+    fn declared_class_member(
+        &mut self,
+        class: SymbolId,
+        class_scope: ScopeId,
+        name: &str,
+        depth: usize,
+        access: Option<(ScopeId, Location)>,
+    ) -> Option<Value> {
+        let class_name = self.symbols[class].name.text.trim_start_matches('_');
+        if !self.phase03 || class_name.is_empty() {
+            let attribute = self.local(class_scope, name, END)?;
+            return Some(self.binding(attribute, END, depth + 1));
+        }
+        // The class stores private declarations under their mangled keys.
+        // Keep each declaration's source spelling and location for reports.
+        if is_private_name(name) {
+            return None;
+        }
+        let explicit = self.local_raw(class_scope, name, END);
+        let private = private_source_spelling(class_name, name)
+            .and_then(|spelling| self.local_raw(class_scope, spelling, END));
+        let attribute = explicit
+            .into_iter()
+            .chain(private)
+            .max_by_key(|&id| position(self.symbols[id].name.at))?;
+        if explicit.is_some() && private.is_some() && self.binding_depends_on_branch(attribute, END)
+        {
+            // The conditional binding model follows one source spelling.
+            // It cannot establish the active declaration across both spellings.
+            if let Some((scope, at)) = access {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "ambiguous_binding",
+                    "a private attribute has conditional declarations under different spellings",
+                );
+            }
+            return Some(Value::Unknown);
+        }
+        Some(self.binding(attribute, END, depth + 1))
+    }
+
     fn class_member_at(
         &mut self,
         id: SymbolId,
@@ -3530,7 +3569,7 @@ impl<'a> Graph<'a> {
             return Some(Value::Unknown);
         }
         let symbol = &self.symbols[id];
-        let class_declaration_scope = symbol.scope;
+        let decl_scope = symbol.scope;
         let Binding::Definition(definition, class_scope) = symbol.binding else {
             unreachable!()
         };
@@ -3555,17 +3594,19 @@ impl<'a> Graph<'a> {
             }
             Some(mutations::MemberWriteValue::Deleted) => {}
             None => {
-                if let Some(attribute) = self
-                    .metaclass_member(id, name)
-                    .or_else(|| self.local(class_scope, name, END))
-                {
+                if let Some(attribute) = self.metaclass_member(id, name) {
                     return Some(self.binding(attribute, END, depth + 1));
+                }
+                if let Some(value) =
+                    self.declared_class_member(id, class_scope, name, depth, access)
+                {
+                    return Some(value);
                 }
             }
         }
         let inherited = match definition.bases.as_slice() {
             [] => None,
-            [base] => match self.class_base(symbol.scope, base, definition.name.at, depth + 1) {
+            [base] => match self.class_base(decl_scope, base, definition.name.at, depth + 1) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
@@ -3659,10 +3700,7 @@ impl<'a> Graph<'a> {
                                     .module_member_write(
                                         &provider,
                                         name,
-                                        access.unwrap_or((
-                                            class_declaration_scope,
-                                            definition.name.at,
-                                        )),
+                                        access.unwrap_or((decl_scope, definition.name.at)),
                                     )
                                     .is_none()
                         }) =>
@@ -12015,8 +12053,10 @@ fn is_identity_decorator(definition: &Definition) -> bool {
     returns_parameter(definition, parameter)
 }
 
-fn is_private_name(name: &str) -> bool {
-    name.starts_with("__") && !name.ends_with("__")
+fn private_source_spelling<'name>(class: &str, key: &'name str) -> Option<&'name str> {
+    key.strip_prefix('_')?
+        .strip_prefix(class)
+        .filter(|name| is_private_name(name))
 }
 
 fn returns_parameter(definition: &Definition, parameter: &Name) -> bool {
