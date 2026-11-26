@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,468 cases to Phase 0.3 and defers 42 to later language
+inventory assigns 1,478 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -205,17 +205,23 @@ job publishes the frozen Skylos results alongside the paired derived replay.
 ### Closure safety audit
 
 The frozen Skylos 5.7.0 checkout passes all 26 cases in
-`test/test_closure_reachability_safety.py`. On release-gate commit `1be3369`,
-the installed Phase 0.3 SDK passed nine cases with complete coverage. The
-release inventory requires those nine under their original pytest IDs and
-assertions. Each case requires the original fixture write, default grep
-verification, and disabled runtime trace input. [Pinned closure safety tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_closure_reachability_safety.py)
+`test/test_closure_reachability_safety.py`. The installed Phase 0.3 SDK
+qualifies ten cases under their original pytest IDs and assertions. Each case
+requires the original fixture write, default grep verification, and disabled
+runtime trace input. [Pinned closure safety tests](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_closure_reachability_safety.py)
 
-The remaining 17 cases are Python release qualification gaps. The
+The `private-attribute-uses-lexical-class` case now retains both
+`Receiver._Envelope__dispatch` and `leaf_south`. Syntactic attributes use the
+enclosing class's mangled name. Lookup keeps that key across base classes and
+reports declarations with their original source spellings. Aliases assigned
+in a class body capture the binding installed at the assignment. Literal
+attribute names passed at runtime keep their supplied spelling. [Dispatch issue](https://github.com/eddiethedean/skarmory/issues/167)
+
+The remaining 16 cases are Python release qualification gaps. The
 [diagnostic manifest](../tests/conformance/phase03-closure-safety-audit.toml)
 records their original assertions and prerequisites. The release preview
 archives the frozen JUnit output for all 26 cases and the paired audit results
-for these 17 in `closure-safety-audit.json`. Only the release inventory
+for these 16 in `closure-safety-audit.json`. Only the release inventory
 contributes case results to reconciliation. The diagnostic manifest blocks
 publication while any required cases remain there, even if the release
 inventory is marked complete. The preview still reports the results of all
@@ -228,7 +234,6 @@ mapped release cases.
 | Incomplete coverage for a declaration in a `finally` block | `finally-nested-definition` |
 | Incomplete coverage for definition-time expressions that update a captured receiver | `lambda-default-mutates-captured-receiver`, `decorator-expression-mutates-captured-receiver`, `class-header-mutates-captured-receiver`, `argument-annotation-mutates-captured-receiver`, `return-annotation-mutates-captured-receiver` |
 | Incomplete coverage for callable dispatch through comprehension and lambda scopes | `comprehension-target-shadows-nested-function`, `escaped-generator-target-shadows-nested-function`, `lambda-captures-private-local-function`, `lambda-private-parameter-shadows-local-function` |
-| Complete coverage with false unused findings | `private-attribute-uses-lexical-class`. CPython 3.11 calls `Receiver._Envelope__dispatch` and `leaf_south`. The SDK reports both as unused. |
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture
