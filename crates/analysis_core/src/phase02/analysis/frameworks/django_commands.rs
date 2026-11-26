@@ -380,26 +380,29 @@ fn declared_options(
             return None;
         };
         let name = long.strip_prefix("--")?;
+        let destination = name.replace('-', "_");
         if name.is_empty()
             || !name
                 .bytes()
                 .all(|char| char.is_ascii_alphanumeric() || matches!(char, b'-' | b'_'))
             || matches!(
-                name,
+                destination.as_str(),
                 "help"
                     | "version"
                     | "verbosity"
                     | "settings"
                     | "pythonpath"
                     | "traceback"
-                    | "no-color"
-                    | "force-color"
-                    | "skip-checks"
+                    | "no_color"
+                    | "force_color"
+                    | "skip_checks"
+                    | "args"
+                    | "stdout"
+                    | "stderr"
             )
         {
             return None;
         }
-        let destination = name.replace('-', "_");
         if !destinations.insert(destination.clone())
             || aliases.insert(long, destination.clone()).is_some()
         {
