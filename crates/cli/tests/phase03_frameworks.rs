@@ -10504,6 +10504,63 @@ def malformed(sender, **kwargs):
 }
 
 #[test]
+fn django_signal_subclass_forwarding_preserves_runtime_condition_and_coverage() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let source = r#"import os
+from django.dispatch import Signal, receiver
+from django.db.models.signals import post_save
+
+def connector(callback):
+    if os.getenv('SIGNAL_ENABLED'):
+        post_save.connect(callback)
+
+class DomainSignal(Signal):
+    def connect(self, callback):
+        return connector(callback)
+
+saved = DomainSignal()
+
+@receiver(saved)
+def on_save(sender, instance, **kwargs):
+    return helper()
+
+def helper(): return 1
+def abandoned(): return 2
+"#;
+    django_signal_project(root, source);
+    let report = scan(root);
+    assert_eq!(
+        django_signal_evidence(&report),
+        [("inventory.signals.on_save", "possible")],
+    );
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["inventory.signals.abandoned"]
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("inventory/signals.py"),
+        source.replace("os.getenv('SIGNAL_ENABLED')", "unknown_provider()"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "unresolved_registration"),
+    );
+}
+
+#[test]
 fn django_known_receiver_rejection_stops_following_registration() {
     for keyword in ["signal=post_save", "invalid=True"] {
         let project = tempfile::tempdir().unwrap();
