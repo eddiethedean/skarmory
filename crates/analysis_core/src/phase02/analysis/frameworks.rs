@@ -3300,6 +3300,18 @@ impl Graph<'_> {
             return false;
         };
         let slots: &[&str] = match role {
+            FrameworkClassRole::DjangoModel => {
+                if self.bounded_django_model_constructor(class, call) {
+                    return true;
+                }
+                self.scope_issue(
+                    call.scope,
+                    call.at,
+                    "unresolved_constructor",
+                    "Django model setup, fields, or constructor are outside the bounded model",
+                );
+                return true;
+            }
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
             }
