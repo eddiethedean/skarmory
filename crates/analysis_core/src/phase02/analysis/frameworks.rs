@@ -2825,7 +2825,12 @@ impl Graph<'_> {
         };
         let at = self.symbols[binding].name.at;
         let object = django_loaded_module(settings);
-        let Value::Sequence(apps) = self.binding(binding, END, 0) else {
+        let apps = match self.binding(binding, END, 0) {
+            Value::Sequence(apps) => Some(apps),
+            Value::OperatorResult => self.django_wildcard_app_extension(settings, binding),
+            _ => None,
+        };
+        let Some(apps) = apps else {
             self.django_registration_issue(
                 object,
                 at,
@@ -3062,6 +3067,96 @@ impl Graph<'_> {
             }
         }
         true
+    }
+
+    fn django_wildcard_app_extension(
+        &self,
+        settings: ScopeId,
+        binding: SymbolId,
+    ) -> Option<Vec<Value>> {
+        let name = "INSTALLED_APPS";
+        let Binding::Import(import) = self.symbols[binding].binding else {
+            return None;
+        };
+        if !import.wildcard_member || !self.files[settings].is_package {
+            return None;
+        }
+        let provider = *self
+            .modules
+            .get(self.import_module(settings, import)?.as_str())?;
+        let extension = self.local(provider, name, END)?;
+        let Binding::Variable(
+            Some(Expression {
+                kind: ExpressionKind::Addition(items),
+                ..
+            }),
+            before,
+        ) = self.symbols[extension].binding
+        else {
+            return None;
+        };
+        let [
+            Expression {
+                kind: ExpressionKind::Member(receiver, member),
+                ..
+            },
+            extra,
+        ] = items.as_slice()
+        else {
+            return None;
+        };
+        let ExpressionKind::Name(alias) = &receiver.kind else {
+            return None;
+        };
+        let alias = self.local(provider, alias, before)?;
+        let Binding::Import(import) = self.symbols[alias].binding else {
+            return None;
+        };
+        let base_name = self.import_module(provider, import)?;
+        let base = *self.modules.get(base_name.as_str())?;
+        let original = self.local(base, name, END)?;
+        let Binding::Variable(Some(original_value), _) = self.symbols[original].binding else {
+            return None;
+        };
+        let (
+            ExpressionKind::Sequence { list, items },
+            ExpressionKind::Sequence {
+                list: extra_list,
+                items: extra,
+            },
+        ) = (&original_value.kind, &extra.kind)
+        else {
+            return None;
+        };
+        if member != name
+            || import.level != 0
+            || import.member.is_some()
+            || import.exposes_top_level
+            || list != extra_list
+            || items.len().saturating_add(extra.len()) > 4096
+            || self.binding_depends_on_branch(binding, END)
+            || self.binding_depends_on_branch(extension, END)
+            || self.binding_depends_on_branch(alias, before)
+            || self.binding_depends_on_branch(original, END)
+            || self
+                .module_member_write(&base_name, name, (provider, before))
+                .is_some()
+            || self
+                .module_member_write(&self.files[provider].module, name, (settings, END))
+                .is_some()
+        {
+            return None;
+        }
+        // The wildcard proof bounds the provider's initialization. Preserve
+        // the exact source container kinds when replaying this consumer.
+        items
+            .iter()
+            .chain(extra)
+            .map(|item| match &item.kind {
+                ExpressionKind::Text(name) => Some(Value::Text(name.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     fn invalid_explicit_django_app_export(&mut self, entry: &str) -> Option<ScopeId> {
