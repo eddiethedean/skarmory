@@ -207,7 +207,7 @@ impl<'a> Graph<'a> {
         {
             return None;
         }
-        let closure_key = self.function_binding_key(outer, name);
+        let closure_key = self.lexical_binding_key(outer, name);
         let mut cell_writes = prefix.iter().filter_map(|statement| match &statement.kind {
             StatementKind::Evaluate(call) => self.local_cell_setter(outer, call),
             _ => None,
@@ -247,8 +247,8 @@ impl<'a> Graph<'a> {
                 || !arguments.is_empty()
                 || !keywords.is_empty()
                 || !matches!(&function.kind, ExpressionKind::Name(name)
-                    if self.function_binding_key(scope, name)
-                        == self.function_binding_key(write.setter, &write.name.text))
+                    if self.lexical_binding_key(scope, name)
+                        == self.lexical_binding_key(write.setter, &write.name.text))
                 || self.local(outer, &write.name.text, write.at).is_none()
             {
                 return None;
@@ -258,9 +258,9 @@ impl<'a> Graph<'a> {
             .as_ref()
             .and_then(|write| self.scopes[write.setter].owner);
         let setter_key =
-            setter.map(|id| self.function_binding_key(outer, &self.symbols[id].name.text));
+            setter.map(|id| self.lexical_binding_key(outer, &self.symbols[id].name.text));
         let separate_name = |name: &str| {
-            let key = self.function_binding_key(outer, name);
+            let key = self.lexical_binding_key(outer, name);
             key != closure_key && setter_key.as_ref() != Some(&key)
         };
         let separate_value = |value: &Expression| match &value.kind {
@@ -308,13 +308,13 @@ impl<'a> Graph<'a> {
     }
 
     pub(super) fn closure_reads_own_binding(&self, scope: ScopeId, closure: &Definition) -> bool {
-        let key = self.function_binding_key(scope, &closure.name.text);
+        let key = self.lexical_binding_key(scope, &closure.name.text);
         let postponed = self.files[self.scopes[scope].file]
             .facts
             .postponed_annotations;
         namespace_free_names(closure, postponed)
             .into_iter()
-            .any(|name| self.function_binding_key(scope, name) == key)
+            .any(|name| self.lexical_binding_key(scope, name) == key)
     }
 
     fn local_cell_setter(
