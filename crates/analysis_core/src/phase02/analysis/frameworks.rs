@@ -2892,6 +2892,20 @@ impl Graph<'_> {
                     continue;
                 }
                 if external_django
+                    && matches!(
+                        entry.as_str(),
+                        "django.contrib.auth"
+                            | "django.contrib.auth.apps.AuthConfig"
+                            | "django.contrib.contenttypes"
+                            | "django.contrib.contenttypes.apps.ContentTypesConfig"
+                            | "django.contrib.sessions"
+                            | "django.contrib.sessions.apps.SessionsConfig"
+                    )
+                {
+                    // These standard apps contribute no source modules to discovery.
+                    continue;
+                }
+                if external_django
                     && let Some(file) = self.invalid_explicit_django_app_export(&entry)
                 {
                     self.scopes[scope]

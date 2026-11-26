@@ -5514,6 +5514,67 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
 }
 
 #[test]
+fn django_standard_contrib_apps_allow_source_startup() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("shop")).unwrap();
+    for (path, source) in [
+        ("shop/__init__.py", ""),
+        (
+            "shop/apps.py",
+            "from django.apps import AppConfig\nclass ShopConfig(AppConfig):\n    name = 'shop'\n    def ready(self):\n        from . import signals\n",
+        ),
+        (
+            "shop/signals.py",
+            "from django.db.models.signals import post_save\nfrom django.dispatch import receiver\n@receiver(post_save)\ndef update(sender, **kwargs): pass\n",
+        ),
+        (
+            "wsgi.py",
+            "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n",
+        ),
+    ] {
+        fs::write(root.join(path), source).unwrap();
+    }
+    for apps in [
+        "'django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions'",
+        "'django.contrib.auth.apps.AuthConfig', 'django.contrib.contenttypes.apps.ContentTypesConfig', 'django.contrib.sessions.apps.SessionsConfig'",
+    ] {
+        fs::write(
+            root.join("settings.py"),
+            format!("INSTALLED_APPS = [{apps}, 'shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert!(!unreachable_functions(&report).contains(&"shop.signals.update"));
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(
+        root.join("settings.py"),
+        "INSTALLED_APPS = ['django.contrib.auth.apps.LookalikeConfig', 'shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
+    )
+    .unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_registration"),
+        "{opaque}"
+    );
+    assert!(
+        !evidence_certainties(&opaque, "shop.signals.update", "django_signal_registration")
+            .contains(&"certain")
+    );
+}
+
+#[test]
 fn django_admin_callbacks_need_an_effective_option_and_a_loaded_module() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
