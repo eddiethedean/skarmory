@@ -3231,6 +3231,20 @@ impl Graph<'_> {
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
             }
+            FrameworkClassRole::TraitletsConfigurable => {
+                if self.bounded_traitlets_constructor(class, call) {
+                    return true;
+                }
+                if self.allocation_class(class, 0).is_some() {
+                    self.scope_issue(
+                        call.scope,
+                        call.at,
+                        "unresolved_constructor",
+                        "Traitlets initialization is outside the bounded class model",
+                    );
+                }
+                return false;
+            }
             FrameworkClassRole::BuiltinDict | FrameworkClassRole::DjangoView => &[],
             // The generic implementation's get_default_settings returns an
             // empty dictionary. A zero-argument call performs no setting writes.
