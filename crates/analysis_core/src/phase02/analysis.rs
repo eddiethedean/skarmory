@@ -617,6 +617,7 @@ pub(super) fn analyze_with_verification(
         conditional: BTreeMap::new(),
         conditional_groups: BTreeMap::new(),
         next_conditional_group: 0,
+        evaluated_module_booleans: BTreeMap::new(),
         branch_depth: 0,
         dormant_classes: BTreeSet::new(),
         subclassed: BTreeSet::new(),
@@ -849,6 +850,7 @@ struct Graph<'a> {
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
     conditional_groups: BTreeMap<SymbolId, Vec<(usize, bool)>>,
     next_conditional_group: usize,
+    evaluated_module_booleans: BTreeMap<SymbolId, bool>,
     branch_depth: usize,
     dormant_classes: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
@@ -2160,6 +2162,9 @@ impl<'a> Graph<'a> {
         {
             // This binding cannot be installed on the initializer path.
             return Value::Unknown;
+        }
+        if let Some(&value) = self.evaluated_module_booleans.get(&id) {
+            return Value::Bool(value);
         }
         match symbol.binding {
             Binding::Definition(definition, _) => {
@@ -7007,6 +7012,43 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn record_evaluated_module_boolean(
+        &mut self,
+        scope: ScopeId,
+        names: &[Name],
+        value: &Expression,
+        before: Location,
+    ) {
+        if !self.phase03
+            || scope != self.scopes[scope].file
+            || self.branch_depth != 0
+            || self.has_command_namespace(scope)
+        {
+            return;
+        }
+        let (operand, negate) = match &value.kind {
+            ExpressionKind::Not(operand) => (operand.as_ref(), true),
+            _ => (value, false),
+        };
+        let value = match &operand.kind {
+            ExpressionKind::Bool(value) => Some(*value),
+            ExpressionKind::Name(name) => self
+                .local(scope, name, before)
+                .and_then(|id| self.evaluated_module_booleans.get(&id).copied()),
+            _ => None,
+        };
+        if let Some(value) = value {
+            // The walk has already recorded the RHS reads. Capture the value of
+            // this specific binding so a later alias needs only one lookup.
+            for name in names {
+                let id = self.by_location[&(scope, name.at.line, name.at.column)];
+                if !self.conditional.contains_key(&id) {
+                    self.evaluated_module_booleans.insert(id, value != negate);
+                }
+            }
+        }
+    }
+
     fn suite(&mut self, scope: ScopeId, body: &[Statement]) -> bool {
         for statement in body {
             let at = statement.at;
@@ -7164,6 +7206,7 @@ impl<'a> Graph<'a> {
                 } => {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
+                        self.record_evaluated_module_boolean(scope, names, value, at);
                         if annotation.is_none() {
                             self.record_django_global_initializer(scope, names, value, at);
                         }
