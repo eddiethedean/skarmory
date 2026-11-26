@@ -591,6 +591,11 @@ startup can retain the requested source format from a single literal
 locales with a verified regular package path. Dynamic settings, packages and
 lookups keep incomplete coverage.
 
+A literal CharField constructor with a direct source converter can register
+the converter as part of a source model's field declaration. Its contract
+retains the parameters Django supplies when adapting database results.
+Declaration evidence does not imply that a query ran.
+
 Selected Django startup accepts the standard auth, content types, and session
 apps and their explicit default AppConfig classes. Discovery continues through
 the source-owned apps in the same installed list.

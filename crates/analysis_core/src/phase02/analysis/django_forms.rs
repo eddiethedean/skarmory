@@ -468,14 +468,9 @@ impl Graph<'_> {
         if !matches!(data.kind, ExpressionKind::Dictionary(_)) {
             return false;
         }
-        let Value::Mapping(items) = self.probe_identity(call.scope, data, call.before) else {
-            return false;
-        };
-        let (entries, remainder) = items.as_chunks::<2>();
-        remainder.is_empty()
-            && entries
-                .iter()
-                .all(|[key, value]| matches!(key, Value::Text(_)) && inert_submission(value))
+        matches!(self.probe_identity(call.scope, data, call.before), Value::Mapping(items) if
+            items.chunks_exact(2).remainder().is_empty()
+            && items.chunks_exact(2).all(|entry| matches!(entry[0], Value::Text(_)) && inert_submission(&entry[1])))
     }
 
     pub(super) fn record_django_field_parameters(&mut self, scope: ScopeId, target: SymbolId) {

@@ -727,6 +727,7 @@ pub(super) fn analyze_with_verification(
         django_autoreload_method_arguments: BTreeMap::new(),
         django_configured_settings: None,
         django_startup_scopes: BTreeSet::new(),
+        django_widget_data_gets: BTreeMap::new(),
         django_ready_hooks: BTreeSet::new(),
         django_settings_sources: BTreeSet::new(),
         django_template_apps: BTreeMap::new(),
@@ -971,6 +972,7 @@ struct Graph<'a> {
     django_autoreload_method_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
     django_configured_settings: Option<usize>,
     django_startup_scopes: BTreeSet<ScopeId>,
+    django_widget_data_gets: BTreeMap<ScopeId, Location>,
     django_ready_hooks: BTreeSet<SymbolId>,
     django_settings_sources: BTreeSet<(ScopeId, ScopeId)>,
     django_template_apps: BTreeMap<ScopeId, BTreeMap<usize, Option<String>>>,
@@ -10645,6 +10647,7 @@ impl<'a> Graph<'a> {
                         | "click_command_declaration"
                         | "celery_task_declaration"
                         | "django_relationship_field_declaration"
+                        | "django_model_field_converter_declaration"
                         | frameworks::CLASS_ATTRIBUTE_DECLARATION
                         | frameworks::BUILTIN_OVERRIDE_DECLARATION
                         | frameworks::STDLIB_PROTOCOL_DECLARATION
@@ -11158,6 +11161,7 @@ impl<'a> Graph<'a> {
                     | "django_migration_parameter"
                     | django_migrations::DECLARATION
                     | "django_admin_parameter"
+                    | "django_field_parameter"
                     | "django_command_parameter"
                     | celery_routes::ROUTER_PARAMETER
                     | "fastapi_parameter"
