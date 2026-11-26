@@ -471,6 +471,77 @@ index 3a3f6ea..ae07eca 100644
        "description": "Django AppConfig classes and ready hooks are framework lifecycle entrypoints.",
        "source": {
          "repo": "https://github.com/django/django",
+diff --git a/test/test_dead_code_framework_overrides.py b/test/test_dead_code_framework_overrides.py
+index 0feb0e1..d1efd01 100644
+--- a/test/test_dead_code_framework_overrides.py
++++ b/test/test_dead_code_framework_overrides.py
+@@ -260,14 +260,14 @@ def test_drf_field_hooks_through_project_serializers(tmp_path):
+         {
+             "api/__init__.py": "",
+             "api/base.py": (
+-                "from rest_framework import serializers\n\n\n"
++                "from rest_framework import serializers\nfrom django.db import models\n\nclass TagModel(models.Model):\n    color = models.CharField(max_length=32)\n    class Meta:\n        app_label = 'api'\n\n"
+                 "class OwnedObjectSerializer(serializers.ModelSerializer):\n"
+-                "    pass\n"
++                "    class Meta:\n        model = TagModel\n        fields = ('color',)\n"
+             ),
+             "api/tags.py": (
+                 "from api.base import OwnedObjectSerializer\n"
+                 "from rest_framework import serializers\n\n\n"
+-                "class TagSerializer(OwnedObjectSerializer):\n"
++                'class TagSerializer(OwnedObjectSerializer):\n    color = serializers.CharField()\n'
+                 "    def validate_color(self, value):\n"
+                 "        return value\n\n"
+                 "    def stale_tag_helper(self):\n"
+@@ -281,10 +281,10 @@ def test_drf_field_hooks_through_project_serializers(tmp_path):
+                 "USED = (TagSerializer, AmountField, NotASerializer)\n"
+             ),
+             "api/views.py": (
+-                "from rest_framework.authtoken.views import ObtainAuthToken\n"
++                'from rest_framework.authtoken.views import ObtainAuthToken\nfrom rest_framework.throttling import ScopedRateThrottle\n'
+                 "from rest_framework.viewsets import ModelViewSet\n\n\n"
+                 "class TokenView(ObtainAuthToken):\n"
+-                "    throttle_scope = 'login'\n\n\n"
++                "    throttle_classes = [ScopedRateThrottle]\n    throttle_scope = 'login'\n\n\n"
+                 "class BundleViewSet(ModelViewSet):\n"
+                 "    http_method_names = ['get', 'post']\n\n\n"
+                 "USED = (TokenView, BundleViewSet)\n"
+@@ -309,7 +309,7 @@ def test_django_admin_options_on_third_party_model_admins(tmp_path):
+             "mail/__init__.py": "",
+             "mail/admin.py": (
+                 "from django.contrib import admin\n"
+-                "from guardian.admin import GuardedModelAdmin\n\n\n"
++                "from guardian.admin import GuardedModelAdmin\nfrom django.db import models\n\nclass MailRule(models.Model):\n    action = models.CharField(max_length=16)\n    created = models.DateField()\n    class Meta:\n        app_label = 'mail'\n\n\n"
+                 "class BaseAdmin(GuardedModelAdmin):\n"
+                 "    pass\n\n\n"
+                 "class MailRuleAdmin(BaseAdmin):\n"
+@@ -317,7 +317,7 @@ def test_django_admin_options_on_third_party_model_admins(tmp_path):
+                 "    sortable_by = []\n"
+                 "    date_hierarchy = 'created'\n"
+                 "    stale_admin_note = 'x'\n\n\n"
+-                "admin.site.register(object, MailRuleAdmin)\n"
++                'admin.site.register(MailRule, MailRuleAdmin)\n'
+             ),
+         },
+     )
+diff --git a/test/test_django_admin_stubs.py b/test/test_django_admin_stubs.py
+index 8cf2665..8fb4a93 100644
+--- a/test/test_django_admin_stubs.py
++++ b/test/test_django_admin_stubs.py
+@@ -67,10 +67,10 @@ def test_admin_stub_requires_django_package_context(
+         "shop/admin.py": "# Register your models here.\n",
+         "shop/placeholder.py": "# An ordinary empty file.\n",
+     }
+-    if package:
+-        sources["shop/__init__.py"] = ""
++    if "src/django/__init__.py" in extra_sources:
++        sources.update({"src/settings.py": sources.pop("settings.py"), "src/django/apps.py": "class AppConfig: pass\n"})
++    if package: sources["shop/__init__.py"] = ""
+     _sources(tmp_path, sources)
+-
+     result = json.loads(analyze(str(tmp_path), conf=0, grep_verify=False))
+     empty_files = {
+         finding["file"]
 diff --git a/test/test_django_autoreload_precision.py b/test/test_django_autoreload_precision.py
 index a0fc96b..fc7a48f 100644
 --- a/test/test_django_autoreload_precision.py
@@ -573,6 +644,37 @@ index ce688b9..d96cd3f 100644
              "app.py": 'from celery import Celery\napp = Celery("shop")\n'
              'app.conf.task_routes = ("routers.route_task",)\n'
              "class Other:\n    app = object()\n",
+diff --git a/test/test_django_historical_consumer_controls.py b/test/test_django_historical_consumer_controls.py
+index 02c912e..89a91a0 100644
+--- a/test/test_django_historical_consumer_controls.py
++++ b/test/test_django_historical_consumer_controls.py
+@@ -4,7 +4,7 @@ from test.test_django_app_repro_liveness import _assert_quiet, _scan, _unused_na
+
+
+ _PROVIDER_IFACE = {
+-    "provider_iface/__init__.py": "",
++    "provider_iface/__init__.py": "", "provider_iface/main.py": "from .provider import ConcreteProvider, Provider\ndef fetch_schedule(provider: Provider, season: int):\n    return provider.schedule_dates(season)\nDATES = fetch_schedule(ConcreteProvider(), 2026)\n",
+     "provider_iface/provider.py": '''\
+ """Provider interface — duck-typed calls on base type.
+
+@@ -48,7 +48,7 @@ def test_original_declared_provider_contract_remains_live(tmp_path):
+
+
+ _PROCESSOR_PLUGIN = {
+-    "processor_plugin/__init__.py": "",
++    "processor_plugin/__init__.py": "", "processor_plugin/main.py": "from .loader import integrate_sessions\nSELECTED = integrate_sessions\n",
+     "processor_plugin/plugins/__init__.py": "",
+     "processor_plugin/loader.py": '''\
+ """Convention loader: processor path chosen by name string only.
+@@ -74,7 +74,7 @@ def load_processor(name: str):
+ def run_named(name: str, session):
+     cls = load_processor(name)
+     return cls(session).process()
+-''',
++''' "\ndef __getattr__(name):\n    if name in PROCESSORS:\n        return getattr(import_module(PROCESSORS[name]), \"IntegrateSessions\")\n    raise AttributeError(name)\n",
+     "processor_plugin/plugins/integrate.py": '''\
+ """Bare processor class — product convention load, no static importers of the class."""
+
 diff --git a/test/test_django_hook_provenance.py b/test/test_django_hook_provenance.py
 index 6bab49e..992674d 100644
 --- a/test/test_django_hook_provenance.py
@@ -775,6 +877,62 @@ index cff9b2d..960821d 100644
      if setting == "STORAGES":
          configured = "{'default': {'BACKEND': 'app.protocols.Storage'}}"
      parameters = ""
+diff --git a/test/test_django_wagtail_conventions.py b/test/test_django_wagtail_conventions.py
+index 28388fb..0d56d91 100644
+--- a/test/test_django_wagtail_conventions.py
++++ b/test/test_django_wagtail_conventions.py
+@@ -36,7 +36,7 @@ def _reported(root: Path) -> set[str]:
+
+
+ _WAGTAIL_APP = {
+-    "home/__init__.py": "",
++    "home/__init__.py": "", "settings.py": "INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions', 'taggit', 'modelcluster', 'wagtail', 'wagtail.admin', 'wagtail.users', 'wagtail.documents', 'wagtail.images', 'wagtail.snippets', 'wagtail.search', 'wagtail.contrib.settings', 'home']\nSECRET_KEY = 'fixture'\nSTATIC_URL = '/static/'\nDATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}\n",
+     "home/models.py": (
+         "from django.db import models\n"
+         "from modelcluster.fields import ParentalKey\n"
+@@ -69,7 +69,7 @@ _WAGTAIL_APP = {
+         "class NotAModel:\n"
+         "    pass\n\n\n"
+         "def stale_helper():\n"
+-        "    return 1\n"
++        "    return 1\n\nclass Person(models.Model):\n    name = models.CharField(max_length=20)\n    sort_order = models.IntegerField(default=0)\n"
+     ),
+     "home/blocks.py": (
+         "from wagtail.blocks import CharBlock, ListBlock, StreamBlock, StructBlock\n\n\n"
+@@ -82,11 +82,11 @@ _WAGTAIL_APP = {
+         "    items = ListBlock(CharBlock())\n"
+     ),
+     "home/views.py": (
+-        "from wagtail.snippets.views.snippets import SnippetViewSet\n\n\n"
++        "from wagtail.snippets.views.snippets import SnippetViewSet\nfrom wagtail.snippets.models import register_snippet\nfrom .models import Person\n\n"
+         "class PersonViewSet(SnippetViewSet):\n"
+         "    list_display = ('name',)\n"
+         "    sort_order_field = 'sort_order'\n"
+-        "    unrelated_option = 1\n"
++        "    unrelated_option = 1\n\nregister_snippet(Person, viewset=PersonViewSet)\n"
+     ),
+ }
+
+diff --git a/test/test_fastapi_evidence_boundaries.py b/test/test_fastapi_evidence_boundaries.py
+index f488b5c..6dd5224 100644
+--- a/test/test_fastapi_evidence_boundaries.py
++++ b/test/test_fastapi_evidence_boundaries.py
+@@ -91,11 +91,11 @@ def test_reused_analyzer_refreshes_fastapi_provider_evidence(tmp_path):
+ def test_unrelated_decorators_keep_their_own_evidence(
+     tmp_path, provider, decorator, strong
+ ):
++    if not strong:
++        (tmp_path / "plugin.py").write_text("from atexit import register\ndef register_entry(callback):\n    register(callback)\n    return callback\n", encoding="utf-8")
+     result, definitions = _scan(
+-        tmp_path,
+-        "from fastapi import FastAPI\n"
+-        "class Local:\n"
+-        "    def get(self, path): return lambda function: function\n"
++        tmp_path, "from fastapi import FastAPI\n"
++        "class Local:\n    def get(self, path): return lambda function: function\n"
+         "fake = Local()\n"
+         f"{provider}\n@{decorator}\n@fake.get('/')\n"
+         "def endpoint(): return helper()\n"
 diff --git a/test/test_fastapi_nested_projects.py b/test/test_fastapi_nested_projects.py
 index ff9919f..4e085e3 100644
 --- a/test/test_fastapi_nested_projects.py
@@ -828,10 +986,10 @@ index e44ba3a..3858059 100644
  @pytest.mark.parametrize(
      "condition",
 diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
-index 2386a5c..7ac28e5 100644
+index 2386a5c..79b1a78 100644
 --- a/test/test_flask_callback_providers.py
 +++ b/test/test_flask_callback_providers.py
-@@ -39,12 +39,12 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
+@@ -39,16 +39,16 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
      "provider",
      [
          "class LoginManager: pass\nlogin = LoginManager()\n",
@@ -841,15 +999,21 @@ index 2386a5c..7ac28e5 100644
 -        "from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
 -        "import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n',
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n',
 +        'def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n',
 +        "def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nimport flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n',
 +        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
-         "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
++        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
++        "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
+         "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
 @@ -56,7 +56,7 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
          "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
@@ -859,11 +1023,13 @@ index 2386a5c..7ac28e5 100644
  )
  def test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks(
      tmp_path, provider
-@@ -187,11 +187,11 @@ def test_global_constructor_replacement_keeps_callback_unproved(tmp_path):
+@@ -186,12 +186,12 @@ def test_global_constructor_replacement_keeps_callback_unproved(tmp_path):
+         "from flask import Flask\ndef create_app():\n    return replacement\n",
          "from flask import Flask\ndef create_app(Flask):\n    app = Flask(__name__)\n    return app\n",
          "from flask import Flask\ndef create_app(flag):\n    if flag:\n        return replacement\n    app = Flask(__name__)\n    return app\n",
-         "from flask import Flask\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n",
+-        "from flask import Flask\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n",
 -        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n",
++        "from flask import Flask\nclass Replacement:\n    @staticmethod\n    def shell_context_processor(callback): return callback\ndef decorator(factory): return Replacement\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n",
 +        'class Replacement:\n    @staticmethod\n    def shell_context_processor(callback): return callback\nreplacement = Replacement\nfrom flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n',
          "from flask import Flask\nasync def create_app():\n    app = Flask(__name__)\n    return app\n",
          "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield 1\n    return app\n",
