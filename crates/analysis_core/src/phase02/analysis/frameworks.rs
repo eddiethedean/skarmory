@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) const CLASS_ATTRIBUTE_DECLARATION: &str = "framework_class_attribute_declaration";
+pub(super) const BUILTIN_OVERRIDE_DECLARATION: &str = "builtin_override_declaration";
 
 fn django_unconditionally_raises(body: &[Statement]) -> bool {
     body.iter()
@@ -312,7 +313,8 @@ impl Graph<'_> {
                     .insert(class, "Django framework class");
             }
             let (root, lifecycle, fields) = match role {
-                FrameworkClassRole::Unittest
+                FrameworkClassRole::BuiltinDict
+                | FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync
                 | FrameworkClassRole::DjangoTestCase
                 | FrameworkClassRole::DjangoDatabaseTestCase => (None, &[][..], false),
@@ -428,23 +430,31 @@ impl Graph<'_> {
         body: ScopeId,
         role: FrameworkClassRole,
     ) {
-        let names: &[&str] = match role {
-            FrameworkClassRole::CeleryRedisBackend => &["ResultConsumer"],
-            FrameworkClassRole::DjangoSimpleListFilter => &["parameter_name", "title"],
-            FrameworkClassRole::DjangoS3Storage => &[
-                "bucket_name",
-                "location",
-                "custom_domain",
-                "default_acl",
-                "file_overwrite",
-                "object_parameters",
-                "querystring_auth",
-                "gzip",
-                "region_name",
-                "endpoint_url",
-                "addressing_style",
-                "signature_version",
-            ],
+        let (names, kind): (&[&str], _) = match role {
+            FrameworkClassRole::BuiltinDict => (&["get", "keys"], BUILTIN_OVERRIDE_DECLARATION),
+            FrameworkClassRole::CeleryRedisBackend => {
+                (&["ResultConsumer"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoSimpleListFilter => {
+                (&["parameter_name", "title"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoS3Storage => (
+                &[
+                    "bucket_name",
+                    "location",
+                    "custom_domain",
+                    "default_acl",
+                    "file_overwrite",
+                    "object_parameters",
+                    "querystring_auth",
+                    "gzip",
+                    "region_name",
+                    "endpoint_url",
+                    "addressing_style",
+                    "signature_version",
+                ],
+                CLASS_ATTRIBUTE_DECLARATION,
+            ),
             _ => return,
         };
         if self.has_unmodeled_class_write(class) {
@@ -459,8 +469,11 @@ impl Graph<'_> {
                     self.symbols[target].binding,
                     Binding::Variable(..) | Binding::Definition(..)
                 )
+                && (role != FrameworkClassRole::BuiltinDict
+                    || matches!(self.symbols[target].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function && !definition.is_generator))
             {
-                self.edge(body, target, CLASS_ATTRIBUTE_DECLARATION, "possible");
+                self.edge(body, target, kind, "possible");
             }
         }
     }
@@ -3142,7 +3155,7 @@ impl Graph<'_> {
                 == Some(FrameworkClassRole::DjangoCommand)
     }
 
-    pub(super) fn django_default_constructor(
+    pub(super) fn framework_default_constructor(
         &mut self,
         class: SymbolId,
         call: CallArguments<'_>,
@@ -3155,7 +3168,7 @@ impl Graph<'_> {
             FrameworkClassRole::DjangoRelationshipField => {
                 return self.record_django_relationship_field(class, call);
             }
-            FrameworkClassRole::DjangoView => &[],
+            FrameworkClassRole::BuiltinDict | FrameworkClassRole::DjangoView => &[],
             // The generic implementation's get_default_settings returns an
             // empty dictionary. A zero-argument call performs no setting writes.
             FrameworkClassRole::DjangoStorageBase => &["get_default_settings"],
@@ -3227,7 +3240,12 @@ impl Graph<'_> {
                 _ => {}
             }
         }
-        self.scope_issue(call.scope, call.at, "unresolved_constructor", "Django initializer arguments or attribute dispatch are outside the bounded default constructor model");
+        let reason = if role == FrameworkClassRole::BuiltinDict {
+            "dictionary subclass initialization requires ordinary empty allocation"
+        } else {
+            "Django initializer arguments or attribute dispatch are outside the bounded default constructor model"
+        };
+        self.scope_issue(call.scope, call.at, "unresolved_constructor", reason);
         true
     }
 

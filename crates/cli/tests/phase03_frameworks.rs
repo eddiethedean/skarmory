@@ -91,6 +91,102 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn builtin_dictionary_overrides_keep_only_declared_members() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let body = "class Store(Base):\n    def get(self, *args): return None\n    def keys(self, *args): return None\n    def unused_neighbor(self): return None\n";
+    fs::write(&path, format!("Base = dict\n{body}\nSTORE = Store()\n")).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Store.unused_neighbor"]
+    );
+    for name in ["app.Store.get", "app.Store.keys"] {
+        assert_eq!(
+            evidence_certainties(&report, name, "builtin_override_declaration"),
+            ["possible"]
+        );
+        assert!(evidence_certainties(&report, name, "direct_call").is_empty());
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        &path,
+        format!("class Base: pass\n{body}\nSTORE = Store()\n"),
+    )
+    .unwrap();
+    let shadowed = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&shadowed, "unused_functions"),
+        [
+            "app.Store.get",
+            "app.Store.keys",
+            "app.Store.unused_neighbor"
+        ]
+    );
+    fs::write(
+        &path,
+        format!("Base = dict\n{body}\nSTORE = Store(external)\n"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_constructor" })
+    );
+}
+
+#[test]
+fn selected_initializer_can_store_a_fresh_source_owned_hook_instance() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("base.py"),
+        "class FrameworkishBase:\n    def __init__(self):\n        self.hook = self.Hook()\n",
+    )
+    .unwrap();
+    fs::write(root.join("impl.py"), "class Impl: pass\n").unwrap();
+    let path = root.join("plugin.py");
+    fs::write(
+        &path,
+        "from base import FrameworkishBase\nfrom impl import Impl\nclass Plugin(FrameworkishBase):\n    Hook = Impl\n    orphan = 1\nRESULT = Plugin()\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_variables");
+    assert!(unused.contains(&"plugin.Plugin.orphan"));
+    assert!(!unused.contains(&"plugin.Plugin.Hook"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("impl.py"),
+        "class Impl:\n    def __init__(self): return None\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_attribute_write" })
+    );
+}
+
+#[test]
 fn framework_class_attributes_require_proven_provider_declarations() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
