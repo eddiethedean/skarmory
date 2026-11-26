@@ -449,13 +449,13 @@ jobs:
               passed = {
                   case["case_id"]
                   for case in report["cases"]
-                  if case["variant"] == variant and case["status"] == "passed"
+                  if case["variant"] == variant and case["preview_status"] == "passed"
               }
               if not expected:
                   raise SystemExit(f"No mapped {layer} cases to verify")
               if missing := sorted(expected - passed):
-                  raise SystemExit(f"Mapped {layer} cases did not pass:\n" + "\n".join(missing))
-              print(f"Mapped {layer} cases passed: {len(expected)}. Full release gate: {report['status']}.")
+                  raise SystemExit(f"Mapped {layer} preview cases did not pass:\n" + "\n".join(missing))
+              print(f"Mapped {layer} preview cases passed: {len(expected)}. Full release gate: {report['status']}.")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ !cancelled() && env.DEAD_CODE_GATE_ENABLED == 'true' }}

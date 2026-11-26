@@ -178,16 +178,27 @@ port = "crates/analysis_core/tests/resolve.rs"
         )
         return receipt
 
-    def test_reviewed_runtime_qualifies_and_preserves_the_original_verdict(self):
+    def test_reviewed_runtime_previews_but_cannot_override_the_original_failure(self):
         sdk = self.reviewed_receipt()
-        run, report = self.run_gate(self.receipt("python-engine"), sdk)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(report["qualified_counts"], {"skylos_parity": 1, "reviewed_runtime": 1})
+        engine = self.receipt("python-engine")
+        report = self.assert_blocked([engine, sdk], "is not an ordinary pass")
+        self.assertEqual(report["counts"], {"passed": 1, "blocked": 1})
+        self.assertEqual(report["reviewed_runtime_preview_passes"], 1)
         decision = next(row for row in report["cases"] if row["case_id"] == CASE_ID)
-        self.assertEqual(decision["qualification"], "reviewed_runtime")
+        self.assertEqual(decision["status"], "blocked")
+        self.assertEqual(decision["preview_status"], "passed")
         self.assertEqual(decision["original_candidate_status"], "failed")
         self.assertEqual(decision["original_candidate_failed_assertion"], ASSERTION)
         self.assertEqual(decision["runtime_review"]["reason"], "import stops")
+
+        result = sdk["results"][0]
+        result["status"] = "passed"
+        del result["candidate_failed_assertion"]
+        self.assert_blocked([engine, sdk], "executed assertions do not match")
+        result["assertions"].append(ASSERTION)
+        run, report = self.run_gate(engine, sdk)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(report["counts"], {"passed": 2, "blocked": 0})
 
     def test_reviewed_runtime_still_requires_fixture_coverage_and_original_execution(self):
         sdk = self.reviewed_receipt()
@@ -212,7 +223,11 @@ port = "crates/analysis_core/tests/resolve.rs"
         )
         for update, reason in changed:
             with self.subTest(reason=reason):
-                self.assert_blocked([engine, {**sdk, "results": [{**row, **update}]}], reason)
+                report = self.assert_blocked(
+                    [engine, {**sdk, "results": [{**row, **update}]}], reason,
+                )
+                decision = next(row for row in report["cases"] if row["case_id"] == CASE_ID)
+                self.assertEqual(decision["preview_status"], "blocked")
 
     def test_reviewed_scope_must_extract_the_matching_fixture_sources(self):
         sdk = self.reviewed_receipt([
@@ -232,15 +247,18 @@ port = "crates/analysis_core/tests/resolve.rs"
         runtime["scopes"] = {"shop": scope}
         self.assert_blocked([engine, sdk], "did not extract the same fixture sources")
         scope["selected_paths"] = ["placeholder.py"]
-        run, _ = self.run_gate(engine, sdk)
-        self.assertEqual(run.returncode, 0, run.stderr)
+        report = self.assert_blocked([engine, sdk], "is not an ordinary pass")
+        decision = next(row for row in report["cases"] if row["case_id"] == CASE_ID)
+        self.assertEqual(decision["preview_status"], "passed")
 
     def test_reviewed_incomplete_fixture_can_fail_its_pinned_coverage_check(self):
         sdk = self.reviewed_receipt()
         row = sdk["results"][0]
         row["candidate_failed_assertion"] = "test/web_framework_fixtures.py:16"
-        run, _ = self.run_gate(self.receipt("python-engine"), sdk)
-        self.assertEqual(run.returncode, 0, run.stderr)
+        engine = self.receipt("python-engine")
+        report = self.assert_blocked([engine, sdk], "is not an ordinary pass")
+        decision = next(row for row in report["cases"] if row["case_id"] == CASE_ID)
+        self.assertEqual(decision["preview_status"], "passed")
 
         sdk = self.reviewed_receipt(["coverage:complete", "definition:app.main"])
         row = sdk["results"][0]

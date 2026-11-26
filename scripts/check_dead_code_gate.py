@@ -238,7 +238,7 @@ def load_ledgers(paths, errors):
     return ledgers
 
 
-def verify_result(result, case):
+def verify_preview_result(result, case):
     reasons = []
     reference_status = require_string(result, "reference_status")
     status = require_string(result, "status")
@@ -482,40 +482,41 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
             reasons.extend(fixture_blockers)
             if variant_errors:
                 reasons.append("variant ledger is missing or invalid")
-            if case_id not in results:
+            result = results.get(case_id, {})
+            if not result:
                 reasons.append("required result is missing")
             else:
                 try:
-                    result = results[case_id]
-                    reasons.extend(verify_result(result, case))
+                    reasons.extend(verify_preview_result(result, case))
                     if case_fixtures and not fixture_blockers:
                         expected_hashes = {name: item["sha256"] for name, item in case_fixtures.items()}
                         if result.get("fixture_sha256") != expected_hashes:
                             reasons.append("receipt fixture hashes do not match the reviewed originals")
                 except ValueError as error:
                     reasons.append(str(error))
+            preview_status = "blocked" if reasons else "passed"
+            candidate_status = result.get("status")
+            if preview_status == "passed" and candidate_status != "passed":
+                reasons.append(f"Skarmory outcome {candidate_status!r} is not an ordinary pass")
             decision = {
                 "case_id": case_id,
                 "variant": variant_id,
                 "status": "blocked" if reasons else "passed",
-                "qualification": "reviewed_runtime" if "runtime_review" in case else "skylos_parity",
+                "preview_status": preview_status,
                 "reasons": reasons,
             }
             if "runtime_review" in case:
                 decision["runtime_review"] = case["runtime_review"]
-                decision["original_candidate_status"] = results.get(case_id, {}).get("status")
-                decision["original_candidate_failed_assertion"] = results.get(case_id, {}).get(
-                    "candidate_failed_assertion"
-                )
+                decision["original_candidate_status"] = candidate_status
+                decision["original_candidate_failed_assertion"] = result.get("candidate_failed_assertion")
             report["cases"].append(decision)
 
-    qualified_counts = Counter(
-        case["qualification"] for case in report["cases"] if case["status"] == "passed"
+    counts = Counter(case["status"] for case in report["cases"])
+    report["counts"] = {status: counts[status] for status in ("passed", "blocked")}
+    report["reviewed_runtime_preview_passes"] = sum(
+        "runtime_review" in case and case["preview_status"] == "passed" for case in report["cases"]
     )
-    report["qualified_counts"] = {
-        kind: qualified_counts[kind] for kind in ("skylos_parity", "reviewed_runtime")
-    }
-    if not errors and all(case["status"] == "passed" for case in report["cases"]):
+    if not errors and not counts["blocked"]:
         report["status"] = "passed"
     return report
 
@@ -533,15 +534,14 @@ def main():
         args.inventory, args.candidate_revision, args.artifact, args.ledger, args.fixture_root
     )
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    blocked = [case for case in report["cases"] if case["status"] != "passed"]
     for error in report["errors"]:
         print(error, file=sys.stderr)
-    counts = report.get("qualified_counts", {})
+    counts = report.get("counts", {})
     print(
         f"Dead-code release gate {report['status']} "
-        f"({counts.get('skylos_parity', 0)} parity, {counts.get('reviewed_runtime', 0)} "
-        f"reviewed runtime, {len(blocked)} blocked case variants)"
+        f"({counts.get('passed', 0)} original passes, {counts.get('blocked', 0)} blocked case variants)"
     )
+    print(f"Reviewed runtime preview passes: {report.get('reviewed_runtime_preview_passes', 0)}")
     return 0 if report["status"] == "passed" else 1
 
 
