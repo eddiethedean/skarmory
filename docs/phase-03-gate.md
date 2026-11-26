@@ -61,7 +61,7 @@ passes on the original assertions.
 | Required cases | Observed behavior |
 | --- | --- |
 | Flask callback providers and blueprint exports | The original source executions failed before publishing a callback. Twenty fixtures raised `NameError` for an unbound replacement, opaque consumer, or decorator. The remaining two raised `ImportError` during a named re-export cycle or `TypeError` while constructing a local blueprint lookalike. The SDK preserves incomplete coverage for the failed consumer and records no registration. |
-| External decorator in the FastAPI evidence suite | The original project supplies no `plugin` module. A real external decorator may invoke the supplied callback. The SDK retains possible callback and helper evidence and reports the unresolved decorator. |
+| External decorator in the FastAPI evidence suite | The frozen project supplies no `plugin` module. The derived fixture supplies a local shutdown registrar. CPython runs the callback and its helper after initialization, and the SDK records possible shutdown evidence while preserving the no-FastAPI-root assertion. |
 | FastAPI nested projects | With FastAPI 0.141.1, the tool-only namespace fixture fails to import from the repository root and serves `/namespace_route` with HTTP 200 when `backend` is on the import path. The fixture leaves the source root unspecified. The sibling-service fixture fails to import `other` from `backend`. Including `worker` on the path finds `router = None` and fails at router inclusion. |
 | Django function view negatives | Django supports a mounted async function view and can dispatch its provider. A view module that raises while the selected URLconf imports it cannot supply a callback. An unconditional source-proven failure can completely establish that the callback and later URL mappings are unreachable. |
 | Django source-layout admin stubs | The source-root fixture finds both empty files. Adding `src` to the import path selects the inert local `django` package and fails to import `django.apps`. Resolving from the repository root can select the external package. The fixture leaves the import path unspecified. |
@@ -102,6 +102,14 @@ verifies the original incomplete reason and empty activation and parameter
 sets. The separate legacy fallback test requires no public analysis error
 even when its internal proof is incomplete. Native coverage records an
 exhausted budget explicitly and preserves unresolved route evidence.
+
+Two cases need a release-scope decision under [#41](https://github.com/eddiethedean/skarmory/issues/41).
+The Click case runs danger and secrets analysis in addition to dead-code
+analysis. Its original assertion and required options remain in the
+inventory. The FastAPI fallback case requires legacy framework roots for
+unmounted routes and an empty public error list after its proof is exhausted.
+The native release profile keeps that analysis incomplete. Its separate
+engine control verifies bounded call work and the absence of unproved roots.
 
 The class-attribute provider suite contributes 19 original Python cases.
 The SDK ports use genuine Celery, Django admin, and django-storages providers

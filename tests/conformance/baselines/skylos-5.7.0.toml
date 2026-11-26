@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "851ea835128678c53cc9bc9ef386ad20e29bd5f9"
+git_revision = "5861d0fa12cfb79d95c48101a61464349ca06a35"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "8d0067285e9241746c4fb9143beeac872bdd530642dd504e01c719acca9b3467"
+patch_sha256 = "d17a9b2d33091c148f0eea6e6c353d3140a773536224ef0f20cc4725a5cf79c6"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
@@ -81,9 +81,34 @@ lines = [111, 115, 123, 130]
 runtime = "FastAPI 0.141.1 serves the root package and resolves the backend's own dependency"
 
 [[phase03_reference.fixture_setup_corrections]]
+path = "test/test_fastapi_evidence_boundaries.py"
+lines = [94, 95, 96, 97, 98]
+runtime = "CPython 3.11 and FastAPI 0.141.1 import the local plugin and retain the unrelated callback for interpreter shutdown"
+
+[[phase03_reference.fixture_setup_corrections]]
 path = "test/test_framework_class_attr_providers.py"
 lines = [56, 82, 95]
 runtime = "Celery 5.5.3, Django 5.2.12 and django-storages 1.14.6 with declared subclasses"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_dead_code_framework_overrides.py"
+lines = [263, 265, 270, 284, 287, 312, 320]
+runtime = "DRF 3.16.1 and Guardian 3.2.0 with a configured Django application and a real registered model"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_django_admin_stubs.py"
+lines = [70, 71, 72, 73]
+runtime = "CPython 3.11 selects the local Django provider from the explicit source layout"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_django_historical_consumer_controls.py"
+lines = [7, 51, 77]
+runtime = "CPython 3.11 executes the selected provider and loads the processor through its declared registry"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_django_wagtail_conventions.py"
+lines = [39, 72, 85, 89]
+runtime = "Wagtail 7.2 registers the genuine model and consumes the original snippet viewset options"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_autoreload_precision.py"
