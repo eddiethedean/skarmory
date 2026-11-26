@@ -359,7 +359,10 @@ inherit the namespace rewrite. Opaque metaclass hooks leave coverage incomplete.
 For a resolved local `INSTALLED_APPS` sequence, startup also loads selected
 application modules, their models modules, and the `ready()` hook of a resolved
 AppConfig. It accepts explicit config class paths and resolves default selection
-in a local `apps.py`. A management launcher exposes local `BaseCommand`
+in a local `apps.py`. A reached `ready()` hook retains an unconditional
+import that establishes a resolved signal receiver. The report records this
+import-time registration separately from ordinary binding reads. A
+management launcher exposes local `BaseCommand`
 subclasses named `Command` in the installed apps' public
 `management/commands` modules. Earlier installed apps take precedence when
 command names collide. A literal argument list limits discovery to the chosen

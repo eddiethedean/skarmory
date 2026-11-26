@@ -2467,6 +2467,48 @@ impl Graph<'_> {
             .min()
     }
 
+    pub(super) fn retain_django_ready_signal_imports(&self, reach: &mut Reachability) {
+        let mut imports = BTreeSet::new();
+        for &(hook, kind, certainty) in &reach.evidence {
+            if kind != "django_app_config"
+                || certainty != "certain"
+                || !self.django_ready_hooks.contains(&hook)
+            {
+                continue;
+            }
+            let Binding::Definition(_, body) = self.symbols[hook].binding else {
+                continue;
+            };
+            let first_failure = self.first_terminal_signal_import(body);
+            for &(import, module) in &self.scopes[body].initializer_imports {
+                if first_failure.is_some_and(|at| position(self.symbols[import].name.at) >= at)
+                    || !reach.active_objects.contains(&django_loaded_module(module))
+                {
+                    continue;
+                }
+                let module_failure = self.first_terminal_signal_import(module);
+                if self.scopes[module]
+                    .django_signals
+                    .iter()
+                    .any(|registration| {
+                        registration.issue.is_none()
+                            && registration.precedes(module_failure)
+                            && registration.callbacks.iter().any(|callback| {
+                                let edge = callback.edge;
+                                edge.certainty == "certain"
+                                    && reach
+                                        .evidence
+                                        .contains(&(edge.target, edge.kind, "certain"))
+                            })
+                    })
+                {
+                    imports.insert((import, "django_ready_signal_import", "certain"));
+                }
+            }
+        }
+        reach.evidence.extend(imports);
+    }
+
     pub(super) fn activate_django_signals(
         &self,
         reach: &mut Reachability,
@@ -3667,6 +3709,9 @@ impl Graph<'_> {
             return;
         };
         if let Value::Callable(invocation) = value {
+            if kind == "django_app_config" && name == "ready" {
+                self.django_ready_hooks.insert(invocation.target);
+            }
             self.record_django_hook(scope, object, class, invocation, kind);
         } else if !matches!(value, Value::ConstantFunction) {
             self.django_registration_issue(
