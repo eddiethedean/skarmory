@@ -1031,7 +1031,7 @@ fn dictionary_type_alias_allows_a_bounded_logging_config_write() {
     let stdlib = scan_with_settings(root, None, Some(cache.path()));
     assert_eq!(
         findings(&stdlib, "unused_classes"),
-        ["pkg.formatters.Retired"]
+        ["os.PathLike", "pkg.formatters.Retired"]
     );
 
     fs::remove_file(os_shadow).unwrap();
