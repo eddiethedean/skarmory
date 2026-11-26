@@ -473,9 +473,17 @@ def pytest_worker(args):
                     def scan_scope(scope):
                         return json.loads(scan_candidate(args.sdk_python, scope, options))
 
-                    self.runtime_results.setdefault(key, []).append(
-                        observe_review(report, path, review["assertions"], scan_scope),
-                    )
+                    runtime = observe_review(report, path, review["assertions"], scan_scope)
+                    if "reviewed_exception" in case:
+                        root = Path(path).resolve()
+                        sources = {
+                            source.relative_to(root).as_posix(): hashlib.sha256(source.read_bytes()).hexdigest()
+                            for source in root.rglob("*.py")
+                        }
+                        runtime["fixture_sha256"] = hashlib.sha256(
+                            json.dumps(sources, sort_keys=True).encode()
+                        ).hexdigest()
+                    self.runtime_results.setdefault(key, []).append(runtime)
                 elif report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
                 self.scans.add(key)

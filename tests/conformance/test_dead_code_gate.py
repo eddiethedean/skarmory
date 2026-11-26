@@ -224,6 +224,75 @@ reviewed_exception = {{ reason = "combined scan outside Phase 0.3", approval = "
                 )
                 self.assertEqual(report["reviewed_exceptions"][0]["status"], "blocked")
 
+    def test_mounted_django_exception_requires_the_exact_original_failure_and_sdk_control(self):
+        source = "test/test_django_function_view_roots.py"
+        case = f"{source}::test_unproved_function_callbacks_do_not_create_provider_roots[async_view-80]"
+        original = [f"{source}:{line}" for line in (29, 120, 121, 125)]
+        prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
+        checks = [
+            "coverage:complete",
+            "evidence:django_registration:certain:views.view",
+            "evidence:direct_call:certain:pipeline.dispatch",
+            "evidence:direct_call:certain:providers.NcaaClient.schedule_dates",
+            "unused:unused_functions:providers.NjcaaClient.schedule_dates",
+            "unused:unused_functions:providers.UnrelatedClient.schedule_dates",
+        ]
+        fixture = "d" * 64
+        self.write_inventory(deferred=f"""
+[[cases]]
+id = "{case}"
+milestone = "0.3"
+languages = ["python"]
+source = "{source}"
+provenance = "original mounted async fixture"
+assertions = {json.dumps(original)}
+prerequisites = {json.dumps(prerequisites)}
+omitted_assertions = []
+variants = ["python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+runtime_review = {{ reason = "mounted async executes", evidence = "Django runtime", assertions = {json.dumps(checks)} }}
+reviewed_exception = {{ reason = "original expects dormant provider", approval = "approved for the two mounted Django async cases", tracking_issue = "https://github.com/eddiethedean/skarmory/issues/41", fixture_sha256 = "{fixture}" }}
+""")
+        sdk = self.receipt("python-sdk")
+        control = {
+            "status": "passed",
+            "assertions": checks,
+            "fixture_sha256": fixture,
+            "selected_paths": ["manage.py", "pipeline.py", "providers.py", "settings.py", "urls.py", "views.py"],
+            "coverage": {
+                "status": "complete", "selected_files": 6, "extracted_files": 6, "issues": [],
+            },
+        }
+        result = {
+            "case_id": case,
+            "reference_status": "passed",
+            "reference_assertions": original,
+            "status": "failed",
+            "assertions": original[:1],
+            "candidate_failed_assertion": original[1],
+            "prerequisites": dict.fromkeys(prerequisites, "passed"),
+            "reviewed_runtime": control,
+        }
+        sdk["results"].append(result)
+        engine = self.receipt("python-engine")
+        run, report = self.run_gate(engine, sdk)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(report["counts"], {"passed": 2, "blocked": 0})
+        [exception] = report["reviewed_exceptions"]
+        self.assertEqual(exception["original_candidate_status"], "failed")
+        self.assertEqual(exception["original_candidate_failed_assertion"], original[1])
+        self.assertEqual(exception["native_control"], control)
+        for changes in (
+            {"candidate_failed_assertion": original[2]},
+            {"status": "passed"},
+            {"reviewed_runtime": {**control, "fixture_sha256": "e" * 64}},
+            {"reviewed_runtime": {**control, "status": "failed"}},
+        ):
+            with self.subTest(changes=changes):
+                sdk["results"][-1] = {**result, **changes}
+                broken = self.assert_blocked([engine, sdk], "approved exception control")
+                self.assertEqual(broken["reviewed_exceptions"][0]["status"], "blocked")
+
     def reviewed_receipt(self, checks=None):
         if checks is None:
             checks = ["coverage:incomplete", "issue:unresolved_import:app.py:2"]

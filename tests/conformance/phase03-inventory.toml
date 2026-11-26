@@ -12890,6 +12890,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 runtime_review = { reason = "Django awaits the mounted async view, which invokes the selected provider before response validation.", evidence = "Django 4.2.1 and 5.2.1 Client and AsyncClient on the frozen project reach NcaaClient.schedule_dates and return [2026] inside the handler. The original request then fails response validation because the view returns a list.", assertions = ["coverage:complete", "evidence:django_registration:certain:views.view", "evidence:direct_call:certain:pipeline.dispatch", "evidence:direct_call:certain:providers.NcaaClient.schedule_dates", "unused:unused_functions:providers.NjcaaClient.schedule_dates", "unused:unused_functions:providers.UnrelatedClient.schedule_dates"] }
+reviewed_exception = { reason = "Django executes the mounted async callback and its provider at both confidence levels. The installed native scan must retain that execution evidence and the unused siblings.", approval = "approved for the two mounted Django async cases", tracking_issue = "https://github.com/eddiethedean/skarmory/issues/41", fixture_sha256 = "9cc812a628b8c5b1838257af2fb3701ae31eb8273c57847bd9b16d90130f6270" }
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[async_view-80]"
@@ -12903,6 +12904,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 runtime_review = { reason = "Django awaits the mounted async view, which invokes the selected provider before response validation.", evidence = "Django 4.2.1 and 5.2.1 Client and AsyncClient on the frozen project reach NcaaClient.schedule_dates and return [2026] inside the handler. The original request then fails response validation because the view returns a list.", assertions = ["coverage:complete", "evidence:django_registration:certain:views.view", "evidence:direct_call:certain:pipeline.dispatch", "evidence:direct_call:certain:providers.NcaaClient.schedule_dates", "unused:unused_functions:providers.NjcaaClient.schedule_dates", "unused:unused_functions:providers.UnrelatedClient.schedule_dates"] }
+reviewed_exception = { reason = "Django executes the mounted async callback and its provider at both confidence levels. The installed native scan must retain that execution evidence and the unused siblings.", approval = "approved for the two mounted Django async cases", tracking_issue = "https://github.com/eddiethedean/skarmory/issues/41", fixture_sha256 = "9cc812a628b8c5b1838257af2fb3701ae31eb8273c57847bd9b16d90130f6270" }
 
 [[cases]]
 id = "test/test_django_function_view_roots.py::test_unproved_function_callbacks_do_not_create_provider_roots[generator_view-0]"
