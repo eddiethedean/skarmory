@@ -96,9 +96,10 @@ independently. The native Click control checks the declaration and dormant
 callback after reassignment. The original combined Click SDK case also
 enables the unported danger and secrets analyzers and remains required.
 
-Two additional FastAPI cases assert the frozen implementation's call-event
-budget and legacy fallback. The native adapter still needs a mapping for
-the original budget. The legacy test requires no public analysis error
+The native engine adapter replays the original acyclic initializer fixture
+with its 40-call-event budget. It measures the bounded native expansion and
+verifies the original incomplete reason and empty activation and parameter
+sets. The separate legacy fallback test requires no public analysis error
 even when its internal proof is incomplete. Native coverage records an
 exhausted budget explicitly and preserves unresolved route evidence.
 
