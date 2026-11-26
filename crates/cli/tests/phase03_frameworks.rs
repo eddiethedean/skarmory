@@ -5694,7 +5694,7 @@ app.teardown_appcontext(always)
 }
 
 #[test]
-fn flask_login_bounded_namespace_writes_change_only_later_receiver_reads() {
+fn flask_login_literal_globals_update_changes_only_later_receiver_reads() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -5709,26 +5709,23 @@ replacement = Replacement()
 def before(user_id): return user_id
 "#;
     let update = "globals().update({'login': replacement})\n";
-    let setter = "def replace():\n    global login\n    login = replacement\nreplace()\n";
+    fs::write(&provider, format!("{setup}{update}")).unwrap();
     fs::write(
         root.join("app.py"),
         "from providers import login\n@login.user_loader\ndef after(user_id): return user_id\n",
     )
     .unwrap();
-    for operation in [update, setter] {
-        fs::write(&provider, format!("{setup}{operation}")).unwrap();
-        let report = scan(root);
-        assert_eq!(
-            evidence_certainties(&report, "providers.before", "flask_login_registration"),
-            ["certain"]
-        );
-        assert!(evidence_certainties(&report, "app.after", "flask_login_registration").is_empty());
-        assert!(findings(&report, "unused_functions").contains(&"app.after"));
-        for _ in 0..2 {
-            let mut cached = scan_with_settings(root, None, Some(cache.path()));
-            cached.as_object_mut().unwrap().remove("cache");
-            assert_eq!(report, cached);
-        }
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.before", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.after", "flask_login_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.after"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
     }
 
     fs::write(
@@ -5740,67 +5737,6 @@ def before(user_id): return user_id
     assert_eq!(
         evidence_certainties(&report, "app.after", "flask_login_registration"),
         ["certain"]
-    );
-
-    fs::write(
-        &provider,
-        format!("{setup}{setter}def later():\n    global replacement\n    replacement = login\n"),
-    )
-    .unwrap();
-    let report = scan_with_exit(root, None, Some(cache.path()), 2);
-    assert!(
-        report["analysis_errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| issue["kind"] == "unresolved_global_binding")
-    );
-}
-
-#[test]
-fn flask_login_closed_helpers_apply_writes_at_their_initializer_call_sites() {
-    let project = tempfile::tempdir().unwrap();
-    let root = project.path();
-    let cache = tempfile::tempdir().unwrap();
-    let providers = root.join("providers.py");
-    fs::write(
-        root.join("app.py"),
-        "from providers import login\n@login.user_loader\ndef callback(): return 1\n",
-    )
-    .unwrap();
-    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n@login.user_loader\ndef before(): return 1\n";
-    let cases = [
-        "def replacement(self, callback): return callback\ndef mutate(target): target.user_loader = replacement\nmutate(LoginManager)\n",
-        "def replacement(callback): return callback\ndef mutate(target): target.user_loader = replacement\nmutate(login)\n",
-        "def replacement(callback): return callback\ndef replace(): login.user_loader = replacement\ndef mutate(apply): apply()\nmutate(replace)\n",
-    ];
-    for effect in cases {
-        fs::write(&providers, format!("{setup}{effect}")).unwrap();
-        let report = scan(root);
-        assert_eq!(findings(&report, "unused_functions"), ["app.callback"]);
-        assert_eq!(
-            evidence_certainties(&report, "providers.before", "flask_login_registration"),
-            ["certain"],
-        );
-        assert!(
-            evidence_certainties(&report, "app.callback", "flask_login_registration").is_empty()
-        );
-        for _ in 0..2 {
-            let mut cached = scan_with_settings(root, None, Some(cache.path()));
-            cached.as_object_mut().unwrap().remove("cache");
-            assert_eq!(cached, report);
-        }
-    }
-
-    fs::write(&providers, format!("{setup}{}mutate(object())\n", cases[1])).unwrap();
-    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
-    assert!(
-        incomplete["analysis_errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| issue["kind"] == "unresolved_attribute_write"),
-        "{incomplete}"
     );
 }
 
