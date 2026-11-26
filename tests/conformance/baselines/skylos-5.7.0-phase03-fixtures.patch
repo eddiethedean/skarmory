@@ -578,6 +578,19 @@ index 2a0f424..db019c5 100644
  def test_repro_11_reloader_helper_is_live(tmp_path):
      result = _scan(tmp_path, _MGMT_COMMAND)
      _assert_quiet(result, "_restart_worker")
+diff --git a/test/test_django_auth_backend_liveness.py b/test/test_django_auth_backend_liveness.py
+index b6cd8bb..a0f59d4 100644
+--- a/test/test_django_auth_backend_liveness.py
++++ b/test/test_django_auth_backend_liveness.py
+@@ -230,7 +230,7 @@ def test_unknown_earlier_base_does_not_prove_a_later_local_hook_is_selected(tmp_
+             "from external import Provider\n"
+             "class Later:\n    def get_user(self, user_id):\n        return None\n"
+             "class Configured(Provider, Later):\n    pass\n"
+-        ),
++        ) | {"external.py": "import os\nclass Provider:\n    if os.environ.get('DJANGO_AUTH_PICKER'):\n        def get_user(self, user_id): return 1\n"},
+     )
+     assert "shop.backends.Later.get_user" not in _auth_roots(result)
+
 diff --git a/test/test_django_autoreload_precision.py b/test/test_django_autoreload_precision.py
 index a0fc96b..29322f3 100644
 --- a/test/test_django_autoreload_precision.py
@@ -844,7 +857,7 @@ index 6bab49e..0f45416 100644
      )
      assert (f"app.Worker.{hook}" in _unused(result)) is not expected_live
 diff --git a/test/test_django_management_command_reachability.py b/test/test_django_management_command_reachability.py
-index dcb66d2..e6a0971 100644
+index dcb66d2..92e1acc 100644
 --- a/test/test_django_management_command_reachability.py
 +++ b/test/test_django_management_command_reachability.py
 @@ -10,11 +10,11 @@ from skylos.analyzer import Skylos
@@ -939,6 +952,15 @@ index dcb66d2..e6a0971 100644
      assert f"{_MODULE}.prepare" not in unused
      assert f"{_MODULE}.abandoned" in unused
      assert (
+@@ -218,7 +218,7 @@ def test_command_namespace_escape_does_not_establish_dispatch(tmp_path, tail):
+         + "class Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + tail
+     )
+-    _, definitions = _command(tmp_path, source)
++    _, definitions = _command(tmp_path, source, {"external_plugin.py": "def replacement(self, *args, **options): return None\ndef install(target): setattr(target, 'handle', replacement)\n"} if tail.startswith("from external_plugin") else None)
+     assert not definitions[f"{_MODULE}.Command.handle"].heuristic_refs.get(_ROOT_REASON)
+
+
 @@ -335,7 +335,7 @@ def test_direct_readonly_module_metadata_keeps_command_proof(tmp_path):
          + "class Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
          + "module_name = globals().get('__name__')\n"
@@ -957,6 +979,13 @@ index dcb66d2..e6a0971 100644
      if not replaced:
          assert f"{_MODULE}.prepare" not in unused
      # Function-object uncertainty already retained helpers on original main.
+@@ -377,5 +377,5 @@ def test_escaped_handle_alias_does_not_supply_a_stable_body(tmp_path):
+         + "class Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + "from external_plugin import install\nselected = Command.handle\ninstall(selected)\n"
+     )
+-    _, definitions = _command(tmp_path, source)
++    _, definitions = _command(tmp_path, source, {"external_plugin.py": "def replacement(self, *args, **options): return None\ndef install(target): setattr(target, '__code__', replacement.__code__)\n"})
+     assert not definitions[f"{_MODULE}.Command.handle"].heuristic_refs.get(_ROOT_REASON)
 diff --git a/test/test_django_named_setting_imports.py b/test/test_django_named_setting_imports.py
 index cff9b2d..960821d 100644
 --- a/test/test_django_named_setting_imports.py
@@ -1010,14 +1039,16 @@ index e25651a..2bc8f3c 100644
      assert "conf.settings_production.PRODUCTION_ONLY" not in unused
      assert "conf.constants.STALE_CONSTANT" in unused
 diff --git a/test/test_django_signal_liveness.py b/test/test_django_signal_liveness.py
-index 0888139..21f00ba 100644
+index 0888139..ca8f202 100644
 --- a/test/test_django_signal_liveness.py
 +++ b/test/test_django_signal_liveness.py
-@@ -197,7 +197,7 @@ def test_custom_signal_instances_preserve_genuine_callbacks(tmp_path, prefix):
+@@ -196,8 +196,8 @@ def test_connect_inside_registration_wrapper_requires_invocation(tmp_path, calle
+ def test_custom_signal_instances_preserve_genuine_callbacks(tmp_path, prefix):
      result = _scan(tmp_path, _sources(prefix + "@receiver(saved)\n" + _BODY))
      _assert_registered(result, loaded=True)
-
 -
+-
++_DOMAIN_CONNECTOR = "import os\nfrom django.db.models.signals import post_save\ndef connector(callback):\n    if os.getenv('FIXTURE_SIGNAL'):\n        post_save.connect(callback)\n"
 +_THIRD_PARTY_SIGNAL = {"third_party/__init__.py": "", "third_party/signals.py": "import os\nfrom django.db.models.signals import post_save\nsaved = post_save if os.getenv('FIXTURE_SIGNAL') == 'enabled' else []\n"}
  @pytest.mark.parametrize(
      "prefix",
@@ -1027,10 +1058,40 @@ index 0888139..21f00ba 100644
  )
  def test_unsupported_signal_provider_retains_callback_as_uncertain(tmp_path, prefix):
 -    result = _scan(tmp_path, _sources(prefix + "@receiver(saved)\n" + _BODY))
-+    result = _scan(tmp_path, {**_sources(prefix + "@receiver(saved)\n" + _BODY), **(_THIRD_PARTY_SIGNAL if "third_party.signals" in prefix else {})})
++    result = _scan(tmp_path, {**_sources(prefix + (_DOMAIN_CONNECTOR if "class DomainSignal" in prefix else "") + "@receiver(saved)\n" + _BODY), **(_THIRD_PARTY_SIGNAL if "third_party.signals" in prefix else {})})
      assert "shop.signals.on_save" not in _unused(result)
      assert "shop.signals.helper" not in _unused(result)
      assert "shop.signals.on_save" not in _signal_targets(
+@@ -222,7 +222,7 @@ def test_unsupported_signal_provider_retains_callback_as_uncertain(tmp_path, pre
+ def test_unknown_external_receiver_keeps_previous_uncertainty_without_django(tmp_path):
+     result = _scan(
+         tmp_path,
+-        {"callbacks.py": "from external import receiver\n@receiver(event)\n" + _BODY},
++        {"callbacks.py": "from external import receiver\nevent = 'saved'\n@receiver(event)\n" + _BODY, "external.py": "from atexit import register\ndef receiver(event):\n    return defer_receiver\ndef defer_receiver(callback):\n    register(callback, None, None)\n    return callback\n"},
+     )
+     assert "callbacks.on_save" not in _unused(result)
+     assert "callbacks.helper" not in _unused(result)
+@@ -518,7 +518,7 @@ def test_bare_receiver_decorator_preserves_unknown_provider_but_not_identity(
+     prefix = "from external import receiver\n"
+     if not external:
+         prefix = "def receiver(callback):\n    'Keep the input.'\n    return callback\n"
+-    result = _scan(tmp_path, {"callbacks.py": prefix + "@receiver\n" + _BODY})
++    result = _scan(tmp_path, {"callbacks.py": prefix + "@receiver\n" + _BODY, **({"external.py": "from atexit import register\ndef receiver(callback):\n    register(callback, None, None)\n    return callback\n"} if external else {})})
+     if external:
+         assert "callbacks.on_save" not in _unused(result)
+         assert "callbacks.helper" not in _unused(result)
+@@ -673,9 +673,9 @@ def test_source_owned_method_resolves_before_unknown_external_ancestry(
+         "    def on_save(self, sender, instance, **kwargs):\n        return helper()\n"
+         + replacement
+         + "def helper():\n    return 1\n"
+-        "handler = Handlers()\npost_save.connect(handler.on_save)\n"
++        + ("handler = Handlers()\nif handler.on_save is not None:\n    post_save.connect(handler.on_save)\n" if replacement else "handler = Handlers()\npost_save.connect(handler.on_save)\n")
+     )
+-    result = _scan(tmp_path, _sources(source))
++    result = _scan(tmp_path, _sources(source) | {"external.py": "import os\nclass Base:\n    if os.environ.get('INHERITED_SIGNAL_CALLBACK'):\n        def on_save(self, sender, instance, **kwargs): return 0\n"})
+     if not replacement:
+         assert "shop.signals.helper" not in _unused(result)
+         assert "shop.signals.Handlers.on_save.instance" not in _unused(
 diff --git a/test/test_django_wagtail_conventions.py b/test/test_django_wagtail_conventions.py
 index 28388fb..0d56d91 100644
 --- a/test/test_django_wagtail_conventions.py
@@ -1157,7 +1218,7 @@ index a073560..728c223 100644
      for path, body in files.items():
          write_fixture(root, path, textwrap.dedent(body).lstrip(), overwrite=True)
 diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
-index 2386a5c..ef5d915 100644
+index 2386a5c..0a6200b 100644
 --- a/test/test_flask_callback_providers.py
 +++ b/test/test_flask_callback_providers.py
 @@ -39,24 +39,24 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
@@ -1175,6 +1236,13 @@ index 2386a5c..ef5d915 100644
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
+-        "from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
+-    ],
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n',
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n',
 +        'def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n',
@@ -1186,16 +1254,12 @@ index 2386a5c..ef5d915 100644
 +        "def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
 +        "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n',
-         "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
-         "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
--        "from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n",
--        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n",
--        "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
++        "def replacement(callback): return callback\ndef opaque(apply): apply()\nfrom flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
++        "def replacement(callback): return callback\ndef opaque(target): target.user_loader = replacement\nfrom flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\ndef replacement(cls): return Replacement()\nfrom flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n',
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n',
 +        'def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n',
-         "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
--    ],
++        "def replacement(self, callback): return callback\ndef opaque(target): target.user_loader = replacement\nfrom flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
 +    ], ids=['class LoginManager: pass\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n', 'from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n', 'import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n', "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n", "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n", 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n', 'from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n'],
  )
  def test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks(
@@ -1320,6 +1384,23 @@ index a6efeb9..abcac71 100644
          {
              "project_base.py": (
                  "from celery.backends.redis import RedisBackend as FrameworkBase\n\n"
+diff --git a/test/test_logging_config_liveness.py b/test/test_logging_config_liveness.py
+index 477564a..6fc0d81 100644
+--- a/test/test_logging_config_liveness.py
++++ b/test/test_logging_config_liveness.py
+@@ -272,10 +272,10 @@ def test_pathlike_branch_cannot_consume_a_literal_dictionary(tmp_path, kind):
+     ],
+ )
+ def test_pathlike_lookalikes_do_not_exclude_possible_mutation(tmp_path, setup):
+-    extra = {"os.py": "class PathLike: pass\n"} if not setup else None
++    extra = {"path_policy.py": "PathLike = dict\n"} if not setup else None
+     result = _scan(
+         tmp_path,
+-        f"import logging.config\nimport os\nCONFIG = {_CONFIG}\n{setup}\n"
++        ("import logging.config\nimport os\n" if setup else "import logging.config\nimport path_policy as os\ndef unknown(config): config['formatters'] = {}\n") + f"CONFIG = {_CONFIG}\n{setup}\n"
+         "if isinstance(CONFIG, os.PathLike):\n    unknown(CONFIG)\n"
+         "logging.config.dictConfig(CONFIG)\n",
+         extra,
 diff --git a/test/test_settings_without_django_import.py b/test/test_settings_without_django_import.py
 index 2cf2a54..0ff3116 100644
 --- a/test/test_settings_without_django_import.py
