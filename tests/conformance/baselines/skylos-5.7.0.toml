@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "aa7a996dfb83ac14d24a459264b963d06ab5b020"
+git_revision = "6830b0a73e4f5aaa5adfd7c225e2c964baff81ed"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "09b2603f0ce24663f804658f772d40209879507a183fbd040f8c6cd8727cde7e"
+patch_sha256 = "4471a64258bf7b4bbbbbcedb3ea36eb78d363355eda47286565358d1e7240b04"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
@@ -112,13 +112,13 @@ runtime = "CPython 3.11 executes the selected provider and loads the processor t
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_wagtail_conventions.py"
-lines = [39, 72, 85, 89]
-runtime = "Wagtail 7.2 registers the genuine model and consumes the original snippet viewset options"
+lines = [39, 72, 85, 89, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181]
+runtime = "Wagtail 7.2 registers the genuine snippet model and consumes its viewset options. Django 5.2.1 starts the importable signature fixture and executes the selected checks, views, admin, widgets, context, signals, ORM and locale lookups."
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_quiet_dead_code.py"
-lines = [241, 245, 251, 257, 258, 259, 260, 261]
-runtime = "Django 5.2.1 loads the explicit settings module and installed auth and contenttypes apps"
+lines = [52, 56, 59, 75, 77, 83, 84, 85, 165, 171, 172, 173, 174, 175, 176, 177, 178, 179, 241, 245, 251, 257, 258, 259, 260, 261]
+runtime = "Django 5.2.1 starts the Pontoon-shaped project with its development settings selected, required contrib apps and real mounted view. The alternate production setting keeps its development-only names unbound. The launcher-free fixture uses explicit settings selection."
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_autoreload_precision.py"
