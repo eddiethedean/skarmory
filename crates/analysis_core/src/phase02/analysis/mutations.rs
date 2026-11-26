@@ -1269,6 +1269,8 @@ fn provider_module(name: &str) -> bool {
             | "tenacity.stop"
             | "typer"
             | "typer.main"
+            | "click"
+            | "click.decorators"
             | "django.utils.autoreload"
             | "pathlib"
             | "pathlib.Path"
