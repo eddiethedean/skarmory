@@ -341,7 +341,11 @@ Django URL discovery follows a reachable, recognized launcher. An explicit
 management `--settings` option takes precedence over the launcher's environment.
 The environment starts with the scan process's `DJANGO_SETTINGS_MODULE`. A
 literal assignment to the genuine `os.environ` entry overrides it, and
-`setdefault` fills an unset entry. Without a reachable launcher or environment
+`setdefault` fills an unset entry. With an explicit settings module and
+literal app and URL configuration, a launcher-free scan records possible
+reads of closed uppercase settings declarations. Application startup and
+URL dispatch require their own evidence.
+Without a reachable launcher or environment
 selection, one conventional `package.settings` module with literal `INSTALLED_APPS` and
 `ROOT_URLCONF = 'package.urls'` can describe an externally configured project
 when the sibling URL module imports the genuine Django URL API and defines

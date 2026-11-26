@@ -420,6 +420,48 @@ fn generic_django_storage_constructor_uses_empty_defaults() {
 }
 
 #[test]
+fn explicitly_selected_django_settings_keep_declarations_without_a_launcher() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("conf")).unwrap();
+    for (name, source) in [
+        ("conf/__init__.py", ""),
+        (
+            "conf/base.py",
+            "INSTALLED_APPS = []\nROOT_URLCONF = 'conf.urls'\nCUSTOM_FLAG = True\n",
+        ),
+        (
+            "conf/settings_production.py",
+            "from conf.base import *\nPRODUCTION_ONLY = CUSTOM_FLAG\n",
+        ),
+        (
+            "conf/urls.py",
+            "from django.urls import path\ndef handler(request): pass\nurlpatterns = []\n",
+        ),
+        ("conf/ordinary.py", "STALE_CONSTANT = True\n"),
+    ] {
+        fs::write(root.join(name), source).unwrap();
+    }
+    let option = "conf.settings_production.PRODUCTION_ONLY";
+    let report = scan_with_settings(root, Some("conf.settings_production"), None);
+    assert_eq!(
+        evidence_certainties(&report, option, "django_setting"),
+        ["possible"]
+    );
+    assert!(!findings(&report, "unused_variables").contains(&option));
+    assert!(findings(&report, "unused_variables").contains(&"conf.ordinary.STALE_CONSTANT"));
+    assert!(evidence_certainties(&report, "conf.urls.handler", "django_registration").is_empty());
+    assert!(findings(&scan(root), "unused_variables").contains(&option));
+    for _ in 0..2 {
+        let mut cached =
+            scan_with_settings(root, Some("conf.settings_production"), Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
 fn wagtail_snippet_options_require_registration_with_the_real_viewset_and_model() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
