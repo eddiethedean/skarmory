@@ -409,12 +409,23 @@ impl Graph<'_> {
                 self.member_write(&receiver, member, (file, at)),
                 Some(MemberWriteValue::Replacement(_))
             );
-        let value = if conditional
+        let login_replacement = match (&receiver, value) {
+            (ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager), Some(value))
+                if !conditional && flask_login_callback(member) =>
+            {
+                self.flask_login_identity_replacement(file, at, value)
+            }
+            _ => None,
+        };
+        let value = if let Some(replacement) = login_replacement {
+            MemberWriteValue::Replacement(replacement)
+        } else if conditional
             || deletes_inherited_method
             || matches!(
                 receiver,
                 ReceiverKey::FastapiBase | ReceiverKey::FlaskBase(_) | ReceiverKey::McpServerBase
-            ) {
+            )
+        {
             MemberWriteValue::Ambiguous
         } else if let Some(value) = value {
             let value = if matches!(value.kind, ExpressionKind::IdentityLambda)
@@ -454,6 +465,36 @@ impl Graph<'_> {
             .entry(member.into())
             .or_default()
             .push(Write { file, at, value });
+    }
+
+    fn flask_login_identity_replacement(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        value: &Expression,
+    ) -> Option<Value> {
+        if !matches!(value.kind, ExpressionKind::Name(_)) {
+            return None;
+        }
+        let Value::Callable(call) = self.probe_identity(file, value, at) else {
+            return None;
+        };
+        let symbol = &self.symbols[call.target];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return None;
+        };
+        // Assigning a plain function to LoginManager's class dictionary
+        // binds its first parameter when read through a manager instance.
+        (!call.verified
+            && matches!(call.receiver, Receiver::Ordinary)
+            && !call.implicit_descriptor_receiver
+            && symbol.scope == file
+            && field_dispatch::plain_method(definition, 2)
+            && returns_parameter(definition, &definition.parameters[1]))
+        .then_some(Value::Callable(Invocation {
+            implicit_descriptor_receiver: true,
+            ..call
+        }))
     }
 
     fn index_command_global(
@@ -1004,20 +1045,32 @@ impl Graph<'_> {
             Some(MemberWriteValue::Replacement(value)) => value,
             Some(MemberWriteValue::Ambiguous) => Value::Unknown,
             Some(MemberWriteValue::Deleted) | None => {
-                if self.member_write(&class, name, access).is_some() {
-                    Value::Unknown
+                // An imported manager can only expose this class method after
+                // the module that created the instance has initialized.
+                let class_write = if matches!(kind, ObjectKind::FlaskLoginManager)
+                    && flask_login_callback(name)
+                {
+                    self.mutations
+                        .members
+                        .get(&class)
+                        .and_then(|members| members.get(name))
+                        .and_then(|writes| self.write_value(writes, Some(site.0), access))
                 } else {
-                    if kind == ObjectKind::FlaskApp
+                    self.member_write(&class, name, access)
+                };
+                match class_write {
+                    Some(MemberWriteValue::Replacement(value)) => value,
+                    Some(_) => Value::Unknown,
+                    None if kind == ObjectKind::FlaskApp
                         && name == "config"
                         && ["config_class", "make_config"].iter().all(|name| {
                             self.member_write(&class, name, access).is_none()
                                 && self.member_write(&receiver, name, access).is_none()
-                        })
+                        }) =>
                     {
                         Value::FlaskConfig
-                    } else {
-                        Value::Method(site, kind, name.into())
                     }
+                    None => Value::Method(site, kind, name.into()),
                 }
             }
         }
