@@ -5724,18 +5724,22 @@ impl<'a> Graph<'a> {
                                 .find(|(name, _)| name == "blueprint")
                                 .map(|(_, value)| value)
                         });
-                        if let Some(target) = target
-                            && let Value::Object(child, ObjectKind::FlaskBlueprint) =
-                                self.identity(scope, target, before, 0)
-                        {
-                            self.scopes[scope].mounts.push((parent, child));
-                        } else {
-                            self.scope_issue(
+                        let blueprint = target.map_or(Value::Unknown, |target| {
+                            self.identity(scope, target, before, 0)
+                        });
+                        match blueprint {
+                            Value::Object(child, ObjectKind::FlaskBlueprint) => {
+                                self.scopes[scope].mounts.push((parent, child));
+                            }
+                            Value::Instance(class)
+                                if matches!(arguments.as_slice(), [_]) && keywords.is_empty()
+                                    && self.call_inert_flask_blueprint(class, scope, before, expr.at) => {}
+                            _ => self.scope_issue(
                                 scope,
                                 expr.at,
                                 "unresolved_registration",
                                 "Flask blueprint identity could not be resolved",
-                            );
+                            ),
                         }
                     }
                     Value::Method(parent, ObjectKind::CeleryApp, method)
