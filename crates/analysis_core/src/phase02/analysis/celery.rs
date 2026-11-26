@@ -87,8 +87,8 @@ impl Graph<'_> {
         // this process. Only receivers already registered here can be
         // proved in source order. Earlier external setup is still possible.
         let row = &mut self.scopes[call.scope];
-        if !row.started_celery_logging {
-            row.started_celery_logging = true;
+        if row.celery_logging_setup.is_none() {
+            row.celery_logging_setup = Some(call.at);
             for &(target, parameter) in &row.celery_logging_receivers {
                 row.edges.extend([
                     Edge {
@@ -104,6 +104,69 @@ impl Graph<'_> {
                 ]);
             }
         }
+    }
+
+    pub(super) fn report_celery_logging_imports(&mut self, reach: &Reachability) {
+        for &scope in &reach.scopes {
+            let Some(at) = self.scopes[scope].celery_logging_setup else {
+                continue;
+            };
+            let mut imported = self.celery_logging_imports_before(scope, at);
+            let mut visited = BTreeSet::from([scope]);
+            while let Some(module) = imported.pop() {
+                if !reach.scopes.contains(&module) || !visited.insert(module) {
+                    continue;
+                }
+                let row = &self.scopes[module];
+                if !row.celery_logging_receivers.is_empty() {
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_registration",
+                        "Celery logging dispatch may reach receivers registered in an imported module",
+                    );
+                    break;
+                }
+                imported.extend(&row.imports);
+            }
+        }
+    }
+
+    fn celery_logging_imports_before(&self, scope: ScopeId, at: Location) -> Vec<ScopeId> {
+        let row = &self.scopes[scope];
+        let mut imported: Vec<_> = row
+            .initializer_imports
+            .iter()
+            .filter_map(|&(id, module)| {
+                (position(self.symbols[id].name.at) < position(at)).then_some(module)
+            })
+            .collect();
+        // Conditional imports can publish receivers before the first setup.
+        // Include only modules selected by an evaluated import in this scope.
+        for &id in &row.evaluated_imports {
+            let symbol = &self.symbols[id];
+            if symbol.scope != scope
+                || position(symbol.name.at) >= position(at)
+                || !self.conditional.contains_key(&id)
+            {
+                continue;
+            }
+            let Binding::Import(import) = symbol.binding else {
+                continue;
+            };
+            let Some(module) = self.import_module(row.file, import) else {
+                continue;
+            };
+            let child = import
+                .member
+                .as_ref()
+                .map(|name| format!("{module}.{name}"));
+            imported.extend(row.imports.iter().copied().filter(|&file| {
+                let name = &self.files[file].module;
+                name == &module || Some(name) == child.as_ref() || within_package(&module, name)
+            }));
+        }
+        imported
     }
 
     pub(super) fn record_celery_expanded_config(
