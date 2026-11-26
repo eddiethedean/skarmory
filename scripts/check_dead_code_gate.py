@@ -493,7 +493,10 @@ def verify_ledger(ledger, identity, cases, deferred_ids, errors):
     return results
 
 
-def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, fixture_root=None):
+def evaluate(
+    inventory_path, candidate_revision, artifact_inputs, ledger_paths, fixture_root=None,
+    *, diagnostic_inventory=None,
+):
     report = {
         "schema_version": SCHEMA_VERSION,
         "candidate_revision": candidate_revision,
@@ -533,6 +536,14 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
                 deferred_by_variant[variant].add(case["id"])
     if not inventory["inventory_complete"]:
         errors.append("the case and variant inventory is not complete")
+    if diagnostic_inventory is not None:
+        try:
+            _, _, _, diagnostic_cases = read_inventory(diagnostic_inventory)
+        except (OSError, ValueError) as error:
+            errors.append(f"unable to read diagnostic inventory: {error}")
+        else:
+            pending = sum(len(cases) for cases in diagnostic_cases.values())
+            errors.append(f"{pending} required case variants remain in the diagnostic inventory")
 
     roles = {variants[variant]["artifact"] for variant in expected}
     deferred_roles = {variant["artifact"] for variant in variants.values()} - roles
@@ -660,6 +671,10 @@ def evaluate(inventory_path, candidate_revision, artifact_inputs, ledger_paths, 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, required=True)
+    parser.add_argument(
+        "--diagnostic-inventory", type=Path,
+        help="inventory of required cases still outside release reconciliation",
+    )
     parser.add_argument("--candidate-revision", required=True)
     parser.add_argument("--artifact", action="append", default=[], metavar="ROLE=PATH")
     parser.add_argument("--ledger", type=Path, action="append", default=[])
@@ -667,7 +682,8 @@ def main():
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     report = evaluate(
-        args.inventory, args.candidate_revision, args.artifact, args.ledger, args.fixture_root
+        args.inventory, args.candidate_revision, args.artifact, args.ledger, args.fixture_root,
+        diagnostic_inventory=args.diagnostic_inventory,
     )
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     for error in report["errors"]:
