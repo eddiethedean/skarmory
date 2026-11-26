@@ -46,6 +46,13 @@ BENCHMARK_CASE = f"{BENCHMARK_SOURCE}::{BENCHMARK_ID}"
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
 SOURCE_EDIT_CACHE = "installed-sdk-source-edit-cache-reuse"
+PROJECT_VENV_CASE = (
+    "test/test_framework_class_attr_liveness.py::test_project_venv_site_packages_are_external_search_dirs"
+)
+THIRD_PARTY_CASE = (
+    "test/test_dead_code_framework_overrides.py::test_third_party_overrides_read_from_site_packages"
+)
+
 
 
 # Run in an isolated interpreter so the candidate never imports the Skylos
@@ -84,8 +91,14 @@ SCAN = """
 import json
 import sys
 from skarmory.compat.skylos import analyze
-path, options = json.load(sys.stdin)
-print(analyze(path, **options))
+path, options, *external_paths = json.load(sys.stdin)
+if external_paths:
+    [dependency_paths] = external_paths
+    sys.path[:0] = dependency_paths
+report = analyze(path, **options)
+if external_paths and "fakelib" in sys.modules:
+    raise SystemExit("static dependency lookup imported the fixture library")
+print(report)
 """
 
 
@@ -107,7 +120,7 @@ def check_candidate_wheel(sdk_python, artifact, expected_platform, cwd, env):
         raise ValueError(result.stderr.strip() or "candidate SDK wheel validation failed")
 
 
-def scan_candidate(sdk_python, path, options):
+def scan_candidate(sdk_python, path, options, dependency_paths=()):
     def json_value(value):
         if isinstance(value, os.PathLike):
             return os.fspath(value)
@@ -117,9 +130,12 @@ def scan_candidate(sdk_python, path, options):
             return [json_value(item) for item in value]
         return value
 
+    inputs = [path, {**options, "profile": "skylos-0.3"}]
+    if dependency_paths:
+        inputs.append(dependency_paths)
     return subprocess.run(
         [str(sdk_python), "-I", "-c", SCAN],
-        input=json.dumps(json_value([path, {**options, "profile": "skylos-0.3"}])),
+        input=json.dumps(json_value(inputs)),
         cwd=Path(path) if Path(path).is_dir() else Path(path).parent,
         env=environment(), text=True, capture_output=True, timeout=60,
         check=True,
@@ -467,7 +483,17 @@ def pytest_worker(args):
                     if options.get("cache_dir") is not None:
                         pytest.fail("the original source-edit case already selects a cache")
                     options["cache_dir"] = cache_path
-                scanned = scan_candidate(args.sdk_python, path, options)
+                if key == THIRD_PARTY_CASE:
+                    workspace = item.funcargs["tmp_path"]
+                    dependency_paths = tuple(
+                        entry for entry in sys.path
+                        if isinstance(entry, str) and Path(entry).is_relative_to(workspace)
+                    )
+                    if not dependency_paths:
+                        pytest.fail("the original fixture supplied no dependency path")
+                    scanned = scan_candidate(args.sdk_python, path, options, dependency_paths)
+                else:
+                    scanned = scan_candidate(args.sdk_python, path, options)
                 report = json.loads(scanned)
                 if review:
                     def scan_scope(scope):
@@ -550,6 +576,13 @@ def pytest_worker(args):
                         cache_path = stack.enter_context(TemporaryDirectory(
                             prefix="skarmory-pinned-source-edit-cache-",
                         ))
+                    if key == PROJECT_VENV_CASE:
+                        def project_venv_roots(projects):
+                            [project] = projects
+                            report = json.loads(analyze(project, conf=60, grep_verify=False, grep_cache=False))
+                            return [Path(root) for root in report.get("external_dependency_roots", [])]
+
+                        patch.setattr(item.module, "default_search_dirs", project_venv_roots)
                     if variant["layer"] == "cli":
                         if key == CLI_CASE:
                             cli = RecursiveCaseCli(args.artifact)

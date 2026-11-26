@@ -104,7 +104,26 @@ EXCEPTION_CONTROLS = {
          "Native incomplete-coverage and route-evidence control"],
     ),
 }
-TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES, BUDGET_CASE}
+EXTERNAL_CLASS_SOURCE = "test/test_dead_code_framework_overrides.py"
+EXTERNAL_VENDORED_SOURCE = "test/test_framework_class_attr_liveness.py"
+EXTERNAL_VENDORED = f"{EXTERNAL_VENDORED_SOURCE}::test_vendored_site_packages_inside_scan_still_excluded"
+EXTERNAL_INSIDE = f"{EXTERNAL_CLASS_SOURCE}::test_site_packages_inside_the_scan_root_is_not_external"
+EXTERNAL_INDEX = f"{EXTERNAL_CLASS_SOURCE}::test_index_follows_reexports_aliases_and_stops_on_cycles"
+EXTERNAL_TEST = "phase02::external_classes::tests::pinned_external_class_metadata"
+EXTERNAL_CASES = {
+    EXTERNAL_VENDORED: (
+        EXTERNAL_VENDORED_SOURCE, [f"{EXTERNAL_VENDORED_SOURCE}:200"], [],
+    ),
+    EXTERNAL_INSIDE: (
+        EXTERNAL_CLASS_SOURCE, [f"{EXTERNAL_CLASS_SOURCE}:{line}" for line in (25, 163, 165)],
+        [f"{EXTERNAL_CLASS_SOURCE}:25"],
+    ),
+    EXTERNAL_INDEX: (
+        EXTERNAL_CLASS_SOURCE, [f"{EXTERNAL_CLASS_SOURCE}:{line}" for line in (25, 184, 187, 190, 193, 194, 195, 196)],
+        [f"{EXTERNAL_CLASS_SOURCE}:25"],
+    ),
+}
+TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES, *EXTERNAL_CASES, BUDGET_CASE}
 ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES, *EXCEPTION_CONTROLS}
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -358,6 +377,86 @@ def replay_initializer_budget(source, fixture, argv, env, trace):
     return outcome, fixtures, {"initializer_budget": result, "assertion_error": failure}
 
 
+def replay_external_classes(key, source, fixture, argv, env, trace):
+    import pytest
+
+    reports = []
+
+    def build(project, paths, targets):
+        paths = [Path(path) for path in paths if Path(path).is_relative_to(fixture)]
+        fixtures = {
+            path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(fixture.rglob("*")) if path.is_file()
+        }
+        with TemporaryDirectory(prefix="skarmory-external-metadata-") as metadata:
+            request = Path(metadata) / "selection.json"
+            response = Path(metadata) / "index.json"
+            request.write_text(json.dumps({
+                "project": str(project) if project else None,
+                "paths": [str(path) for path in paths],
+                "queries": dict.fromkeys(targets, []),
+            }), encoding="utf-8")
+            outcome = subprocess.run(
+                argv, capture_output=True, text=True, timeout=60, check=False,
+                env={
+                    **env,
+                    "SKARMORY_PHASE03_EXTERNAL_REQUEST": str(request),
+                    "SKARMORY_PHASE03_EXTERNAL_RESPONSE": str(response),
+                },
+            )
+            if not passed_exact_test(outcome, EXTERNAL_TEST):
+                reports.append((outcome, fixtures, None))
+                raise ValueError("the named native dependency metadata test failed")
+            report = json.loads(response.read_text(encoding="utf-8"))
+        reports.append((outcome, fixtures, report))
+        return report
+
+    def search_dirs(projects):
+        if len(projects) != 1:
+            raise ValueError("the original case must select exactly one project")
+        return [Path(root) for root in build(projects[0], sys.path, [])["roots"]]
+
+    class Index:
+        def __init__(self, paths):
+            targets = ["fakelib.HTMLRenderer"]
+            if key == EXTERNAL_INDEX:
+                targets.extend(["aliased.Renderer", "cyclic.Loop", "not_installed.Thing"])
+            self.classes = build(None, paths, targets)["classes"]
+
+        def defining_class(self, target, member):
+            return (self.classes[target] or {}).get(member)
+
+        def mro_members(self, target):
+            return self.classes[target]
+
+    _, function = key.split("::", 1)
+    original = source[function]
+    previous_trace = sys.gettrace()
+    failure = None
+    try:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            with patch.dict(original.__globals__, {
+                "default_search_dirs": search_dirs, "ExternalClassIndex": Index,
+            }):
+                sys.settrace(trace)
+                if key == EXTERNAL_INSIDE:
+                    original(fixture, monkeypatch)
+                else:
+                    original(fixture)
+    except (AssertionError, ValueError, OSError) as error:
+        failure = str(error)
+    finally:
+        sys.settrace(previous_trace)
+    if not reports:
+        raise ValueError("the original dependency fixture did not use native metadata")
+    if not failure and len(reports) != (3 if key == EXTERNAL_INSIDE else 1):
+        raise ValueError("the original dependency fixture must use the expected native metadata operations")
+    outcome, fixtures, _report = reports[-1]
+    return outcome, fixtures, {
+        "metadata": [report for _, _, report in reports], "assertion_error": failure,
+    }
+
+
 def replay_exception_control(key, source, fixture, argv, env):
     import pytest
     from skylos.deadcode import fastapi_liveness
@@ -429,6 +528,9 @@ def engine_case(args, key, case, env, trace=None):
         source_file, assertions, prerequisites, test = (
             BUDGET_SOURCE, BUDGET_ASSERTIONS, BUDGET_PREREQUISITES, BUDGET_TEST,
         )
+    elif key in EXTERNAL_CASES:
+        source_file, assertions, prerequisites = EXTERNAL_CASES[key]
+        test = EXTERNAL_TEST
     elif key in EXCEPTION_CONTROLS:
         source_file, _, test, assertions, prerequisites = EXCEPTION_CONTROLS[key]
     else:
@@ -453,6 +555,8 @@ def engine_case(args, key, case, env, trace=None):
             outcome, fixtures, details = replay_truth_chain(key, source, fixture, argv, env, trace)
         elif key == BUDGET_CASE:
             outcome, fixtures, details = replay_initializer_budget(source, fixture, argv, env, trace)
+        elif key in EXTERNAL_CASES:
+            outcome, fixtures, details = replay_external_classes(key, source, fixture, argv, env, trace)
         elif key in EXCEPTION_CONTROLS:
             outcome, fixtures, details = replay_exception_control(key, source, fixture, argv, env)
         elif key == CASE:

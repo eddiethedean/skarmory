@@ -17816,9 +17816,8 @@ assertions = ["test/test_framework_class_attr_liveness.py:22", "test/test_framew
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_liveness.py:22", "test/test_framework_class_attr_liveness.py:180"]
 provenance = "Pinned test/test_framework_class_attr_liveness.py:148."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original private search-directory assertion includes a project venv and then checks liveness through the public API. The SDK selects only app.py and reports unresolved_subclass_hook and unresolved_constructor for the excluded external base. A qualification port needs both the search prerequisite and the original liveness checks."
 
 [[cases]]
 id = "test/test_framework_class_attr_liveness.py::test_vendored_site_packages_inside_scan_still_excluded"
@@ -17829,9 +17828,8 @@ assertions = ["test/test_framework_class_attr_liveness.py:200"]
 prerequisites = []
 provenance = "Pinned test/test_framework_class_attr_liveness.py:196."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original directly tests Skylos's private default_search_dirs result without a public scan. Scope review is pending for an equivalent native dependency-discovery assertion."
 
 # External overrides and bounded framework protocol coverage.
 
@@ -17856,9 +17854,8 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["installed-sdk", "grep-verification", "test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:131."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original uses a temporary site-packages source added to sys.path outside the project. The native scan reports unresolved subclass and constructor dispatch. The port needs an explicit external source selection and must preserve the assertion that the package is never imported."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_unresolvable_external_base_keeps_reporting"
@@ -17881,9 +17878,8 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:157."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original checks the private Skylos dependency search and class index without running a public scan. Scope review is pending for the equivalent native source-selection assertions."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_index_follows_reexports_aliases_and_stops_on_cycles"
@@ -17894,9 +17890,8 @@ assertions = ["test/test_dead_code_framework_overrides.py:25", "test/test_dead_c
 prerequisites = ["test/test_dead_code_framework_overrides.py:25"]
 provenance = "Pinned test/test_dead_code_framework_overrides.py:168."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original directly constructs Skylos's private external class index and tests re-exports, cycles, and dependency non-execution. A native engine port needs an external class index and must verify the same controls."
 
 [[cases]]
 id = "test/test_dead_code_framework_overrides.py::test_traitlets_handlers_and_dynamic_defaults"
