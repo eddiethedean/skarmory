@@ -572,7 +572,10 @@ Django's `connect()` method. It accepts `@receiver`, a stored receiver
 decorator, and `connect()`, including the named signal and callback arguments
 and literal lists or tuples of signals. A local signal with a resolved Django
 `connect()` method can establish registration. Registrations inside unresolved
-branches contribute possible-use evidence. A proven registration
+branches contribute possible-use evidence. A source signal subclass can
+forward a callback through a source helper that registers it with a resolved
+standard signal under a literal environment guard. That registration remains
+possible. A proven registration
 whose module is outside the known load path of an externally configured project
 contributes `django_signal_unknown_loading` possible-use evidence. Opaque
 registrations in loaded modules and registrations without a selected setup produce

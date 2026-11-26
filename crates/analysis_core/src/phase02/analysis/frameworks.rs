@@ -3937,7 +3937,163 @@ impl Graph<'_> {
             return DjangoReceiver::Invalid;
         };
         let value = self.identity(scope, signal, before, depth + 1);
+        if keywords.is_empty()
+            && let Some(wrappers) =
+                self.conditional_django_signal_forwarders(&value, (scope, before))
+        {
+            for target in wrappers {
+                self.edge(scope, target, mcp_tools::DECORATOR_APPLICATION, "certain");
+            }
+            return DjangoReceiver::Possible;
+        }
         self.django_signal_sources(&value, (scope, before))
+    }
+
+    fn conditional_django_signal_forwarders(
+        &mut self,
+        value: &Value,
+        access: (ScopeId, Location),
+    ) -> Option<[SymbolId; 2]> {
+        let Value::Instance(class) = value else {
+            return None;
+        };
+        if self.framework_class_role(*class, &mut BTreeSet::new(), 0)
+            != Some(FrameworkClassRole::DjangoSignal)
+            || self.class_lineage(*class).0.iter().any(|&body| {
+                self.scopes[body].owner.is_none_or(|owner| {
+                    self.has_unmodeled_class_write(owner)
+                        || ["__getattribute__", "__getattr__"].into_iter().any(|name| {
+                            self.local(body, name, END).is_some()
+                                || self.class_member_write(owner, name, access).is_some()
+                        })
+                })
+            })
+        {
+            return None;
+        }
+        let Value::Callable(wrapper) = self.member(value.clone(), "connect", access, 0) else {
+            return None;
+        };
+        let Binding::Definition(definition, body) = self.symbols[wrapper.target].binding else {
+            return None;
+        };
+        if wrapper.verified || !field_dispatch::plain_method(definition, 2) {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::Return(Some(Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        ..
+                    })),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        let ExpressionKind::Name(helper_name) = &function.kind else {
+            return None;
+        };
+        let module = self.scopes[body].file;
+        if !keywords.is_empty()
+            || !matches!(arguments.as_slice(), [arg]
+                if matches!(&arg.kind, ExpressionKind::Name(name) if name == &definition.parameters[1].text))
+            || definition
+                .parameters
+                .iter()
+                .any(|parameter| parameter.text == *helper_name)
+            || self
+                .module_member_write(&self.files[module].module, helper_name, access)
+                .is_some()
+        {
+            return None;
+        }
+        let before = if module == self.scopes[access.0].file {
+            access.1
+        } else {
+            END
+        };
+        let Value::Callable(helper) = self.probe_identity(module, function, before) else {
+            return None;
+        };
+        let Binding::Definition(definition, body) = self.symbols[helper.target].binding else {
+            return None;
+        };
+        if helper.verified
+            || !matches!(helper.receiver, Receiver::Ordinary)
+            || self.symbols[helper.target].scope != module
+            || !field_dispatch::plain_method(definition, 1)
+        {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::If {
+                        test,
+                        body: branch,
+                        otherwise,
+                    },
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        if !otherwise.is_empty() || !self.closed_django_signal_environment_guard(body, test) {
+            return None;
+        }
+        let [
+            Statement {
+                kind:
+                    StatementKind::Evaluate(Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        at,
+                    }),
+                ..
+            },
+        ] = branch.as_slice()
+        else {
+            return None;
+        };
+        (keywords.is_empty()
+            && matches!(arguments.as_slice(), [arg]
+                if matches!(&arg.kind, ExpressionKind::Name(name) if name == &definition.parameters[0].text))
+            && matches!(self.probe_identity(body, function, *at), Value::Provider(provider)
+                if provider.strip_suffix(".connect").is_some_and(is_django_signal)))
+        .then_some([wrapper.target, helper.target])
+    }
+
+    fn closed_django_signal_environment_guard(&mut self, body: ScopeId, test: &Expression) -> bool {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &test.kind
+        else {
+            return false;
+        };
+        keywords.is_empty()
+            && matches!(
+                arguments.as_slice(),
+                [Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }]
+            )
+            && matches!(self.probe_identity(body, function, test.at), Value::Provider(provider) if provider == "os.getenv")
     }
 
     pub(super) fn django_receiver_rejects_definition(
