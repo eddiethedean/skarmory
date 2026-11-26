@@ -8250,6 +8250,14 @@ impl<'a> Graph<'a> {
                 );
             }
             Value::Callable(invocation) => {
+                if self.phase03
+                    && !reads_rebound_global
+                    && self.apply_atexit_forwarding_decorator(
+                        scope, decorator, target, before, invocation,
+                    )
+                {
+                    return true;
+                }
                 self.invoke(scope, invocation, "decorator", "certain", decorator.at);
                 let Binding::Definition(definition, body) = self.symbols[invocation.target].binding
                 else {
@@ -8412,6 +8420,100 @@ impl<'a> Graph<'a> {
         {
             return false;
         }
+        self.decorator_receives_function(scope, decorator, target, before)
+    }
+
+    fn apply_atexit_forwarding_decorator(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+        invocation: Invocation,
+    ) -> bool {
+        let provider_scope = self.symbols[invocation.target].scope;
+        if scope != self.scopes[scope].file
+            || provider_scope != self.scopes[provider_scope].file
+            || self.failed_terminal_modules.contains(&provider_scope)
+            || self.branch_depth != 0
+            || invocation.verified
+            || !matches!(decorator.kind, ExpressionKind::Name(_))
+        {
+            return false;
+        }
+        let Some((definition, _)) = self.bounded_replacement_function(invocation) else {
+            return false;
+        };
+        let [
+            Statement {
+                kind: StatementKind::Evaluate(call),
+                ..
+            },
+            Statement {
+                kind: StatementKind::Return(Some(result)),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &call.kind
+        else {
+            return false;
+        };
+        let callback = &definition.parameters[0].text;
+        let ExpressionKind::Name(registrar) = &function.kind else {
+            return false;
+        };
+        if definition.is_generator
+            || registrar == callback
+            || !keywords.is_empty()
+            || !matches!(arguments.as_slice(), [argument]
+                if matches!(&argument.kind, ExpressionKind::Name(name) if name == callback))
+            || !matches!(&result.kind, ExpressionKind::Name(name) if name == callback)
+            || !matches!(self.symbols[target].binding, Binding::Definition(callback, _)
+                if callback.kind == DefinitionKind::Function && !callback.is_generator
+                    && callback.parameters.is_empty())
+        {
+            return false;
+        }
+        let provider_before = if provider_scope == scope { before } else { END };
+        let module = &self.files[provider_scope].module;
+        if self
+            .module_member_write(module, registrar, (scope, before))
+            .is_some()
+            || !matches!(self.probe_identity(provider_scope, function, provider_before),
+                Value::Provider(name) if name == "atexit.register")
+            || !self.decorator_receives_function(scope, decorator, target, before)
+        {
+            return false;
+        }
+        // The wrapper binds and returns its argument from the same frame.
+        // The registered callback can run later, after module initialization.
+        self.edge(
+            scope,
+            invocation.target,
+            mcp_tools::DECORATOR_APPLICATION,
+            "certain",
+        );
+        self.retain_atexit_callback(
+            scope,
+            Value::Callable(Invocation::ordinary(target)),
+            decorator.at,
+        )
+    }
+
+    fn decorator_receives_function(
+        &mut self,
+        scope: ScopeId,
+        decorator: &Expression,
+        target: SymbolId,
+        before: Location,
+    ) -> bool {
         let Binding::Definition(definition, _) = self.symbols[target].binding else {
             return false;
         };
