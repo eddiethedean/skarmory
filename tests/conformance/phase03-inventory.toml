@@ -7046,11 +7046,10 @@ languages = ["python"]
 source = "test/test_fastapi_evidence_boundaries.py"
 assertions = ["test/test_fastapi_evidence_boundaries.py:15", "test/test_fastapi_evidence_boundaries.py:104", "test/test_fastapi_evidence_boundaries.py:107"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_fastapi_evidence_boundaries.py at the pinned revision"
+provenance = "The derived fixture supplies the local plugin. CPython runs the unrelated deferred callback and its helper at interpreter shutdown without registering a FastAPI route."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The external plugin cannot be resolved in the fixture. Preserve possible callback and helper use through an external decorator without inventing a FastAPI registration.", evidence = "Skylos 5.7.0 at 87978e69adf91b3811e97b00c40aa39d7937cd94, unchanged test/test_fastapi_evidence_boundaries.py fixture, CPython 3.11.15, FastAPI 0.141.1, Starlette 1.3.1. Import app from the fixture root. app.py:5 raises ModuleNotFoundError for plugin. The source-owned facade returns the function unchanged. An external register_entry, if supplied, could invoke it and its helper.", assertions = ["coverage:incomplete", "issue:unresolved_decorator:app.py:6", "definition:app.endpoint", "definition:app.helper", "evidence:opaque_decorator_argument:possible:app.endpoint", "evidence:direct_call:possible:app.helper", "no-evidence:fastapi_registration:*:app.endpoint"] }
 
 [[cases]]
 id = "test/test_fastapi_hook_precision.py::test_actual_constructor_callbacks_and_required_parameters_are_live[exception_handlers]"
