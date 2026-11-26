@@ -227,6 +227,10 @@ impl Graph<'_> {
                         }
                     }
                 }
+                StatementKind::Evaluate(expression)
+                    if track_framework_escapes
+                        && self.index_flask_login_mock_start(file, at, expression, conditional) => {
+                }
                 StatementKind::Evaluate(
                     expression @ Expression {
                         kind:
@@ -619,6 +623,102 @@ impl Graph<'_> {
             && let Some((_, _, replacement)) = flask_globals_update(expression)
         {
             self.walk(scope, replacement, at);
+            return true;
+        }
+        false
+    }
+
+    fn index_flask_login_mock_start(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+        conditional: bool,
+    ) -> bool {
+        let Some((constructor, arguments)) = mock_start(expression) else {
+            return false;
+        };
+        let Value::Provider(provider) = self.probe_identity(file, constructor, at) else {
+            return false;
+        };
+        let dotted_receiver;
+        let (receiver, member, replacement) = match (provider.as_str(), arguments) {
+            (
+                "unittest.mock.patch",
+                [
+                    Expression {
+                        kind: ExpressionKind::Text(target),
+                        ..
+                    },
+                    value,
+                ],
+            ) => {
+                let Some(rest) = target
+                    .strip_prefix(self.files[file].module.as_str())
+                    .and_then(|rest| rest.strip_prefix('.'))
+                else {
+                    return false;
+                };
+                let Some((name, member)) = rest.split_once('.') else {
+                    return false;
+                };
+                dotted_receiver = Expression {
+                    kind: ExpressionKind::Name(name.to_owned()),
+                    at,
+                };
+                (&dotted_receiver, member, value)
+            }
+            (
+                "unittest.mock.patch.object",
+                [
+                    receiver,
+                    Expression {
+                        kind: ExpressionKind::Text(member),
+                        ..
+                    },
+                    value,
+                ],
+            ) => (receiver, member.as_str(), value),
+            _ => return false,
+        };
+        if !flask_login_callback(member) {
+            return false;
+        }
+        let kind = ObjectKind::FlaskLoginManager;
+        let known_target = match self.probe_identity(file, receiver, at) {
+            Value::Object(site, ObjectKind::FlaskLoginManager) => matches!(
+                self.flask_member(site, kind, member, (file, at)),
+                Value::Method(..)
+            ),
+            Value::Provider(name)
+                if provider == "unittest.mock.patch.object"
+                    && is_flask_login_constructor(&name) =>
+            {
+                let class = ReceiverKey::FlaskBase(kind);
+                !self.framework_receiver_has_escaped(&class, None, (file, at))
+                    && self.member_write(&class, member, (file, at)).is_none()
+            }
+            _ => false,
+        };
+        if known_target {
+            self.index_member_write(file, at, receiver, member, Some(replacement), conditional);
+        }
+        known_target
+    }
+
+    pub(super) fn walk_flask_login_mock_start(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        at: Location,
+    ) -> bool {
+        if self.modeled_framework_write(scope, at)
+            && let Some((constructor, arguments)) = mock_start(expression)
+        {
+            self.walk(scope, constructor, at);
+            for argument in arguments {
+                self.walk(scope, argument, at);
+            }
             return true;
         }
         false
@@ -1326,6 +1426,30 @@ impl Graph<'_> {
             })
             .map(|write| write.value.clone())
     }
+}
+
+fn mock_start(expression: &Expression) -> Option<(&Expression, &[Expression])> {
+    let ExpressionKind::Call {
+        function,
+        arguments,
+        keywords,
+    } = &expression.kind
+    else {
+        return None;
+    };
+    let ExpressionKind::Member(patch, method) = &function.kind else {
+        return None;
+    };
+    let ExpressionKind::Call {
+        function: constructor,
+        arguments: target,
+        keywords: patch_keywords,
+    } = &patch.kind
+    else {
+        return None;
+    };
+    (method == "start" && arguments.is_empty() && keywords.is_empty() && patch_keywords.is_empty())
+        .then_some((constructor, target))
 }
 
 fn flask_globals_update(expression: &Expression) -> Option<(&Expression, &str, &Expression)> {
