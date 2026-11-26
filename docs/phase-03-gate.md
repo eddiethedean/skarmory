@@ -18,6 +18,9 @@ reviewed Starlette, unittest, Django, and Gin fixture corrections while those
 upstream PRs are in review. It also supplies runtime-dependent FastAPI
 reassignment inputs with the original pytest IDs. The baseline manifest records
 the source revision, derived revision, exact patch hash, and correction provenance.
+The fixture patch includes context from the original Apache-2.0-licensed
+Skylos files. The pinned license text is kept with the baseline.
+[Skylos fixture license](../tests/conformance/baselines/skylos-5.7.0-LICENSE.txt)
 
 The materializer verifies the patch, checks the reviewed corpus and inline
 fixture changes, and verifies the expected Git commit before switching to it.
