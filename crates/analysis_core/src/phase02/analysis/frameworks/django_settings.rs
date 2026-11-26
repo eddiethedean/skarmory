@@ -234,6 +234,25 @@ impl Graph<'_> {
         Some(binding)
     }
 
+    pub(super) fn django_default_toolbar_panels(
+        &mut self,
+        settings: ScopeId,
+        access: (ScopeId, Location),
+    ) -> bool {
+        // DebugToolbarConfig.ready runs each panel's startup hook. Custom
+        // panel declarations are outside the bounded default-provider model.
+        self.discovery.is_some_and(|project| {
+            project.top_level_module_absent("debug_toolbar")
+                && project.top_level_module_absent("django")
+        }) && self.local(settings, "DEBUG_TOOLBAR_PANELS", END).is_none()
+            && self
+                .module_member_write(&self.files[settings].module, "DEBUG_TOOLBAR_PANELS", access)
+                .is_none()
+            && self
+                .django_settings_initializer_writes(settings)
+                .is_some_and(|writes| writes.modules.is_empty())
+    }
+
     pub(in crate::phase02::analysis) fn external_django_setting_declarations(
         &mut self,
         reach: &Reachability,

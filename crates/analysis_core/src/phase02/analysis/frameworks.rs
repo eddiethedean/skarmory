@@ -2887,6 +2887,8 @@ impl Graph<'_> {
             ) && external_django
         };
         let mut admin_ready = None;
+        let mut staticfiles_started = false;
+        let mut toolbar_started = false;
         let mut selected = Vec::new();
         for app in apps {
             let resolved = if let Value::Text(entry) = app {
@@ -2908,6 +2910,30 @@ impl Graph<'_> {
                     )
                 {
                     // These standard apps contribute no source modules to discovery.
+                    continue;
+                }
+                if external_django
+                    && matches!(
+                        entry.as_str(),
+                        "django.contrib.staticfiles"
+                            | "django.contrib.staticfiles.apps.StaticFilesConfig"
+                    )
+                    && self
+                        .discovery
+                        .is_some_and(|project| project.top_level_module_absent("django"))
+                    && !std::mem::replace(&mut staticfiles_started, true)
+                {
+                    // The built-in ready hook registers Django's own system checks.
+                    continue;
+                }
+                if external_django
+                    && matches!(
+                        entry.as_str(),
+                        "debug_toolbar" | "debug_toolbar.apps.DebugToolbarConfig"
+                    )
+                    && self.django_default_toolbar_panels(settings, (scope, at))
+                    && !std::mem::replace(&mut toolbar_started, true)
+                {
                     continue;
                 }
                 if external_django
