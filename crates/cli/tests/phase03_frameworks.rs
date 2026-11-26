@@ -91,6 +91,79 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn traitlets_hooks_require_genuine_text_trait_declarations() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let source = r#"from traitlets import Unicode, default, observe, validate
+from traitlets.config import LoggingConfigurable
+
+def handler_body():
+    return "set"
+
+class Base(LoggingConfigurable):
+    pass
+
+class Settings(Base):
+    root = Unicode()
+    alternate = Unicode()
+
+    @default("alternate")
+    def modern(self):
+        return handler_body()
+
+    def _root_default(self):
+        return handler_body()
+
+    @validate("root")
+    def checked(self, proposal):
+        return proposal["value"]
+
+    @observe("root")
+    def changed(self, change):
+        return handler_body()
+
+    def _missing_default(self):
+        return None
+
+SETTINGS = Settings
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(unused.contains(&"app.Settings._missing_default"));
+    assert!(unused.contains(&"app.handler_body"));
+    for name in ["modern", "_root_default", "checked", "changed"] {
+        let qualified = format!("app.Settings.{name}");
+        assert_eq!(
+            evidence_certainties(&report, &qualified, "framework_class_attribute_declaration"),
+            ["possible"],
+        );
+        assert!(evidence_certainties(&report, &qualified, "direct_call").is_empty());
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        &path,
+        source.replace("@default(\"alternate\")", "@default(\"root\")"),
+    )
+    .unwrap();
+    let conflict = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        evidence_certainties(
+            &conflict,
+            "app.Settings.modern",
+            "framework_class_attribute_declaration"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn stdlib_override_declarations_keep_hooks_without_opening_their_bodies() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
