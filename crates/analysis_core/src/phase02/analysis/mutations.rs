@@ -35,7 +35,7 @@ pub(super) struct Mutations {
     members: BTreeMap<ReceiverKey, BTreeMap<String, Vec<Write>>>,
     modules: BTreeMap<String, Vec<Write>>,
     command_namespaces: BTreeSet<ScopeId>,
-    command_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
+    module_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
     command_code: BTreeMap<SymbolId, Vec<Write>>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     unmodeled_class_writes: BTreeSet<SymbolId>,
@@ -105,7 +105,7 @@ impl Graph<'_> {
             )
     }
 
-    pub(super) fn command_global_value(
+    pub(super) fn module_global_value(
         &mut self,
         scope: ScopeId,
         at: Location,
@@ -119,7 +119,7 @@ impl Graph<'_> {
                     scope,
                     at,
                     "unresolved_attribute_write",
-                    "Django command module lookup depends on an unresolved namespace write",
+                    "module lookup depends on an unresolved namespace write",
                 );
                 Value::Unknown
             }
@@ -227,15 +227,22 @@ impl Graph<'_> {
                         }
                     }
                 }
-                StatementKind::Evaluate(Expression {
-                    kind:
-                        ExpressionKind::Call {
-                            function,
-                            arguments,
-                            keywords,
-                        },
-                    ..
-                }) if !arguments.is_empty() || !keywords.is_empty() => {
+                StatementKind::Evaluate(
+                    expression @ Expression {
+                        kind:
+                            ExpressionKind::Call {
+                                function,
+                                arguments,
+                                keywords,
+                            },
+                        ..
+                    },
+                ) if !arguments.is_empty() || !keywords.is_empty() => {
+                    if track_framework_escapes
+                        && self.index_flask_globals_update(file, at, expression, conditional)
+                    {
+                        continue;
+                    }
                     if keywords.is_empty()
                         && let [receiver, name, rest @ ..] = arguments.as_slice()
                         && let ExpressionKind::Text(member) = &name.kind
@@ -541,6 +548,18 @@ impl Graph<'_> {
             return false;
         }
         let replacement = self.probe_identity(file, value, at);
+        self.index_module_global_value(file, at, name, replacement, conditional);
+        true
+    }
+
+    fn index_module_global_value(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        name: &str,
+        replacement: Value,
+        conditional: bool,
+    ) {
         let value = if conditional || replacement.contains_unknown() {
             MemberWriteValue::Ambiguous
         } else {
@@ -548,13 +567,61 @@ impl Graph<'_> {
             MemberWriteValue::Replacement(replacement)
         };
         self.mutations
-            .command_globals
+            .module_globals
             .entry(file)
             .or_default()
             .entry(name.into())
             .or_default()
             .push(Write { file, at, value });
+    }
+
+    fn index_flask_globals_update(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        expression: &Expression,
+        conditional: bool,
+    ) -> bool {
+        let Some((globals, name, replacement)) = flask_globals_update(expression) else {
+            return false;
+        };
+        let current = Expression {
+            kind: ExpressionKind::Name(name.to_owned()),
+            at,
+        };
+        if name.starts_with("__")
+            || !matches!(self.probe_identity(file, globals, at), Value::Provider(provider)
+                if provider == "builtins.globals")
+            || !matches!(
+                self.probe_identity(file, &current, at),
+                Value::Object(_, ObjectKind::FlaskLoginManager)
+            )
+        {
+            return false;
+        }
+        let Value::Instance(class) = self.probe_identity(file, replacement, at) else {
+            return false;
+        };
+        if !self.plain_default_provider(class, (file, at), &BTreeSet::new()) {
+            return false;
+        }
+        self.index_module_global_value(file, at, name, Value::Instance(class), conditional);
         true
+    }
+
+    pub(super) fn walk_flask_globals_update(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        at: Location,
+    ) -> bool {
+        if self.modeled_framework_write(scope, at)
+            && let Some((_, _, replacement)) = flask_globals_update(expression)
+        {
+            self.walk(scope, replacement, at);
+            return true;
+        }
+        false
     }
 
     fn index_django_command_code(
@@ -727,14 +794,14 @@ impl Graph<'_> {
         Some(fields)
     }
 
-    pub(super) fn command_global_write(
+    pub(super) fn module_global_write(
         &self,
         file: ScopeId,
         name: &str,
         before: Location,
         access: (ScopeId, Location),
     ) -> Option<MemberWriteValue> {
-        let writes = self.mutations.command_globals.get(&file)?.get(name)?;
+        let writes = self.mutations.module_globals.get(&file)?.get(name)?;
         let before = if access.0 == file && position(access.1) < position(before) {
             access.1
         } else {
@@ -1259,6 +1326,53 @@ impl Graph<'_> {
             })
             .map(|write| write.value.clone())
     }
+}
+
+fn flask_globals_update(expression: &Expression) -> Option<(&Expression, &str, &Expression)> {
+    let ExpressionKind::Call {
+        function,
+        arguments,
+        keywords,
+    } = &expression.kind
+    else {
+        return None;
+    };
+    let ExpressionKind::Member(namespace, update) = &function.kind else {
+        return None;
+    };
+    let [
+        Expression {
+            kind: ExpressionKind::Dictionary(items),
+            ..
+        },
+    ] = arguments.as_slice()
+    else {
+        return None;
+    };
+    let [
+        Expression {
+            kind: ExpressionKind::Text(name),
+            ..
+        },
+        value,
+    ] = items.as_slice()
+    else {
+        return None;
+    };
+    let ExpressionKind::Call {
+        function: globals,
+        arguments: namespace_arguments,
+        keywords: namespace_keywords,
+    } = &namespace.kind
+    else {
+        return None;
+    };
+    (update == "update"
+        && keywords.is_empty()
+        && namespace_arguments.is_empty()
+        && namespace_keywords.is_empty()
+        && matches!(&globals.kind, ExpressionKind::Name(name) if name == "globals"))
+    .then_some((globals, name, value))
 }
 
 fn provider_module(name: &str) -> bool {

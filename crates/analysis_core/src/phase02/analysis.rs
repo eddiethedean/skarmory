@@ -2387,9 +2387,9 @@ impl<'a> Graph<'a> {
             _ => access,
         };
         if let Some(&file) = self.modules.get(module)
-            && let Some(write) = self.command_global_write(file, member, before, access)
+            && let Some(write) = self.module_global_write(file, member, before, access)
         {
-            return self.command_global_value(scope, at, write);
+            return self.module_global_value(scope, at, write);
         }
         if matches!(mode, ModuleMemberAccess::FromImport)
             && let Some(replacement) = self.imported_module_write(module, access)
@@ -3584,14 +3584,14 @@ impl<'a> Graph<'a> {
                         END
                     };
                     if binding_scope == self.scopes[binding_scope].file
-                        && let Some(write) = self.command_global_write(
+                        && let Some(write) = self.module_global_write(
                             binding_scope,
                             name,
                             binding_before,
                             (scope, before),
                         )
                     {
-                        return self.command_global_value(scope, expression.at, write);
+                        return self.module_global_value(scope, expression.at, write);
                     }
                     let value = self.binding(id, binding_before, depth + 1);
                     if matches!(value, Value::DeletedModuleBinding) {
@@ -7476,7 +7476,10 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::Evaluate(value) => {
-                    if !self.phase03 || !self.discarded_generator_call(scope, value, at) {
+                    if !self.phase03
+                        || !(self.discarded_generator_call(scope, value, at)
+                            || self.walk_flask_globals_update(scope, value, at))
+                    {
                         self.walk(scope, value, at);
                     }
                 }
