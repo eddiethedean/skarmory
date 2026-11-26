@@ -216,7 +216,10 @@ The remaining 17 cases are Python release qualification gaps. The
 records their original assertions and prerequisites. The release preview
 archives the frozen JUnit output for all 26 cases and the paired audit results
 for these 17 in `closure-safety-audit.json`. Only the release inventory
-contributes case results to reconciliation. The inventory remains incomplete.
+contributes case results to reconciliation. The diagnostic manifest blocks
+publication while any required cases remain there, even if the release
+inventory is marked complete. The preview still reports the results of all
+mapped release cases.
 
 | Candidate outcome on `1be3369` | Pytest parameter IDs |
 | --- | --- |
