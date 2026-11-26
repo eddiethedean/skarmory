@@ -164,6 +164,56 @@ SETTINGS = Settings
 }
 
 #[test]
+fn missing_child_of_an_inert_package_selects_only_the_plain_optional_base() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let package = root.join("lookalike");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        root.join("app.py"),
+        r#"try:
+    from lookalike.backends.redis import RedisBackend
+except ImportError:
+    class RedisBackend:
+        pass
+
+class Backend(RedisBackend):
+    ResultConsumer = object
+    orphan = 1
+
+ENTRY = Backend()
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_variables");
+    assert!(unused.contains(&"app.Backend.ResultConsumer"));
+    assert!(unused.contains(&"app.Backend.orphan"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::create_dir(package.join("backends")).unwrap();
+    fs::write(package.join("backends/__init__.py"), "").unwrap();
+    fs::write(
+        package.join("backends/redis.py"),
+        "class RedisBackend: pass\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["kind"] == "unresolved_optional_import" })
+    );
+}
+
+#[test]
 fn stdlib_override_declarations_keep_hooks_without_opening_their_bodies() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

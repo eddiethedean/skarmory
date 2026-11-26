@@ -1043,6 +1043,16 @@ impl<'a> Graph<'a> {
                 StatementKind::Import(import) => {
                     self.bind(scope, &import.local, Binding::Import(import));
                 }
+                StatementKind::OptionalProjectClassFallback {
+                    package,
+                    missing_member,
+                    fallback,
+                } if self
+                    .optional_project_package(scope, statement.at, package, missing_member)
+                    .is_some() =>
+                {
+                    self.index(scope, fallback);
+                }
                 StatementKind::ProviderWildcardImport(imports)
                     if self.supported_provider_wildcard(scope, statement.at, imports) =>
                 {
@@ -1141,6 +1151,39 @@ impl<'a> Graph<'a> {
                 _ => {}
             }
         }
+    }
+
+    fn optional_project_package(
+        &self,
+        scope: ScopeId,
+        at: Location,
+        package: &str,
+        missing_member: &str,
+    ) -> Option<ScopeId> {
+        if !self.phase03
+            || !self.terminal_proofs
+            || scope != self.scopes[scope].file
+            || self.local(scope, "ImportError", at).is_some()
+            || self.local(scope, "__builtins__", at).is_some()
+        {
+            return None;
+        }
+        let project = self.discovery?;
+        let &file = self.modules.get(package)?;
+        let initializer = &self.files[file];
+        // An inert regular package has a fixed lookup path and no lazy
+        // attribute hook. The discovery snapshot covers source and opaque
+        // import candidates, including names excluded from analysis.
+        (initializer.is_package
+            && initializer.facts.body.is_empty()
+            && project.root_package_source_unambiguous(
+                &initializer.path,
+                &initializer.path,
+                package,
+                "__init__",
+            )
+            && project.root_package_submodule_absent(&initializer.path, missing_member))
+        .then_some(file)
     }
 
     fn indexed_bool(
@@ -7660,6 +7703,27 @@ impl<'a> Graph<'a> {
                         "star imports cannot resolve finite bindings at this location",
                     );
                 }
+                StatementKind::OptionalProjectClassFallback {
+                    package,
+                    missing_member,
+                    fallback,
+                } => {
+                    if let Some(file) =
+                        self.optional_project_package(scope, at, package, missing_member)
+                    {
+                        self.scopes[scope].imports.push(file);
+                        if self.suite(scope, fallback) {
+                            return true;
+                        }
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_optional_import",
+                            "optional import requires a proven missing member of an inert selected regular package",
+                        );
+                    }
+                }
             }
         }
         false
@@ -10983,7 +11047,8 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             StatementKind::ProviderWildcardImport(imports) => {
                 assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
             }
-            StatementKind::ProjectWildcardImport { .. } => {}
+            StatementKind::ProjectWildcardImport { .. }
+            | StatementKind::OptionalProjectClassFallback { .. } => {}
             StatementKind::Assign {
                 names,
                 value,
