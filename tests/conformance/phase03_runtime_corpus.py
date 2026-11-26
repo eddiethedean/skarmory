@@ -7,6 +7,7 @@ from dataclasses import dataclass
 class Control:
     unused: tuple[tuple[str, str], ...] = ()
     absent_evidence: tuple[tuple[str, str], ...] = ()
+    test_only_unused: tuple[str, ...] = ()
     diagnostic: tuple[str, int, str] | None = None
 
 
@@ -46,13 +47,18 @@ CONTROLS = {
     )),
     # This module loads zero tests. A test-file whitelist is a separate
     # reporting policy and cannot establish that a lifecycle hook runs.
-    "python-unittest-lifecycle": Control(unused=tuple(
-        ("unused_functions", f"test_case.{name}")
-        for name in (
-            "TestCase.setUpClass", "TestCase.tearDownClass",
-            "setUpModule", "tearDownModule", "prepare_record",
-        )
-    )),
+    "python-unittest-lifecycle": Control(
+        test_only_unused=(
+            "test_case.TestCase.setUpClass", "test_case.TestCase.tearDownClass",
+            "test_case.setUpModule", "test_case.tearDownModule", "test_case.prepare_record",
+        ),
+        absent_evidence=tuple(
+            (f"test_case.{name}", "unittest_discovery")
+            for name in (
+                "TestCase.setUpClass", "TestCase.tearDownClass", "setUpModule", "tearDownModule",
+            )
+        ),
+    ),
     # Gin does not supply timed(). The coverage diagnostic must stay visible.
     "python-decorator-factory-registration": Control(
         diagnostic=("trainer/components.py", 35, "unresolved_decorator"),
@@ -84,6 +90,15 @@ def evaluate_runtime_control(report, selected_paths, control):
     for bucket, name in control.unused:
         if not any(row["full_name"] == name for row in report[bucket]):
             failures.append(f"expected {name} in {bucket}")
+    if control.test_only_unused:
+        dead = {row["full_name"] for row in report["unused_functions"]}
+        dead.update(
+            row["full_name"] for row in report["whitelisted"]
+            if row["reason"] == "test-only path"
+        )
+        for name in control.test_only_unused:
+            if name not in dead:
+                failures.append(f"expected non-use for {name}")
     definitions = {row["name"] for row in report["definitions"].values()}
     evidence = {
         (row["qualified_name"], edge["kind"])

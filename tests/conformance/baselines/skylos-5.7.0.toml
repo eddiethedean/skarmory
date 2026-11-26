@@ -50,3 +50,53 @@ build_tool = "maturin 1.16.0"
 rust = "1.96.0"
 disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
+
+[phase03_reference]
+git_revision = "b979ee83989289c962dae15e4856f5fbbfb6a6bd"
+patch = "skylos-5.7.0-phase03-fixtures.patch"
+patch_sha256 = "8eb36c775d12412d7d2e4141ba1d77a383a9191bf52e9c819ad6278ff016c9b1"
+
+[[phase03_reference.corrections]]
+id = "starlette-add-route"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1300"
+upstream_head = "164a259d1785ab66425a324e2dac9b6e549ef5be"
+
+[[phase03_reference.corrections]]
+id = "python-unittest-lifecycle"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1301"
+upstream_head = "1805017533aea29892a1a908d42c792172b77c9a"
+
+[[phase03_reference.corrections]]
+id = "django-urlpatterns"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1302"
+upstream_head = "e8a4b34d9542f97ebe721df06b3448c7b8fb36d7"
+
+[[phase03_reference.corrections]]
+id = "django-class-based-view"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1302"
+upstream_head = "e8a4b34d9542f97ebe721df06b3448c7b8fb36d7"
+
+[[phase03_reference.corrections]]
+id = "django-management-command"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1302"
+upstream_head = "e8a4b34d9542f97ebe721df06b3448c7b8fb36d7"
+
+[[phase03_reference.corrections]]
+id = "django-signal-receiver"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1302"
+upstream_head = "e8a4b34d9542f97ebe721df06b3448c7b8fb36d7"
+
+[[phase03_reference.corrections]]
+id = "django-appconfig-ready"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1302"
+upstream_head = "e8a4b34d9542f97ebe721df06b3448c7b8fb36d7"
+
+[[phase03_reference.corrections]]
+id = "django-error-handlers"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1302"
+upstream_head = "e8a4b34d9542f97ebe721df06b3448c7b8fb36d7"
+
+[[phase03_reference.corrections]]
+id = "python-decorator-factory-registration"
+upstream_pr = "https://github.com/duriantaco/skylos/pull/1304"
+upstream_head = "c4baca58beec0e78ea2ced5c92596eaf96cc85fe"

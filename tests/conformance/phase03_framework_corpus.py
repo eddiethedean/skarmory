@@ -164,7 +164,7 @@ def check_runtime_corpus(corpus_ci, manifest, selected, scan):
 
 
 def run(upstream, sdk_python, selected, backend, *, runtime_controls=False):
-    check_checkout(upstream, "corpus")
+    check_checkout(upstream, "corpus", frozen_only=runtime_controls)
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(upstream))
     if backend == "python":

@@ -10,12 +10,9 @@ import tomllib
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
+from phase03_reference import BASELINE, phase03_revisions
 from phase03_review_assertions import SCOPED_ASSERTIONS, parse_assertion
 
-BASELINE = (
-    Path(__file__).resolve().parents[1]
-    / "tests/conformance/baselines/skylos-5.7.0.toml"
-)
 SCHEMA_VERSION = 1
 MILESTONE = "0.3"
 RESULT_STATUSES = {
@@ -117,7 +114,7 @@ def verify_fixtures(fixtures, root):
         if "sha256" not in fixture:
             result["blocker"] = f"{name}: original fixture provenance, digest, and license are unverified"
         elif result["observed_sha256"] != fixture["sha256"]:
-            result["blocker"] = f"{name}: fixture SHA-256 does not match the reviewed original"
+            result["blocker"] = f"{name}: fixture SHA-256 does not match the reviewed baseline"
     return evidence
 
 
@@ -129,8 +126,9 @@ def read_inventory(path):
     ):
         raise ValueError("unsupported inventory schema_version")
     reference = tomllib.loads(BASELINE.read_text(encoding="utf-8"))
-    if inventory.get("reference_revision") != reference["reference"]["git_revision"]:
-        raise ValueError("inventory revision differs from the pinned Skylos baseline")
+    _, selected = phase03_revisions(reference)
+    if inventory.get("reference_revision") != selected:
+        raise ValueError("inventory revision differs from the pinned Phase 0.3 Skylos baseline")
     if type(inventory.get("inventory_complete")) is not bool:
         raise ValueError("inventory_complete must be a boolean")
 

@@ -10,10 +10,38 @@ candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
 [Recorded seed reference outcomes](phase-03-reference.md)
 
+## Reviewed Phase 0.3 reference
+
+The release workflow derives its conformance checkout from Skylos 5.7.0 at
+`87978e69adf91b3811e97b00c40aa39d7937cd94`. The tracked patch supplies the
+reviewed Starlette, unittest, Django, and Gin fixture corrections while those
+upstream PRs are in review. The baseline manifest records the source revision,
+derived revision, exact patch hash, and upstream PR and head for every
+corrected case.
+
+The materializer verifies the patch, checks that only the reviewed corpus
+fixtures and their manifest paths change, and verifies the expected Git
+commit before switching to it. Analyzer code, test assertions, and the
+dependency lock come from the frozen revision. The gate checks fixture
+hashes and requires an ordinary pass on the original assertions from the
+derived checkout. The release retains separate controls on the frozen
+fixture bytes for review evidence.
+
+For a clean checkout of the frozen revision, materialize the same reference
+locally with:
+
+```sh
+python scripts/phase03_reference.py /path/to/skylos-5.7.0
+```
+
+Use the patched checkout for the SDK, engine, and CLI receipts. Use a
+separate unmodified checkout at the original revision for frozen controls.
+
 ## Reviewed framework mismatches
 
 The [case inventory](../tests/conformance/phase03-inventory.toml) records the
-original assertions and verified runtime discrepancies. A mapped
+original assertions and verified runtime discrepancies. The corpus rows in
+the table below describe the frozen inputs preserved for runtime controls. A mapped
 `runtime_review` includes the reason, runtime evidence and corrected
 assertions. Receipts preserve the original Skylos and Skarmory outcomes.
 The checker counts validated runtime reviews as preview passes under
@@ -29,7 +57,7 @@ passes on the original assertions.
 | Django source-layout admin stubs | The source-root fixture finds both empty files. Adding `src` to the import path selects the inert local `django` package and fails to import `django.apps`. Resolving from the repository root can select the external package. The fixture leaves the import path unspecified. |
 | Django command, autoreload and hook tests | The standalone fixtures leave installed apps, command selection, and invocation unspecified. Dispatching `handle`, validation, saving, and queries requires separate lifecycle actions. Escaped callbacks and classes remain unresolved without the external installer's code. |
 | Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1302) |
-| Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. The submitted fixture correction still needs upstream review and a reviewed baseline update. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1300) |
+| Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. The derived reference supplies the runtime-verified fixture correction. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1300) |
 | Gin decorator factory corpus case | Gin 0.5.0 raises `AttributeError` at `@gin.timed()` while importing the original component module. The fixture also supplies no `config.gin`. A corrected fixture loads both named bindings and passes on Skylos. Skarmory still reports incomplete coverage for reached Gin and retry operations. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1304) |
 | Django provider and settings fixtures | The original concrete imports invoke only `NcaaProvider.schedule_dates` and `ConcreteProvider.scoreboard` in their respective projects. The selected Pontoon-shaped settings evaluates `DEV` to false and leaves both development-only settings unbound. The launcher-free fixture needs explicit settings selection. Its auth application also needs `django.contrib.contenttypes` to finish setup. |
 | Pontoon-shaped Django startup | The WSGI fixture fails while loading admin because it omits `django.contrib.contenttypes`. The SDK extracts all sources, reports the unresolved wildcard imports, and keeps the original unused-code checks and bounded declaration evidence in complete file scopes. |

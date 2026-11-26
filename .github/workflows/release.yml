@@ -15,8 +15,10 @@ on:
       - 'licenses/**'
       - 'scripts/update_third_party_notices.py'
       - 'scripts/check_dead_code_gate.py'
+      - 'scripts/phase03_reference.py'
       - 'scripts/phase03_review_assertions.py'
       - 'tests/conformance/baselines/skylos-5.7.0.toml'
+      - 'tests/conformance/baselines/skylos-5.7.0-phase03-fixtures.patch'
       - 'tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt'
       - 'tests/conformance/phase03-inventory.toml'
       - 'tests/conformance/phase03_*.py'
@@ -318,6 +320,11 @@ jobs:
           ref: ${{ steps.skylos.outputs.revision }}
           path: phase03-skylos
           persist-credentials: false
+      - name: Materialize the reviewed Phase 0.3 fixture baseline
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        run: |
+          git -C phase03-skylos worktree add --detach "$GITHUB_WORKSPACE/phase03-skylos-frozen" HEAD
+          python scripts/phase03_reference.py phase03-skylos
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         with:
@@ -349,7 +356,7 @@ jobs:
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |
           phase03-skylos/.venv/bin/python tests/conformance/phase03_framework_corpus.py \
-            phase03-skylos --runtime-controls --sdk-python "$RUNNER_TEMP/phase03-sdk/bin/python" \
+            phase03-skylos-frozen --runtime-controls --sdk-python "$RUNNER_TEMP/phase03-sdk/bin/python" \
             > phase03-evidence/runtime-controls.json
       - name: Run the pinned FastAPI router variant
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
@@ -464,6 +471,8 @@ jobs:
           path: |
             tests/conformance/phase03-inventory.toml
             phase03-skylos/uv.lock
+            tests/conformance/baselines/skylos-5.7.0.toml
+            tests/conformance/baselines/skylos-5.7.0-phase03-fixtures.patch
             tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt
             phase03-evidence/
           if-no-files-found: error
