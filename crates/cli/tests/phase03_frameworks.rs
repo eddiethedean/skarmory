@@ -5564,6 +5564,53 @@ fn conventional_pytest_hooks_have_possible_use_without_discovery() {
 }
 
 #[test]
+fn django_model_form_metaclass_reads_only_its_effective_help_texts() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("forms.py"),
+        concat!(
+            "from django.db.models import Model, CharField\n",
+            "from django.forms import ModelForm\n",
+            "class Product(Model):\n",
+            "    name = CharField(max_length=20)\n",
+            "class ProductForm(ModelForm):\n",
+            "    class Meta:\n",
+            "        model = Product\n",
+            "        fields = ['name']\n",
+            "        help_texts = {'name': 'Product name'}\n",
+            "        stale_option = True\n",
+            "class Lookalike:\n",
+            "    class Meta:\n",
+            "        help_texts = {'name': 'Unused'}\n",
+        ),
+    )
+    .unwrap();
+    let report = scan(root);
+    let selected = "forms.ProductForm.Meta.help_texts";
+    assert_eq!(
+        evidence_certainties(&report, selected, "django_model_form_help_texts"),
+        ["certain"]
+    );
+    assert!(!findings(&report, "unused_variables").contains(&selected));
+    assert!(
+        evidence_certainties(
+            &report,
+            "forms.Lookalike.Meta.help_texts",
+            "django_model_form_help_texts"
+        )
+        .is_empty()
+    );
+    assert!(findings(&report, "unused_variables").contains(&"forms.ProductForm.Meta.stale_option"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
 fn django_date_format_uses_only_the_selected_source_locale() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

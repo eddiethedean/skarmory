@@ -402,6 +402,9 @@ impl Graph<'_> {
                 continue;
             };
             self.collect_framework_class_attributes(class, class_scope, role);
+            if role == FrameworkClassRole::DjangoModelForm {
+                self.retain_django_model_form_help_texts(class);
+            }
             if role == FrameworkClassRole::TraitletsConfigurable {
                 self.collect_traitlets_legacy_defaults(class, class_scope);
             }
@@ -3432,6 +3435,75 @@ impl Graph<'_> {
                     && self.module_member_write(&provider, name, access).is_none()
             }))
         .then_some(body)
+    }
+
+    fn retain_django_model_form_help_texts(&mut self, class: SymbolId) {
+        let symbol = &self.symbols[class];
+        let access = (symbol.scope, symbol.name.at);
+        let Binding::Definition(form, _) = symbol.binding else {
+            return;
+        };
+        if !matches!(body_without_docstring(form), [Statement { kind: StatementKind::Define(meta), .. }]
+            if meta.name.text == "Meta")
+        {
+            return;
+        }
+        let Some(body) =
+            self.direct_framework_protocol_body(class, FrameworkClassRole::DjangoModelForm, access)
+        else {
+            return;
+        };
+        let Some(meta) = self.local(body, "Meta", END) else {
+            return;
+        };
+        let Binding::Definition(definition, options) = self.symbols[meta].binding else {
+            return;
+        };
+        if definition.kind != DefinitionKind::Class
+            || !definition.bases.is_empty()
+            || !definition.decorators.is_empty()
+            || definition.has_class_keywords()
+            || self.binding_depends_on_branch(meta, END)
+            || self.has_unmodeled_class_write(meta)
+            || !body_without_docstring(definition).iter().all(|statement| {
+                matches!(
+                    statement.kind,
+                    StatementKind::Assign {
+                        value: Some(_),
+                        annotation: None,
+                        ..
+                    }
+                )
+            })
+        {
+            return;
+        }
+        let Some(target) = self.local(options, "help_texts", END) else {
+            return;
+        };
+        let Some(model) = self.local(options, "model", END) else {
+            return;
+        };
+        let Value::Callable(model) = self.binding(model, END, 0) else {
+            return;
+        };
+        if self.framework_class_role(model.target, &mut BTreeSet::new(), 0)
+            != Some(FrameworkClassRole::DjangoModel)
+            || self.binding_depends_on_branch(target, END)
+            || !matches!(self.symbols[target].binding,
+            Binding::Variable(Some(Expression { kind: ExpressionKind::Dictionary(items), .. }), _)
+                if {
+                    let (pairs, rest) = items.as_chunks::<2>();
+                    rest.is_empty() && pairs.iter().all(|[key, value]|
+                        matches!((&key.kind, &value.kind),
+                            (ExpressionKind::Text(_), ExpressionKind::Text(_))))
+                })
+        {
+            return;
+        }
+        // Django's stock ModelFormMetaclass reads ModelFormOptions while
+        // creating this class, before any form instance or validation.
+        self.edge(body, target, "django_model_form_help_texts", "certain");
     }
 
     fn drf_exception_defaults(&mut self, class: SymbolId, call: CallArguments<'_>) -> bool {
