@@ -498,6 +498,15 @@ constructor behavior.
 [Django admin list filters](https://docs.djangoproject.com/en/5.2/ref/contrib/admin/filters/) ·
 [django-storages base and S3 settings](https://github.com/jschneier/django-storages/blob/1.14.6/storages/base.py)
 
+The native analyzer also records possible declarations for selected standard
+library visitor and protocol overrides, literal integer `ctypes.Structure`
+layouts, DRF field error tables and view options, and Guardian model admin
+options. The DRF token-view scope declaration requires a resolved
+`ScopedRateThrottle` on the class. Calls, unsupported layout expressions,
+and unrelated options retain their existing evidence and coverage rules.
+[DRF throttling](https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle) ·
+[Django Guardian admin](https://django-guardian.readthedocs.io/en/stable/api/admin/)
+
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
 Django template directories, literal inheritance and includes, and supported

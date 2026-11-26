@@ -276,6 +276,9 @@ enum ObjectKind {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum FrameworkClassRole {
     BuiltinDict,
+    StdlibAstVisitor,
+    StdlibAsyncProtocol,
+    StdlibCtypesStructure,
     Unittest,
     UnittestAsync,
     DjangoTestCase,
@@ -292,6 +295,7 @@ enum FrameworkClassRole {
     DjangoRelationshipField,
     DjangoSignal,
     DjangoAdmin,
+    DjangoGuardianAdmin,
     DjangoSimpleListFilter,
     DjangoStorageBase,
     DjangoS3Storage,
@@ -300,8 +304,6 @@ enum FrameworkClassRole {
     DrfViewSet,
     DrfField,
     DrfAuthTokenView,
-    DrfApiException,
-    DrfPageNumberPagination,
     CeleryTask,
     CeleryRedisBackend,
     SqlAlchemyModel,
@@ -10481,6 +10483,7 @@ impl<'a> Graph<'a> {
                         | "django_relationship_field_declaration"
                         | frameworks::CLASS_ATTRIBUTE_DECLARATION
                         | frameworks::BUILTIN_OVERRIDE_DECLARATION
+                        | frameworks::STDLIB_PROTOCOL_DECLARATION
                 ) {
                     continue;
                 }
@@ -11983,6 +11986,11 @@ fn builtin_noop_subclass_hook(name: &str) -> bool {
 fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
     match name {
         "builtins.dict" => Some(FrameworkClassRole::BuiltinDict),
+        "ast.NodeVisitor" => Some(FrameworkClassRole::StdlibAstVisitor),
+        "asyncio.Protocol" | "asyncio.protocols.Protocol" => {
+            Some(FrameworkClassRole::StdlibAsyncProtocol)
+        }
+        "ctypes.Structure" => Some(FrameworkClassRole::StdlibCtypesStructure),
         "unittest.TestCase" | "unittest.case.TestCase" => Some(FrameworkClassRole::Unittest),
         "unittest.IsolatedAsyncioTestCase" | "unittest.async_case.IsolatedAsyncioTestCase" => {
             Some(FrameworkClassRole::UnittestAsync)
@@ -12045,6 +12053,7 @@ fn framework_class_provider(name: &str) -> Option<FrameworkClassRole> {
         "django.contrib.admin.ModelAdmin" | "django.contrib.admin.options.ModelAdmin" => {
             Some(FrameworkClassRole::DjangoAdmin)
         }
+        "guardian.admin.GuardedModelAdmin" => Some(FrameworkClassRole::DjangoGuardianAdmin),
         "django.contrib.admin.SimpleListFilter"
         | "django.contrib.admin.filters.SimpleListFilter" => {
             Some(FrameworkClassRole::DjangoSimpleListFilter)

@@ -4,6 +4,7 @@ use super::*;
 
 pub(super) const CLASS_ATTRIBUTE_DECLARATION: &str = "framework_class_attribute_declaration";
 pub(super) const BUILTIN_OVERRIDE_DECLARATION: &str = "builtin_override_declaration";
+pub(super) const STDLIB_PROTOCOL_DECLARATION: &str = "stdlib_protocol_declaration";
 
 fn django_unconditionally_raises(body: &[Statement]) -> bool {
     body.iter()
@@ -340,6 +341,9 @@ impl Graph<'_> {
             }
             let (root, lifecycle, fields) = match role {
                 FrameworkClassRole::BuiltinDict
+                | FrameworkClassRole::StdlibAstVisitor
+                | FrameworkClassRole::StdlibAsyncProtocol
+                | FrameworkClassRole::StdlibCtypesStructure
                 | FrameworkClassRole::Unittest
                 | FrameworkClassRole::UnittestAsync
                 | FrameworkClassRole::DjangoTestCase
@@ -358,6 +362,7 @@ impl Graph<'_> {
                 | FrameworkClassRole::DjangoSignal => (None, &[][..], false),
                 FrameworkClassRole::DjangoAdmin => (None, &[][..], true),
                 FrameworkClassRole::CeleryTask
+                | FrameworkClassRole::DjangoGuardianAdmin
                 | FrameworkClassRole::CeleryRedisBackend
                 | FrameworkClassRole::DjangoSimpleListFilter
                 | FrameworkClassRole::DjangoStorageBase
@@ -367,8 +372,6 @@ impl Graph<'_> {
                 | FrameworkClassRole::DrfSerializer
                 | FrameworkClassRole::DrfField
                 | FrameworkClassRole::DrfAuthTokenView
-                | FrameworkClassRole::DrfApiException
-                | FrameworkClassRole::DrfPageNumberPagination
                 | FrameworkClassRole::DrfViewSet => (None, &[][..], false),
                 FrameworkClassRole::SqlAlchemyModel => (
                     Some("sqlalchemy_model"),
@@ -462,6 +465,39 @@ impl Graph<'_> {
     ) {
         let (names, kind): (&[&str], _) = match role {
             FrameworkClassRole::BuiltinDict => (&["get", "keys"], BUILTIN_OVERRIDE_DECLARATION),
+            FrameworkClassRole::StdlibAstVisitor => {
+                (&["generic_visit"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::StdlibAsyncProtocol => {
+                (&["eof_received"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::StdlibCtypesStructure => {
+                (&["_fields_"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DjangoGuardianAdmin => (
+                &["radio_fields", "sortable_by", "date_hierarchy"],
+                CLASS_ATTRIBUTE_DECLARATION,
+            ),
+            FrameworkClassRole::DrfField => {
+                (&["default_error_messages"], CLASS_ATTRIBUTE_DECLARATION)
+            }
+            FrameworkClassRole::DrfViewSet => (&["http_method_names"], CLASS_ATTRIBUTE_DECLARATION),
+            FrameworkClassRole::DrfAuthTokenView => {
+                let Some(throttles) = self.local(body, "throttle_classes", END) else {
+                    return;
+                };
+                if self.binding_depends_on_branch(throttles, END)
+                    || self
+                        .class_discovery_write(class, "throttle_classes", self.symbols[class].scope)
+                        .is_some()
+                    || !matches!(self.binding(throttles, END, 0), Value::Sequence(classes)
+                        if matches!(classes.as_slice(), [Value::Provider(provider)]
+                            if provider == "rest_framework.throttling.ScopedRateThrottle"))
+                {
+                    return;
+                }
+                (&["throttle_scope"], CLASS_ATTRIBUTE_DECLARATION)
+            }
             FrameworkClassRole::CeleryRedisBackend => {
                 (&["ResultConsumer"], CLASS_ATTRIBUTE_DECLARATION)
             }
@@ -491,6 +527,12 @@ impl Graph<'_> {
             return;
         }
         let scope = self.symbols[class].scope;
+        let stdlib_namespace = matches!(
+            role,
+            FrameworkClassRole::StdlibAstVisitor | FrameworkClassRole::StdlibAsyncProtocol
+        )
+        .then(|| self.public_protocol_module_scope(class))
+        .flatten();
         for name in names {
             if let Some(target) = self.local(body, name, END)
                 && !self.binding_depends_on_branch(target, END)
@@ -504,6 +546,9 @@ impl Graph<'_> {
                         if definition.kind == DefinitionKind::Function && !definition.is_generator))
             {
                 self.edge(body, target, kind, "possible");
+                if let Some(namespace) = stdlib_namespace {
+                    self.edge(namespace, class, STDLIB_PROTOCOL_DECLARATION, "possible");
+                }
             }
         }
     }
@@ -541,14 +586,6 @@ impl Graph<'_> {
             let StatementKind::Assign { names, value, .. } = &statement.kind else {
                 return matches!(statement.kind, StatementKind::Define(_));
             };
-            if names.iter().any(|name| {
-                matches!(
-                    name.text.as_str(),
-                    "_pack_" | "_align_" | "_anonymous_" | "_layout_" | "__slots__"
-                )
-            }) {
-                return false;
-            }
             if !names.iter().any(|name| name.text == "_fields_") {
                 return true;
             }
