@@ -196,6 +196,16 @@ impl Value {
         }
     }
 
+    fn contains_callback_generator(&self) -> bool {
+        match self {
+            Self::CallbackGenerator(_) => true,
+            Self::Sequence(values) | Self::Mapping(values) | Self::Alternatives(values) => {
+                values.iter().any(Self::contains_callback_generator)
+            }
+            _ => false,
+        }
+    }
+
     fn is_builtin_scalar(&self) -> bool {
         matches!(
             self,
@@ -5200,7 +5210,13 @@ impl<'a> Graph<'a> {
 
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
-            Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
+            Value::Callable(invocation) => {
+                if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
+                    self.report_unmodeled_deferred_value(scope, at, &Value::DeferredComprehension);
+                }
+                invocation
+            }
+            Value::Coroutine(invocation) => invocation,
             Value::Provider(provider)
                 if self.phase03 && is_bounded_declaration_provider(&provider) =>
             {
@@ -6747,16 +6763,20 @@ impl<'a> Graph<'a> {
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         if self.phase03 {
                             for arg in arguments.iter().chain(keywords.iter().map(|(_, expr)| expr)) {
-                                if let Value::CallbackGenerator(calls) = self.probe_identity(scope, arg, before) {
-                                    if matches!(name.as_str(), "builtins.list" | "builtins.tuple")
-                                        && arguments.len() == 1 && keywords.is_empty()
+                                let value = self.probe_identity(scope, arg, before);
+                                match value {
+                                    Value::CallbackGenerator(calls)
+                                        if matches!(name.as_str(), "builtins.list" | "builtins.tuple")
+                                            && arguments.len() == 1 && keywords.is_empty() =>
                                     {
                                         for invocation in calls {
                                             self.invoke(scope, invocation, "direct_call", "possible", expr.at);
                                         }
-                                    } else {
+                                    }
+                                    value if value.contains_callback_generator() => {
                                         self.report_unmodeled_deferred_value(scope, arg.at, &Value::DeferredComprehension);
                                     }
+                                    _ => {}
                                 }
                             }
                         }

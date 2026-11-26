@@ -230,7 +230,13 @@ impl Graph<'_> {
     ) -> Value {
         self.walk(evaluation.scope, iterable, evaluation.before);
         let value = self.identity(evaluation.scope, iterable, evaluation.before, 0);
-        if matches!(
+        if value.contains_callback_generator() {
+            self.report_unmodeled_deferred_value(
+                evaluation.scope,
+                iterable.at,
+                &Value::DeferredComprehension,
+            );
+        } else if matches!(
             value,
             Value::DeferredComprehension | Value::ComprehensionResult
         ) {

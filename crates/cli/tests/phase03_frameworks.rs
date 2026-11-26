@@ -156,20 +156,22 @@ unused_generator()
         assert_eq!(cached, report);
     }
 
-    fs::write(
-        &path,
-        source.replace("list(generator())", "set(generator())"),
-    )
-    .unwrap();
-    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
-    assert!(
-        report["coverage"]["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
-        "{report}"
-    );
+    for consumer in [
+        "set(generator())",
+        "[item for item in generator()]",
+        "list(generator() if __debug__ else unused_generator())",
+    ] {
+        fs::write(&path, source.replace("list(generator())", consumer)).unwrap();
+        let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
+            "{report}"
+        );
+    }
 }
 
 #[test]
