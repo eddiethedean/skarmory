@@ -16370,11 +16370,10 @@ languages = ["python"]
 source = "test/test_django_wagtail_conventions.py"
 assertions = ["test/test_django_wagtail_conventions.py:19", "test/test_django_wagtail_conventions.py:119", "test/test_django_wagtail_conventions.py:122", "test/test_django_wagtail_conventions.py:123", "test/test_django_wagtail_conventions.py:124", "test/test_django_wagtail_conventions.py:125"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed fixture registers a source-owned Django model with the genuine snippet viewset. Wagtail 7.2 builds its registered URLs and reads list_display and sort_order_field while leaving the original unrelated option unread."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The model-less PersonViewSet subclass never registers, so its menu and ordering options are dormant.", evidence = "On Wagtail 7.1 and 7.2 the unchanged class has only the stock inherited object.__init_subclass__ and registers no snippets. In an independent registered control using a model, both releases evaluate list_display and Wagtail 7.2 also evaluates sort_order_field.", assertions = ["coverage:complete", "no-unused:home.models.HomePage.lead_text", "no-unused:home.models.HomePage.hero", "no-unused:home.models.HomePage.content_panels", "no-unused:home.models.HomePage.subpage_types", "no-unused:home.models.HomePage.max_count", "no-unused:home.models.HomePage.get_preview_template.mode_name", "no-unused:home.models.HomePage.get_preview_template.request", "no-unused:home.models.HomePage.Meta.verbose_name", "no-unused:home.models.Slot", "no-unused:home.models.Slot.page", "no-unused:home.models.ReviewTask", "no-unused:home.models.ReviewTask.task_state_class", "no-unused:home.models.ReviewTask.user_can_access_editor.obj", "no-unused:home.models.SiteSettings", "no-unused:home.blocks.QuoteBlock.Meta.label_format", "no-unused:home.blocks.BodyBlock.items", "unused:unused_variables:home.views.PersonViewSet.list_display", "unused:unused_variables:home.views.PersonViewSet.sort_order_field", "unused:unused_variables:home.views.PersonViewSet.unrelated_option", "unused:unused_parameters:home.models.HomePage.paginate.args", "unused:unused_classes:home.models.NotAModel", "unused:unused_functions:home.models.stale_helper"] }
 
 [[cases]]
 id = "test/test_logging_config_liveness.py::test_class_configuration_and_consistent_module_imports"
