@@ -91,8 +91,18 @@ CLICK_CONTROL = "phase02::analysis::tests::pinned_click_dead_code_control"
 LEGACY_FALLBACK = "test_incomplete_fastapi_proofs_preserve_all_legacy_hints"
 LEGACY_CASE = f"{BUDGET_SOURCE}::{LEGACY_FALLBACK}"
 EXCEPTION_CONTROLS = {
-    CLICK_CASE: (TRUTH_SOURCE, CLICK_FUNCTION, CLICK_CONTROL),
-    LEGACY_CASE: (BUDGET_SOURCE, LEGACY_FALLBACK, BUDGET_TEST),
+    CLICK_CASE: (
+        TRUTH_SOURCE, CLICK_FUNCTION, CLICK_CONTROL,
+        [f"{TRUTH_SOURCE}:{line}" for line in (88, 90, 91, 93)],
+        ["Original Click fixture", "Original combined scan options",
+         "Native Click declaration and dormant-call control"],
+    ),
+    LEGACY_CASE: (
+        BUDGET_SOURCE, LEGACY_FALLBACK, BUDGET_TEST,
+        [f"{BUDGET_SOURCE}:{line}" for line in (349, 351, 352, 353, 357, 358, 359)],
+        ["Original generated wrapper chain", "Reference abstract analysis-step limit",
+         "Native incomplete-coverage and route-evidence control"],
+    ),
 }
 TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES, BUDGET_CASE}
 ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES, *EXCEPTION_CONTROLS}
@@ -355,7 +365,7 @@ def replay_exception_control(key, source, fixture, argv, env):
     class FixtureStaged(Exception):
         pass
 
-    _, function, _ = EXCEPTION_CONTROLS[key]
+    _, function, _, _, _ = EXCEPTION_CONTROLS[key]
     original = source[function]
     input_path = fixture / "app.py"
     report_path = fixture / "exception-control.json"
@@ -420,8 +430,7 @@ def engine_case(args, key, case, env, trace=None):
             BUDGET_SOURCE, BUDGET_ASSERTIONS, BUDGET_PREREQUISITES, BUDGET_TEST,
         )
     elif key in EXCEPTION_CONTROLS:
-        source_file, _, test = EXCEPTION_CONTROLS[key]
-        assertions, prerequisites = case["assertions"], case["prerequisites"]
+        source_file, _, test, assertions, prerequisites = EXCEPTION_CONTROLS[key]
     else:
         raise ValueError(f"missing native engine port for {key}")
     if (case["source"], case["assertions"], case["prerequisites"]) != (

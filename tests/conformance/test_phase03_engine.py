@@ -4,10 +4,19 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from phase03_engine import TEST, locate_test_artifact, passed_exact_test
+from phase03_engine import EXCEPTION_CONTROLS, TEST, engine_case, locate_test_artifact, passed_exact_test
 
 
 class EngineReceiptTests(unittest.TestCase):
+    def test_exception_replay_requires_the_original_assertions_and_setup(self):
+        for case_id, (source, _, _, assertions, prerequisites) in EXCEPTION_CONTROLS.items():
+            case = {"source": source, "assertions": assertions, "prerequisites": prerequisites}
+            for field in ("assertions", "prerequisites"):
+                with self.subTest(case_id=case_id, field=field):
+                    reduced = {**case, field: case[field][:-1]}
+                    with self.assertRaisesRegex(ValueError, "reviewed assertion and fixture mapping"):
+                        engine_case(None, case_id, reduced, {})
+
     def test_requires_exactly_the_named_passing_test(self):
         success = (
             f"\nrunning 1 test\ntest {TEST} ... ok\n\n"
