@@ -2523,6 +2523,56 @@ fn flask_failed_class_patches_leave_independent_receivers_unchanged() {
 }
 
 #[test]
+fn flask_login_instance_dictionary_replaces_only_the_selected_callback_decorator() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = "from flask_login import LoginManager\nlogin = LoginManager()\n";
+    let write =
+        "def identity(callback): return callback\nlogin.__dict__['user_loader'] = identity\n";
+    fs::write(&provider, format!("{setup}{write}")).unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login\n@login.user_loader\ndef replaced(value): return value\n@login.request_loader\ndef active(request): return request\n",
+    )
+    .unwrap();
+
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "providers.identity", "decorator"),
+        ["certain"]
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.active", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "app.replaced", "flask_login_registration").is_empty());
+    assert!(findings(&report, "unused_functions").contains(&"app.replaced"));
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &provider,
+        "class LoginManager: pass\nlogin = LoginManager()\ndef identity(callback): return callback\nlogin.__dict__['user_loader'] = identity\n",
+    )
+    .unwrap();
+    let mut report = scan_with_exit(root, None, Some(cache.path()), 2);
+    report.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, scan_with_exit(root, None, None, 2));
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write")
+    );
+}
+
+#[test]
 fn flask_login_class_replacement_binds_the_local_identity_decorator() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
