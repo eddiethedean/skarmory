@@ -382,6 +382,7 @@ pub enum ExpressionKind {
     ConstantLambda,
     NullaryConstantLambda,
     IdentityLambda,
+    IdentityDefaultLambda(Box<Expression>),
     IdentityDecoratorLambda,
     DeferredLambda(Box<Expression>),
     DeferredBoolLambda,
@@ -823,6 +824,58 @@ impl Lowering<'_> {
             .collect()
     }
 
+    fn definition_decorators(
+        &self,
+        decorators: &[ruff_python_ast::Decorator],
+        simple_header: bool,
+        output: &mut Vec<Statement>,
+        depth: usize,
+    ) -> Result<Vec<Expression>, FrontendError> {
+        if self.4
+            && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+            && simple_header
+            && let [decorator] = decorators
+            && let Expr::BoolOp(test) = &decorator.expression
+            && test.op == BoolOp::And
+            && let [Expr::Named(assignment), right @ Expr::Name(_)] = test.values.as_slice()
+        {
+            let guard = self.definition_header_assignment(assignment, output, depth)?;
+            return Ok(vec![Expression {
+                at: self.0.locate(test.start()),
+                kind: ExpressionKind::Boolean {
+                    and: true,
+                    values: vec![guard, self.expression(right, depth)?],
+                },
+            }]);
+        }
+        decorators
+            .iter()
+            .map(|decorator| self.expression(&decorator.expression, depth))
+            .collect()
+    }
+
+    fn definition_header_assignment(
+        &self,
+        assignment: &ruff_python_ast::ExprNamed,
+        output: &mut Vec<Statement>,
+        depth: usize,
+    ) -> Result<Expression, FrontendError> {
+        let name = self.target(&assignment.target)?;
+        let read = Expression {
+            at: self.0.locate(assignment.end()),
+            kind: ExpressionKind::Name(name.text.clone()),
+        };
+        output.push(Statement {
+            at: self.0.locate(assignment.start()),
+            kind: StatementKind::Assign {
+                names: vec![name],
+                value: Some(self.expression(&assignment.value, depth)?),
+                annotation: None,
+            },
+        });
+        Ok(read)
+    }
+
     fn imports(
         &self,
         output: &mut Vec<Statement>,
@@ -1095,6 +1148,12 @@ impl Lowering<'_> {
                             None,
                         )
                     };
+                    let decorators = self.definition_decorators(
+                        &node.decorator_list,
+                        defaults.is_empty() && annotations.is_empty(),
+                        &mut result,
+                        next,
+                    )?;
                     StatementKind::Define(Definition {
                         name,
                         kind: if is_async {
@@ -1108,11 +1167,7 @@ impl Lowering<'_> {
                         body,
                         body_coverage_lines: coverage.lines.into_iter().collect(),
                         global_reads,
-                        decorators: node
-                            .decorator_list
-                            .iter()
-                            .map(|item| expression(&item.expression))
-                            .collect::<Result<_, _>>()?,
+                        decorators,
                         parameters,
                         positional_only_parameter_count: node.parameters.posonlyargs.len(),
                         positional_parameter_count: node.parameters.posonlyargs.len()
@@ -1200,11 +1255,14 @@ impl Lowering<'_> {
                         .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
                         global_reads: Vec::new(),
-                        decorators: node
-                            .decorator_list
-                            .iter()
-                            .map(|item| expression(&item.expression))
-                            .collect::<Result<_, _>>()?,
+                        decorators: self.definition_decorators(
+                            &node.decorator_list,
+                            node.arguments.as_ref().is_none_or(|arguments| {
+                                arguments.args.is_empty() && arguments.keywords.is_empty()
+                            }),
+                            &mut result,
+                            next,
+                        )?,
                         parameters: Vec::new(),
                         positional_only_parameter_count: 0,
                         positional_parameter_count: 0,
@@ -1227,7 +1285,33 @@ impl Lowering<'_> {
                     })
                 }
                 Stmt::Assign(node) => {
-                    if let [Expr::Subscript(target)] = node.targets.as_slice()
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && let [Expr::Name(target)] = node.targets.as_slice()
+                        && let Expr::Lambda(lambda) = node.value.as_ref()
+                        && let Some(parameters) = &lambda.parameters
+                        && parameters.len() == 1
+                        && parameters.kwonlyargs.is_empty()
+                        && let Some(parameter) = parameters.iter_non_variadic_params().next()
+                        && let Some(Expr::Named(assignment)) = parameter.default.as_deref()
+                        && let Expr::Name(default_name) = assignment.target.as_ref()
+                        && self.attribute_name(target.id.as_str())
+                            != self.attribute_name(default_name.id.as_str())
+                        && matches!(lambda.body.as_ref(), Expr::Name(name)
+                            if self.attribute_name(name.id.as_str())
+                                == self.attribute_name(parameter.name().as_str()))
+                    {
+                        let default =
+                            self.definition_header_assignment(assignment, &mut result, next)?;
+                        StatementKind::Assign {
+                            names: vec![self.target(&node.targets[0])?],
+                            value: Some(Expression {
+                                at: self.0.locate(lambda.start()),
+                                kind: ExpressionKind::IdentityDefaultLambda(Box::new(default)),
+                            }),
+                            annotation: None,
+                        }
+                    } else if let [Expr::Subscript(target)] = node.targets.as_slice()
                         && matches!(target.slice.as_ref(), Expr::StringLiteral(key)
                             if key.value.to_str() == "DJANGO_SETTINGS_MODULE")
                     {

@@ -247,6 +247,77 @@ Shadow().run()
 }
 
 #[test]
+fn definition_headers_update_a_captured_receiver_before_invocation() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let code = root.join("app.py");
+    let prelude = r#"def stale(): return "old"
+def active(): return "new"
+
+class Earlier:
+    def read(self): return stale()
+
+class Later:
+    def read(self): return active()
+
+def preserve(item): return item
+"#;
+    let lambda = r#"def run():
+    current = Earlier()
+    def get(): return current.read()
+    initialize = lambda default=(current := Later()): default
+    return get(), initialize
+run()
+"#;
+    let function_decorator = r#"def run():
+    current = Earlier()
+    @((current := Later()) and preserve)
+    def get(): return current.read()
+    return get()
+run()
+"#;
+    let class_decorator = r#"def run():
+    current = Earlier()
+    @((current := Later()) and preserve)
+    class Local: pass
+    def get(): return current.read()
+    return get(), Local
+run()
+"#;
+    for source in [lambda, function_decorator, class_decorator] {
+        fs::write(&code, format!("{prelude}\n{source}")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            evidence_certainties(&report, "app.Later.read", "direct_call"),
+            ["certain"]
+        );
+        let unused = findings(&report, "unused_functions");
+        assert!(unused.contains(&"app.Earlier.read"), "{report}");
+        assert!(!unused.contains(&"app.active"), "{report}");
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    let unknown_guard = prelude.replace(
+        "class Later:\n",
+        "class Later:\n    def __bool__(self): return False\n",
+    );
+    fs::write(&code, format!("{unknown_guard}\n{function_decorator}")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
 fn private_attribute_lookup_uses_the_lexical_class_and_runtime_key() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
