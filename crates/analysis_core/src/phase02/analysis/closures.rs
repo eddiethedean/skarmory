@@ -497,16 +497,7 @@ impl<'a> Graph<'a> {
             return None;
         }
         // Only ordinary nullary construction has a modeled result here.
-        if plain_name(value).is_none()
-            && !matches!(self.symbols[source_id].binding, Binding::Definition(class, _) if
-                class.kind == DefinitionKind::Class
-                    && class.decorators.is_empty()
-                    && class.bases.is_empty()
-                    && !class.has_class_keywords()
-                    && class.body.iter().all(|statement| matches!(&statement.kind,
-                        StatementKind::Define(member)
-                            if !matches!(member.name.text.as_str(), "__new__" | "__init__"))))
-        {
+        if plain_name(value).is_none() && !self.ordinary_cell_constructor(source_id) {
             return None;
         }
         Some(ClosureCellWrite {
@@ -703,12 +694,19 @@ impl<'a> Graph<'a> {
                 scope != frame
                     && scope != reader
                     && scope != write.setter
-                    && namespace_free_names(
-                        definition,
-                        self.files[row.file].facts.postponed_annotations,
-                    )
-                    .into_iter()
-                    .any(|name| self.lexical_binding_key(scope, name) == key)
+                    && (definition
+                        .global_reads
+                        .iter()
+                        .any(|name| self.lexical_binding_key(scope, name) == key)
+                        || namespace_free_names(
+                            definition,
+                            self.files[row.file].facts.postponed_annotations,
+                        )
+                        .into_iter()
+                        .any(|name| {
+                            matches!(name, "globals" | "eval" | "exec")
+                                || self.lexical_binding_key(scope, name) == key
+                        }))
             })
         {
             return None;
@@ -724,24 +722,60 @@ impl<'a> Graph<'a> {
             ))
     }
 
+    fn ordinary_cell_constructor(&self, source: SymbolId) -> bool {
+        matches!(self.symbols[source].binding, Binding::Definition(class, _) if
+            class.kind == DefinitionKind::Class
+                && class.decorators.is_empty()
+                && class.bases.is_empty()
+                && !class.has_class_keywords()
+                && class.body.iter().all(|statement| matches!(&statement.kind,
+                    StatementKind::Define(member)
+                        if !matches!(member.name.text.as_str(), "__new__" | "__init__"))))
+    }
+
     fn closed_global_cell_frame(&self, frame: ScopeId, write: &ClosureCellWrite<'a>) -> bool {
         let file = self.scopes[frame].file;
         if self.files.len() != 1 || write.slot != file || write.possible {
             return false;
         }
-        // The write occurs during the final top-level call and no following
-        // module expression observes the updated slot outside this frame.
-        let Some(Statement {
-            kind: StatementKind::Evaluate(call),
-            ..
-        }) = self.scopes[file].body.last()
+        let [
+            prefix @ ..,
+            Statement {
+                kind: StatementKind::Evaluate(call),
+                ..
+            },
+        ] = self.scopes[file].body
         else {
             return false;
         };
         let Some((name, [])) = name_call(call) else {
             return false;
         };
-        self.local(file, name, call.at) == self.scopes[frame].owner
+        let Some(owner) = self.local(file, name, call.at) else {
+            return false;
+        };
+        if Some(owner) != self.scopes[frame].owner {
+            return false;
+        }
+        // This is the only possible invocation of the frame. The module
+        // prefix may define callables and construct plain instances, but
+        // cannot run an arbitrary call or expose a callback before the write.
+        prefix.iter().all(|statement| match &statement.kind {
+            StatementKind::Define(definition) if definition.kind == DefinitionKind::Class =>
+                definition.bases.is_empty()
+                    && !definition.has_class_keywords()
+                    && definition.decorators.is_empty()
+                    && definition.body.iter().all(|statement| matches!(&statement.kind,
+                        StatementKind::Define(method) if passive_definition(method))),
+            StatementKind::Define(definition) => passive_definition(definition),
+            StatementKind::Assign { value: Some(value), annotation: None, .. } =>
+                inert_default(value)
+                    || plain_name(value).is_some_and(|name| self.local(file, name, value.at) != Some(owner))
+                    || matches!(name_call(value), Some((name, []))
+                        if self.local(file, name, value.at).is_some_and(|id| self.ordinary_cell_constructor(id))),
+            StatementKind::Evaluate(Expression { kind: ExpressionKind::Text(_), .. }) => true,
+            _ => false,
+        })
     }
 
     pub(super) fn closure_cell_read(
