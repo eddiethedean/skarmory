@@ -10726,6 +10726,38 @@ fn atexit_forwarding_decorator_checks_forwarded_literal_arguments() {
 }
 
 #[test]
+fn atexit_decorator_factory_retains_only_the_source_proven_returned_wrapper() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        "from plugin import select\nevent = 'saved'\n@select(event)\ndef saved(sender, instance, **kwargs): return helper()\ndef helper(): return 1\ndef abandoned(): return 2\n",
+    )
+    .unwrap();
+    let plugin = root.join("plugin.py");
+    let wrapper = "from atexit import register\ndef select(event):\n    return receiver\ndef receiver(callback):\n    register(callback, None, None)\n    return callback\n";
+    fs::write(&plugin, wrapper).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.abandoned"]);
+    assert_eq!(
+        evidence_certainties(&report, "app.saved", "atexit_registration"),
+        ["possible"],
+    );
+    assert!(evidence_certainties(&report, "app.saved", "direct_call").is_empty());
+
+    fs::write(
+        &plugin,
+        wrapper.replace(
+            "    return receiver",
+            "    opaque(event)\n    return receiver",
+        ),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&report, "app.saved", "atexit_registration").is_empty());
+}
+
+#[test]
 fn atexit_registration_checks_provider_identity_and_unresolved_targets() {
     let project = tempfile::tempdir().unwrap();
     let path = project.path().join("shutdown.py");
