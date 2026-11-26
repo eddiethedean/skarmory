@@ -16169,6 +16169,49 @@ run()
     }
 
     #[test]
+    fn phase03_global_cell_replay_requires_the_only_invocation_to_be_last() {
+        let source = r#"
+class First:
+    def work(self): return 1
+    def extra(self): return 3
+class Second:
+    def work(self): return 2
+    def extra(self): return 4
+
+selected = First()
+
+def run():
+    def install():
+        global selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+
+run()
+selected.extra()
+run()
+"#;
+        let file = AnalyzedFile {
+            path: "main.py".into(),
+            module: "main".into(),
+            is_package: false,
+            fastapi_router_mode: FastapiRouterMode::Auto,
+            facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+        };
+        let report = analyze_phase03(&[file], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unsupported_construct"),
+            "{:?}",
+            report.issues
+        );
+    }
+
+    #[test]
     fn phase03_recursive_closure_does_not_reuse_its_initial_receiver() {
         let source = r#"class Primary:
     def run(self): return 1
