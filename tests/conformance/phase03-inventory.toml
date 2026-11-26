@@ -6168,11 +6168,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:364", "test/test_django_management_command_reachability.py:367"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Reading the original method's code metadata observes its code object without dispatching the command or its helper.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "evidence:code_reference:certain:shop.management.commands.audit.Command.handle", "unused:unused_functions:shop.management.commands.audit.prepare", "unused:unused_functions:shop.management.commands.audit.abandoned", "unused:unused_functions:shop.management.commands.audit.replacement", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "no-evidence:direct_call:*:shop.management.commands.audit.prepare"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_command_helpers_require_the_original_handle_body[replaced-code]"
@@ -6266,11 +6265,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:339", "test/test_django_management_command_reachability.py:340"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Reading the module name does not select the installed app or dispatch handle.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "definition:shop.management.commands.audit.module_name", "unused:unused_classes:shop.management.commands.audit.Command", "unused:suppressed:shop.management.commands.audit.Command.handle", "unused:unused_functions:shop.management.commands.audit.prepare", "unused:unused_functions:shop.management.commands.audit.abandoned", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[constructor-chain]"
@@ -6279,11 +6277,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:108", "test/test_django_management_command_reachability.py:109", "test/test_django_management_command_reachability.py:111", "test/test_django_management_command_reachability.py:112"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "A command module can declare handle and its helpers without an installed app or a selected command.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.audit.Command", "unused:suppressed:shop.management.commands.audit.Command.handle", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "unused:unused_functions:shop.management.commands.audit.analyze_games_queryset", "unused:unused_functions:shop.management.commands.audit.abandoned", "unused:unused_classes:shop.management.commands.audit.GameDiscontinuityAnalyzer"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[module-helper]"
@@ -6292,11 +6289,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:108", "test/test_django_management_command_reachability.py:109", "test/test_django_management_command_reachability.py:111", "test/test_django_management_command_reachability.py:112"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "A command module can declare handle and its helpers without an installed app or a selected command.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.audit.Command", "unused:suppressed:shop.management.commands.audit.Command.handle", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "unused:unused_functions:shop.management.commands.audit.prepare", "unused:unused_functions:shop.management.commands.audit.abandoned"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[nested-alias]"
@@ -6305,11 +6301,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:108", "test/test_django_management_command_reachability.py:109", "test/test_django_management_command_reachability.py:111", "test/test_django_management_command_reachability.py:112"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "A command module can declare handle and its helpers without an installed app or a selected command.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.audit.Command", "unused:suppressed:shop.management.commands.audit.Command.handle", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "unused:unused_functions:shop.management.commands.audit.Command.handle.prepare"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[nested-chain]"
@@ -6318,11 +6313,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:108", "test/test_django_management_command_reachability.py:109", "test/test_django_management_command_reachability.py:111", "test/test_django_management_command_reachability.py:112"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "A command module can declare handle and its helpers without an installed app or a selected command.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.audit.Command", "unused:suppressed:shop.management.commands.audit.Command.handle", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "unused:unused_functions:shop.management.commands.audit.Command.handle.prepare", "unused:unused_functions:shop.management.commands.audit.Command.handle.run"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_discovered_handle_roots_only_its_called_helpers[nested-helper]"
@@ -6331,11 +6325,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:108", "test/test_django_management_command_reachability.py:109", "test/test_django_management_command_reachability.py:111", "test/test_django_management_command_reachability.py:112"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "A command module can declare handle and its helpers without an installed app or a selected command.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.audit.Command", "unused:suppressed:shop.management.commands.audit.Command.handle", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "unused:unused_functions:shop.management.commands.audit.Command.handle.prepare", "unused:unused_functions:shop.management.commands.audit.Command.handle.abandoned"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_escaped_handle_alias_does_not_supply_a_stable_body"
@@ -6465,11 +6458,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:134", "test/test_django_management_command_reachability.py:135", "test/test_django_management_command_reachability.py:136"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Subclassing the command retains the ancestor relationship without dispatching the inherited handle.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "evidence:base_class:certain:shop.management.commands.audit.Parent", "unused:unused_classes:shop.management.commands.audit.Command", "unused:unused_functions:shop.management.commands.audit.Parent.handle", "unused:unused_functions:shop.management.commands.audit.prepare", "unused:unused_functions:shop.management.commands.audit.abandoned", "no-evidence:django_command:*:shop.management.commands.audit.Parent.handle"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_management_discovery_selects_the_effective_inherited_handle[True]"
@@ -6478,11 +6470,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:134", "test/test_django_management_command_reachability.py:135", "test/test_django_management_command_reachability.py:136"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Subclassing the command retains the ancestor relationship without dispatching the inherited handle.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "evidence:base_class:certain:parent.Parent", "unused:unused_classes:shop.management.commands.audit.Command", "unused:unused_functions:parent.Parent.handle", "unused:unused_functions:parent.prepare", "unused:unused_functions:parent.abandoned", "no-evidence:django_command:*:parent.Parent.handle"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_management_export_alias_and_unrelated_constructor_do_not_lose_identity"
@@ -6491,11 +6482,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:150", "test/test_django_management_command_reachability.py:151", "test/test_django_management_command_reachability.py:152"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed fixture supplies Django settings, installs shop, and dispatches audit through the real management launcher. Django 5.2.1 reached the specified handle and helpers, left the dead controls uncalled, and accepted the string return value."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "Exporting Actual under the Command name keeps its identity. The fixture never dispatches it or instantiates Unrelated.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no audit command. The import trace reached no command-body call. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "evidence:class_reference:certain:shop.management.commands.audit.Actual", "unused:unused_classes:shop.management.commands.audit.Unrelated", "unused:unused_functions:shop.management.commands.audit.Actual.handle", "unused:unused_functions:shop.management.commands.audit.prepare", "unused:unused_functions:shop.management.commands.audit.abandoned", "no-evidence:django_command:*:shop.management.commands.audit.Actual.handle"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_module_namespace_replacement_cannot_root_old_command[globals-alias]"
@@ -10738,11 +10728,10 @@ languages = ["python"]
 source = "test/test_django_autoreload_precision.py"
 assertions = ["test/test_django_autoreload_precision.py:17", "test/test_django_autoreload_precision.py:146", "test/test_django_autoreload_precision.py:149"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified temporary project written by the pinned test/test_django_autoreload_precision.py test"
+provenance = "The reviewed fixture installs shop and starts the hello command through the real management launcher. Django 5.2.1 reached the launcher call and passed the expected callback to an observed run_with_reloader boundary."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The undeployed command does not call run_with_reloader, so its callback remains dormant.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no hello command. The import trace reached neither handle nor run_with_reloader. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.hello.Command", "unused:suppressed:shop.management.commands.hello.Command.handle", "no-evidence:django_command:*:shop.management.commands.hello.Command.handle", "unused:unused_functions:shop.management.commands.hello.callback", "no-evidence:django_autoreload:*:shop.management.commands.hello.callback", "unused:unused_functions:shop.management.commands.hello.helper"] }
 
 [[cases]]
 id = "test/test_django_autoreload_precision.py::test_inactive_or_replaced_command_handle_is_not_callback_execution[class BaseCommand: pass\\nclass Command(BaseCommand):\\n    def handle(self): autoreload.run_with_reloader(callback)\\n]"
@@ -10811,11 +10800,10 @@ languages = ["python"]
 source = "test/test_django_autoreload_precision.py"
 assertions = ["test/test_django_autoreload_precision.py:17", "test/test_django_autoreload_precision.py:212", "test/test_django_autoreload_precision.py:215"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified temporary project written by the pinned test/test_django_autoreload_precision.py test"
+provenance = "The reviewed fixture installs shop and starts the hello command through the real management launcher. Django 5.2.1 reached the launcher call and passed the expected callback to an observed run_with_reloader boundary."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The bound wrapper or its captured alias stays dormant because the fixture never dispatches the command.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no hello command. The import trace reached neither handle nor run_with_reloader. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.hello.Command", "unused:suppressed:shop.management.commands.hello.Command.handle", "no-evidence:django_command:*:shop.management.commands.hello.Command.handle", "unused:unused_functions:shop.management.commands.hello.callback", "no-evidence:django_autoreload:*:shop.management.commands.hello.callback", "unused:unused_functions:shop.management.commands.hello.helper"] }
 
 [[cases]]
 id = "test/test_django_autoreload_precision.py::test_captured_reloader_remains_real_after_provider_attribute_is_replaced"
@@ -14384,11 +14372,10 @@ languages = ["python"]
 source = "test/test_django_named_setting_imports.py"
 assertions = ["test/test_django_named_setting_imports.py:230", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed LOGGING mutation supplies dictConfig schema version 1 while preserving the original scope argument and assertions. Django 5.2.1 constructed app.protocols.Factory for the effective global setting."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The settings helper updates the module-level dictionary without a schema version. dictConfig rejects it before loading its filter factory.", evidence = "CPython 3.11.15 imported the frozen settings and raised ValueError before importing app.protocols. Supplying version 1 in a separate runtime control constructed app.protocols.Factory.", assertions = ["coverage:complete", "evidence:direct_call:certain:app.settings.configure", "definition:app.protocols.Factory.filter", "unused:unused_classes:app.protocols.Factory", "no-evidence:django_logging_factory:*:app.protocols.Factory.filter"] }
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_called_setting_mutation_helper_uses_the_module_binding[global-STORAGES-Storage.save]"
@@ -14409,11 +14396,10 @@ languages = ["python"]
 source = "test/test_django_named_setting_imports.py"
 assertions = ["test/test_django_named_setting_imports.py:230", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers in test/web_framework_fixtures.py."
+provenance = "The reviewed LOGGING mutation supplies dictConfig schema version 1 while preserving the original scope argument and assertions. Django 5.2.1 constructed app.protocols.Factory for the effective global setting."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The settings helper updates the module-level dictionary without a schema version. dictConfig rejects it before loading its filter factory.", evidence = "CPython 3.11.15 imported the frozen settings and raised ValueError before importing app.protocols. Supplying version 1 in a separate runtime control constructed app.protocols.Factory.", assertions = ["coverage:complete", "evidence:direct_call:certain:app.settings.configure", "definition:app.protocols.Factory.filter", "unused:unused_classes:app.protocols.Factory", "no-evidence:django_logging_factory:*:app.protocols.Factory.filter"] }
 
 [[cases]]
 id = "test/test_django_named_setting_imports.py::test_called_setting_mutation_helper_uses_the_module_binding[read-global-STORAGES-Storage.save]"
@@ -16056,11 +16042,10 @@ languages = ["python"]
 source = "test/test_django_celery_entrypoints.py"
 assertions = ["test/test_django_celery_entrypoints.py:320"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed router accepts the task keyword passed by Celery 5.5.3. The real AMQP router invoked the module callback with that keyword despite the class-local assignment."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The class-local assignment does not replace the module's configured router. Celery rejects the router's four-argument signature before entering its body.", evidence = "On Celery 5.2.7 and 5.6.0, importing the unchanged fixture and calling app.amqp.router.route selected routers.route_task but raised TypeError for the task keyword. A signature control accepting task entered the router body. https://docs.celeryq.dev/en/v5.6.0/_modules/celery/app/routes.html", assertions = ["coverage:complete", "definition:app.Other.app", "unused:unused_functions:routers.route_task", "no-evidence:celery_task_router:*:routers.route_task", "no-evidence:celery_router_parameter:*:routers.route_task.args", "unused:unused_parameters:routers.route_task.name", "unused:unused_parameters:routers.route_task.args", "unused:unused_parameters:routers.route_task.kwargs", "unused:unused_parameters:routers.route_task.options"] }
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_fake_appconfig_ready_import_stays_unused[class AppConfig: pass]"
@@ -16081,11 +16066,10 @@ languages = ["python"]
 source = "test/test_django_celery_entrypoints.py"
 assertions = ["test/test_django_celery_entrypoints.py:249"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed fixture supplies the source-local AppConfig lookalike referenced by the original test. CPython 3.11 imported the class without running the unselected ready hook or importing shop.signals."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The missing local_apps provider prevents the analyzer from proving subclass creation or any ready activation.", evidence = "Django 4.2.1 and 5.2.1 stopped the unchanged fixture at its import of the local_apps AppConfig. The fixture does not provide that module. https://docs.djangoproject.com/en/5.2/ref/applications/#django.apps.AppConfig.ready", assertions = ["coverage:incomplete", "issue:unresolved_subclass_hook:shop/apps.py:2", "definition:shop.apps.AppConfig", "definition:shop.apps.ShopConfig.ready", "no-evidence:django_app_config:*:shop.apps.ShopConfig.ready"] }
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_local_framework_package_is_not_trusted[celery]"
@@ -16275,11 +16259,10 @@ languages = ["python"]
 source = "test/test_django_celery_entrypoints.py"
 assertions = ["test/test_django_celery_entrypoints.py:145", "test/test_django_celery_entrypoints.py:146"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed fixture supplies the source-local RunPython lookalike referenced by the original test. CPython 3.11 with Django 5.2.1 executed the local operation without dispatching forwards."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The selected RunPython spelling belongs to the unresolved local_ops alias. Do not assume Django's migration contract for forwards or its parameters.", evidence = "Django 4.2.1 and 5.2.1 stopped importing the unchanged migration at its import of local_ops as migrations. The fixture supplies no local_ops provider. https://docs.djangoproject.com/en/5.2/ref/migration-operations/#runpython", assertions = ["coverage:incomplete", "issue:unresolved_call:shop/migrations/0001_data.py:4", "definition:shop.migrations.0001_data.forwards", "definition:shop.migrations.0001_data.forwards.apps", "definition:shop.migrations.0001_data.forwards.schema_editor", "no-evidence:django_migration_callback_declaration:*:shop.migrations.0001_data.forwards", "no-evidence:direct_call:*:shop.migrations.0001_data.forwards"] }
 
 [[cases]]
 id = "test/test_django_celery_entrypoints.py::test_runpython_rescues_only_framework_argument_slots[from django.db import migrations as ops\\noperation = ops.RunPython(forwards)]"
@@ -16955,11 +16938,10 @@ languages = ["python"]
 source = "test/test_settings_without_django_import.py"
 assertions = ["test/test_settings_without_django_import.py:70", "test/test_settings_without_django_import.py:71", "test/web_framework_fixtures.py:14", "test/web_framework_fixtures.py:16"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed settings module supplies dictConfig schema version 1 while preserving the satellite import. Django 5.2.1 constructed JSONFormatter and ExtraAdder during setup."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The imported LOGGING setting omits its schema version. dictConfig rejects it before loading the formatter or filter.", evidence = "CPython 3.11.15 imported the frozen settings and raised ValueError before importing app.formatters. A separate version 1 runtime control constructed both factories.", assertions = ["coverage:complete", "definition:app.settings_logging.LOGGING", "unused:unused_classes:app.formatters.JSONFormatter", "unused:unused_classes:app.formatters.ExtraAdder", "no-evidence:django_logging_factory:*:app.formatters.JSONFormatter", "no-evidence:django_logging_factory:*:app.formatters.ExtraAdder"] }
 
 # Django-template static entrypoints assert browser JavaScript reachability.
 # The Python test runner builds the fixtures; no assertion analyzes Python source.
