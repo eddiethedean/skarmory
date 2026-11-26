@@ -491,6 +491,22 @@ and unrelated options retain their existing evidence and coverage rules.
 [DRF throttling](https://www.django-rest-framework.org/api-guide/throttling/#scopedratethrottle) ·
 [Django Guardian admin](https://django-guardian.readthedocs.io/en/stable/api/admin/)
 
+The Phase 0.3 profile can index bounded external class declarations from
+dependency source. For a directory scan, the first project virtual environment
+with a supported site-packages layout supplies dependency roots. Otherwise
+the CLI accepts ordered `--dependency-root` site-packages or dist-packages paths,
+and the SDK forwards matching entries from its interpreter search path.
+Selected local packages keep precedence. Vendored directories inside the
+project remain outside the dependency index.
+
+The index follows supported imports, re-exports, aliases, and single-base
+inheritance without executing package code. It records matched project
+overrides as possible declarations. Ordinary inherited construction can
+complete when the source metadata resolves the default lifecycle. Opaque
+initializers, class creation, and constructor behavior remain incomplete.
+The optional `external_dependency_roots` report field lists roots whose
+source was read. Dependency files stay outside project findings.
+
 Resolved Traitlets configurable classes support zero-argument text trait
 declarations and their named default, validation, and observation hooks.
 The analyzer records possible declarations when a named trait resolves.

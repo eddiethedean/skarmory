@@ -20,6 +20,7 @@ mod analysis;
 pub mod cleanup;
 pub(crate) mod config;
 mod dependencies;
+mod external_classes;
 mod javascript;
 mod package_entrypoints;
 mod runtime_evidence;
@@ -38,6 +39,8 @@ pub enum Profile {
 pub struct Options {
     pub profile: Profile,
     pub grep_verify: Option<bool>,
+    /// Ordered external dependency source paths for the Phase 0.3 model.
+    pub dependency_search_paths: Vec<PathBuf>,
     /// None uses the Phase 0.3 compatibility configuration.
     pub enable_quality: Option<bool>,
     pub quality_only: bool,
@@ -61,6 +64,7 @@ impl Default for Options {
         Self {
             profile: Profile::default(),
             grep_verify: None,
+            dependency_search_paths: Vec::new(),
             enable_quality: Some(false),
             quality_only: false,
             trace_file: EvidenceInput::Default,
@@ -516,6 +520,8 @@ pub struct Report {
     schema_version: u8,
     profile: &'static str,
     selected_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    external_dependency_roots: Vec<String>,
     exclusions: Vec<Exclusion>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     generated_sources: BTreeSet<String>,
@@ -849,6 +855,11 @@ fn scan_selected(
     let include_dead_code = !options.quality_only;
     let project_wildcards = phase03 && include_dead_code;
     let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
+    if !phase03 && !options.dependency_search_paths.is_empty() {
+        return Err(ConfigError::new(
+            "dependency source paths require the skylos-0.3 profile",
+        ));
+    }
     if enable_quality && !phase03 {
         return Err(ConfigError::new(
             "quality scanning requires the skylos-0.3 profile",
@@ -1075,7 +1086,14 @@ fn scan_selected(
         .then(|| analysis::TemplateProject::new(&project, &config.selection));
     let gin = (include_dead_code && phase03 && path.is_dir())
         .then(|| analysis::GinProject::new(&project, &config.selection));
+    let external_classes = (phase03 && include_dead_code && path.is_dir()).then(|| {
+        external_classes::ExternalClassIndex::new(external_classes::search_roots(
+            path,
+            &options.dependency_search_paths,
+        ))
+    });
     let framework = analysis::FrameworkInputs {
+        external_classes: external_classes.as_ref(),
         settings: django_settings.as_deref(),
         templates: django_templates.as_ref(),
         gin: gin.as_ref(),
@@ -1183,6 +1201,31 @@ fn scan_selected(
             }
         }
     }
+    let external_dependency_roots = external_classes.as_ref().map_or_else(Vec::new, |index| {
+        issues.extend(index.changed_sources().iter().map(|path| {
+            Issue::new(
+                "source_changed",
+                &preview_source::display(path),
+                "dependency source changed during analysis",
+            )
+        }));
+        if let Some(inputs) = cleanup_inputs.as_deref_mut() {
+            for (path, stamp) in index.input_stamps().iter() {
+                let label = preview_source::display(path);
+                match preview_source::read_snapshot(path, &label, Some(stamp)) {
+                    Ok((bytes, _)) => {
+                        inputs.policy.insert(label, blake3::hash(&bytes));
+                    }
+                    Err(issue) => issues.push(issue),
+                }
+            }
+        }
+        index
+            .roots_used()
+            .iter()
+            .map(|path| preview_source::display(path))
+            .collect()
+    });
     issues.append(&mut analysis.issues);
     if let Some(verification) = verification {
         issues.extend(verification.finish(&project, Some(&config.selection)));
@@ -1503,6 +1546,7 @@ fn scan_selected(
             issues,
         },
         selected_paths,
+        external_dependency_roots,
         exclusions: project.exclusions,
         generated_sources,
         config_sources: config.sources,
