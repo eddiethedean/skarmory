@@ -17541,7 +17541,7 @@ omitted_assertions = []
 blocker = "The Click report and framework-root assertions require an installed-SDK port."
 
 # Framework attribute controls exercise the native report through the pinned
-# public SDK entry point. External ancestry cases still need complete ports.
+# public SDK entry point, including genuine providers and local shadows.
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_missing_framework_provider_keeps_only_documented_attributes_live[celery.backends.redis.RedisBackend-attributes0]"
@@ -17552,9 +17552,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:45 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_missing_framework_provider_keeps_only_documented_attributes_live[django.contrib.admin.SimpleListFilter-attributes1]"
@@ -17565,9 +17564,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:45 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_missing_framework_provider_keeps_only_documented_attributes_live[django.contrib.admin.filters.SimpleListFilter-attributes2]"
@@ -17578,9 +17576,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:45 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_missing_framework_provider_keeps_only_documented_attributes_live[storages.backends.s3.S3Storage-attributes3]"
@@ -17591,9 +17588,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:45 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_missing_framework_provider_keeps_only_documented_attributes_live[storages.backends.s3boto3.S3Boto3Storage-attributes4]"
@@ -17604,9 +17600,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:45 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_celery_provider_aliases_keep_the_hook_live[from celery.backends.redis import RedisBackend as FrameworkBase-FrameworkBase]"
@@ -17617,9 +17612,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:75 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_celery_provider_aliases_keep_the_hook_live[import celery.backends.redis as backend-backend.RedisBackend]"
@@ -17630,9 +17624,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:75 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_celery_provider_aliases_keep_the_hook_live[from celery.backends import redis as backend-backend.RedisBackend]"
@@ -17643,9 +17636,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:75 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_celery_provider_aliases_keep_the_hook_live[import celery.backends.redis-celery.backends.redis.RedisBackend]"
@@ -17656,9 +17648,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:75 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_framework_provider_through_project_intermediary_keeps_the_hook_live"
@@ -17669,9 +17660,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:88 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[cases]]
 id = "test/test_framework_class_attr_providers.py::test_local_lookalike_base_does_not_hide_dead_attributes[RedisBackend-ResultConsumer]"
@@ -17778,9 +17768,8 @@ assertions = ["test/test_framework_class_attr_providers.py:28", "test/test_frame
 prerequisites = ["installed-sdk", "grep-verification-disabled", "test/test_framework_class_attr_providers.py:28", "test/test_framework_class_attr_providers.py:174", "test/test_framework_class_attr_providers.py:175"]
 provenance = "Pinned test/test_framework_class_attr_providers.py:171 creates Python sources through _scan at line 22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The candidate scan is incomplete for this external base and cannot prove the original reported-attribute assertions."
 
 [[fixtures]]
 path = "corpus/fixtures/django_appconfig/demo/__init__.py"
