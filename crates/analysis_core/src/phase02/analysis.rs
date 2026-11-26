@@ -3313,7 +3313,7 @@ impl<'a> Graph<'a> {
         {
             return None;
         }
-        index.class(provider)
+        index.class_with_bounded_initializers(provider)
     }
 
     fn dependency_ancestor(

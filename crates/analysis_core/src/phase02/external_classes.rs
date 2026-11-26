@@ -2,7 +2,7 @@
 //! the project graph or execute as part of analysis.
 
 use std::cell::{Ref, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -128,6 +128,114 @@ impl ExternalClassIndex {
         match self.binding(&self.module(module)?, member, None, 0)? {
             Binding::Class(class) => Some(class),
             _ => None,
+        }
+    }
+
+    pub(super) fn class_with_bounded_initializers(&self, name: &str) -> Option<Class> {
+        let (module, _) = name.rsplit_once('.')?;
+        let class = self.class(name)?;
+        let mut active = BTreeSet::new();
+        let mut complete = BTreeSet::new();
+        for end in module
+            .match_indices('.')
+            .map(|(end, _)| end)
+            .chain(std::iter::once(module.len()))
+        {
+            if !self.initializer(&module[..end], &mut active, &mut complete) {
+                return None;
+            }
+        }
+        Some(class)
+    }
+
+    fn initializer(
+        &self,
+        name: &str,
+        active: &mut BTreeSet<String>,
+        complete: &mut BTreeSet<String>,
+    ) -> bool {
+        if complete.contains(name) {
+            return true;
+        }
+        if let Some((parent, _)) = name.rsplit_once('.')
+            && !active.contains(parent)
+            && !self.initializer(parent, active, complete)
+        {
+            return false;
+        }
+        if complete.contains(name) {
+            return true;
+        }
+        if active.len() >= MAX_DEPTH || !active.insert(name.to_owned()) {
+            return false;
+        }
+        let bounded = self.module(name).is_some_and(|module| {
+            module
+                .facts
+                .body
+                .iter()
+                .enumerate()
+                .all(|(index, statement)| match &statement.kind {
+                    StatementKind::Import(import) => {
+                        self.initializer_import(&module, import, active, complete)
+                    }
+                    StatementKind::Define(definition)
+                        if definition.kind == DefinitionKind::Class =>
+                    {
+                        self.class_definition(&module, index, definition, 0)
+                            .is_some()
+                    }
+                    StatementKind::Assign {
+                        value: Some(value), ..
+                    } => literal(value) || self.expression(&module, value, index, 0).is_some(),
+                    _ => true,
+                })
+        });
+        active.remove(name);
+        if bounded {
+            complete.insert(name.to_owned());
+        }
+        bounded
+    }
+
+    fn initializer_import(
+        &self,
+        module: &Module,
+        import: &Import,
+        active: &mut BTreeSet<String>,
+        complete: &mut BTreeSet<String>,
+    ) -> bool {
+        let target = if import.level == 0 {
+            import.module.clone()
+        } else {
+            let Some(target) = relative_module(module, import) else {
+                return false;
+            };
+            target
+        };
+        // "from . import child" can load a child beneath an initializer
+        // already on the stack. Reading an arbitrary partially initialized
+        // member still needs an order proof.
+        if active.contains(&target) {
+            return import
+                .member
+                .as_ref()
+                .and_then(|member| self.child_module(self.module(&target)?.as_ref(), member))
+                .is_some_and(|value| {
+                    matches!(value, Binding::Module(child)
+                if self.initializer(&child, active, complete))
+                });
+        }
+        if !self.initializer(&target, active, complete) {
+            return false;
+        }
+        if import.member.is_none() {
+            return true;
+        }
+        match self.import(module, import, 0) {
+            Some(Binding::Module(child)) => self.initializer(&child, active, complete),
+            Some(_) => true,
+            None => false,
         }
     }
 
@@ -711,6 +819,43 @@ mod tests {
                 .contains_key("external_dependency_roots")
         );
         assert!(findings(&shadow, "unused_functions").contains(&"app.App.render".into()));
+    }
+
+    #[test]
+    fn external_base_requires_its_parent_initializer_to_complete() {
+        use super::super::{Options, Profile, scan};
+
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path();
+        let venv = project.join(".venv/lib/python3.11/site-packages");
+        write(
+            project,
+            "app.py",
+            "from fakelib.core import Base\nclass App(Base): pass\napp = App()\n",
+        );
+        write(&venv, "fakelib/core.py", "class Base: pass\n");
+        let options = Options {
+            profile: Profile::SkylosPhase03,
+            grep_verify: Some(false),
+            ..Options::default()
+        };
+        for initializer in [
+            "raise RuntimeError('blocked')\n",
+            "import missing_dependency\n",
+        ] {
+            write(&venv, "fakelib/__init__.py", initializer);
+            let report = scan(project, &options).unwrap().to_json().unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&report).unwrap();
+            assert_eq!(parsed["coverage"]["status"], "incomplete", "{report}");
+            assert!(
+                parsed["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["kind"] == "unresolved_subclass_hook"),
+                "{report}"
+            );
+        }
     }
 
     #[derive(Deserialize)]
