@@ -2744,6 +2744,55 @@ fn flask_failed_class_patches_leave_independent_receivers_unchanged() {
 }
 
 #[test]
+fn flask_login_class_change_uses_the_replacement_layout_and_leaves_siblings_active() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup =
+        "from flask_login import LoginManager\nlogin = LoginManager()\ncontrol = LoginManager()\n";
+    let members = "    @staticmethod\n    def user_loader(callback): return callback\n";
+    let mutation = "login.__class__ = Replacement\n";
+    fs::write(
+        &provider,
+        format!("{setup}class Replacement:\n{members}{mutation}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login, control\n@login.user_loader\ndef replaced(value): return value\n@control.user_loader\ndef active(user_id): return user_id\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "app.active", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(findings(&report, "unused_functions").contains(&"app.replaced"));
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(report, cached);
+
+    fs::write(
+        &provider,
+        format!("{setup}class Replacement:\n    __slots__ = ()\n{members}{mutation}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert_eq!(
+        evidence_certainties(&report, "app.active", "flask_login_registration"),
+        ["certain"]
+    );
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
 fn flask_login_literal_mock_start_replaces_a_resolved_callback_decorator() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
