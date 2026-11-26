@@ -295,7 +295,16 @@ impl Graph<'_> {
         }
         // The external selection identifies the settings namespace. It does
         // not establish that an application or a route has started.
-        self.django_setting_bindings(settings)
+        let Some(bindings) = self.django_setting_bindings(settings) else {
+            self.scope_issue(
+                settings,
+                self.symbols[apps].name.at,
+                "unresolved_registration",
+                "Django settings initialization terminates before exposing its values",
+            );
+            return Vec::new();
+        };
+        bindings
             .into_keys()
             .filter(|&binding| !self.binding_depends_on_branch(binding, END))
             .map(|binding| possible_edge(binding, "django_setting"))

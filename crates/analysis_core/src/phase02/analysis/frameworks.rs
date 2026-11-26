@@ -23,6 +23,11 @@ fn django_unconditionally_raises(body: &[Statement]) -> bool {
 mod django_commands;
 mod django_settings;
 
+enum DjangoSettingAliasError {
+    Unresolved,
+    FailedInitializer,
+}
+
 pub(super) use django_commands::DjangoCommandDispatch;
 pub(super) use django_settings::DjangoFormatLookup;
 
@@ -2331,7 +2336,9 @@ impl Graph<'_> {
                     );
                     continue;
                 };
-                self.activate_django_settings(scope, settings, &startup.commands);
+                if !self.activate_django_settings(scope, settings, &startup.commands, startup.at) {
+                    continue;
+                }
                 if startup.creates_application
                     && scope == self.scopes[scope].file
                     && matches!(
@@ -2379,8 +2386,12 @@ impl Graph<'_> {
         };
         self.django_configured_settings = Some(settings);
         self.django_startup_scopes.insert(settings);
-        self.activate_django_settings(settings, settings, &DjangoCommands::None);
-        true
+        self.activate_django_settings(
+            settings,
+            settings,
+            &DjangoCommands::None,
+            Location { line: 1, column: 1 },
+        )
     }
 
     fn collect_django_root_patterns(&mut self) {
@@ -2508,19 +2519,29 @@ impl Graph<'_> {
         scope: ScopeId,
         settings: usize,
         commands: &DjangoCommands,
-    ) {
+        at: Location,
+    ) -> bool {
+        let Some(bindings) = self.django_setting_bindings(settings) else {
+            self.scope_issue(
+                scope,
+                at,
+                "unresolved_registration",
+                "Django settings initialization terminates before exposing its values",
+            );
+            return false;
+        };
         self.django_settings_sources.insert((scope, settings));
         let row = &mut self.scopes[scope];
         row.activated_apps.extend([
             django_loaded_module(settings),
             django_loaded_module(row.file),
         ]);
-        for (binding, definite) in self.django_setting_bindings(settings) {
+        for (binding, definite) in bindings {
             let certainty = if definite { "certain" } else { "possible" };
             self.edge(scope, binding, "django_setting", certainty);
         }
         if !self.collect_django_apps(scope, settings, commands) {
-            return;
+            return true;
         }
         if let Some(binding) = self.local(settings, "ROOT_URLCONF", END) {
             if let Value::Text(module) = self.binding(binding, END, 0)
@@ -2537,9 +2558,13 @@ impl Graph<'_> {
                 );
             }
         }
+        true
     }
 
-    fn django_setting_bindings(&self, settings: ScopeId) -> BTreeMap<SymbolId, bool> {
+    fn django_setting_bindings(&self, settings: ScopeId) -> Option<BTreeMap<SymbolId, bool>> {
+        if self.django_setting_initializer_fails(settings) {
+            return None;
+        }
         let mut selected = BTreeMap::new();
         let namespace = &self.scopes[settings];
         let closed = !namespace.open_wildcard && self.local(settings, "__dir__", END).is_none();
@@ -2554,43 +2579,65 @@ impl Graph<'_> {
                 }
                 let definite =
                     candidates.len() == 1 && !self.binding_depends_on_branch(binding, END);
-                let Some(chain) = self.django_setting_alias_chain(binding) else {
-                    continue;
+                let chain = match self.django_setting_alias_chain(binding) {
+                    Ok(chain) => chain,
+                    Err(DjangoSettingAliasError::Unresolved) => continue,
+                    Err(DjangoSettingAliasError::FailedInitializer) if definite => return None,
+                    Err(DjangoSettingAliasError::FailedInitializer) => continue,
                 };
                 for binding in chain {
                     *selected.entry(binding).or_default() |= definite;
                 }
             }
         }
-        selected
+        Some(selected)
     }
 
-    fn django_setting_alias_chain(&self, mut binding: SymbolId) -> Option<Vec<SymbolId>> {
+    fn django_setting_initializer_fails(&self, file: ScopeId) -> bool {
+        self.failed_terminal_modules.contains(&file)
+            || self.scopes[file]
+                .body
+                .iter()
+                .any(|statement| matches!(statement.kind, StatementKind::Raise(_)))
+    }
+
+    fn django_setting_alias_chain(
+        &self,
+        mut binding: SymbolId,
+    ) -> Result<Vec<SymbolId>, DjangoSettingAliasError> {
+        use DjangoSettingAliasError::{FailedInitializer, Unresolved};
+
         let mut aliases = Vec::new();
         let mut visited = BTreeSet::new();
         while visited.insert(binding) {
             aliases.push(binding);
             let symbol = &self.symbols[binding];
             match symbol.binding {
-                Binding::Variable(Some(_), _) | Binding::UnpackItem { .. } => return Some(aliases),
-                Binding::Variable(None, _) if aliases.len() == 1 => return Some(aliases),
+                Binding::Variable(Some(_), _) | Binding::UnpackItem { .. } => return Ok(aliases),
+                Binding::Variable(None, _) if aliases.len() == 1 => return Ok(aliases),
                 Binding::Import(import) => {
-                    let member = import.member.as_deref()?;
-                    let module = self.import_module(self.scopes[symbol.scope].file, import)?;
-                    let &source = self.modules.get(module.as_str())?;
+                    let member = import.member.as_deref().ok_or(Unresolved)?;
+                    let module = self
+                        .import_module(self.scopes[symbol.scope].file, import)
+                        .ok_or(Unresolved)?;
+                    let &source = self.modules.get(module.as_str()).ok_or(Unresolved)?;
                     let access = (symbol.scope, import.local.at);
                     let before = self
                         .import_member_position(symbol.scope, &module, import)
                         .unwrap_or(END);
+                    if self.imported_module_write(&module, access).is_some() {
+                        return Err(Unresolved);
+                    }
+                    if self.django_setting_initializer_fails(source) {
+                        return Err(FailedInitializer);
+                    }
                     if self.scopes[source].open_wildcard
-                        || self.failed_terminal_modules.contains(&source)
-                        || self.imported_module_write(&module, access).is_some()
                         || self.module_member_write(&module, member, access).is_some()
                         || self
                             .module_global_write(source, member, before, access)
                             .is_some()
                     {
-                        return None;
+                        return Err(Unresolved);
                     }
                     let ModuleMember::Binding(origin, None) = self.selected_module_member(
                         source,
@@ -2599,17 +2646,17 @@ impl Graph<'_> {
                         access,
                         ModuleMemberAccess::FromImport,
                     ) else {
-                        return None;
+                        return Err(Unresolved);
                     };
                     if self.binding_depends_on_branch(origin, before) {
-                        return None;
+                        return Err(Unresolved);
                     }
                     binding = origin;
                 }
-                _ => return None,
+                _ => return Err(Unresolved),
             }
         }
-        None
+        Err(Unresolved)
     }
 
     pub(super) fn report_django_startup_coverage(&mut self, reach: &Reachability) {
