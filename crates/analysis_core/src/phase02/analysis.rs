@@ -608,6 +608,7 @@ pub(super) struct FrameworkInputs<'a> {
     pub(super) discovery: Option<&'a crate::preview_source::Project>,
     pub(super) external_classes: Option<&'a external_classes::ExternalClassIndex>,
     pub(super) unresolved_project_wildcards: bool,
+    pub(super) wildcard_guards: Option<&'a super::wildcards::Guards>,
     #[cfg(test)]
     pub(super) fastapi_call_event_limit: Option<usize>,
 }
@@ -625,6 +626,7 @@ pub(super) fn analyze_with_verification(
         files,
         discovery: framework.discovery,
         external_classes: framework.external_classes,
+        wildcard_guards: framework.wildcard_guards,
         modules: BTreeMap::new(),
         nested_packages: if phase03 {
             NestedPackages::index(files)
@@ -877,6 +879,7 @@ struct Graph<'a> {
     files: &'a [AnalyzedFile],
     discovery: Option<&'a crate::preview_source::Project>,
     external_classes: Option<&'a external_classes::ExternalClassIndex>,
+    wildcard_guards: Option<&'a super::wildcards::Guards>,
     modules: BTreeMap<&'a str, usize>,
     nested_packages: NestedPackages<'a>,
     scopes: Vec<Scope<'a>>,
@@ -1206,6 +1209,11 @@ impl<'a> Graph<'a> {
         before: Location,
         depth: usize,
     ) -> Option<bool> {
+        if depth == 0
+            && let Some(value) = self.wildcard_guard(scope, before)
+        {
+            return Some(value);
+        }
         if depth >= MAX_BINDING_CHAIN {
             return None;
         }
@@ -1228,6 +1236,14 @@ impl<'a> Graph<'a> {
             }
             _ => None,
         }
+    }
+
+    fn wildcard_guard(&self, scope: ScopeId, at: Location) -> Option<bool> {
+        (scope < self.files.len())
+            .then_some(())
+            .and_then(|()| self.wildcard_guards?.get(&self.files[scope].path))?
+            .get(&position(at))
+            .copied()
     }
 
     fn index_dormant(&mut self, scope: ScopeId, body: &'a [Statement]) {
@@ -7892,7 +7908,8 @@ impl<'a> Graph<'a> {
                     body,
                     otherwise,
                 } => {
-                    let stop = match self.walk_if_test(scope, test, at) {
+                    let test_value = self.walk_if_test(scope, test, at);
+                    let stop = match self.wildcard_guard(scope, at).or(test_value) {
                         Some(true) => {
                             self.scopes[scope]
                                 .namespace_exclusions
