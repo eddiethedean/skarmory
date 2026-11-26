@@ -170,6 +170,15 @@ impl<'a> Python<'a> {
                 Stmt::SetGlobalName { value, .. } => {
                     self.expression(value, &bindings);
                 }
+                Stmt::SetNonlocalName { value, .. } => {
+                    self.expression(value, &bindings);
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "a local callback can rebind a dependency configuration alias",
+                    ));
+                }
                 Stmt::DjangoSettingsGlobalCall(value) => {
                     self.expression(value, &bindings);
                     self.usage.reasons.push(Reason::new(
@@ -194,6 +203,12 @@ impl<'a> Python<'a> {
                         .chain(&definition.bases)
                     {
                         self.expression(expression, &bindings);
+                    }
+                    if let (Some(target), [value]) =
+                        (&definition.default_binding, definition.defaults.as_slice())
+                    {
+                        let origin = qualified(value, &bindings);
+                        bindings.insert(&target.text, origin);
                     }
                     if is_test_file(self.path)
                         && definition.name.text.starts_with("test_")
@@ -661,6 +676,9 @@ fn shadow<'a>(body: &'a [Statement], bindings: &mut Bindings<'a>) {
             }
             Stmt::Define(definition) => {
                 bindings.insert(&definition.name.text, None);
+                if let Some(target) = &definition.default_binding {
+                    bindings.insert(&target.text, None);
+                }
             }
             Stmt::Import(import) => {
                 bindings.insert(&import.local.text, None);
