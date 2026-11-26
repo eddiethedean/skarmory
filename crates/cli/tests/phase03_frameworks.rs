@@ -91,6 +91,88 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn closure_safety_retains_bindings_from_straight_line_finally() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let source = r#"def live(): return 2
+def dormant(): return 3
+def launch():
+    try:
+        offset = 1
+    finally:
+        def callback():
+            return live() + offset
+    return callback()
+launch()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["app.dormant"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&path, source.replace("offset = 1", "offset = live()")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+}
+
+#[test]
+fn closure_safety_comprehension_dispatch_follows_iteration_and_consumption() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let source = r#"def shadowed(): return 1
+def eagerly_called(): return 2
+def called_on_resume(): return 3
+def dormant_yield(): return 4
+def eager():
+    def callback(): return shadowed()
+    return [callback() for callback in [eagerly_called]]
+def generator():
+    def callback(): return shadowed()
+    return (callback() for callback in [called_on_resume])
+def unused_generator():
+    return (callback() for callback in [dormant_yield])
+eager()
+list(generator())
+unused_generator()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    for live in ["app.eagerly_called", "app.called_on_resume"] {
+        assert!(!unused.contains(&live), "{unused:?}");
+    }
+    for dead in ["app.shadowed", "app.dormant_yield"] {
+        assert!(unused.contains(&dead), "{unused:?}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &path,
+        source.replace("list(generator())", "set(generator())"),
+    )
+    .unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
+        "{report}"
+    );
+}
+
+#[test]
 fn private_attribute_lookup_uses_the_lexical_class_and_runtime_key() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
