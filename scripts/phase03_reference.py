@@ -180,6 +180,20 @@ def validate_fixture_setup(before, after, rule):
         raise ValueError(f"{rule['path']}: fixture setup changed assertions or test collection")
 
 
+def validate_combined_fixtures(before, after, inline, setup):
+    old_lines, new_lines = before.splitlines(keepends=True), after.splitlines(keepends=True)
+    if len(old_lines) != len(new_lines):
+        raise ValueError(f"{setup['path']}: combined fixture edits must preserve line positions")
+    setup_lines = set(setup["lines"])
+    separator = b"" if isinstance(before, bytes) else ""
+    with_only_inline = separator.join(
+        old if line in setup_lines else new
+        for line, (old, new) in enumerate(zip(old_lines, new_lines), 1)
+    )
+    validate_inline_fixtures(before, with_only_inline, inline)
+    validate_fixture_setup(with_only_inline, after, setup)
+
+
 def checked_test_fixture(checkout, original, env, paths, path):
     fixture = PurePosixPath(path)
     if (path not in paths or fixture.parts[:1] != ("test",)
@@ -217,12 +231,21 @@ def materialize(checkout, manifest=BASELINE):
         inline = {}
         for rule in corrections.get("inline_corrections", ()):
             inline.setdefault(rule["path"], []).append(rule)
+        setups = corrections.get("fixture_setup_corrections", ())
+        setup_paths = {rule["path"] for rule in setups}
+        if len(setup_paths) != len(setups):
+            raise ValueError("expected unique fixture setup paths")
         for path, rules in inline.items():
+            if path not in setup_paths:
+                old, new = checked_test_fixture(checkout, original, env, corpus_paths, path)
+                validate_inline_fixtures(old, new, rules)
+        for rule in setups:
+            path = rule["path"]
             old, new = checked_test_fixture(checkout, original, env, corpus_paths, path)
-            validate_inline_fixtures(old, new, rules)
-        for rule in corrections.get("fixture_setup_corrections", ()):
-            old, new = checked_test_fixture(checkout, original, env, corpus_paths, rule["path"])
-            validate_fixture_setup(old, new, rule)
+            if path in inline:
+                validate_combined_fixtures(old, new, inline[path], rule)
+            else:
+                validate_fixture_setup(old, new, rule)
         validate_corpus_changes(before, after, corpus_paths, reviewed)
         for path in paths:
             entry = git(checkout, "ls-files", "--stage", "--", path, env=env)

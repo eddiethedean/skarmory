@@ -1,7 +1,7 @@
 # Reviewed seed for the pinned dead-code release gate.
 # The complete case inventory and remaining ports are still required.
 schema_version = 1
-reference_revision = "a133716edc9ae877c37482e9f7e4c1ac8e756ee0"
+reference_revision = "4ded0870f2a4eab8170424e6d21e28117492a5ba"
 inventory_complete = false
 
 [[variants]]
@@ -9228,7 +9228,6 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The factory cannot activate or register callbacks after its blueprint initializer fails. Coverage must retain the failed import.", evidence = "Skylos 5.7.0 at 87978e69adf91b3811e97b00c40aa39d7937cd94, unchanged test/test_flask_blueprint_exports.py fixture, CPython 3.11.15, Flask 3.1.3, Flask-Login 0.6.3. Import app from the fixture root and invoke app.create_app(). CPython raised NameError for unbound 'replacement' at app/views/__init__.py:3 before the callback module could load and the blueprint could register.", assertions = ["coverage:incomplete", "issue:unresolved_import:app/__init__.py:4", "issue:unresolved_import:app/views/routes.py:1", "definition:app.views.routes.prepare", "definition:app.views.routes.helper", "definition:app.views.routes.retired", "no-evidence:flask_registration:*:app.views.routes.prepare", "no-evidence:direct_call:*:app.views.routes.helper", "no-evidence:direct_call:*:app.views.routes.retired"] }
 
 [[cases]]
 id = "test/test_flask_blueprint_exports.py::test_unregistered_replaced_or_fake_blueprint_does_not_rescue_hook[options2]"
@@ -9241,7 +9240,6 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The factory cannot activate or register callbacks after its blueprint initializer fails. Coverage must retain the failed import.", evidence = "Skylos 5.7.0 at 87978e69adf91b3811e97b00c40aa39d7937cd94, unchanged test/test_flask_blueprint_exports.py fixture, CPython 3.11.15, Flask 3.1.3, Flask-Login 0.6.3. Import app from the fixture root and invoke app.create_app(). CPython raised TypeError at app/views/__init__.py:2 because the local Blueprint constructor accepts no arguments before the callback module could load and the blueprint could register.", assertions = ["coverage:incomplete", "issue:unresolved_import:app/__init__.py:4", "issue:unresolved_import:app/views/routes.py:1", "definition:app.views.routes.prepare", "definition:app.views.routes.helper", "definition:app.views.routes.retired", "no-evidence:flask_registration:*:app.views.routes.prepare", "no-evidence:direct_call:*:app.views.routes.helper", "no-evidence:direct_call:*:app.views.routes.retired"] }
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_attributes_of_framework_objects_are_not_the_provider_itself[from flask import Flask\\napp = Flask(__name__)\\n-app.config.shell_context_processor]"
@@ -9386,7 +9384,6 @@ provenance = "Unmodified Python project fixture constructed by the original test
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The blocked provider import prevents callback registration. The scanner must expose the failed import while preserving the lexical callback without a framework root.", evidence = "Skylos 5.7.0 at 87978e69adf91b3811e97b00c40aa39d7937cd94, unchanged test/test_flask_callback_providers.py fixture, CPython 3.11.15, Flask 3.1.3, Flask-Login 0.6.3. Import app with the fixture root on sys.path. CPython raised ImportError at other.py:1 when the named import cycle read login from the partially initialized providers module before app.py could finish its line 1 import and register app.callback.", assertions = ["coverage:incomplete", "issue:unresolved_import:app.py:1", "definition:app.callback", "no-evidence:flask_login_registration:*:app.callback", "issue:unresolved_import:providers.py:1", "issue:unresolved_import:other.py:1"] }
 
 [[cases]]
 id = "test/test_flask_callback_providers.py::test_imported_flask_instance_shell_context_is_a_registered_callback"
@@ -10918,7 +10915,6 @@ provenance = "Unmodified temporary project written by the pinned test/test_djang
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The bound wrapper or its captured alias stays dormant because the fixture never dispatches the command.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no hello command. The import trace reached neither handle nor run_with_reloader. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:shop.management.commands.hello.Command", "unused:suppressed:shop.management.commands.hello.Command.handle", "no-evidence:django_command:*:shop.management.commands.hello.Command.handle", "unused:unused_functions:shop.management.commands.hello.callback", "no-evidence:django_autoreload:*:shop.management.commands.hello.callback", "unused:unused_functions:shop.management.commands.hello.helper"] }
 
 [[cases]]
 id = "test/test_django_config_replacement_liveness.py::test_replaced_dictionary_does_not_supply_protocol_roots[{setting} = {{}}\\n-LOGGING-False]"
@@ -15744,7 +15740,6 @@ provenance = "Original Python project produced by the pinned test and its fixtur
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The undeployed command does not call run_with_reloader, so its callback remains dormant.", evidence = "Django 4.2.1 and 5.2.1 imported the unchanged fixture with INSTALLED_APPS empty. get_commands() listed no hello command. The import trace reached neither handle nor run_with_reloader. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:complete", "unused:unused_classes:mgmt_command.management.commands.hello.Command", "unused:suppressed:mgmt_command.management.commands.hello.Command.handle", "no-evidence:django_command:*:mgmt_command.management.commands.hello.Command.handle", "unused:unused_functions:mgmt_command.management.commands.hello._restart_worker", "no-evidence:django_autoreload:*:mgmt_command.management.commands.hello._restart_worker"] }
 
 [[cases]]
 id = "test/test_django_app_repro_liveness.py::test_repro_12_auth_backend_hooks_are_live"

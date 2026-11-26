@@ -562,8 +562,24 @@ index 8cf2665..8fb4a93 100644
      result = json.loads(analyze(str(tmp_path), conf=0, grep_verify=False))
      empty_files = {
          finding["file"]
+diff --git a/test/test_django_app_repro_liveness.py b/test/test_django_app_repro_liveness.py
+index 2a0f424..db019c5 100644
+--- a/test/test_django_app_repro_liveness.py
++++ b/test/test_django_app_repro_liveness.py
+@@ -176,9 +176,9 @@ class Command(BaseCommand):
+             _restart_worker, options["name"], options["queue"]
+         )
+ ''',
++    "settings.py": "INSTALLED_APPS = ['mgmt_command']\nSECRET_KEY = 'fixture'\n",
++    "manage.py": "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings', '--name=night', '--queue=main'])\n",
+ }
+-
+-
+ def test_repro_11_reloader_helper_is_live(tmp_path):
+     result = _scan(tmp_path, _MGMT_COMMAND)
+     _assert_quiet(result, "_restart_worker")
 diff --git a/test/test_django_autoreload_precision.py b/test/test_django_autoreload_precision.py
-index a0fc96b..fc7a48f 100644
+index a0fc96b..29322f3 100644
 --- a/test/test_django_autoreload_precision.py
 +++ b/test/test_django_autoreload_precision.py
 @@ -27,8 +27,8 @@ def callback():
@@ -589,6 +605,15 @@ index a0fc96b..fc7a48f 100644
 @@ -196,7 +196,7 @@ def test_autoreload_wrapper_in_imported_module_uses_actual_callback_argument(tmp
  def test_management_command_bound_wrapper_uses_the_callback_argument(tmp_path):
      result, definitions = _scan(
+         tmp_path,
+-        {
++        {**_SHOP_PACKAGES, **_COMMAND_LAUNCH,
+             "shop/management/commands/hello.py": (
+                 "from django.core.management.base import BaseCommand\n"
+                 "from django.utils import autoreload\n"
+@@ -328,7 +328,7 @@ def test_bound_wrapper_alias_preserves_the_capture_order(tmp_path, capture_befor
+         operations = capture + replacement
+     _, definitions = _scan(
          tmp_path,
 -        {
 +        {**_SHOP_PACKAGES, **_COMMAND_LAUNCH,
@@ -696,40 +721,55 @@ index 02c912e..89a91a0 100644
  """Bare processor class — product convention load, no static importers of the class."""
 
 diff --git a/test/test_django_hook_provenance.py b/test/test_django_hook_provenance.py
-index 6bab49e..992674d 100644
+index 6bab49e..0f45416 100644
 --- a/test/test_django_hook_provenance.py
 +++ b/test/test_django_hook_provenance.py
-@@ -3,8 +3,8 @@
+@@ -1,10 +1,10 @@
+ """Source-only controls for Django hook ownership and effective form fields."""
+-
  import pytest
-
+-
  from test.web_framework_fixtures import _scan, _unused
 -
 -
++_MODEL_SETTINGS = {"settings.py": "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n"}
++_DJANGO_MODEL_BOOTSTRAP = "        import os, django\n        os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n        django.setup()\n"
 +_FORM_SETTINGS = {"settings.py": "SECRET_KEY = 'fixture'\n"}
 +_COMMAND_SETUP = {"settings.py": "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n", "shop/__init__.py": "", "shop/management/__init__.py": "", "shop/management/commands/__init__.py": "", "shop/management/commands/probe.py": "from app import Worker as Command\n", "manage.py": "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'probe', '--settings=settings'])\n"}
  @pytest.mark.parametrize(
      ("base", "hook"),
      [("BaseCommand", "handle"), ("Form", "clean_phone"), ("Model", "save")],
-@@ -43,15 +43,15 @@ def test_genuine_imported_django_hooks_remain_recognized(
+@@ -43,22 +43,22 @@ def test_genuine_imported_django_hooks_remain_recognized(
  ):
      result = _scan(
          tmp_path,
 -        {
-+        {**(_COMMAND_SETUP if base == "BaseCommand" else _FORM_SETTINGS if base == "Form" else {}),
-             "app.py": f"""
+-            "app.py": f"""
++        {**(_COMMAND_SETUP if base == "BaseCommand" else _FORM_SETTINGS if base == "Form" else _MODEL_SETTINGS),
++            "app.py": ((_DJANGO_MODEL_BOOTSTRAP if base == "Model" else "") + f"""
          from {provider} import {base} as Parent
          class Worker(Parent):
 -            def {hook}(self):
 -                return 1
-+            def {hook}(self{", **options" if base == "BaseCommand" else ""}):
++            {"class Meta: app_label = 'hook_fixture'" if base == "Model" else ""}\n            def {hook}(self{", **options" if base == "BaseCommand" else ""}):
 +                return "ready"
              def abandoned(self):
                  return 2
 -        Worker()
-+        {"Worker(data={}).is_valid()" if base == "Form" else "Worker()" if base == "Model" else ""}
-     """
+-    """
++        {"Worker(data={}).is_valid()" if base == "Form" else "Worker().save()" if base == "Model" else ""}
++    """),
          },
      )
+     assert f"app.Worker.{hook}" not in _unused(result)
+     assert "app.Worker.abandoned" in _unused(result)
+-
+-
++_HOOK_EXERCISE = {("QuerySet", "delete"): "Worker().delete()", ("Manager", "get_queryset"): "Worker().all()",
++                  ("Model", "save"): "Worker().save()", ("ModelForm", "save"): "form = Worker(data={})\n        if form.is_valid(): form.save()"}
+ @pytest.mark.parametrize("declared", [True, False])
+ def test_form_clean_hook_requires_a_corresponding_field(tmp_path, declared):
+     field = "phone = forms.CharField()"
 @@ -154,7 +154,7 @@ def test_model_form_selected_model_field_keeps_clean_hook(tmp_path):
  def test_imported_project_django_base_keeps_hooks(tmp_path):
      result = _scan(
@@ -770,6 +810,39 @@ index 6bab49e..992674d 100644
      """
          },
      )
+@@ -552,8 +552,8 @@ def test_model_form_all_fields_omits_uneditable_model_field(tmp_path):
+         },
+     )
+     assert "app.Contact.clean_phone" in _unused(result)
+-
+-
++_MODEL_FORM_SOURCE = "        from django.db import models\n        class Sample(models.Model):\n            class Meta: app_label = 'hook_fixture'\n"
++_HOOK_CLASS_OPTIONS = {"Model": "class Meta: app_label = 'hook_fixture'", "ModelForm": "class Meta:\n                model = Sample\n                fields = ()"}
+ @pytest.mark.parametrize(
+     ("provider", "base", "hook", "expected_live"),
+     [
+@@ -572,16 +572,16 @@ def test_framework_hooks_match_the_specific_provider_role(
+ ):
+     result = _scan(
+         tmp_path,
+-        {
+-            "app.py": f"""
++        {**(_MODEL_SETTINGS if base in {"Model", "ModelForm"} else {}),
++            "app.py": ((_DJANGO_MODEL_BOOTSTRAP if base in {"Model", "ModelForm"} else "") + (_MODEL_FORM_SOURCE if base == "ModelForm" else "") + f"""
+         from {provider} import {base} as Parent
+         class Worker(Parent):
+-            def {hook}(self):
++            {_HOOK_CLASS_OPTIONS.get(base, "")}\n            def {hook}(self):
+                 return 1
+             def abandoned(self):
+                 return 2
+-        Worker()
+-    """
++        {_HOOK_EXERCISE.get((base, hook), "Worker()")}
++    """),
+         },
+     )
+     assert (f"app.Worker.{hook}" in _unused(result)) is not expected_live
 diff --git a/test/test_django_management_command_reachability.py b/test/test_django_management_command_reachability.py
 index dcb66d2..e6a0971 100644
 --- a/test/test_django_management_command_reachability.py
@@ -936,6 +1009,28 @@ index e25651a..2bc8f3c 100644
      assert "conf.settings.CUSTOM_FLAG" not in unused
      assert "conf.settings_production.PRODUCTION_ONLY" not in unused
      assert "conf.constants.STALE_CONSTANT" in unused
+diff --git a/test/test_django_signal_liveness.py b/test/test_django_signal_liveness.py
+index 0888139..21f00ba 100644
+--- a/test/test_django_signal_liveness.py
++++ b/test/test_django_signal_liveness.py
+@@ -197,7 +197,7 @@ def test_custom_signal_instances_preserve_genuine_callbacks(tmp_path, prefix):
+     result = _scan(tmp_path, _sources(prefix + "@receiver(saved)\n" + _BODY))
+     _assert_registered(result, loaded=True)
+
+-
++_THIRD_PARTY_SIGNAL = {"third_party/__init__.py": "", "third_party/signals.py": "import os\nfrom django.db.models.signals import post_save\nsaved = post_save if os.getenv('FIXTURE_SIGNAL') == 'enabled' else []\n"}
+ @pytest.mark.parametrize(
+     "prefix",
+     [
+@@ -207,7 +207,7 @@ def test_custom_signal_instances_preserve_genuine_callbacks(tmp_path, prefix):
+     ],
+ )
+ def test_unsupported_signal_provider_retains_callback_as_uncertain(tmp_path, prefix):
+-    result = _scan(tmp_path, _sources(prefix + "@receiver(saved)\n" + _BODY))
++    result = _scan(tmp_path, {**_sources(prefix + "@receiver(saved)\n" + _BODY), **(_THIRD_PARTY_SIGNAL if "third_party.signals" in prefix else {})})
+     assert "shop.signals.on_save" not in _unused(result)
+     assert "shop.signals.helper" not in _unused(result)
+     assert "shop.signals.on_save" not in _signal_targets(
 diff --git a/test/test_django_wagtail_conventions.py b/test/test_django_wagtail_conventions.py
 index 28388fb..0d56d91 100644
 --- a/test/test_django_wagtail_conventions.py
@@ -1044,8 +1139,25 @@ index e44ba3a..3858059 100644
  )
  @pytest.mark.parametrize(
      "condition",
+diff --git a/test/test_flask_blueprint_exports.py b/test/test_flask_blueprint_exports.py
+index a073560..728c223 100644
+--- a/test/test_flask_blueprint_exports.py
++++ b/test/test_flask_blueprint_exports.py
+@@ -15,10 +15,10 @@ def _scan(root, *, register=True, blueprint_tail="", provider="flask"):
+         + ("    app.register_blueprint(bp)\n" if register else "")
+         + "    return app\n",
+         "app/views/__init__.py": f"from {provider} import Blueprint\nbp = Blueprint('main', __name__)\n"
+-        + blueprint_tail
++        + ("from app.views import routes\nfrom lookalike import Replacement\nbp = Replacement()\n" if blueprint_tail == "bp = replacement\n" else blueprint_tail)
+         + "\nfrom app.views import routes\n",
+         "app/views/routes.py": "from app.views import bp\n@bp.before_app_request\ndef prepare(): return helper()\ndef helper(): return 1\ndef retired(): return 2\n",
+-        "lookalike.py": "class Blueprint: pass\n",
++        "lookalike.py": "class Blueprint:\n    def __init__(self, name, import_name): pass\n    def before_app_request(self, callback): return callback\n    def register(self, app, options): pass\nclass Replacement:\n    def register(self, app, options): pass\n",
+     }
+     for path, body in files.items():
+         write_fixture(root, path, textwrap.dedent(body).lstrip(), overwrite=True)
 diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
-index 2386a5c..b8c58c9 100644
+index 2386a5c..ef5d915 100644
 --- a/test/test_flask_callback_providers.py
 +++ b/test/test_flask_callback_providers.py
 @@ -39,24 +39,24 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
@@ -1088,6 +1200,17 @@ index 2386a5c..b8c58c9 100644
  )
  def test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks(
      tmp_path, provider
+@@ -76,8 +76,8 @@ def test_import_cycle_does_not_invent_a_callback_provider(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "providers.py": "from other import login\n",
+-            "other.py": "from providers import login\n",
++            "providers.py": "from origin import login\nfrom other import login\n", "origin.py": "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nlogin = Replacement()\n",
++            "other.py": "from origin import login\nfrom providers import login\n",
+             "app.py": "from providers import login\n@login.user_loader\ndef callback(): return 1\n",
+         },
+     )
 @@ -186,12 +186,12 @@ def test_global_constructor_replacement_keeps_callback_unproved(tmp_path):
          "from flask import Flask\ndef create_app():\n    return replacement\n",
          "from flask import Flask\ndef create_app(Flask):\n    app = Flask(__name__)\n    return app\n",
