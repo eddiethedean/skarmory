@@ -472,7 +472,7 @@ index 3a3f6ea..ae07eca 100644
        "source": {
          "repo": "https://github.com/django/django",
 diff --git a/test/test_dead_code_framework_overrides.py b/test/test_dead_code_framework_overrides.py
-index 0feb0e1..5ca7642 100644
+index 0feb0e1..4de29a7 100644
 --- a/test/test_dead_code_framework_overrides.py
 +++ b/test/test_dead_code_framework_overrides.py
 @@ -146,7 +146,7 @@ def test_third_party_overrides_read_from_site_packages(tmp_path, monkeypatch):
@@ -484,6 +484,17 @@ index 0feb0e1..5ca7642 100644
 
      reported = _reported(root)
 
+@@ -211,8 +211,8 @@ def test_traitlets_handlers_and_dynamic_defaults(tmp_path):
+                 "from traitlets import Unicode, default, validate\n"
+                 "from app.base import Configurable\n\n\n"
+                 "class Manager(Configurable):\n"
+-                "    root_dir = Unicode()\n\n"
+-                "    @default('root_dir')\n"
++                '    root_dir = Unicode()\n    alternate_dir = Unicode()\n\n'
++                "    @default('alternate_dir')\n"
+                 "    def _default_root_dir(self):\n"
+                 "        return '/'\n\n"
+                 "    @validate('root_dir')\n"
 @@ -260,14 +260,14 @@ def test_drf_field_hooks_through_project_serializers(tmp_path):
          {
              "api/__init__.py": "",
@@ -1034,7 +1045,7 @@ index e44ba3a..3858059 100644
  @pytest.mark.parametrize(
      "condition",
 diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
-index 2386a5c..4acd79c 100644
+index 2386a5c..b8c58c9 100644
 --- a/test/test_flask_callback_providers.py
 +++ b/test/test_flask_callback_providers.py
 @@ -39,24 +39,24 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
@@ -1065,10 +1076,12 @@ index 2386a5c..4acd79c 100644
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n',
          "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
-         "from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n",
+-        "from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\ndef replacement(cls): return Replacement()\nfrom flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n',
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n',
-         "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
++        'def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n',
          "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
 -    ],
 +    ], ids=['class LoginManager: pass\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n', 'from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n', 'import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n', "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n", "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n", 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n', 'from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n'],

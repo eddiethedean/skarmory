@@ -136,11 +136,12 @@ The original venv case still requires external dependency discovery and public
 liveness. The vendored-package case checks the private search list.
 
 The external-override suite exercises stdlib ancestry, builtin `dict`
-allocation, DRF, Guardian, and an unavailable external base with an explicit
-fallback. The Traitlets case requires actual configurable construction and
-remains pending. Other cases require external source lookup or assertions
-on Skylos's private dependency search and class index. The inventory
-preserves those requirements for native scope review.
+allocation, Traitlets, DRF, Guardian, and an unavailable external base with an
+explicit fallback. The Traitlets fixture constructs its configurable and
+declares distinct fields for the two default handlers. The remaining cases
+require external source lookup or assertions on Skylos's private dependency
+search and class index. The inventory preserves those requirements for
+native scope review.
 
 ### Runtime-derived test expectations
 
