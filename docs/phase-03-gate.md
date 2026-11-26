@@ -213,7 +213,8 @@ runtime trace input. [Pinned closure safety tests](https://github.com/duriantaco
 The `private-attribute-uses-lexical-class` case now retains both
 `Receiver._Envelope__dispatch` and `leaf_south`. Syntactic attributes use the
 enclosing class's mangled name. Lookup keeps that key across base classes and
-reports declarations with their original source spellings. Literal
+reports declarations with their original source spellings. Aliases assigned
+in a class body capture the binding installed at the assignment. Literal
 attribute names passed at runtime keep their supplied spelling. [Dispatch issue](https://github.com/eddiethedean/skarmory/issues/167)
 
 The remaining 16 cases are Python release qualification gaps. The
