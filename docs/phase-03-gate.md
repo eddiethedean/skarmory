@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,417 cases to Phase 0.3 and defers 42 to later language
+inventory assigns 1,468 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -185,6 +185,18 @@ scan extracted the same sources selected within that subtree.
 [Wagtail snippet configuration](https://docs.wagtail.org/en/stable/topics/snippets/customizing.html)
 
 ## Inventory and receipts
+
+The installed SDK replays all 57 parametrized cases from
+`test/test_closure_reachability.py`. Receipts verify fixture creation, preserve
+each case's grep setting, and require runtime trace input to stay disabled.
+The cases distinguish creating a closure from calling it and cover nested
+ownership, captured bindings, callback escape, and private names.
+The frozen fixtures refer to an absent `external` module. The reviewed inputs
+use CPython's `atexit.register` and `asyncio.run`, keep the list append and
+dictionary item assignment on real callback registries, and use `__debug__`
+to select both branches across normal and optimized interpreter runs. The
+materializer preserves the original assertions and pytest IDs. The release
+job publishes the frozen Skylos results alongside the paired derived replay.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

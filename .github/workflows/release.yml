@@ -352,6 +352,16 @@ jobs:
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/sdk.receipt.json
+      - name: Record frozen closure reference results
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        working-directory: phase03-skylos-frozen
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+          PYTHONHASHSEED: '0'
+        run: |
+          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
+            test/test_closure_reachability.py \
+            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/closure-frozen-reference.xml"
       - name: Check reviewed framework runtime controls
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |

@@ -125,6 +125,10 @@ pub enum StatementKind {
         name: Name,
         value: Expression,
     },
+    SetNonlocalName {
+        name: Name,
+        value: Expression,
+    },
     DjangoSettingsGlobalCall(Expression),
     EditDjangoBackendList {
         receiver: Expression,
@@ -201,6 +205,8 @@ pub struct Definition {
     pub is_generator: bool,
     pub body: Vec<Statement>,
     pub body_coverage_lines: Vec<usize>,
+    #[serde(default)]
+    pub global_reads: Vec<String>,
     pub decorators: Vec<Expression>,
     pub parameters: Vec<Name>,
     pub positional_only_parameter_count: usize,
@@ -212,6 +218,8 @@ pub struct Definition {
     pub has_variadic_keyword_parameter: bool,
     pub simple_positional_parameters: bool,
     pub defaults: Vec<Expression>,
+    #[serde(default)]
+    pub default_binding: Option<Name>,
     pub annotations: Vec<Expression>,
     pub parameter_annotation_count: usize,
     pub bases: Vec<Expression>,
@@ -955,6 +963,7 @@ impl Lowering<'_> {
                         self.3,
                         self.4,
                     );
+                    let mut global_reads = Vec::new();
                     let body = if !is_async
                         && parameters.is_empty()
                         && node.decorator_list.is_empty()
@@ -986,6 +995,37 @@ impl Lowering<'_> {
                                 lowering.expression(call, next + 1)?,
                             ),
                         }]
+                    } else if self.4
+                        && !is_async
+                        && parameters.is_empty()
+                        && node.decorator_list.is_empty()
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && let [Stmt::Nonlocal(declare), Stmt::Assign(assign)] =
+                            node.body.as_slice()
+                        && let [name] = declare.names.as_slice()
+                        && let [Expr::Name(target)] = assign.targets.as_slice()
+                        && target.id.as_str() == name.as_str()
+                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                    {
+                        vec![Statement {
+                            at: self.0.locate(declare.start()),
+                            kind: StatementKind::SetNonlocalName {
+                                name: self.binding_name(name.as_str(), target)?,
+                                value: lowering.expression(&assign.value, next + 1)?,
+                            },
+                        }]
+                    } else if self.4
+                        && let [Stmt::Global(declare), statement @ Stmt::Return(_)] =
+                            node.body.as_slice()
+                        && declare
+                            .names
+                            .iter()
+                            .all(|name| !parameter_names.contains(name.as_str()))
+                    {
+                        // A lone return cannot rebind the declared module names
+                        // in the supported expression subset.
+                        global_reads.extend(declare.names.iter().map(ToString::to_string));
+                        lowering.suite(std::slice::from_ref(statement), next)?
                     } else {
                         lowering.suite(&node.body, next)?
                     };
@@ -996,6 +1036,30 @@ impl Lowering<'_> {
                         is_generator: false,
                     };
                     coverage.visit_body(&node.body);
+                    let defaults: Vec<_> = node
+                        .parameters
+                        .iter_non_variadic_params()
+                        .filter_map(|parameter| parameter.default.as_deref())
+                        .collect();
+                    let (defaults, default_binding) = if self.4
+                        && node.decorator_list.is_empty()
+                        && annotations.is_empty()
+                        && let [Expr::Named(named)] = defaults.as_slice()
+                        && let Expr::Name(target) = named.target.as_ref()
+                    {
+                        (
+                            vec![expression(&named.value)?],
+                            Some(self.binding_name(target.id.as_str(), target)?),
+                        )
+                    } else {
+                        (
+                            defaults
+                                .into_iter()
+                                .map(expression)
+                                .collect::<Result<_, _>>()?,
+                            None,
+                        )
+                    };
                     StatementKind::Define(Definition {
                         name,
                         kind: if is_async {
@@ -1008,6 +1072,7 @@ impl Lowering<'_> {
                         is_generator: coverage.is_generator,
                         body,
                         body_coverage_lines: coverage.lines.into_iter().collect(),
+                        global_reads,
                         decorators: node
                             .decorator_list
                             .iter()
@@ -1041,12 +1106,8 @@ impl Lowering<'_> {
                             && node.parameters.kwonlyargs.is_empty()
                             && node.parameters.vararg.is_none()
                             && node.parameters.kwarg.is_none()),
-                        defaults: node
-                            .parameters
-                            .iter_non_variadic_params()
-                            .filter_map(|parameter| parameter.default.as_deref())
-                            .map(expression)
-                            .collect::<Result<_, _>>()?,
+                        defaults,
+                        default_binding,
                         annotations,
                         parameter_annotation_count,
                         bases: Vec::new(),
@@ -1095,6 +1156,7 @@ impl Lowering<'_> {
                         body: Lowering(self.0, SyntaxScope::Class, BTreeMap::new(), self.3, self.4)
                             .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
+                        global_reads: Vec::new(),
                         decorators: node
                             .decorator_list
                             .iter()
@@ -1110,6 +1172,7 @@ impl Lowering<'_> {
                         has_variadic_keyword_parameter: false,
                         simple_positional_parameters: false,
                         defaults: Vec::new(),
+                        default_binding: None,
                         annotations: Vec::new(),
                         parameter_annotation_count: 0,
                         bases: node
