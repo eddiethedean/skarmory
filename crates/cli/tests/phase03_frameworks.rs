@@ -2650,6 +2650,85 @@ def detached(): return {}
 }
 
 #[test]
+fn fastapi_long_boolean_aliases_preserve_route_activation() {
+    use std::fmt::Write as _;
+
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let app = root.join("app.py");
+
+    for (length, initial) in [(1100, false), (1101, false), (1101, true)] {
+        let initial_literal = if initial { "True" } else { "False" };
+        let mut source = format!(
+            "from fastapi import FastAPI\napp = FastAPI()\n\
+             def live(): return 1\ndef dormant(): return 2\n\
+             flag_0 = {initial_literal}\n"
+        );
+        for index in 1..=length {
+            writeln!(source, "flag_{index} = not flag_{}", index - 1).unwrap();
+        }
+        // Updating the first binding cannot affect the Boolean already captured by the last.
+        let next_literal = if initial { "False" } else { "True" };
+        writeln!(source, "flag_0 = {next_literal}").unwrap();
+        let (active, inactive) = if initial != (length % 2 == 1) {
+            ("and", "or")
+        } else {
+            ("or", "and")
+        };
+        writeln!(
+            source,
+            "flag_{length} {active} app.add_api_route('/live', live)"
+        )
+        .unwrap();
+        writeln!(
+            source,
+            "flag_{length} {inactive} app.add_api_route('/dormant', dormant)"
+        )
+        .unwrap();
+        fs::write(&app, source).unwrap();
+
+        let report = scan(root);
+        assert_eq!(findings(&report, "unused_functions"), ["app.dormant"]);
+        assert_eq!(
+            evidence_certainties(&report, "app.live", "fastapi_registration"),
+            ["certain"]
+        );
+        assert!(evidence_certainties(&report, "app.dormant", "fastapi_registration").is_empty());
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn fastapi_boolean_aliases_preserve_conditional_route_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        r#"from fastapi import FastAPI
+import os
+app = FastAPI()
+def endpoint(): return 1
+flag = False
+if os.getenv('ENABLE'):
+    flag = True
+alias = not flag
+alias and app.add_api_route('/', endpoint)
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(&report, "app.endpoint", "fastapi_registration"),
+        ["possible"]
+    );
+}
+
+#[test]
 fn fastapi_router_cycle_preserves_snapshot_order_and_live_uncertainty() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
