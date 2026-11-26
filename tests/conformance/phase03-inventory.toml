@@ -18187,3 +18187,29 @@ path = "corpus/fixtures/starlette_add_route/app.py"
 sha256 = "a1b1a1ac23e2882f3e3622c1b4ac7472224a5bf4e3d22b1ad170960926e5bc69"
 provenance = "Reviewed fixture in https://github.com/duriantaco/skylos/pull/1300; original provenance https://github.com/encode/starlette"
 license = "BSD-3-Clause"
+
+[[cases]]
+id = "test/test_fastapi_route_precision.py::test_abstract_call_budget_bounds_acyclic_source_expansion"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_route_precision.py"
+assertions = ["test/test_fastapi_route_precision.py:332", "test/test_fastapi_route_precision.py:333", "test/test_fastapi_route_precision.py:334", "test/test_fastapi_route_precision.py:335", "test/test_fastapi_route_precision.py:336", "test/test_fastapi_route_precision.py:337"]
+prerequisites = ["Original generated wrapper chain", "Reference abstract analysis-step and call-event limits", "Native engine call-work evidence"]
+provenance = "The frozen test builds a 12-level acyclic wrapper chain and sets the Skylos private call-event limit to 40."
+variants = ["linux-x86_64-cp311-python-engine"]
+port = ""
+omitted_assertions = []
+blocker = "The native engine adapter does not yet map the reference call-event budget and the corresponding incomplete-result and capture assertions."
+
+[[cases]]
+id = "test/test_fastapi_route_precision.py::test_incomplete_fastapi_proofs_preserve_all_legacy_hints"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_fastapi_route_precision.py"
+assertions = ["test/test_fastapi_route_precision.py:349", "test/test_fastapi_route_precision.py:351", "test/test_fastapi_route_precision.py:352", "test/test_fastapi_route_precision.py:353", "test/test_fastapi_route_precision.py:357", "test/test_fastapi_route_precision.py:358", "test/test_fastapi_route_precision.py:359"]
+prerequisites = ["Original generated wrapper chain", "Reference abstract analysis-step limit", "Installed SDK with bounded FastAPI evidence"]
+provenance = "The frozen test forces an exhausted FastAPI proof and checks the public report and private legacy root flags."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The original expects an empty analysis_errors list alongside an incomplete proof and legacy framework-root flags on unmounted routes. Native work-limit coverage and liveness evidence must remain explicit."
