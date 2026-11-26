@@ -55,6 +55,7 @@ enabled = "Load the source-built skylos_fast module and require successful nativ
 git_revision = "7812cded3a6918ec6a83b64fb3ca51d2aeb713ee"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
 patch_sha256 = "3f0c534d7e537500ce6b816460b5e519ed3d8fa9d76ba6da9d0b264144f30761"
+fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
 path = "test/test_fastapi_truth_cycles.py"
