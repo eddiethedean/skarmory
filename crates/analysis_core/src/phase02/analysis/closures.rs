@@ -5,14 +5,21 @@ use super::*;
 pub(super) struct ClosureCall<'a> {
     pub(super) at: Location,
     pub(super) arguments: &'a [Expression],
-    pub(super) write: Option<ClosureCellWrite<'a>>,
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct ClosureCellWrite<'a> {
     pub(super) setter: ScopeId,
-    pub(super) name: &'a Name,
     pub(super) value: &'a Expression,
-    pub(super) at: Location,
+    slot: ScopeId,
+    source: SymbolId,
+    key: &'a Name,
+    pub(super) possible: bool,
+}
+
+struct TerminalRead<'a> {
+    scope: ScopeId,
+    target: &'a Expression,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -311,132 +318,65 @@ impl<'a> Graph<'a> {
         {
             return None;
         }
-        let [
-            prefix @ ..,
-            Statement {
-                kind:
-                    StatementKind::Return(Some(Expression {
-                        kind:
-                            ExpressionKind::Call {
-                                function,
-                                arguments,
-                                keywords,
-                            },
-                        at,
-                    })),
-                ..
-            },
-        ] = self.scopes[outer].body
-        else {
-            return None;
-        };
-        let ExpressionKind::Name(name) = &function.kind else {
-            return None;
-        };
+        let (prefix, call, returned) = terminal_call(self.scopes[outer].body)?;
+        let (name, arguments) = name_call(call)?;
         if arguments.len() < closure.required_positional_parameter_count
             || arguments.len() > closure.parameters.len()
-            || !keywords.is_empty()
-            || self.local(outer, name, *at) != Some(owner)
+            || self.local(outer, name, call.at) != Some(owner)
         {
             return None;
         }
-        let closure_key = self.lexical_binding_key(outer, name);
-        let mut cell_writes = prefix.iter().filter_map(|statement| match &statement.kind {
-            StatementKind::Evaluate(call) => self.local_cell_setter(outer, call),
-            _ => None,
-        });
-        let write = cell_writes.next();
-        if let Some(write) = &write {
-            // Only the terminal closure read sees the updated cell. Require
-            // the setter to run immediately before that call, with no
-            // arguments or closure defaults that could introduce other reads
-            // or calls to the setter.
-            if !arguments.is_empty()
-                || !closure.defaults.is_empty()
-                || !matches!(prefix.last(), Some(Statement { kind: StatementKind::Evaluate(call), .. })
-                    if position(call.at) == position(write.at))
-            {
-                return None;
-            }
-            let [
-                Statement {
-                    kind:
-                        StatementKind::Return(Some(Expression {
-                            kind:
-                                ExpressionKind::Call {
-                                    function,
-                                    arguments,
-                                    keywords,
-                                },
-                            ..
-                        })),
-                    ..
-                },
-            ] = closure.body.as_slice()
-            else {
-                return None;
-            };
-            if cell_writes.next().is_some()
-                || !arguments.is_empty()
-                || !keywords.is_empty()
-                || !matches!(&function.kind, ExpressionKind::Name(name)
-                    if self.lexical_binding_key(scope, name)
-                        == self.lexical_binding_key(write.setter, &write.name.text))
-                || self.local(outer, &write.name.text, write.at).is_none()
-            {
-                return None;
-            }
-        }
-        let setter = write
-            .as_ref()
-            .and_then(|write| self.scopes[write.setter].owner);
-        let setter_key =
-            setter.map(|id| self.lexical_binding_key(outer, &self.symbols[id].name.text));
-        let separate_name = |name: &str| {
-            let key = self.lexical_binding_key(outer, name);
-            key != closure_key && setter_key.as_ref() != Some(&key)
-        };
-        let separate_value = |value: &Expression| match &value.kind {
-            ExpressionKind::Name(name) => separate_name(name),
-            ExpressionKind::Call {
-                function,
-                arguments,
-                keywords,
-            } => {
-                arguments.is_empty()
-                    && keywords.is_empty()
-                    && matches!(&function.kind, ExpressionKind::Name(name) if separate_name(name))
-            }
-            _ => false,
-        };
-        // No prior statement or argument can expose or invoke the closure.
-        (arguments.iter().all(separate_value)
+        let key = self.lexical_binding_key(outer, name);
+        let separate_name = |name: &str| self.lexical_binding_key(outer, name) != key;
+        let separate_value = |value: &Expression| self.separate_closure_value(outer, value, &key);
+        // Every observed invocation uses the bindings at the terminal call.
+        // Earlier operations cannot call or expose that nested function.
+        (returned
+            .iter()
+            .all(|value| plain_name(value).is_some_and(separate_name))
+            && arguments.iter().all(separate_value)
             && prefix.iter().all(|statement| match &statement.kind {
                 StatementKind::Define(definition) => {
-                    std::ptr::eq(definition, closure)
-                        || setter.is_some_and(|id| {
-                            matches!(self.symbols[id].binding, Binding::Definition(found, _)
-                            if std::ptr::eq(found, definition))
-                        })
+                    std::ptr::eq(definition, closure) || passive_definition(definition)
                 }
                 StatementKind::Assign {
                     value: Some(value),
                     annotation: None,
                     ..
                 } => separate_value(value),
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } => {
+                    separate_value(test)
+                        && !body.is_empty()
+                        && !otherwise.is_empty()
+                        && body.iter().chain(otherwise).all(|statement| {
+                            matches!(&statement.kind,
+                                StatementKind::Assign { value: Some(value), annotation: None, .. }
+                                if separate_value(value))
+                        })
+                }
                 StatementKind::Evaluate(Expression {
                     kind: ExpressionKind::Text(_),
                     ..
                 }) => true,
-                StatementKind::Evaluate(call) => write
-                    .as_ref()
-                    .is_some_and(|write| position(call.at) == position(write.at)),
                 _ => false,
             }))
         .then_some(ClosureCall {
-            at: *at,
+            at: call.at,
             arguments,
-            write,
+        })
+    }
+
+    fn separate_closure_value(&self, frame: ScopeId, value: &Expression, own: &str) -> bool {
+        bounded_cell_source(value).is_some_and(|source| {
+            self.lexical_binding_key(frame, source) != own
+                && (plain_name(value).is_some()
+                    || self
+                        .lexical(frame, source, value.at)
+                        .is_none_or(|id| self.symbols[id].scope != frame))
         })
     }
 
@@ -450,11 +390,268 @@ impl<'a> Graph<'a> {
             .any(|name| self.lexical_binding_key(scope, name) == key)
     }
 
-    fn local_cell_setter(
+    fn closure_cell_setter(&self, scope: ScopeId, depth: usize) -> Option<ClosureCellWrite<'a>> {
+        let row = &self.scopes[scope];
+        let owner = row.owner?;
+        let Binding::Definition(definition, _) = self.symbols[owner].binding else {
+            return None;
+        };
+        if depth >= MAX_BINDING_CHAIN || !plain_nullary_function(definition) {
+            return None;
+        }
+        let (key, value, slot) = match row.body {
+            [
+                Statement {
+                    kind: StatementKind::SetNonlocalName { name, value },
+                    ..
+                },
+                tail @ ..,
+            ] if tail.is_empty()
+                || matches!(tail, [Statement { kind: StatementKind::Return(Some(value)), .. }]
+                    if plain_name(value).is_some()) =>
+            {
+                let key = self.lexical_binding_key(scope, &name.text);
+                let mut ancestor = row.parent?;
+                loop {
+                    if !self.in_function(ancestor) {
+                        return None;
+                    }
+                    if self.local_by_key(ancestor, &key, END).is_some() {
+                        break;
+                    }
+                    ancestor = self.scopes[ancestor].parent?;
+                }
+                (name, value, ancestor)
+            }
+            [
+                Statement {
+                    kind: StatementKind::SetGlobalName { name, value },
+                    ..
+                },
+            ] => (name, value, row.file),
+            [
+                Statement {
+                    kind: StatementKind::Define(inner),
+                    ..
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(call),
+                    ..
+                },
+            ] => {
+                let (name, []) = name_call(call)? else {
+                    return None;
+                };
+                let id = self.local(scope, name, call.at)?;
+                let Binding::Definition(found, inner_scope) = self.symbols[id].binding else {
+                    return None;
+                };
+                if !std::ptr::eq(inner, found) {
+                    return None;
+                }
+                return self.closure_cell_setter(inner_scope, depth + 1);
+            }
+            _ => return None,
+        };
+        let source = bounded_cell_source(value)?;
+        let source_id = self.lexical(scope, source, value.at)?;
+        let source_scope = self.symbols[source_id].scope;
+        let source_key = self.lexical_binding_key(scope, source);
+        if self.local_by_key(source_scope, &source_key, END) != Some(source_id)
+            || self.binding_depends_on_branch(source_id, END)
+            || source_key == self.lexical_binding_key(scope, &key.text)
+        {
+            return None;
+        }
+        // Replay may move the RHS identity to a read in the caller. Require a
+        // declaration or a single stable value, never a changing alias.
+        if !matches!(self.symbols[source_id].binding, Binding::Definition(_, _))
+            && self.scopes[source_scope]
+                .names
+                .get(source_key.as_ref())?
+                .len()
+                != 1
+        {
+            return None;
+        }
+        // Only ordinary nullary construction has a modeled result here.
+        if plain_name(value).is_none()
+            && !matches!(self.symbols[source_id].binding, Binding::Definition(class, _) if
+                class.kind == DefinitionKind::Class
+                    && class.decorators.is_empty()
+                    && class.bases.is_empty()
+                    && !class.has_class_keywords()
+                    && class.body.iter().all(|statement| matches!(&statement.kind,
+                        StatementKind::Define(member)
+                            if !matches!(member.name.text.as_str(), "__new__" | "__init__"))))
+        {
+            return None;
+        }
+        Some(ClosureCellWrite {
+            setter: scope,
+            value,
+            slot,
+            source: source_id,
+            key,
+            possible: false,
+        })
+    }
+
+    fn called_cell_setter(
         &self,
-        outer: ScopeId,
-        call: &'a Expression,
+        frame: ScopeId,
+        call: &Expression,
     ) -> Option<ClosureCellWrite<'a>> {
+        let (name, arguments) = name_call(call)?;
+        let write = match arguments {
+            [] => {
+                let id = self.local(frame, name, call.at)?;
+                let Binding::Definition(_, setter) = self.symbols[id].binding else {
+                    return None;
+                };
+                (!self.binding_depends_on_branch(id, call.at))
+                    .then(|| self.closure_cell_setter(setter, 0))
+                    .flatten()
+            }
+            [argument] => {
+                let id = self.lexical(frame, name, call.at)?;
+                let Binding::Import(import) = self.symbols[id].binding else {
+                    return None;
+                };
+                let module = self.import_module(self.scopes[frame].file, import)?;
+                let provider = *self.modules.get(module.as_str())?;
+                let provider_before = self
+                    .import_member_position(self.symbols[id].scope, &module, import)
+                    .unwrap_or(END);
+                let provider_id =
+                    self.local(provider, import.member.as_deref()?, provider_before)?;
+                let Binding::Definition(dispatch, _) = self.symbols[provider_id].binding else {
+                    return None;
+                };
+                if !bounded_optional_callback(dispatch)
+                    || self.binding_depends_on_branch(id, call.at)
+                    || self.binding_depends_on_branch(provider_id, provider_before)
+                    || self
+                        .module_member_write(&module, import.member.as_deref()?, (frame, call.at))
+                        .is_some()
+                    || self.has_command_namespace(provider)
+                {
+                    return None;
+                }
+                let setter_id = self.local(frame, plain_name(argument)?, call.at)?;
+                let Binding::Definition(_, setter) = self.symbols[setter_id].binding else {
+                    return None;
+                };
+                if self.binding_depends_on_branch(setter_id, call.at) {
+                    return None;
+                }
+                let mut write = self.closure_cell_setter(setter, 0)?;
+                write.possible = true;
+                Some(write)
+            }
+            _ => None,
+        }?;
+        let source = &self.symbols[write.source];
+        if source.scope == frame && position(source.name.at) >= position(call.at) {
+            return None;
+        }
+        Some(write)
+    }
+
+    fn terminal_cell_write(
+        &self,
+        frame: ScopeId,
+    ) -> Option<(TerminalRead<'a>, ClosureCellWrite<'a>)> {
+        if !self.phase03 || !self.in_function(frame) {
+            return None;
+        }
+        let (prefix, call, []) = terminal_call(self.scopes[frame].body)? else {
+            return None;
+        };
+        let (name, []) = name_call(call)? else {
+            return None;
+        };
+        let frame_key = self.lexical_binding_key(frame, name);
+        let mut write = None;
+        for statement in prefix {
+            let next = match &statement.kind {
+                StatementKind::Define(definition) if passive_definition(definition) => None,
+                StatementKind::Define(definition)
+                    if definition.name.text == name
+                        && definition.defaults.iter().all(inert_default)
+                        && definition.decorators.is_empty()
+                        && !self.files[self.scopes[frame].file]
+                            .facts
+                            .postponed_annotations
+                        && let [annotation] = definition.annotations.as_slice() =>
+                {
+                    Some(self.called_cell_setter(frame, annotation)?)
+                }
+                StatementKind::Assign {
+                    value: Some(value),
+                    annotation: None,
+                    ..
+                } if write.is_none() && self.separate_closure_value(frame, value, &frame_key) =>
+                {
+                    None
+                }
+                StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }) => None,
+                StatementKind::Evaluate(Expression { kind: ExpressionKind::Member(base, member), .. })
+                    if member == "__annotations__"
+                        && plain_name(base).is_some_and(|name| self.lexical_binding_key(frame, name) == frame_key)
+                        && self.local_by_key(frame, &frame_key, statement.at).is_some_and(|id|
+                            matches!(self.symbols[id].binding, Binding::Definition(definition, _)
+                                if !definition.annotations.is_empty() && definition.decorators.is_empty())) => None,
+                StatementKind::Evaluate(value) => Some(self.called_cell_setter(frame, value)?),
+                _ => return None,
+            };
+            if let Some(next) = next
+                && write.replace(next).is_some()
+            {
+                return None;
+            }
+        }
+        let write = write?;
+        let global = write.slot != frame;
+        if global && !self.closed_global_cell_frame(frame, &write) {
+            return None;
+        }
+        let key = self.lexical_binding_key(write.setter, &write.key.text);
+        self.local_by_key(write.slot, &key, call.at)?;
+        let ExpressionKind::Call { function, .. } = &call.kind else {
+            return None;
+        };
+        if frame_key == key && !global {
+            return Some((
+                TerminalRead {
+                    scope: frame,
+                    target: function,
+                },
+                write,
+            ));
+        }
+        let id = self.local(frame, name, call.at)?;
+        let Binding::Definition(definition, reader) = self.symbols[id].binding else {
+            return None;
+        };
+        if definition.kind != DefinitionKind::Function
+            || definition.is_generator
+            || !definition.simple_positional_parameters
+            || definition.required_positional_parameter_count != 0
+            || !definition.required_keyword_only_parameters.is_empty()
+            || !definition.defaults.iter().all(inert_default)
+            || !definition.decorators.is_empty()
+            || self.binding_depends_on_branch(id, call.at)
+            || self.local_by_key(reader, &key, END).is_some()
+        {
+            return None;
+        }
+        let ([], call, tail) = terminal_call(definition.body.as_slice())? else {
+            return None;
+        };
         let ExpressionKind::Call {
             function,
             arguments,
@@ -463,54 +660,224 @@ impl<'a> Graph<'a> {
         else {
             return None;
         };
-        let ExpressionKind::Name(name) = &function.kind else {
-            return None;
-        };
-        if !arguments.is_empty() || !keywords.is_empty() {
-            return None;
-        }
-        let id = self.local(outer, name, call.at)?;
-        let Binding::Definition(definition, setter) = self.symbols[id].binding else {
-            return None;
-        };
-        let [
-            Statement {
-                kind: StatementKind::SetNonlocalName { name, value },
-                ..
-            },
-        ] = definition.body.as_slice()
-        else {
-            return None;
-        };
-        if !definition.annotations.is_empty() || self.binding_depends_on_branch(id, call.at) {
+        if !arguments.is_empty()
+            || !keywords.is_empty()
+            || !tail.iter().all(|value| {
+                plain_name(value)
+                    .is_some_and(|name| definition.parameters.iter().any(|p| p.text == name))
+            })
+        {
             return None;
         }
-        Some(ClosureCellWrite {
-            setter,
-            name,
-            value,
-            at: call.at,
-        })
+        let target = call_receiver(function);
+        let target_name = plain_name(target)?;
+        let receiver = self.lexical(reader, target_name, target.at)?;
+        if global
+            && self.scopes.iter().enumerate().any(|(scope, row)| {
+                let Some(owner) = row.owner else { return false };
+                let Binding::Definition(definition, _) = self.symbols[owner].binding else {
+                    return false;
+                };
+                scope != frame
+                    && scope != reader
+                    && scope != write.setter
+                    && namespace_free_names(
+                        definition,
+                        self.files[row.file].facts.postponed_annotations,
+                    )
+                    .into_iter()
+                    .any(|name| self.lexical_binding_key(scope, name) == key)
+            })
+        {
+            return None;
+        }
+        (self.lexical_binding_key(reader, target_name) == key
+            && self.symbols[receiver].scope == write.slot)
+            .then_some((
+                TerminalRead {
+                    scope: reader,
+                    target,
+                },
+                write,
+            ))
     }
 
-    pub(super) fn proved_closure_cell_write(&self, scope: ScopeId) -> Option<ClosureCellWrite<'a>> {
-        let outer = self.scopes[scope].parent?;
-        let StatementKind::Return(Some(Expression {
-            kind: ExpressionKind::Call { function, .. },
-            at,
-        })) = &self.scopes[outer].body.last()?.kind
+    fn closed_global_cell_frame(&self, frame: ScopeId, write: &ClosureCellWrite<'a>) -> bool {
+        let file = self.scopes[frame].file;
+        if self.files.len() != 1 || write.slot != file || write.possible {
+            return false;
+        }
+        // The write occurs during the final top-level call and no following
+        // module expression observes the updated slot outside this frame.
+        let Some(Statement {
+            kind: StatementKind::Evaluate(call),
+            ..
+        }) = self.scopes[file].body.last()
         else {
-            return None;
+            return false;
         };
-        let ExpressionKind::Name(name) = &function.kind else {
-            return None;
+        let Some((name, [])) = name_call(call) else {
+            return false;
         };
-        let id = self.local(outer, name, *at)?;
-        let Binding::Definition(_, closure) = self.symbols[id].binding else {
-            return None;
-        };
-        self.final_direct_closure_call(closure, outer)?
-            .write
-            .filter(|write| write.setter == scope)
+        self.local(file, name, call.at) == self.scopes[frame].owner
     }
+
+    pub(super) fn closure_cell_read(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+    ) -> Option<ClosureCellWrite<'a>> {
+        if !self.phase03 {
+            return None;
+        }
+        let (_, terminal, _) = terminal_call(self.scopes[scope].body)?;
+        let ExpressionKind::Call { function, .. } = &terminal.kind else {
+            return None;
+        };
+        if position(call_receiver(function).at) != position(expression.at) {
+            return None;
+        }
+        [Some(scope), self.scopes[scope].parent]
+            .into_iter()
+            .flatten()
+            .filter_map(|frame| self.terminal_cell_write(frame))
+            .find_map(|(read, write)| {
+                (read.scope == scope && position(read.target.at) == position(expression.at))
+                    .then_some(write)
+            })
+    }
+
+    pub(super) fn proved_closure_cell_write(&self, scope: ScopeId) -> bool {
+        let mut parent = self.scopes[scope].parent;
+        for _ in 0..MAX_BINDING_CHAIN {
+            let Some(frame) = parent else { return false };
+            if self
+                .terminal_cell_write(frame)
+                .is_some_and(|(_, write)| write.setter == scope)
+            {
+                return true;
+            }
+            parent = self.scopes[frame].parent;
+        }
+        false
+    }
+}
+
+fn call_receiver(function: &Expression) -> &Expression {
+    match &function.kind {
+        ExpressionKind::Member(base, _) => base,
+        _ => function,
+    }
+}
+
+fn plain_name(value: &Expression) -> Option<&str> {
+    let ExpressionKind::Name(name) = &value.kind else {
+        return None;
+    };
+    Some(name)
+}
+
+fn name_call(value: &Expression) -> Option<(&str, &[Expression])> {
+    let ExpressionKind::Call {
+        function,
+        arguments,
+        keywords,
+    } = &value.kind
+    else {
+        return None;
+    };
+    if !keywords.is_empty() {
+        return None;
+    }
+    Some((plain_name(function)?, arguments.as_slice()))
+}
+
+fn bounded_cell_source(value: &Expression) -> Option<&str> {
+    plain_name(value).or_else(|| match name_call(value) {
+        Some((name, [])) => Some(name),
+        _ => None,
+    })
+}
+
+fn terminal_call(body: &[Statement]) -> Option<(&[Statement], &Expression, &[Expression])> {
+    let [
+        prefix @ ..,
+        Statement {
+            kind: StatementKind::Return(Some(result)),
+            ..
+        },
+    ] = body
+    else {
+        return None;
+    };
+    match &result.kind {
+        ExpressionKind::Sequence { items, list: false } => {
+            let (call, rest) = items.split_first()?;
+            Some((prefix, call, rest))
+        }
+        _ => Some((prefix, result, &[])),
+    }
+}
+
+fn passive_definition(definition: &Definition) -> bool {
+    definition.defaults.is_empty()
+        && definition.decorators.is_empty()
+        && definition.annotations.is_empty()
+        && if definition.kind == DefinitionKind::Class {
+            definition.bases.is_empty()
+                && !definition.has_class_keywords()
+                && definition.body.is_empty()
+        } else {
+            true
+        }
+}
+
+fn inert_default(value: &Expression) -> bool {
+    matches!(
+        value.kind,
+        ExpressionKind::None
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::Scalar(_)
+            | ExpressionKind::Text(_)
+    )
+}
+
+fn plain_nullary_function(definition: &Definition) -> bool {
+    definition.kind == DefinitionKind::Function
+        && !definition.is_generator
+        && definition.parameters.is_empty()
+        && definition.simple_positional_parameters
+        && definition.defaults.is_empty()
+        && definition.decorators.is_empty()
+}
+
+fn bounded_optional_callback(definition: &Definition) -> bool {
+    let [parameter] = definition.parameters.as_slice() else {
+        return false;
+    };
+    if definition.kind != DefinitionKind::Function
+        || definition.is_generator
+        || !definition.simple_positional_parameters
+        || !passive_definition(definition)
+    {
+        return false;
+    }
+    let [
+        Statement {
+            kind:
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                },
+            ..
+        },
+    ] = definition.body.as_slice()
+    else {
+        return false;
+    };
+    matches!(plain_name(test), Some("__debug__"))
+        && otherwise.is_empty()
+        && matches!(body.as_slice(), [Statement { kind: StatementKind::Evaluate(call), .. }] if
+            name_call(call).is_some_and(|(name, args)| name == parameter.text && args.is_empty()))
 }

@@ -74,6 +74,14 @@ fn django_settings_global_call<'a>(statement: &'a Stmt, name: &str) -> Option<&'
     .then_some(statement.value.as_ref())
 }
 
+fn bounded_cell_value(value: &Expr) -> bool {
+    matches!(value, Expr::Name(_))
+        || matches!(value, Expr::Call(call)
+            if matches!(call.func.as_ref(), Expr::Name(_))
+                && call.arguments.args.is_empty()
+                && call.arguments.keywords.is_empty())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ModuleFacts {
     pub body: Vec<Statement>,
@@ -991,7 +999,13 @@ impl Lowering<'_> {
                         && let [name] = declare.names.as_slice()
                         && let [Expr::Name(target)] = assign.targets.as_slice()
                         && target.id.as_str() == name.as_str()
-                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                        && (matches!(assign.value.as_ref(), Expr::Name(_))
+                            || self.4
+                                && matches!(
+                                    self.1,
+                                    SyntaxScope::Function | SyntaxScope::AsyncFunction
+                                )
+                                && bounded_cell_value(&assign.value))
                     {
                         vec![Statement {
                             at: self.0.locate(declare.start()),
@@ -1020,20 +1034,25 @@ impl Lowering<'_> {
                         && parameters.is_empty()
                         && node.decorator_list.is_empty()
                         && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
-                        && let [Stmt::Nonlocal(declare), Stmt::Assign(assign)] =
+                        && let [Stmt::Nonlocal(declare), Stmt::Assign(assign), tail @ ..] =
                             node.body.as_slice()
                         && let [name] = declare.names.as_slice()
                         && let [Expr::Name(target)] = assign.targets.as_slice()
                         && target.id.as_str() == name.as_str()
-                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                        && bounded_cell_value(&assign.value)
+                        && (tail.is_empty()
+                            || matches!(tail, [Stmt::Return(ret)]
+                                if matches!(ret.value.as_deref(), Some(Expr::Name(_)))))
                     {
-                        vec![Statement {
+                        let mut statements = vec![Statement {
                             at: self.0.locate(declare.start()),
                             kind: StatementKind::SetNonlocalName {
                                 name: self.binding_name(name.as_str(), target)?,
                                 value: lowering.expression(&assign.value, next + 1)?,
                             },
-                        }]
+                        }];
+                        statements.extend(lowering.suite(tail, next)?);
+                        statements
                     } else if self.4
                         && let [Stmt::Global(declare), statement @ Stmt::Return(_)] =
                             node.body.as_slice()
