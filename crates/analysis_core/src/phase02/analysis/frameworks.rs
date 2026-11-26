@@ -23,6 +23,11 @@ fn django_unconditionally_raises(body: &[Statement]) -> bool {
 mod django_commands;
 mod django_settings;
 
+enum DjangoSettingAliasError {
+    Unresolved,
+    FailedInitializer,
+}
+
 pub(super) use django_commands::DjangoCommandDispatch;
 pub(super) use django_settings::DjangoFormatLookup;
 
@@ -2375,15 +2380,19 @@ impl Graph<'_> {
                     );
                     continue;
                 };
-                let row = &mut self.scopes[scope];
-                row.activated_apps.extend([
-                    django_loaded_module(settings),
-                    django_loaded_module(row.file),
-                ]);
-                // Django reads DEBUG from the loaded settings object. Tie the
-                // read to the launcher so dormant configurations remain unused.
-                if let Some(debug) = self.local(settings, "DEBUG", END)
-                    && matches!(self.symbols[debug].binding, Binding::Variable(..))
+                if !self.activate_django_settings(scope, settings, &startup.commands, startup.at) {
+                    continue;
+                }
+                if startup.creates_application
+                    && scope == self.scopes[scope].file
+                    && matches!(
+                        self.files[scope].module.rsplit('.').next(),
+                        Some("wsgi" | "asgi")
+                    )
+                    && let Some(application) = self.local(scope, "application", END)
+                    && !self.conditional.contains_key(&application)
+                    && matches!(self.symbols[application].binding,
+                        Binding::Variable(Some(value), _) if position(value.at) == position(startup.at))
                 {
                     self.edge(scope, debug, "django_setting", "certain");
                 }
@@ -2583,20 +2592,13 @@ impl Graph<'_> {
             );
             return false;
         };
-        if matches!(commands, DjangoCommands::Available)
-            || matches!(commands,
-                DjangoCommands::Selected { name, .. } | DjangoCommands::Programmatic(name)
-                    if name == "check")
-        {
-            self.record_django_management_check(scope, at);
-        }
         self.django_settings_sources.insert((scope, settings));
         let row = &mut self.scopes[scope];
         row.activated_apps.extend([
             django_loaded_module(settings),
             django_loaded_module(row.file),
         ]);
-        for (binding, definite) in self.django_setting_bindings(settings) {
+        for (binding, definite) in bindings {
             let certainty = if definite { "certain" } else { "possible" };
             self.edge(scope, binding, "django_setting", certainty);
         }
@@ -2622,9 +2624,7 @@ impl Graph<'_> {
     }
 
     fn django_setting_bindings(&self, settings: ScopeId) -> Option<BTreeMap<SymbolId, bool>> {
-        // Other terminal proofs already govern their framework effects. In
-        // particular, an inferred settings namespace does not start Django.
-        if self.django_setting_initializer_raises(settings) {
+        if self.django_setting_initializer_fails(settings) {
             return None;
         }
         let mut selected = BTreeMap::new();
@@ -2655,11 +2655,12 @@ impl Graph<'_> {
         Some(selected)
     }
 
-    fn django_setting_initializer_raises(&self, file: ScopeId) -> bool {
-        self.scopes[file]
-            .body
-            .iter()
-            .any(|statement| matches!(statement.kind, StatementKind::Raise(_)))
+    fn django_setting_initializer_fails(&self, file: ScopeId) -> bool {
+        self.failed_terminal_modules.contains(&file)
+            || self.scopes[file]
+                .body
+                .iter()
+                .any(|statement| matches!(statement.kind, StatementKind::Raise(_)))
     }
 
     fn django_setting_alias_chain(
@@ -2689,9 +2690,7 @@ impl Graph<'_> {
                     if self.imported_module_write(&module, access).is_some() {
                         return Err(Unresolved);
                     }
-                    if self.failed_terminal_modules.contains(&source)
-                        || self.django_setting_initializer_raises(source)
-                    {
+                    if self.django_setting_initializer_fails(source) {
                         return Err(FailedInitializer);
                     }
                     if self.scopes[source].open_wildcard
@@ -2720,79 +2719,6 @@ impl Graph<'_> {
             }
         }
         Err(Unresolved)
-    }
-
-    fn django_setting_bindings(&self, settings: ScopeId) -> BTreeMap<SymbolId, bool> {
-        let mut selected = BTreeMap::new();
-        let namespace = &self.scopes[settings];
-        let closed = !namespace.open_wildcard && self.local(settings, "__dir__", END).is_none();
-        for (&name, bindings) in &namespace.names {
-            if !name.chars().any(char::is_uppercase) || name.chars().any(char::is_lowercase) {
-                continue;
-            }
-            let candidates = self.effective_bindings(bindings);
-            for &binding in candidates {
-                if !closed && matches!(self.symbols[binding].binding, Binding::Import(_)) {
-                    continue;
-                }
-                let definite =
-                    candidates.len() == 1 && !self.binding_depends_on_branch(binding, END);
-                let Some(chain) = self.django_setting_alias_chain(binding) else {
-                    continue;
-                };
-                for binding in chain {
-                    *selected.entry(binding).or_default() |= definite;
-                }
-            }
-        }
-        selected
-    }
-
-    fn django_setting_alias_chain(&self, mut binding: SymbolId) -> Option<Vec<SymbolId>> {
-        let mut aliases = Vec::new();
-        let mut visited = BTreeSet::new();
-        while visited.insert(binding) {
-            aliases.push(binding);
-            let symbol = &self.symbols[binding];
-            match symbol.binding {
-                Binding::Variable(Some(_), _) | Binding::UnpackItem { .. } => return Some(aliases),
-                Binding::Variable(None, _) if aliases.len() == 1 => return Some(aliases),
-                Binding::Import(import) => {
-                    let member = import.member.as_deref()?;
-                    let module = self.import_module(self.scopes[symbol.scope].file, import)?;
-                    let &source = self.modules.get(module.as_str())?;
-                    let access = (symbol.scope, import.local.at);
-                    let before = self
-                        .import_member_position(symbol.scope, &module, import)
-                        .unwrap_or(END);
-                    if self.scopes[source].open_wildcard
-                        || self.failed_terminal_modules.contains(&source)
-                        || self.imported_module_write(&module, access).is_some()
-                        || self.module_member_write(&module, member, access).is_some()
-                        || self
-                            .module_global_write(source, member, before, access)
-                            .is_some()
-                    {
-                        return None;
-                    }
-                    let ModuleMember::Binding(origin, None) = self.selected_module_member(
-                        source,
-                        member,
-                        before,
-                        access,
-                        ModuleMemberAccess::FromImport,
-                    ) else {
-                        return None;
-                    };
-                    if self.binding_depends_on_branch(origin, before) {
-                        return None;
-                    }
-                    binding = origin;
-                }
-                _ => return None,
-            }
-        }
-        None
     }
 
     pub(super) fn report_django_startup_coverage(&mut self, reach: &Reachability) {

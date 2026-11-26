@@ -13090,3 +13090,35 @@ fn django_settings_retain_only_the_selected_uppercase_aliases() {
         }
     }
 }
+
+#[test]
+fn django_settings_cannot_read_aliases_from_a_failed_initializer() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (name, text) in [
+        ("providers.py", "FEATURE = True\nraise ImportError\n"),
+        (
+            "settings.py",
+            "from providers import FEATURE\nSECRET_KEY = 'fixture'\nINSTALLED_APPS = []\n",
+        ),
+        (
+            "wsgi.py",
+            "import os\nfrom django.core.wsgi import get_wsgi_application\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\napplication = get_wsgi_application()\n",
+        ),
+    ] {
+        fs::write(root.join(name), text).unwrap();
+    }
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["message"]
+                == "Django settings initialization terminates before exposing its values")
+    );
+    for target in ["settings.FEATURE", "providers.FEATURE"] {
+        assert!(evidence_certainties(&report, target, "django_setting").is_empty());
+    }
+    assert!(evidence_certainties(&report, "wsgi.application", "django_application").is_empty());
+}
