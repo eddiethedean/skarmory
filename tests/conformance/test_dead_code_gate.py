@@ -5,12 +5,14 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts/check_dead_code_gate.py"
-REFERENCE = "87978e69adf91b3811e97b00c40aa39d7937cd94"
+BASELINE = ROOT / "tests/conformance/baselines/skylos-5.7.0.toml"
+REFERENCE = tomllib.loads(BASELINE.read_text(encoding="utf-8"))["phase03_reference"]["git_revision"]
 CANDIDATE = "a" * 40
 CASE_ID = "test/test_exports.py::test_reexport[pkg]"
 NATIVE_CASE = "native:python_engine::resolve::preserve"
@@ -431,7 +433,7 @@ port = ""
         self.write_inventory()
         raw = self.inventory.read_text(encoding="utf-8")
         self.inventory.write_text(raw.replace(REFERENCE, "d" * 40), encoding="utf-8")
-        self.assert_blocked([], "differs from the pinned Skylos baseline")
+        self.assert_blocked([], "differs from the pinned Phase 0.3 Skylos baseline")
 
     def test_reference_failure_requires_the_reviewed_marker_and_assertion(self):
         self.write_inventory()

@@ -1,0 +1,473 @@
+diff --git a/corpus/fixtures/django_appconfig.py b/corpus/fixtures/django_appconfig.py
+deleted file mode 100644
+index 5876275..0000000
+--- a/corpus/fixtures/django_appconfig.py
++++ /dev/null
+@@ -1,16 +0,0 @@
+-from django.apps import AppConfig
+-
+-
+-class DemoConfig(AppConfig):
+-    name = "demo"
+-
+-    def ready(self):
+-        return None
+-
+-
+-class StagingConfig:
+-    pass
+-
+-
+-def inspect_config():
+-    return None
+diff --git a/corpus/fixtures/django_appconfig/demo/__init__.py b/corpus/fixtures/django_appconfig/demo/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_appconfig/demo/apps.py b/corpus/fixtures/django_appconfig/demo/apps.py
+new file mode 100644
+index 0000000..5876275
+--- /dev/null
++++ b/corpus/fixtures/django_appconfig/demo/apps.py
+@@ -0,0 +1,16 @@
++from django.apps import AppConfig
++
++
++class DemoConfig(AppConfig):
++    name = "demo"
++
++    def ready(self):
++        return None
++
++
++class StagingConfig:
++    pass
++
++
++def inspect_config():
++    return None
+diff --git a/corpus/fixtures/django_appconfig/settings.py b/corpus/fixtures/django_appconfig/settings.py
+new file mode 100644
+index 0000000..3cc870f
+--- /dev/null
++++ b/corpus/fixtures/django_appconfig/settings.py
+@@ -0,0 +1 @@
++INSTALLED_APPS = ["demo.apps.DemoConfig"]
+diff --git a/corpus/fixtures/django_appconfig/wsgi.py b/corpus/fixtures/django_appconfig/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_appconfig/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_cbv.py b/corpus/fixtures/django_cbv.py
+deleted file mode 100644
+index 6f17d2b..0000000
+--- a/corpus/fixtures/django_cbv.py
++++ /dev/null
+@@ -1,20 +0,0 @@
+-from django.http import HttpResponse
+-from django.views import View
+-
+-
+-class HomeView(View):
+-    def get(self, request):
+-        return HttpResponse("ok")
+-
+-
+-class PageFormatter:
+-    def format_page(self):
+-        return "preview"
+-
+-
+-class PageRenderer:
+-    def format_page(self):
+-        return "preview"
+-
+-
+-PageRenderer()
+diff --git a/corpus/fixtures/django_cbv/settings.py b/corpus/fixtures/django_cbv/settings.py
+new file mode 100644
+index 0000000..17749c2
+--- /dev/null
++++ b/corpus/fixtures/django_cbv/settings.py
+@@ -0,0 +1,2 @@
++ROOT_URLCONF = "urls"
++ALLOWED_HOSTS = ["testserver"]
+diff --git a/corpus/fixtures/django_cbv/urls.py b/corpus/fixtures/django_cbv/urls.py
+new file mode 100644
+index 0000000..0824b02
+--- /dev/null
++++ b/corpus/fixtures/django_cbv/urls.py
+@@ -0,0 +1,24 @@
++from django.http import HttpResponse
++from django.urls import path
++from django.views import View
++
++
++class HomeView(View):
++    def get(self, request):
++        return HttpResponse("ok")
++
++
++class PageFormatter:
++    def format_page(self):
++        return "preview"
++
++
++class PageRenderer:
++    def format_page(self):
++        return "preview"
++
++
++PageRenderer()
++
++
++urlpatterns = [path("", HomeView.as_view())]
+diff --git a/corpus/fixtures/django_cbv/wsgi.py b/corpus/fixtures/django_cbv/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_cbv/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_error_handlers/settings.py b/corpus/fixtures/django_error_handlers/settings.py
+new file mode 100644
+index 0000000..17749c2
+--- /dev/null
++++ b/corpus/fixtures/django_error_handlers/settings.py
+@@ -0,0 +1,2 @@
++ROOT_URLCONF = "urls"
++ALLOWED_HOSTS = ["testserver"]
+diff --git a/corpus/fixtures/django_error_handlers/wsgi.py b/corpus/fixtures/django_error_handlers/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_error_handlers/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_management_command.py b/corpus/fixtures/django_management_command.py
+deleted file mode 100644
+index 611125b..0000000
+--- a/corpus/fixtures/django_management_command.py
++++ /dev/null
+@@ -1,14 +0,0 @@
+-from django.core.management.base import BaseCommand
+-
+-
+-class Command(BaseCommand):
+-    def handle(self, *args, **options):
+-        return None
+-
+-
+-class CommandPreview:
+-    pass
+-
+-
+-def parse_command():
+-    return "preview"
+diff --git a/corpus/fixtures/django_management_command/demo/__init__.py b/corpus/fixtures/django_management_command/demo/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_management_command/demo/management/__init__.py b/corpus/fixtures/django_management_command/demo/management/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_management_command/demo/management/commands/__init__.py b/corpus/fixtures/django_management_command/demo/management/commands/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_management_command/demo/management/commands/probe.py b/corpus/fixtures/django_management_command/demo/management/commands/probe.py
+new file mode 100644
+index 0000000..611125b
+--- /dev/null
++++ b/corpus/fixtures/django_management_command/demo/management/commands/probe.py
+@@ -0,0 +1,14 @@
++from django.core.management.base import BaseCommand
++
++
++class Command(BaseCommand):
++    def handle(self, *args, **options):
++        return None
++
++
++class CommandPreview:
++    pass
++
++
++def parse_command():
++    return "preview"
+diff --git a/corpus/fixtures/django_management_command/manage.py b/corpus/fixtures/django_management_command/manage.py
+new file mode 100644
+index 0000000..c36a493
+--- /dev/null
++++ b/corpus/fixtures/django_management_command/manage.py
+@@ -0,0 +1,8 @@
++import os
++
++from django.core.management import execute_from_command_line
++
++
++if __name__ == "__main__":
++    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++    execute_from_command_line(["manage.py", "probe"])
+diff --git a/corpus/fixtures/django_management_command/settings.py b/corpus/fixtures/django_management_command/settings.py
+new file mode 100644
+index 0000000..03a2c9b
+--- /dev/null
++++ b/corpus/fixtures/django_management_command/settings.py
+@@ -0,0 +1 @@
++INSTALLED_APPS = ["demo"]
+diff --git a/corpus/fixtures/django_signal_receiver.py b/corpus/fixtures/django_signal_receiver.py
+deleted file mode 100644
+index fe7303c..0000000
+--- a/corpus/fixtures/django_signal_receiver.py
++++ /dev/null
+@@ -1,11 +0,0 @@
+-from django.dispatch import receiver
+-from django.db.models.signals import post_save
+-
+-
+-@receiver(post_save)
+-def on_save(sender, **kwargs):
+-    return None
+-
+-
+-def on_archive(sender, **kwargs):
+-    return None
+diff --git a/corpus/fixtures/django_signal_receiver/demo/__init__.py b/corpus/fixtures/django_signal_receiver/demo/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_signal_receiver/demo/apps.py b/corpus/fixtures/django_signal_receiver/demo/apps.py
+new file mode 100644
+index 0000000..022f66e
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/demo/apps.py
+@@ -0,0 +1,8 @@
++from django.apps import AppConfig
++
++
++class DemoConfig(AppConfig):
++    name = "demo"
++
++    def ready(self):
++        from . import signals  # noqa: F401 - registers the receiver
+diff --git a/corpus/fixtures/django_signal_receiver/demo/signals.py b/corpus/fixtures/django_signal_receiver/demo/signals.py
+new file mode 100644
+index 0000000..fe7303c
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/demo/signals.py
+@@ -0,0 +1,11 @@
++from django.dispatch import receiver
++from django.db.models.signals import post_save
++
++
++@receiver(post_save)
++def on_save(sender, **kwargs):
++    return None
++
++
++def on_archive(sender, **kwargs):
++    return None
+diff --git a/corpus/fixtures/django_signal_receiver/settings.py b/corpus/fixtures/django_signal_receiver/settings.py
+new file mode 100644
+index 0000000..3cc870f
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/settings.py
+@@ -0,0 +1 @@
++INSTALLED_APPS = ["demo.apps.DemoConfig"]
+diff --git a/corpus/fixtures/django_signal_receiver/wsgi.py b/corpus/fixtures/django_signal_receiver/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_urlpatterns.py b/corpus/fixtures/django_urlpatterns.py
+deleted file mode 100644
+index e2c4ee5..0000000
+--- a/corpus/fixtures/django_urlpatterns.py
++++ /dev/null
+@@ -1,13 +0,0 @@
+-from django.http import HttpResponse
+-from django.urls import path
+-
+-
+-def home(request):
+-    return HttpResponse("ok")
+-
+-
+-urlpatterns = [path("", home)]
+-
+-
+-def status(request):
+-    return HttpResponse(str(request))
+diff --git a/corpus/fixtures/django_urlpatterns/settings.py b/corpus/fixtures/django_urlpatterns/settings.py
+new file mode 100644
+index 0000000..17749c2
+--- /dev/null
++++ b/corpus/fixtures/django_urlpatterns/settings.py
+@@ -0,0 +1,2 @@
++ROOT_URLCONF = "urls"
++ALLOWED_HOSTS = ["testserver"]
+diff --git a/corpus/fixtures/django_urlpatterns/urls.py b/corpus/fixtures/django_urlpatterns/urls.py
+new file mode 100644
+index 0000000..e2c4ee5
+--- /dev/null
++++ b/corpus/fixtures/django_urlpatterns/urls.py
+@@ -0,0 +1,13 @@
++from django.http import HttpResponse
++from django.urls import path
++
++
++def home(request):
++    return HttpResponse("ok")
++
++
++urlpatterns = [path("", home)]
++
++
++def status(request):
++    return HttpResponse(str(request))
+diff --git a/corpus/fixtures/django_urlpatterns/wsgi.py b/corpus/fixtures/django_urlpatterns/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_urlpatterns/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/python_decorator_factory_registration/config.gin b/corpus/fixtures/python_decorator_factory_registration/config.gin
+new file mode 100644
+index 0000000..4505fcf
+--- /dev/null
++++ b/corpus/fixtures/python_decorator_factory_registration/config.gin
+@@ -0,0 +1,2 @@
++optimizer.learning_rate = 0.05
++network.layers = 3
+diff --git a/corpus/fixtures/python_decorator_factory_registration/trainer/components.py b/corpus/fixtures/python_decorator_factory_registration/trainer/components.py
+index c38ff81..b4f3731 100644
+--- a/corpus/fixtures/python_decorator_factory_registration/trainer/components.py
++++ b/corpus/fixtures/python_decorator_factory_registration/trainer/components.py
+@@ -2,6 +2,7 @@ import functools
+
+ import gin
+ from gin import configurable
++from pydantic import validate_call
+ from tenacity import retry, stop_after_attempt
+
+ from trainer.wrappers import labelled
+@@ -32,7 +33,7 @@ def unused_labelled():
+     return 3
+
+
+-@gin.timed()
++@validate_call()
+ def unused_empty_call():
+     return 4
+
+diff --git a/corpus/fixtures/python_unittest_lifecycle/test_case.py b/corpus/fixtures/python_unittest_lifecycle/test_case.py
+index cf92fff..94c306a 100644
+--- a/corpus/fixtures/python_unittest_lifecycle/test_case.py
++++ b/corpus/fixtures/python_unittest_lifecycle/test_case.py
+@@ -10,6 +10,9 @@ class TestCase(unittest.TestCase):
+     def tearDownClass(cls):
+         return None
+
++    def test_lifecycle(self):
++        pass
++
+
+ def setUpModule():
+     return None
+diff --git a/corpus/fixtures/starlette_add_route/app.py b/corpus/fixtures/starlette_add_route/app.py
+index f13d16c..783e723 100644
+--- a/corpus/fixtures/starlette_add_route/app.py
++++ b/corpus/fixtures/starlette_add_route/app.py
+@@ -1,13 +1,14 @@
+ from starlette.applications import Starlette
++from starlette.responses import PlainTextResponse
+
+ app = Starlette()
+
+
+ async def homepage(request):
+-    return None
++    return PlainTextResponse("home")
+
+
+-app.add_route("/", endpoint=homepage, methods=["GET"])
++app.add_route("/", homepage, methods=["GET"])
+
+
+ async def status_page(request):
+diff --git a/corpus/manifest.json b/corpus/manifest.json
+index 3a3f6ea..ae07eca 100644
+--- a/corpus/manifest.json
++++ b/corpus/manifest.json
+@@ -191,7 +191,7 @@
+     },
+     {
+       "id": "django-urlpatterns",
+-      "path": "fixtures/django_urlpatterns.py",
++      "path": "fixtures/django_urlpatterns",
+       "description": "Django URL patterns should keep view functions alive.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -311,7 +311,7 @@
+     },
+     {
+       "id": "django-class-based-view",
+-      "path": "fixtures/django_cbv.py",
++      "path": "fixtures/django_cbv",
+       "description": "Django class-based views should not be treated as dead framework classes.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -686,7 +686,7 @@
+     },
+     {
+       "id": "django-management-command",
+-      "path": "fixtures/django_management_command.py",
++      "path": "fixtures/django_management_command",
+       "description": "Django management command handlers are framework entrypoints.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -714,7 +714,7 @@
+     },
+     {
+       "id": "django-signal-receiver",
+-      "path": "fixtures/django_signal_receiver.py",
++      "path": "fixtures/django_signal_receiver",
+       "description": "Django signal receivers should not be reported as dead code.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -931,7 +931,7 @@
+     },
+     {
+       "id": "django-appconfig-ready",
+-      "path": "fixtures/django_appconfig.py",
++      "path": "fixtures/django_appconfig",
+       "description": "Django AppConfig classes and ready hooks are framework lifecycle entrypoints.",
+       "source": {
+         "repo": "https://github.com/django/django",
