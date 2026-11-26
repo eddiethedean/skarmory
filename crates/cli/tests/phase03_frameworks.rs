@@ -2870,15 +2870,11 @@ fn flask_login_allocator_replacement_resolves_the_class_at_call_time() {
     let provider = root.join("providers.py");
     let setup = r#"from flask_login import LoginManager
 control = LoginManager()
-class Replacement:
-    @staticmethod
-    def user_loader(callback): return callback
+def allocate(cls): return Selected()
+LoginManager.__new__ = allocate
 class Selected:
     @staticmethod
     def user_loader(callback): return callback
-def allocate(cls): return Replacement()
-LoginManager.__new__ = allocate
-Replacement = Selected
 "#;
     fs::write(&provider, format!("{setup}login = LoginManager()\n")).unwrap();
     fs::write(
@@ -2962,6 +2958,60 @@ fn flask_login_class_change_uses_the_replacement_layout_and_leaves_siblings_acti
             .unwrap()
             .iter()
             .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
+fn flask_login_code_replacement_affects_captured_methods_only_after_the_write() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("providers.py");
+    let setup = r#"from flask_login import LoginManager
+login = LoginManager()
+saved = login.user_loader
+@saved
+def before(user_id): return user_id
+"#;
+    let write = "LoginManager.user_loader.__code__ = replacement.__code__\n";
+    fs::write(
+        &provider,
+        format!("{setup}def replacement(self, callback): return callback\n{write}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("app.py"),
+        "from providers import login, saved\n@login.user_loader\ndef replaced(user_id): return user_id\n@saved\ndef captured(user_id): return user_id\n@login.request_loader\ndef active(request): return request\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    for active in ["providers.before", "app.active"] {
+        assert_eq!(
+            evidence_certainties(&report, active, "flask_login_registration"),
+            ["certain"]
+        );
+    }
+    for unused in ["app.captured", "app.replaced"] {
+        assert!(findings(&report, "unused_functions").contains(&unused));
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(report, cached);
+    }
+
+    fs::write(
+        &provider,
+        format!("{setup}def replacement(callback): return callback\n{write}"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_attribute_write")
     );
 }
 

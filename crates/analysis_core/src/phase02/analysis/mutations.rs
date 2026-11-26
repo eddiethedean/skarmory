@@ -43,10 +43,7 @@ pub(super) struct Mutations {
     module_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
     flask_global_setters: BTreeSet<ScopeId>,
     command_code: BTreeMap<SymbolId, Vec<Write>>,
-    django_command_installers: BTreeSet<(ScopeId, [usize; 2])>,
     flask_login_code: BTreeMap<String, Vec<Write>>,
-    flask_login_writers: BTreeMap<SymbolId, Location>,
-    flask_login_effect_calls: BTreeMap<(ScopeId, [usize; 2]), FlaskLoginEffectCall>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     unmodeled_class_writes: BTreeSet<SymbolId>,
     framework_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
@@ -532,6 +529,75 @@ impl<'a> Graph<'a> {
             .entry(member.into())
             .or_default()
             .push(Write { file, at, value });
+    }
+
+    fn index_flask_login_code(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        receiver: &Expression,
+        value: &Expression,
+        conditional: bool,
+    ) -> bool {
+        let ExpressionKind::Member(class, method) = &receiver.kind else {
+            return false;
+        };
+        let ExpressionKind::Member(replacement, member) = &value.kind else {
+            return false;
+        };
+        let class_key = ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager);
+        let access = (file, at);
+        if member != "__code__"
+            || !flask_login_callback(method)
+            || !matches!(self.probe_identity(file, class, at), Value::Provider(name)
+                if is_flask_login_constructor(&name))
+            || self.member_write(&class_key, method, access).is_some()
+            || self.framework_receiver_has_escaped(&class_key, None, access)
+            || self
+                .flask_login_identity_replacement(file, at, replacement)
+                .is_none()
+        {
+            return false;
+        }
+        let value = if conditional {
+            MemberWriteValue::Ambiguous
+        } else {
+            // The framework function keeps its identity and globals. These
+            // replacement instructions only return the bound callback parameter.
+            self.mutations.modeled.insert((file, position(at)));
+            MemberWriteValue::Replacement(Value::IdentityFunction)
+        };
+        self.mutations
+            .flask_login_code
+            .entry(method.clone())
+            .or_default()
+            .push(Write { file, at, value });
+        true
+    }
+
+    pub(super) fn flask_login_code_at_call(
+        &self,
+        site: Object,
+        method: &str,
+        access: (ScopeId, Location),
+    ) -> Option<Value> {
+        let writes = self.mutations.flask_login_code.get(method)?;
+        let code = self.write_value(writes, Some(site.0), access)?;
+        let class = ReceiverKey::FlaskBase(ObjectKind::FlaskLoginManager);
+        // A class slot write may change which function receives the code
+        // assignment. A later slot write leaves an earlier bound alias intact.
+        if self.framework_receiver_has_escaped(&class, None, access)
+            || writes.iter().any(|write| {
+                self.member_write(&class, method, (write.file, write.at))
+                    .is_some()
+            })
+        {
+            return Some(Value::Unknown);
+        }
+        Some(match code {
+            MemberWriteValue::Replacement(value) => value,
+            _ => Value::Unknown,
+        })
     }
 
     fn flask_login_identity_replacement(
@@ -1505,6 +1571,9 @@ impl<'a> Graph<'a> {
         // The allocator reads this global when called, not when it is
         // assigned to __new__. Resolve the class at that execution point.
         let name = self.flask_login_allocator_class(allocator)?.to_owned();
+        if self.scopes[scope].names.get(name.as_str())?.len() != 1 {
+            return None;
+        }
         let expression = Expression {
             kind: ExpressionKind::Name(name),
             at: before,
