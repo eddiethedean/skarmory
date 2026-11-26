@@ -2512,6 +2512,8 @@ impl<'a> Graph<'a> {
                     && let Some(argument) = call.arguments.get(index)
                     && let Value::Instance(class) =
                         self.identity(outer, argument, call.at, depth + 1)
+                    // A reference to the closure can re-enter it with a different argument.
+                    && !self.closure_reads_own_binding(scope, closure)
                 {
                     return Value::Instance(class);
                 }
@@ -15686,6 +15688,107 @@ outer()
                 .iter()
                 .any(|issue| issue.kind == "ambiguous_binding")
         );
+    }
+
+    #[test]
+    fn phase03_nonlocal_setter_requires_a_terminal_cell_read() {
+        let scan = |source: &str| {
+            let file = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+            };
+            analyze_phase03(&[file], &[])
+        };
+        let source = r#"def initial(): return 1
+def replacement(): return 2
+def final_task(): return 3
+def configure():
+    task = initial
+    def install():
+        nonlocal task
+        task = replacement
+    def invoke():
+        return task()
+    install()
+    return invoke()
+configure()
+"#;
+        let report = scan(source);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.replacement" && edge.kind == "direct_call" })
+        );
+        assert!(names(&report, Category::Function).contains(&"initial"));
+
+        let intermediate_read = source.replace(
+            "    return invoke()",
+            "    saved = task\n    result = saved()\n    task = final_task\n    return invoke()",
+        );
+        let argument_read = source
+            .replace("def invoke():", "def invoke(result):")
+            .replace("    return invoke()", "    return invoke(task())");
+        for source in [intermediate_read, argument_read] {
+            let report = scan(&source);
+            assert!(
+                report.issues.iter().any(|issue| {
+                    issue.kind == "unsupported_construct"
+                        && issue.message == "nonlocal assignment has no bounded closure call"
+                }),
+                "{:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_recursive_closure_does_not_reuse_its_initial_receiver() {
+        let source = r#"class Primary:
+    def run(self): return 1
+class Fallback:
+    def run(self): return 2
+depth = 1
+def outer():
+    def invoke(worker, budget):
+        return worker.run()
+    return invoke(Primary(), depth)
+outer()
+"#;
+        let report = analyze_phase03(&[module("main.py", "main", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.Primary.run" && edge.kind == "direct_call" })
+        );
+
+        for recursive_branch in [
+            "        if budget:\n            return invoke(Fallback(), 0)\n",
+            "        if budget:\n            again = invoke\n            return again(Fallback(), 0)\n",
+        ] {
+            let source = source.replace(
+                "        return worker.run()",
+                &format!("{recursive_branch}        return worker.run()"),
+            );
+            let report = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"),
+                "{:?}",
+                report.issues
+            );
+            assert!(!report.evidence.iter().any(|edge| {
+                edge.full_name == "main.Primary.run" && edge.kind == "direct_call"
+            }));
+        }
     }
 
     #[test]
