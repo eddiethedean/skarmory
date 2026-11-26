@@ -11462,6 +11462,39 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "requires the pinned FastAPI truth-chain fixture"]
+    fn pinned_fastapi_truth_chain() {
+        let fixture = std::env::var_os("SKARMORY_PHASE03_FASTAPI_TRUTH_FIXTURE").unwrap();
+        let output = std::env::var_os("SKARMORY_PHASE03_FASTAPI_TRUTH_REPORT").unwrap();
+        let source = std::fs::read_to_string(fixture).unwrap();
+        let report = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+        assert!(
+            report.definitions.values().any(|row| {
+                row.name == "app.endpoint" && row.kind == "function" && row.line == 3
+            })
+        );
+        let registrations: Vec<_> = report
+            .evidence
+            .iter()
+            .filter(|row| row.kind == "fastapi_registration")
+            .collect();
+        let locations = |certainty| {
+            registrations
+                .iter()
+                .filter(move |row| row.certainty == certainty)
+                .map(|row| (&row.file, row.line))
+                .collect::<BTreeSet<_>>()
+        };
+        let result = serde_json::json!({
+            "complete": report.issues.is_empty(),
+            "issues": report.issues,
+            "roots": locations("certain"),
+            "uncertain": locations("possible"),
+        });
+        std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
     fn names(result: &Analysis, category: Category) -> Vec<&str> {
         let mut names: Vec<_> = result
             .findings

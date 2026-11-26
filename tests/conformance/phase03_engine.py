@@ -8,6 +8,7 @@ import runpy
 import subprocess
 import sys
 from collections import defaultdict
+from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -40,7 +41,20 @@ INCLUDE_CASES = {
         ["original router graph with cycle and uncalled owner"],
     ),
 }
-ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *INCLUDE_CASES}
+TRUTH_SOURCE = "test/test_fastapi_truth_cycles.py"
+TRUTH_FUNCTION = "test_acyclic_truth_alias_preserves_short_circuit_parity"
+TRUTH_TEST = "phase02::analysis::tests::pinned_fastapi_truth_chain"
+TRUTH_ASSERTIONS = [f"{TRUTH_SOURCE}:{line}" for line in (23, 65, 66)]
+TRUTH_PREREQUISITES = [
+    "Native FastAPI route registration index",
+    "Original synthesized Python route fixture",
+]
+TRUTH_CASES = {
+    f"{TRUTH_SOURCE}::{TRUTH_FUNCTION}[{operator}-{initial}-{length}]": (length, initial, operator)
+    for length, initial, operator in product((0, 1, 2, 1100, 1101), (False, True), ("and", "or"))
+}
+TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES}
+ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES}
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -170,6 +184,58 @@ def replay_include_graph(key, source, fixture, argv, env, trace):
     return outcome, fixtures, {"graph": result, "assertion_error": failure}
 
 
+def replay_truth_chain(key, source, fixture, argv, env, trace):
+    source_path = fixture / "app.py"
+    native_report = fixture / "truth-report.json"
+    stages = []
+
+    class Project:
+        def __init__(self, definitions, parsed, root):
+            if definitions or root != fixture or len(parsed) != 1 or parsed[0].path != source_path:
+                raise ValueError("the original truth fixture must parse its staged app.py")
+
+        def collect(self):
+            if stages:
+                raise ValueError("the original truth fixture must invoke native analysis once")
+            fixtures = {source_path.name: hashlib.sha256(source_path.read_bytes()).hexdigest()}
+            outcome = subprocess.run(
+                argv,
+                env={
+                    **env,
+                    "SKARMORY_PHASE03_FASTAPI_TRUTH_FIXTURE": str(source_path),
+                    "SKARMORY_PHASE03_FASTAPI_TRUTH_REPORT": str(native_report),
+                },
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+            stages.append((outcome, fixtures))
+            if not passed_exact_test(outcome, TRUTH_TEST):
+                raise ValueError("the named native truth-chain test failed")
+            report = json.loads(native_report.read_text(encoding="utf-8"))
+            return SimpleNamespace(
+                complete=report["complete"],
+                incomplete_reason=report["issues"],
+                roots={(str(fixture / path), line) for path, line in report["roots"]},
+                uncertain={(str(fixture / path), line) for path, line in report["uncertain"]},
+            )
+
+    original = source[TRUTH_FUNCTION]
+    previous_trace = sys.gettrace()
+    failure = None
+    try:
+        with patch.dict(original.__globals__, {"FastAPIProject": Project}):
+            sys.settrace(trace)
+            original(fixture, *TRUTH_CASES[key])
+    except (AssertionError, ValueError, OSError) as error:
+        failure = str(error)
+    finally:
+        sys.settrace(previous_trace)
+    if len(stages) != 1:
+        raise ValueError("the original truth fixture did not invoke native analysis exactly once")
+    outcome, fixtures = stages[0]
+    report = json.loads(native_report.read_text(encoding="utf-8")) if native_report.is_file() else None
+    return outcome, fixtures, {"truth": report, "assertion_error": failure}
+
+
 def engine_case(args, key, case, env, trace=None):
     if key == IMPORT_ROOT_CASE:
         source_file = IMPORT_ROOT_SOURCE
@@ -181,6 +247,10 @@ def engine_case(args, key, case, env, trace=None):
     elif key in INCLUDE_CASES:
         assertions, prerequisites = INCLUDE_CASES[key]
         source_file, test = INCLUDE_SOURCE, INCLUDE_TEST
+    elif key in TRUTH_CASES:
+        source_file, assertions, prerequisites, test = (
+            TRUTH_SOURCE, TRUTH_ASSERTIONS, TRUTH_PREREQUISITES, TRUTH_TEST,
+        )
     else:
         raise ValueError(f"missing native engine port for {key}")
     if (case["source"], case["assertions"], case["prerequisites"]) != (
@@ -199,6 +269,8 @@ def engine_case(args, key, case, env, trace=None):
         details = {}
         if key in INCLUDE_CASES:
             outcome, fixtures, details = replay_include_graph(key, source, fixture, argv, env, trace)
+        elif key in TRUTH_CASES:
+            outcome, fixtures, details = replay_truth_chain(key, source, fixture, argv, env, trace)
         elif key == CASE:
             # Keep the source inputs and the real pytest command from the
             # upstream fixture. Rust generates its own cleanup findings.
@@ -211,7 +283,7 @@ def engine_case(args, key, case, env, trace=None):
         else:
             stage_import_roots(source, fixture)
             fixture_env = {"SKARMORY_PHASE03_IMPORT_ROOT_FIXTURE": str(fixture)}
-        if key not in INCLUDE_CASES:
+        if key not in TRACED_ENGINE_CASES:
             fixtures = {
                 path.relative_to(fixture).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in sorted(fixture.rglob("*")) if path.is_file()
@@ -221,7 +293,7 @@ def engine_case(args, key, case, env, trace=None):
                 capture_output=True, text=True, timeout=60, check=False,
             )
     passed = passed_exact_test(outcome, test)
-    if key in INCLUDE_CASES:
+    if key in TRACED_ENGINE_CASES:
         passed = passed and details["assertion_error"] is None and set(assertions) <= trace.completed
     sys.stdout.write(outcome.stdout)
     sys.stderr.write(outcome.stderr)

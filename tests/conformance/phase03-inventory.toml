@@ -17336,9 +17336,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-False-1]"
@@ -17349,9 +17348,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-False-2]"
@@ -17362,9 +17360,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-False-1100]"
@@ -17375,9 +17372,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-False-1101]"
@@ -17388,9 +17384,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-True-0]"
@@ -17401,9 +17396,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-True-1]"
@@ -17414,9 +17408,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-True-2]"
@@ -17427,9 +17420,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-True-1100]"
@@ -17440,9 +17432,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[and-True-1101]"
@@ -17453,9 +17444,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-False-0]"
@@ -17466,9 +17456,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-False-1]"
@@ -17479,9 +17468,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-False-2]"
@@ -17492,9 +17480,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-False-1100]"
@@ -17505,9 +17492,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-False-1101]"
@@ -17518,9 +17504,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-True-0]"
@@ -17531,9 +17516,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-True-1]"
@@ -17544,9 +17528,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-True-2]"
@@ -17557,9 +17540,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A diagnostic scan agrees with runtime branch activation, but the native port must still execute the original graph and completeness assertions."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-True-1100]"
@@ -17570,9 +17552,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_acyclic_truth_alias_preserves_short_circuit_parity[or-True-1101]"
@@ -17583,9 +17564,8 @@ assertions = ["test/test_fastapi_truth_cycles.py:23", "test/test_fastapi_truth_c
 prerequisites = ["Native FastAPI route registration index", "Original synthesized Python route fixture"]
 provenance = "Pinned test/test_fastapi_truth_cycles.py:52 writes the original source via _collect at line 13."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original native graph port is missing. A candidate diagnostic run reports an analysis limit on this generated assignment chain."
 
 [[cases]]
 id = "test/test_fastapi_truth_cycles.py::test_non_fastapi_click_scan_survives_reassigned_truth_alias"
