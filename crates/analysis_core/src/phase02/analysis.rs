@@ -358,7 +358,7 @@ struct Scope<'a> {
     optional_flask_routes: Vec<(Object, SymbolId, &'static str)>,
     django_settings: DjangoSettings,
     celery_logging_receivers: Vec<(SymbolId, SymbolId)>,
-    started_celery_logging: bool,
+    celery_logging_setup: Option<Location>,
     starts_django: Vec<frameworks::DjangoStartup>,
     django_formats: Vec<frameworks::DjangoFormatLookup>,
     django_signals: Vec<frameworks::DjangoSignalRegistration>,
@@ -1024,7 +1024,7 @@ impl<'a> Graph<'a> {
             optional_flask_routes: Vec::new(),
             django_settings: self.initial_django_settings.clone(),
             celery_logging_receivers: Vec::new(),
-            started_celery_logging: false,
+            celery_logging_setup: None,
             starts_django: Vec::new(),
             django_formats: Vec::new(),
             django_signals: Vec::new(),
@@ -11076,6 +11076,7 @@ impl<'a> Graph<'a> {
             self.report_converter_string_calls(&reach);
             self.report_django_autoreload_wrappers(&reach);
             self.report_django_system_check_order(&reach);
+            self.report_celery_logging_imports(&reach);
             self.remove_proven_django_command_option_diagnostics(&reach);
             self.report_django_middleware_calls(&reach);
             self.report_log_record_calls(&reach);

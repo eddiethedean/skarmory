@@ -2574,6 +2574,13 @@ impl Graph<'_> {
             );
             return false;
         };
+        if matches!(commands, DjangoCommands::Available)
+            || matches!(commands,
+                DjangoCommands::Selected { name, .. } | DjangoCommands::Programmatic(name)
+                    if name == "check")
+        {
+            self.record_django_management_check(scope, at);
+        }
         self.django_settings_sources.insert((scope, settings));
         let row = &mut self.scopes[scope];
         row.activated_apps.extend([
