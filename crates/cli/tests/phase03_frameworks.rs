@@ -259,19 +259,20 @@ class Payload(ctypes.Structure):
             ["possible"]
         );
     }
-    fs::write(
-        &path,
+    for source in [
         source.replace("[('size', ctypes.c_int)]", "external_layout"),
-    )
-    .unwrap();
-    let incomplete = scan_with_exit(root, None, None, 2);
-    assert!(
-        incomplete["coverage"]["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| { row["kind"] == "unresolved_subclass_hook" })
-    );
+        source.replace("    unused_field = 1", "    _pack_ = '8'"),
+    ] {
+        fs::write(&path, source).unwrap();
+        let incomplete = scan_with_exit(root, None, None, 2);
+        assert!(
+            incomplete["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["kind"] == "unresolved_subclass_hook" })
+        );
+    }
 }
 
 #[test]

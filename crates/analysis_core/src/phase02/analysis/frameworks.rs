@@ -590,6 +590,14 @@ impl Graph<'_> {
             let StatementKind::Assign { names, value, .. } = &statement.kind else {
                 return matches!(statement.kind, StatementKind::Define(_));
             };
+            if names.iter().any(|name| {
+                matches!(
+                    name.text.as_str(),
+                    "_pack_" | "_align_" | "_anonymous_" | "_layout_" | "__slots__"
+                )
+            }) {
+                return false;
+            }
             if !names.iter().any(|name| name.text == "_fields_") {
                 return true;
             }
