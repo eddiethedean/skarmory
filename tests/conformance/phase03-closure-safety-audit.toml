@@ -1,8 +1,8 @@
 # Diagnostic audit for unqualified Python closure safety cases.
-# Replay unchanged closure safety source in the reviewed reference checkout.
+# Replay the original closure safety assertions in the reviewed reference checkout.
 # Keep this receipt outside release reconciliation.
 schema_version = 1
-reference_revision = "49a1266c4c8d8cc19e76a54c5f18984c149f1851"
+reference_revision = "5ba1c3230ebdd19b2a5cb2b53d6fba54f0ecd1bc"
 inventory_complete = false
 
 [[variants]]
@@ -31,7 +31,7 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_closure_reachability_safety.py"
 assertions = ["test/test_closure_reachability_safety.py:329", "test/test_closure_reachability_safety.py:332"]
-prerequisites = ["test/test_closure_reachability_safety.py:326", "installed-sdk", "grep-verification", "runtime-trace-disabled", "external.dispatch-fixture"]
+prerequisites = ["test/test_closure_reachability_safety.py:326", "installed-sdk", "grep-verification", "runtime-trace-disabled", "test/test_closure_reachability_safety.py:327"]
 provenance = "The pinned fixture at test/test_closure_reachability_safety.py:323-332 creates worker.py. The source imports external.dispatch and supplies no provider."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
@@ -79,7 +79,7 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_closure_reachability_safety.py"
 assertions = ["test/test_closure_reachability_safety.py:329", "test/test_closure_reachability_safety.py:332"]
-prerequisites = ["test/test_closure_reachability_safety.py:326", "installed-sdk", "grep-verification", "runtime-trace-disabled", "external.choose-fixture"]
+prerequisites = ["test/test_closure_reachability_safety.py:326", "installed-sdk", "grep-verification", "runtime-trace-disabled", "test/test_closure_reachability_safety.py:327"]
 provenance = "The pinned fixture at test/test_closure_reachability_safety.py:323-332 creates worker.py. The source imports external.choose and supplies no provider."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
