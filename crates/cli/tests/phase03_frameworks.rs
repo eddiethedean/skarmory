@@ -3511,6 +3511,67 @@ fn flask_circular_named_exports_report_failed_imports_without_resolving_final_bi
 }
 
 #[test]
+fn circular_named_exports_reuse_the_same_published_binding_in_either_order() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("origin.py"),
+        "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nlogin = Replacement()\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("providers.py"),
+        "from origin import login\nfrom other import login\n",
+    )
+    .unwrap();
+    let peer = root.join("other.py");
+    fs::write(
+        &peer,
+        "from origin import login\nfrom providers import login\n",
+    )
+    .unwrap();
+    let app = root.join("app.py");
+    fs::write(
+        &app,
+        "from providers import login\n@login.user_loader\ndef callback(): return 1\n",
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.callback"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+    fs::write(
+        &app,
+        "from other import login\n@login.user_loader\ndef callback(): return 1\n",
+    )
+    .unwrap();
+    let entered_through_peer = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&entered_through_peer, "unused_functions"),
+        ["app.callback"]
+    );
+    fs::write(&peer, "from providers import login\n").unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                matches!(
+                    issue["kind"].as_str(),
+                    Some("cyclic_imports" | "unresolved_import")
+                )
+            }),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn flask_factory_stops_at_the_failed_blueprint_export() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
