@@ -136,16 +136,18 @@ source package named like Celery.
 The separate liveness suite exercises a local constructor and three optional
 lookalike imports. The derived lookalike fixtures retain the missing imports
 and define explicit fallback classes using `except ImportError`.
-The original venv case still requires external dependency discovery and public
-liveness. The vendored-package case checks the private search list.
+The original venv case checks the native dependency source roots and public
+liveness from the installed SDK. The vendored-package cases exercise native
+dependency discovery and class lookup.
 
 The external-override suite exercises stdlib ancestry, builtin `dict`
 allocation, Traitlets, DRF, Guardian, and an unavailable external base with an
 explicit fallback. The Traitlets fixture constructs its configurable and
-declares distinct fields for the two default handlers. The remaining cases
-require external source lookup or assertions on Skylos's private dependency
-search and class index. The inventory preserves those requirements for
-native scope review.
+declares distinct fields for the two default handlers. The external source case
+passes the original fixture search path to the installed SDK and checks
+retained overrides and dead sibling members. The native engine replay
+evaluates the original index assertions using real Rust lookup results
+for defining classes, re-exports, aliases, missing members, and cycles.
 
 ### Runtime-derived test expectations
 
