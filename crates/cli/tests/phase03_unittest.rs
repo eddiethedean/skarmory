@@ -37,15 +37,21 @@ fn scan(project: &Path, cached: Option<&Path>) -> Value {
 }
 
 fn discovery(report: &Value, name: &str) -> bool {
+    certain_evidence(report, name, "unittest_discovery")
+}
+
+fn certain_evidence(report: &Value, name: &str, kind: &str) -> bool {
     report["dead_code_evidence"]["symbols"]
         .as_array()
         .unwrap()
         .iter()
         .any(|symbol| {
             symbol["qualified_name"] == name
-                && symbol["evidence"].as_array().unwrap().iter().any(|edge| {
-                    edge["kind"] == "unittest_discovery" && edge["certainty"] == "certain"
-                })
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == kind && edge["certainty"] == "certain")
         })
 }
 
@@ -263,6 +269,109 @@ class Empty(TestCase):
     let mut cached = scan(root, Some(cache.path()));
     cached.as_object_mut().unwrap().remove("cache");
     assert_eq!(cached, report);
+}
+
+#[test]
+fn unittest_module_hooks_follow_the_discovered_case_to_its_defining_module() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("service_cases.py"),
+        r#"from unittest import TestCase
+
+def prepare(): return seed()
+def seed(): return 1
+setUpModule = prepare
+def tearDownModule(): return 2
+
+class ServiceCase(TestCase):
+    def test_service(self): return 1
+"#,
+    )
+    .unwrap();
+    let loader = root.join("tests.py");
+    let source = r#"from service_cases import ServiceCase as ImportedCase
+
+def setUpModule(): return 3
+def tearDownModule(): return 4
+"#;
+    fs::write(&loader, source).unwrap();
+
+    let report = scan(root, None);
+    for name in ["service_cases.prepare", "service_cases.tearDownModule"] {
+        assert!(discovery(&report, name), "{name}");
+    }
+    assert!(!unused(&report, "unused_functions", "service_cases.seed"));
+    for name in ["tests.setUpModule", "tests.tearDownModule"] {
+        assert!(unused(&report, "unused_functions", name), "{name}");
+    }
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan(root, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let pytest_loader = root.join("test_service.py");
+    fs::rename(&loader, &pytest_loader).unwrap();
+    let report = scan(root, None);
+    assert!(discovery(&report, "service_cases.prepare"));
+    for name in ["test_service.setUpModule", "test_service.tearDownModule"] {
+        assert!(!discovery(&report, name), "{name}");
+        assert!(
+            certain_evidence(&report, name, "pytest_xunit_fixture"),
+            "{name}"
+        );
+        assert!(!unused(&report, "unused_functions", name), "{name}");
+    }
+
+    fs::write(&pytest_loader, format!("{source}\nImportedCase = None\n")).unwrap();
+    let report = scan(root, None);
+    for name in [
+        "service_cases.prepare",
+        "service_cases.seed",
+        "service_cases.tearDownModule",
+        "test_service.setUpModule",
+        "test_service.tearDownModule",
+    ] {
+        assert!(unused(&report, "unused_functions", name), "{name}");
+    }
+    let mut cached = scan(root, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+}
+
+#[test]
+fn unittest_module_hooks_report_an_overridden_class_module() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("tests.py"),
+        r#"from unittest import TestCase
+
+def setUpModule(): return 1
+
+class ServiceCase(TestCase):
+    __module__ = "other"
+    def test_service(self): return 2
+"#,
+    )
+    .unwrap();
+
+    let report = scan_with_status(root, None, 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert!(discovery(&report, "tests.ServiceCase.test_service"));
+    assert!(!discovery(&report, "tests.setUpModule"));
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["kind"] == "unresolved_unittest_fixture_module")
+    );
 }
 
 #[test]
