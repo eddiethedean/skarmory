@@ -4796,9 +4796,9 @@ impl<'a> Graph<'a> {
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
-            ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda => {
-                Value::DeferredLambda
-            }
+            ExpressionKind::DeferredLambda(_)
+            | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda => Value::DeferredLambda,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Divide(operands) if self.phase03 => {
                 let [left, right] = operands.as_slice() else {
@@ -5808,6 +5808,20 @@ impl<'a> Graph<'a> {
                 {
                     return;
                 }
+                if self.phase03
+                    && self.walk_direct_lambda_call(
+                        function,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                {
+                    return;
+                }
                 let rebound_converter =
                     if self.phase03 && arguments.len() == 2 && keywords.is_empty() {
                         self.django_converter_noop_rebinding(scope, function, expr.at, before)
@@ -5838,7 +5852,9 @@ impl<'a> Graph<'a> {
                         }
                     } else if matches!(
                         expr.kind,
-                        ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda
+                        ExpressionKind::DeferredLambda(_)
+                            | ExpressionKind::DeferredBoolLambda
+                            | ExpressionKind::DeferredCallbackLambda
                     ) {
                         self.report_unmodeled_deferred_value(
                             scope,
@@ -7078,6 +7094,7 @@ impl<'a> Graph<'a> {
             | ExpressionKind::IdentityDecoratorLambda
             | ExpressionKind::DeferredLambda(_)
             | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -11936,6 +11953,7 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}

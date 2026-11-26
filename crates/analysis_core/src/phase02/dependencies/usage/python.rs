@@ -465,6 +465,12 @@ impl<'a> Python<'a> {
                     "deferred callable dependency bindings are outside the bounded model",
                 ));
             }
+            Expr::DeferredCallbackLambda => self.usage.reasons.push(Reason::new(
+                "unresolved_dependency_configuration",
+                self.path,
+                Some(expression.at.line),
+                "deferred callable dependency bindings are outside the bounded model",
+            )),
             Expr::Sequence { items: values, .. }
             | Expr::Dictionary(values)
             | Expr::FormattedString(values)
