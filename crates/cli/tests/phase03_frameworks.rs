@@ -12412,6 +12412,14 @@ fn django_system_checks_require_ordered_selected_registration_and_matching_tags(
     }
 
     configure(
+        "        from . import checks, fields\n        register(fields.callback, Tags.security)\n        register(fields.callback, Tags.database)\n        run_checks(tags=[Tags.security])\n",
+    );
+    let retagged = scan(root);
+    assert!(
+        evidence_certainties(&retagged, "shop.fields.callback", "django_system_check").is_empty()
+    );
+
+    configure(
         "        run_checks(tags=[Tags.security])\n        from . import checks, fields\n        register(fields.callback, Tags.security)\n",
     );
     let unordered = scan_with_exit(root, None, Some(cache.path()), 2);

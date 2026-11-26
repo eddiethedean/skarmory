@@ -161,6 +161,7 @@ impl Graph<'_> {
                         "admin"
                             | "async_support"
                             | "caches"
+                            | "commands"
                             | "compatibility"
                             | "database"
                             | "files"
@@ -210,14 +211,30 @@ impl Graph<'_> {
         let mut edges = BTreeSet::new();
         let mut imports = BTreeSet::new();
         for run in &self.django_checks.runs {
+            let mut effective = BTreeMap::new();
             for (&scope, registrations) in &self.django_checks.registrations {
-                for registration in registrations.iter().filter(|site| run.selects(site)) {
-                    if let Some(import) =
+                for registration in registrations {
+                    let Some(import) =
                         self.django_check_registration_order(run, scope, registration)
+                    else {
+                        continue;
+                    };
+                    // Django stores one function object and replaces its tags
+                    // on every registration.
+                    let entered = import.map_or(registration.at, |id| self.symbols[id].name.at);
+                    let order = (position(entered), position(registration.at));
+                    if effective
+                        .get(&registration.target)
+                        .is_none_or(|(previous, _, _)| *previous < order)
                     {
-                        edges.insert((run.scope, registration.target));
-                        imports.extend(import);
+                        effective.insert(registration.target, (order, registration, import));
                     }
+                }
+            }
+            for (_, registration, import) in effective.into_values() {
+                if run.selects(registration) {
+                    edges.insert((run.scope, registration.target));
+                    imports.extend(import);
                 }
             }
         }
