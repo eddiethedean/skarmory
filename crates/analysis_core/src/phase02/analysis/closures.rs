@@ -311,7 +311,6 @@ impl<'a> Graph<'a> {
         };
         if closure.kind != DefinitionKind::Function
             || closure.is_generator
-            || !closure.decorators.is_empty()
             || !closure.annotations.is_empty()
             || !closure.defaults.is_empty() && closure.default_binding.is_none()
             || !closure.simple_positional_parameters
@@ -329,15 +328,34 @@ impl<'a> Graph<'a> {
         let key = self.lexical_binding_key(outer, name);
         let separate_name = |name: &str| self.lexical_binding_key(outer, name) != key;
         let separate_value = |value: &Expression| self.separate_closure_value(outer, value, &key);
+        let separate_guarded_decorator = |definition: &Definition| {
+            let at = definition.name.at;
+            let [decorator] = definition.decorators.as_slice() else {
+                return false;
+            };
+            let ExpressionKind::Boolean { and: true, values } = &decorator.kind else {
+                return false;
+            };
+            self.by_location
+                .get(&(outer, at.line, at.column))
+                .is_some_and(|id| self.transparent_guarded_definitions.contains(id))
+                && values
+                    .iter()
+                    .all(|value| plain_name(value).is_some_and(separate_name))
+        };
         // Every observed invocation uses the bindings at the terminal call.
         // Earlier operations cannot call or expose that nested function.
-        (returned
-            .iter()
-            .all(|value| plain_name(value).is_some_and(separate_name))
+        ((closure.decorators.is_empty() || separate_guarded_decorator(closure))
+            && returned
+                .iter()
+                .all(|value| plain_name(value).is_some_and(separate_name))
             && arguments.iter().all(separate_value)
             && prefix.iter().all(|statement| match &statement.kind {
                 StatementKind::Define(definition) => {
-                    std::ptr::eq(definition, closure) || passive_definition(definition)
+                    std::ptr::eq(definition, closure)
+                        || passive_definition(definition)
+                        || separate_guarded_decorator(definition)
+                            && passive_definition_body(definition)
                 }
                 StatementKind::Assign {
                     value: Some(value),
@@ -371,6 +389,10 @@ impl<'a> Graph<'a> {
     }
 
     fn separate_closure_value(&self, frame: ScopeId, value: &Expression, own: &str) -> bool {
+        let value = match &value.kind {
+            ExpressionKind::IdentityDefaultLambda(default) => default,
+            _ => value,
+        };
         bounded_cell_source(value).is_some_and(|source| {
             self.lexical_binding_key(frame, source) != own
                 && (plain_name(value).is_some()
@@ -820,8 +842,11 @@ fn terminal_call(body: &[Statement]) -> Option<(&[Statement], &Expression, &[Exp
 }
 
 fn passive_definition(definition: &Definition) -> bool {
+    definition.decorators.is_empty() && passive_definition_body(definition)
+}
+
+fn passive_definition_body(definition: &Definition) -> bool {
     definition.defaults.is_empty()
-        && definition.decorators.is_empty()
         && definition.annotations.is_empty()
         && if definition.kind == DefinitionKind::Class {
             definition.bases.is_empty()

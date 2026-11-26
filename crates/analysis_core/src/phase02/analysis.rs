@@ -193,6 +193,7 @@ impl Value {
                 values.iter().any(Self::may_contain_namespace)
             }
             Self::Alternatives(values) => values.iter().any(Self::may_contain_namespace),
+            Self::IdentityDefaultFunction(default) => default.may_contain_namespace(),
             _ => false,
         }
     }
@@ -665,6 +666,7 @@ pub(super) fn analyze_with_verification(
         evaluated_module_booleans: BTreeMap::new(),
         branch_depth: 0,
         dormant_classes: BTreeSet::new(),
+        transparent_guarded_definitions: BTreeSet::new(),
         subclassed: BTreeSet::new(),
         instance_receivers: BTreeMap::new(),
         class_invocations: Vec::new(),
@@ -917,6 +919,7 @@ struct Graph<'a> {
     evaluated_module_booleans: BTreeMap<SymbolId, bool>,
     branch_depth: usize,
     dormant_classes: BTreeSet<SymbolId>,
+    transparent_guarded_definitions: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
     class_invocations: Vec<ClassInvocation>,
@@ -8510,6 +8513,7 @@ impl<'a> Graph<'a> {
                     && self.local_identity_decorator(Value::Callable(invocation), function)
                 {
                     self.invoke(scope, invocation, "decorator", "certain", decorator.at);
+                    self.transparent_guarded_definitions.insert(target);
                     return true;
                 }
             }
@@ -10247,6 +10251,7 @@ impl<'a> Graph<'a> {
                 Value::Sequence(items) | Value::Mapping(items) | Value::Alternatives(items) => {
                     items
                 }
+                Value::IdentityDefaultFunction(default) => vec![*default],
                 Value::Unknown | Value::OpaqueNamespace => {
                     self.scope_issue(
                         scope,
