@@ -1063,27 +1063,26 @@ impl<'a> Graph<'a> {
     }
 
     pub(super) fn report_escaped_flask_login_mutators(&mut self, reach: &Reachability) {
-        self.issues
-            .extend(
-                self.mutations
-                    .flask_login_writers
-                    .iter()
-                    .filter_map(|(&target, &at)| {
-                        reach
-                            .evidence
-                            .range((target, "", "")..)
-                            .take_while(|(id, _, _)| *id == target)
-                            .any(|(_, kind, _)| !matches!(*kind, "direct_call" | "type_reference"))
-                            .then(|| {
-                                Issue::new(
-                                    "unresolved_attribute_write",
-                                    &self.files[self.symbols[target].scope].path,
-                                    "Flask callback mutation can escape the bounded initializer",
-                                )
-                                .at(at)
-                            })
-                    }),
-            );
+        self.issues.extend(
+            self.mutations
+                .flask_login_writers
+                .iter()
+                .filter(|&(&target, _)| {
+                    reach
+                        .evidence
+                        .range((target, "", "")..)
+                        .take_while(|(id, _, _)| *id == target)
+                        .any(|(_, kind, _)| !matches!(*kind, "direct_call" | "type_reference"))
+                })
+                .map(|(&target, &at)| {
+                    Issue::new(
+                        "unresolved_attribute_write",
+                        &self.files[self.symbols[target].scope].path,
+                        "Flask callback mutation can escape the bounded initializer",
+                    )
+                    .at(at)
+                }),
+        );
     }
 
     pub(super) fn walk_flask_globals_update(
