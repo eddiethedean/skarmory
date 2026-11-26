@@ -43,6 +43,7 @@ pub(super) struct Mutations {
     module_globals: BTreeMap<ScopeId, BTreeMap<String, Vec<Write>>>,
     flask_global_setters: BTreeSet<ScopeId>,
     command_code: BTreeMap<SymbolId, Vec<Write>>,
+    django_command_installers: BTreeSet<(ScopeId, [usize; 2])>,
     flask_login_code: BTreeMap<String, Vec<Write>>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     unmodeled_class_writes: BTreeSet<SymbolId>,
@@ -254,6 +255,19 @@ impl<'a> Graph<'a> {
                         ..
                     },
                 ) if !arguments.is_empty() || !keywords.is_empty() => {
+                    if self.has_command_namespace(file) {
+                        if self.index_django_command_installer(
+                            file,
+                            at,
+                            function,
+                            arguments,
+                            keywords,
+                            conditional,
+                        ) {
+                            continue;
+                        }
+                        self.index_opaque_command_escape(file, at, function, arguments, keywords);
+                    }
                     if track_framework_escapes
                         && self.index_flask_globals_update(file, at, expression, conditional)
                     {
@@ -989,6 +1003,229 @@ impl<'a> Graph<'a> {
             return true;
         }
         false
+    }
+
+    fn index_opaque_command_escape(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        function: &Expression,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+    ) {
+        let opaque = match self.probe_identity(file, function, at) {
+            Value::Unknown => true,
+            Value::Provider(provider) => !is_known_call(&provider, true),
+            _ => false,
+        };
+        if !opaque {
+            return;
+        }
+        for argument in arguments
+            .iter()
+            .chain(keywords.iter().map(|(_, value)| value))
+        {
+            let Value::Callable(target) = self.probe_identity(file, argument, at) else {
+                continue;
+            };
+            if target.verified {
+                continue;
+            }
+            let write = Write {
+                file,
+                at,
+                value: MemberWriteValue::Ambiguous,
+            };
+            if self.is_django_command_class(target.target) {
+                self.mutations
+                    .members
+                    .entry(ReceiverKey::Class(target.target))
+                    .or_default()
+                    .entry("handle".into())
+                    .or_default()
+                    .push(write);
+            } else if self.symbols[target.target].name.text == "handle"
+                && let Some(owner) = self.scopes[self.symbols[target.target].scope].owner
+                && self.is_django_command_class(owner)
+            {
+                self.mutations
+                    .command_code
+                    .entry(target.target)
+                    .or_default()
+                    .push(write);
+            }
+        }
+    }
+
+    fn index_django_command_installer(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        function: &Expression,
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+        conditional: bool,
+    ) -> bool {
+        let ([supplied], []) = (arguments, keywords) else {
+            return false;
+        };
+        let Value::Callable(callee) = self.probe_identity(file, function, at) else {
+            return false;
+        };
+        let Binding::Definition(definition, body) = self.symbols[callee.target].binding else {
+            return false;
+        };
+        if callee.verified
+            || !matches!(callee.receiver, Receiver::Ordinary)
+            || callee.implicit_descriptor_receiver
+            || !field_dispatch::plain_method(definition, 1)
+            || !definition.annotations.is_empty()
+            || self.symbols[callee.target].scope != self.scopes[body].file
+        {
+            return false;
+        }
+        let [statement] = body_without_docstring(definition) else {
+            return false;
+        };
+        let StatementKind::Evaluate(Expression {
+            kind:
+                ExpressionKind::Call {
+                    function,
+                    arguments,
+                    keywords,
+                },
+            ..
+        }) = &statement.kind
+        else {
+            return false;
+        };
+        let ([receiver, field, value], []) = (arguments.as_slice(), keywords.as_slice()) else {
+            return false;
+        };
+        let ExpressionKind::Text(field) = &field.kind else {
+            return false;
+        };
+        if !matches!(&receiver.kind, ExpressionKind::Name(parameter) if parameter == &definition.parameters[0].text)
+            || !matches!(self.probe_identity(body, function, statement.at),
+                Value::Provider(provider) if provider == "builtins.setattr")
+        {
+            return false;
+        }
+
+        let Value::Callable(target) = self.probe_identity(file, supplied, at) else {
+            return false;
+        };
+        if target.verified || target.implicit_descriptor_receiver {
+            return false;
+        }
+        if field == "__code__" {
+            let ExpressionKind::Member(code, attribute) = &value.kind else {
+                return false;
+            };
+            let symbol = &self.symbols[target.target];
+            if symbol.name.text != "handle"
+                || matches!(target.receiver, Receiver::Bound(_))
+                || attribute != "__code__"
+            {
+                return false;
+            }
+            let Some(owner) = self.scopes[symbol.scope].owner else {
+                return false;
+            };
+            if !self.plain_installer_command(owner) {
+                return false;
+            }
+            let Value::Callable(replacement) = self.probe_identity(body, code, statement.at) else {
+                return false;
+            };
+            if replacement.verified
+                || !matches!(replacement.receiver, Receiver::Ordinary)
+                || replacement.implicit_descriptor_receiver
+                || !self.closed_django_command_code(
+                    target.target,
+                    replacement.target,
+                    self.scopes[body].file,
+                )
+            {
+                return false;
+            }
+            // The code retains the old function's globals and needs no
+            // calling edge in the installer.
+            self.edge(body, replacement.target, "code_reference", "possible");
+            self.mutations
+                .command_code
+                .entry(target.target)
+                .or_default()
+                .push(Write {
+                    file,
+                    at,
+                    value: if conditional {
+                        MemberWriteValue::Ambiguous
+                    } else {
+                        MemberWriteValue::Replacement(Value::FrameworkCode(replacement.target))
+                    },
+                });
+            self.mutations
+                .django_command_installers
+                .insert((file, position(at)));
+            return true;
+        }
+        if field != "handle"
+            || !matches!(target.receiver, Receiver::Ordinary)
+            || !self.plain_installer_command(target.target)
+        {
+            return false;
+        }
+        let Value::Callable(replacement) = self.probe_identity(body, value, statement.at) else {
+            return false;
+        };
+        if replacement.verified
+            || !matches!(replacement.receiver, Receiver::Ordinary)
+            || replacement.implicit_descriptor_receiver
+            || !self.bounded_framework_function(replacement.target)
+        {
+            return false;
+        }
+        self.mutations
+            .members
+            .entry(ReceiverKey::Class(target.target))
+            .or_default()
+            .entry(field.clone())
+            .or_default()
+            .push(Write {
+                file,
+                at,
+                value: if conditional {
+                    MemberWriteValue::Ambiguous
+                } else {
+                    MemberWriteValue::Replacement(Value::Callable(replacement))
+                },
+            });
+        self.mutations
+            .django_command_installers
+            .insert((file, position(at)));
+        true
+    }
+
+    fn plain_installer_command(&mut self, class: SymbolId) -> bool {
+        let scope = self.symbols[class].scope;
+        let Binding::Definition(definition, _) = self.symbols[class].binding else {
+            return false;
+        };
+        let [base] = definition.bases.as_slice() else {
+            return false;
+        };
+        self.is_django_command_class(class)
+            && !definition.has_class_keywords()
+            && definition.decorators.is_empty()
+            && matches!(self.probe_identity(scope, base, definition.name.at), Value::Provider(provider)
+                if framework_class_provider(&provider) == Some(FrameworkClassRole::DjangoCommand))
+    }
+
+    pub(super) fn modeled_django_command_installer(&self, scope: ScopeId, at: Location) -> bool {
+        self.mutations
+            .django_command_installers
+            .contains(&(scope, position(at)))
     }
 
     fn index_django_command_code(

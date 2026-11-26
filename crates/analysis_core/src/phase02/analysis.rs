@@ -6907,10 +6907,6 @@ impl<'a> Graph<'a> {
         if self.modeled_django_command_installer(scope, at) {
             return;
         }
-        if let Some(writer) = self.flask_login_mutator_dispatch(id, call) {
-            self.invoke(scope, writer, "direct_call", certainty, at);
-            return;
-        }
         // Callback parameter substitution is bounded by retaining the finite
         // supplied values even if the callee dispatches dynamically.
         for argument in positional
