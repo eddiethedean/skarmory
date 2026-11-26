@@ -888,7 +888,7 @@ fn seen_entry(path: &Path, kind: FileType, include_javascript: bool) -> Option<S
     }
 }
 
-fn opaque_python_module(path: &Path) -> bool {
+pub(super) fn opaque_python_module(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
         .is_some_and(|suffix| {

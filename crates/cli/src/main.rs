@@ -118,6 +118,10 @@ struct SkylosArgs {
     #[arg(long, value_name = "PATH")]
     config_file: Option<PathBuf>,
 
+    /// Supply an external site-packages or dist-packages directory for Phase 0.3.
+    #[arg(long = "dependency-root", value_name = "PATH")]
+    dependency_search_paths: Vec<PathBuf>,
+
     /// Exclude a source folder or pattern. Repeat as needed.
     #[arg(long = "exclude", alias = "exclude-folder", value_name = "PATTERN")]
     excludes: Vec<String>,
@@ -415,6 +419,7 @@ fn write_skylos_report(
         profile,
         experimental_javascript: args.experimental_javascript,
         config_file: args.config_file,
+        dependency_search_paths: args.dependency_search_paths,
         excludes: args.excludes,
         generated_keep_paths: args.includes.clone(),
         includes: args.includes,

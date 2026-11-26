@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from os import fspath
+import sys
 from typing import Literal
 
 from ..api import SourcePath, _load_native
@@ -109,6 +110,9 @@ def analyze(
             "phase03": phase03,
             "experimental_javascript": experimental_javascript,
             "enable_quality": enable_quality,
+            "dependency_search_paths": tuple(
+                entry for entry in sys.path if isinstance(entry, str) and entry
+            ) if phase03 else (),
             "config_file": fspath(config_file) if config_file is not None else None,
             "exclude_folders": exclude_folders if exclude_folders is not None else (),
             "skip_generated": skip_generated,

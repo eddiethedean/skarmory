@@ -18,7 +18,7 @@ use super::config::{Entrypoint, FastapiRouterMode};
 use super::{
     Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding, WEAK_HELPER_FUNCTION,
 };
-use super::{package_entrypoints, runtime_evidence};
+use super::{external_classes, package_entrypoints, runtime_evidence};
 use crate::Issue;
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
 
@@ -604,6 +604,7 @@ pub(super) struct FrameworkInputs<'a> {
     pub(super) templates: Option<&'a TemplateProject<'a>>,
     pub(super) gin: Option<&'a GinProject<'a>>,
     pub(super) discovery: Option<&'a crate::preview_source::Project>,
+    pub(super) external_classes: Option<&'a external_classes::ExternalClassIndex>,
     pub(super) unresolved_project_wildcards: bool,
     #[cfg(test)]
     pub(super) fastapi_call_event_limit: Option<usize>,
@@ -621,6 +622,7 @@ pub(super) fn analyze_with_verification(
     let mut graph = Graph {
         files,
         discovery: framework.discovery,
+        external_classes: framework.external_classes,
         modules: BTreeMap::new(),
         nested_packages: if phase03 {
             NestedPackages::index(files)
@@ -870,6 +872,7 @@ pub(super) fn analyze_with_verification(
 struct Graph<'a> {
     files: &'a [AnalyzedFile],
     discovery: Option<&'a crate::preview_source::Project>,
+    external_classes: Option<&'a external_classes::ExternalClassIndex>,
     modules: BTreeMap<&'a str, usize>,
     nested_packages: NestedPackages<'a>,
     scopes: Vec<Scope<'a>>,
@@ -3296,6 +3299,84 @@ impl<'a> Graph<'a> {
         })
     }
 
+    fn dependency_class(&self, provider: &str) -> Option<external_classes::Class> {
+        let index = self.external_classes?;
+        let top = provider.split('.').next()?;
+        // Selected, ambiguous, and namespace project modules retain priority.
+        if self.modules.contains_key(top)
+            || self.discovery.is_some_and(|project| {
+                !matches!(
+                    project.lookup(top),
+                    Err(crate::preview_source::LookupError::Missing)
+                )
+            })
+        {
+            return None;
+        }
+        index.class(provider)
+    }
+
+    fn dependency_ancestor(
+        &mut self,
+        class: SymbolId,
+        depth: usize,
+    ) -> Option<external_classes::Class> {
+        if self.external_classes.is_none() || depth >= MAX_BINDING_CHAIN {
+            return None;
+        }
+        let symbol = &self.symbols[class];
+        let Binding::Definition(definition, _) = symbol.binding else {
+            return None;
+        };
+        let [base] = definition.bases.as_slice() else {
+            return None;
+        };
+        if definition.has_class_keywords()
+            || !definition.decorators.is_empty()
+            || self.has_unmodeled_class_write(class)
+        {
+            return None;
+        }
+        match self.class_base(symbol.scope, base, definition.name.at, depth + 1) {
+            Value::Callable(Invocation { target, .. }) if self.is_class(target) => {
+                self.dependency_ancestor(target, depth + 1)
+            }
+            Value::Provider(provider) => self.dependency_class(&provider),
+            _ => None,
+        }
+    }
+
+    fn retain_dependency_overrides(&mut self, class: SymbolId) {
+        let Some(base) = self.dependency_ancestor(class, 0) else {
+            return;
+        };
+        let symbol = &self.symbols[class];
+        let Binding::Definition(_, body) = symbol.binding else {
+            return;
+        };
+        let scope = symbol.scope;
+        for name in base.members.keys() {
+            if let Some(target) = self.local(body, name, END)
+                && !self.binding_depends_on_branch(target, END)
+                && self.class_discovery_write(class, name, scope).is_none()
+                && matches!(
+                    self.symbols[target].binding,
+                    Binding::Variable(..) | Binding::Definition(..)
+                )
+            {
+                if matches!(self.symbols[target].binding, Binding::Variable(..)) {
+                    self.framework_fields.insert(target);
+                }
+                self.edge(
+                    body,
+                    target,
+                    "external_class_override_declaration",
+                    "possible",
+                );
+            }
+        }
+    }
+
     /// None means the attribute is absent in a fully resolved base chain.
     fn class_member(&mut self, id: SymbolId, name: &str, depth: usize) -> Option<Value> {
         self.class_member_at(id, name, depth, None)
@@ -3312,6 +3393,7 @@ impl<'a> Graph<'a> {
             return Some(Value::Unknown);
         }
         let symbol = &self.symbols[id];
+        let class_declaration_scope = symbol.scope;
         let Binding::Definition(definition, class_scope) = symbol.binding else {
             unreachable!()
         };
@@ -3431,6 +3513,25 @@ impl<'a> Graph<'a> {
                         _ => Some(Value::Unknown),
                     }
                 }
+                Value::Provider(provider)
+                    if self.phase03
+                        && matches!(name, "__new__" | "__init__" | "__init_subclass__")
+                        && self.dependency_class(&provider).is_some_and(|class| {
+                            !class.members.contains_key(name)
+                                && self
+                                    .module_member_write(
+                                        &provider,
+                                        name,
+                                        access.unwrap_or((
+                                            class_declaration_scope,
+                                            definition.name.at,
+                                        )),
+                                    )
+                                    .is_none()
+                        }) =>
+                {
+                    None
+                }
                 _ => Some(Value::Unknown),
             },
             _ if self.phase03 => self
@@ -3535,7 +3636,18 @@ impl<'a> Graph<'a> {
                             || self.wagtail_declaration_base(&name)
                             || self.wagtail_plain_snippet_base(&name, subclass)
                             || self.django_plain_widget_or_field(&name, subclass)
-                            || fastapi::is_app_constructor(&name)) =>
+                            || fastapi::is_app_constructor(&name)
+                            || single_base
+                                && self.dependency_class(&name).is_some_and(|class| {
+                                    !class.members.contains_key("__init_subclass__")
+                                        && self
+                                            .module_member_write(
+                                                &name,
+                                                "__init_subclass__",
+                                                (scope, at),
+                                            )
+                                            .is_none()
+                                })) =>
             {
                 None
             }
@@ -6704,7 +6816,18 @@ impl<'a> Graph<'a> {
             } else {
                 ("constructor", certainty)
             };
-            if !self.phase03 || !self.framework_default_constructor(id, call, certainty) {
+            if self.phase03
+                && (!positional.is_empty() || !keywords.is_empty())
+                && self.dependency_ancestor(id, 0).is_some()
+                && self.class_member(id, "__init__", 0).is_none()
+            {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "unresolved_constructor",
+                    "dependency superclass allocation requires a zero-argument constructor",
+                );
+            } else if !self.phase03 || !self.framework_default_constructor(id, call, certainty) {
                 self.constructor(scope, id, kind, certainty, at);
             }
             if self.phase03 {

@@ -30,6 +30,8 @@ struct SkylosOptions {
     experimental_javascript: bool,
     #[pyo3(default)]
     enable_quality: bool,
+    #[pyo3(default)]
+    dependency_search_paths: Vec<PathBuf>,
     config_file: Option<PathBuf>,
     exclude_folders: Vec<String>,
     skip_generated: bool,
@@ -176,6 +178,7 @@ fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResul
         },
         experimental_javascript: options.experimental_javascript,
         config_file: options.config_file,
+        dependency_search_paths: options.dependency_search_paths,
         excludes: options.exclude_folders,
         include_generated: Some(!options.skip_generated),
         generated_keep_paths: options.generated_keep_paths,
