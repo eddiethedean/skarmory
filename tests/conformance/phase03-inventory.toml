@@ -6190,11 +6190,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:222"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed source-owned installer replaces the exported handle or the captured handle code. The original scan and root assertions are unchanged."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The external installer could change the Command class. Preserve incomplete coverage and leave the original handle unrooted.", evidence = "Django 4.2.1 and 5.2.1 stopped importing the unchanged command module at its missing external_plugin import. The fixture supplies no install implementation. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:incomplete", "issue:unresolved_call:shop/management/commands/audit.py:7", "definition:shop.management.commands.audit.install", "definition:shop.management.commands.audit.Command.handle", "definition:shop.management.commands.audit.prepare", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "no-evidence:direct_call:*:shop.management.commands.audit.prepare"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_command_namespace_escape_does_not_establish_dispatch[writer-alias]"
@@ -6335,11 +6334,10 @@ languages = ["python"]
 source = "test/test_django_management_command_reachability.py"
 assertions = ["test/test_django_management_command_reachability.py:33", "test/test_django_management_command_reachability.py:381"]
 prerequisites = ["installed-sdk", "native-framework-evidence"]
-provenance = "Unmodified Python project fixture constructed by the original test and its helpers in test/test_django_management_command_reachability.py at the pinned revision"
+provenance = "The reviewed source-owned installer replaces the exported handle or the captured handle code. The original scan and root assertions are unchanged."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The external installer could change the saved handle function. Preserve incomplete coverage and leave the original handle unrooted.", evidence = "Django 4.2.1 and 5.2.1 stopped importing the unchanged command module at its missing external_plugin import. The fixture supplies no install implementation. https://docs.djangoproject.com/en/5.2/howto/custom-management-commands/#how-to-create-custom-django-admin-commands", assertions = ["coverage:incomplete", "issue:unresolved_call:shop/management/commands/audit.py:8", "definition:shop.management.commands.audit.install", "definition:shop.management.commands.audit.Command.handle", "definition:shop.management.commands.audit.prepare", "no-evidence:django_command:*:shop.management.commands.audit.Command.handle", "no-evidence:direct_call:*:shop.management.commands.audit.prepare"] }
 
 [[cases]]
 id = "test/test_django_management_command_reachability.py::test_export_module_namespace_is_checked_for_an_imported_command"
