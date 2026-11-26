@@ -155,12 +155,23 @@ struct Analysis {
     findings: Vec<Finding>,
     evidence: Vec<Evidence>,
     fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
+    #[cfg(test)]
+    fastapi_initializer_evidence: FastapiInitializerEvidence,
     issues: Vec<Issue>,
     uncertainties: Vec<Issue>,
     verification: Vec<VerificationEvidence>,
     rescued_count: usize,
     runtime_evidence: Vec<runtime_evidence::Evidence>,
     runtime_evidence_issues: Vec<Issue>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct FastapiInitializerEvidence {
+    call_events: usize,
+    limited: bool,
+    callback_parameters: usize,
+    injected_parameters: usize,
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1077,6 +1088,8 @@ fn scan_selected(
         gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
+        #[cfg(test)]
+        fastapi_call_event_limit: None,
     };
     let mut analysis = if include_dead_code && issues.is_empty() {
         if local_configs.is_empty() {

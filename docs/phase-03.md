@@ -272,6 +272,11 @@ FastAPI instance contributes possible deployment evidence. A plain async
 function used as a lifespan provider does not enter its coroutine body.
 Source-owned no-op ASGI middleware receives possible-use evidence and leaves
 an ignored `dispatch` option unrooted.
+FastAPI activation bounds the expansion of resolved synchronous calls from
+application initializers. Repeated call sites on an acyclic path consume the
+call-event budget. An exhausted budget preserves declaration information,
+reports incomplete coverage, and withholds activation through the affected
+initializer.
 [Uvicorn factory setting](https://uvicorn.dev/settings/#application)
 
 FastAPI supports imperative endpoint registration and literal `Depends` or
