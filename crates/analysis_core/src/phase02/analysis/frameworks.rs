@@ -20,7 +20,10 @@ fn django_unconditionally_raises(body: &[Statement]) -> bool {
         .is_some_and(|statement| matches!(statement.kind, StatementKind::Raise(_)))
 }
 
+mod django_commands;
 mod django_settings;
+
+pub(super) use django_commands::DjangoCommandDispatch;
 
 pub(super) struct DjangoStartup {
     pub(super) at: Location,
@@ -33,9 +36,15 @@ pub(super) struct DjangoStartup {
 pub(super) enum DjangoCommands {
     None,
     Available,
-    Selected(String),
+    Selected {
+        name: String,
+        literal_args: Option<Vec<String>>,
+    },
     Programmatic(String),
-    Help { name: String, through_argv: bool },
+    Help {
+        name: String,
+        through_argv: bool,
+    },
     UnresolvedHelp,
 }
 
@@ -55,7 +64,16 @@ impl DjangoCommands {
                 {
                     Self::Help { name: command.clone(), through_argv: true }
                 } else {
-                    Self::Selected(command.clone())
+                    Self::Selected {
+                        name: command.clone(),
+                        literal_args: tail
+                            .iter()
+                            .map(|arg| match arg {
+                                Value::Text(text) => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect(),
+                    }
                 }
             }
             Some(Value::Text(_)) | None => Self::None,
@@ -2989,7 +3007,7 @@ impl Graph<'_> {
             );
         }
         for (name, file) in registered_commands {
-            if matches!(commands, DjangoCommands::Selected(command) | DjangoCommands::Programmatic(command) | DjangoCommands::Help { name: command, .. } if *command != name)
+            if matches!(commands, DjangoCommands::Selected { name: command, .. } | DjangoCommands::Programmatic(command) | DjangoCommands::Help { name: command, .. } if *command != name)
             {
                 continue;
             }
@@ -3086,6 +3104,7 @@ impl Graph<'_> {
     ) {
         let kind = "django_command";
         self.scopes[launcher].routes.push((object, class, kind));
+        let option_replay = self.django_command_option_replay(class, commands);
         // Django constructs the exported class before dispatch. The default
         // run_from_argv path creates the parser before invoking execute.
         for (name, positional) in [
@@ -3181,6 +3200,15 @@ impl Graph<'_> {
                             "django_command_parameter",
                         ));
                     }
+                }
+                if matches!(name, "add_arguments" | "handle") {
+                    self.record_django_command_dispatch(
+                        launcher,
+                        object,
+                        name,
+                        invocation.target,
+                        option_replay.as_ref(),
+                    );
                 }
                 let body = body_without_docstring(definition);
                 if django_unconditionally_raises(body) {
