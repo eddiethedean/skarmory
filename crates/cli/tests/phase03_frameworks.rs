@@ -2994,6 +2994,12 @@ def before(user_id): return user_id
     for unused in ["app.captured", "app.replaced"] {
         assert!(findings(&report, "unused_functions").contains(&unused));
     }
+    assert_eq!(
+        evidence_certainties(&report, "providers.replacement", "code_reference"),
+        ["certain"]
+    );
+    assert!(evidence_certainties(&report, "providers.replacement", "direct_call").is_empty());
+    assert!(!findings(&report, "unused_functions").contains(&"providers.replacement"));
     for _ in 0..2 {
         let mut cached = scan_with_settings(root, None, Some(cache.path()));
         cached.as_object_mut().unwrap().remove("cache");

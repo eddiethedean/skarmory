@@ -7754,6 +7754,12 @@ impl<'a> Graph<'a> {
                         self.walk(scope, value, at);
                     }
                     self.walk(scope, receiver, at);
+                    if self.phase03
+                        && matches!(&statement.kind, StatementKind::WriteAttribute { member, .. }
+                            if member == "__code__")
+                    {
+                        self.retain_flask_login_code_source(scope, at, receiver);
+                    }
                     let flask_write = matches!(&statement.kind,
                         StatementKind::WriteAttribute { member, value: Some(_), .. }
                         if self.modeled_flask_context_write(scope, receiver, member, at));
