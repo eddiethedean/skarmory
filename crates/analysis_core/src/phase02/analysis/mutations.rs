@@ -2147,8 +2147,6 @@ fn provider_module(name: &str) -> bool {
             | "tenacity.stop"
             | "typer"
             | "typer.main"
-            | "traitlets"
-            | "traitlets.traitlets"
             | "click"
             | "click.decorators"
             | "django.utils.autoreload"
