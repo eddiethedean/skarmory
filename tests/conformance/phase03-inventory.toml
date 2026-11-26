@@ -15693,11 +15693,10 @@ languages = ["python"]
 source = "test/test_django_admin_stubs.py"
 assertions = ["test/test_django_admin_stubs.py:81", "test/test_django_admin_stubs.py:82"]
 prerequisites = ["installed-sdk", "native-framework-evidence", "grep-verification-disabled"]
-provenance = "Original Python project produced by the pinned test and its fixture helpers."
+provenance = "The reviewed fixture executes settings from src with a source-owned django.apps.AppConfig lookalike, so CPython resolves the same shadow from the explicit source root. Both original comment-only shop files remain unchanged."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-runtime_review = { reason = "The original project leaves the import search path unspecified. The source-layout Django package may shadow external Django and cause settings import to fail.", evidence = "Django 4.2.1 and 5.2.1 import django.apps.AppConfig with the exact fixture root on sys.path. Putting src first makes the same import raise ModuleNotFoundError. Both comment-only application files stay unused in a separate scan scoped to the unchanged shop subtree.", assertions = ["coverage:incomplete", "issue:unresolved_import:settings.py:1", "scoped-unused:shop:unused_files:admin.py", "scoped-unused:shop:unused_files:placeholder.py"] }
 
 [[cases]]
 id = "test/test_django_admin_stubs.py::test_admin_stub_requires_django_package_context[standalone-admin-file]"
