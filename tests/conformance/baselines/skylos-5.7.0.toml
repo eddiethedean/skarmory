@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "5861d0fa12cfb79d95c48101a61464349ca06a35"
+git_revision = "44880461f83cd2655567d2cefdf2f718127c43e1"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "d17a9b2d33091c148f0eea6e6c353d3140a773536224ef0f20cc4725a5cf79c6"
+patch_sha256 = "128d0e54216f477319517e26810d3774f6204af871c0de98cd2fafa3b9a2dd4c"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
@@ -92,8 +92,8 @@ runtime = "Celery 5.5.3, Django 5.2.12 and django-storages 1.14.6 with declared 
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_dead_code_framework_overrides.py"
-lines = [263, 265, 270, 284, 287, 312, 320]
-runtime = "DRF 3.16.1 and Guardian 3.2.0 with a configured Django application and a real registered model"
+lines = [214, 215, 230, 263, 265, 270, 284, 287, 312, 320]
+runtime = "Traitlets 5.14.3 consumes distinct trait defaults; DRF 3.16.1 and Guardian 3.2.0 load a configured Django application and real registered model"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_admin_stubs.py"
@@ -109,6 +109,11 @@ runtime = "CPython 3.11 executes the selected provider and loads the processor t
 path = "test/test_django_wagtail_conventions.py"
 lines = [39, 72, 85, 89]
 runtime = "Wagtail 7.2 registers the genuine model and consumes the original snippet viewset options"
+
+[[phase03_reference.fixture_setup_corrections]]
+path = "test/test_django_quiet_dead_code.py"
+lines = [241, 245, 251, 257, 258, 259, 260, 261]
+runtime = "Django 5.2.1 loads the explicit settings module and installed auth and contenttypes apps"
 
 [[phase03_reference.fixture_setup_corrections]]
 path = "test/test_django_autoreload_precision.py"

@@ -1,7 +1,7 @@
 # Reviewed seed for the pinned dead-code release gate.
 # The complete case inventory and remaining ports are still required.
 schema_version = 1
-reference_revision = "5861d0fa12cfb79d95c48101a61464349ca06a35"
+reference_revision = "44880461f83cd2655567d2cefdf2f718127c43e1"
 inventory_complete = false
 
 [[variants]]

@@ -472,9 +472,29 @@ index 3a3f6ea..ae07eca 100644
        "source": {
          "repo": "https://github.com/django/django",
 diff --git a/test/test_dead_code_framework_overrides.py b/test/test_dead_code_framework_overrides.py
-index 0feb0e1..d1efd01 100644
+index 0feb0e1..4985e30 100644
 --- a/test/test_dead_code_framework_overrides.py
 +++ b/test/test_dead_code_framework_overrides.py
+@@ -211,8 +211,8 @@ def test_traitlets_handlers_and_dynamic_defaults(tmp_path):
+                 "from traitlets import Unicode, default, validate\n"
+                 "from app.base import Configurable\n\n\n"
+                 "class Manager(Configurable):\n"
+-                "    root_dir = Unicode()\n\n"
+-                "    @default('root_dir')\n"
++                '    root_dir = Unicode()\n    alternate_dir = Unicode()\n\n'
++                "    @default('alternate_dir')\n"
+                 "    def _default_root_dir(self):\n"
+                 "        return '/'\n\n"
+                 "    @validate('root_dir')\n"
+@@ -227,7 +227,7 @@ def test_traitlets_handlers_and_dynamic_defaults(tmp_path):
+                 "        return None\n\n"
+                 "    def stale_manager_helper(self):\n"
+                 "        return 1\n\n\n"
+-                "MANAGER = Manager()\n"
++                'MANAGER = Manager\n'
+             ),
+             "app/local.py": (
+                 "def default(name):\n"
 @@ -260,14 +260,14 @@ def test_drf_field_hooks_through_project_serializers(tmp_path):
          {
              "api/__init__.py": "",
@@ -877,6 +897,45 @@ index cff9b2d..960821d 100644
      if setting == "STORAGES":
          configured = "{'default': {'BACKEND': 'app.protocols.Storage'}}"
      parameters = ""
+diff --git a/test/test_django_quiet_dead_code.py b/test/test_django_quiet_dead_code.py
+index e25651a..2bc8f3c 100644
+--- a/test/test_django_quiet_dead_code.py
++++ b/test/test_django_quiet_dead_code.py
+@@ -238,27 +238,27 @@ def test_django_framework_names_are_live_and_real_dead_code_remains(tmp_path):
+
+
+ def test_settings_module_found_without_a_launcher(tmp_path):
+-    # DJANGO_SETTINGS_MODULE set outside the code (env, pytest.ini).
++    from unittest.mock import patch
+     sources = {
+         "conf/__init__.py": "",
+         "conf/settings.py": """
+-            INSTALLED_APPS = ["django.contrib.auth"]
++            INSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth"]\n            SECRET_KEY = "fixture"
+             ROOT_URLCONF = "conf.urls"
+             CUSTOM_FLAG = True
+         """,
+         "conf/settings_production.py": """
+             from conf.settings import *  # noqa
+-            PRODUCTION_ONLY = True
++            PRODUCTION_ONLY = CUSTOM_FLAG
+         """,
+         "conf/urls.py": """
+             from django.urls import path
+             urlpatterns = []
+         """,
+-        "conf/constants.py": """
+-            STALE_CONSTANT = 1
+-        """,
++        "conf/constants.py": "\n            STALE_CONSTANT = 1\n        ",
+     }
+-    unused = _all_unused(_scan(tmp_path, sources))
++    with patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "conf.settings_production"}):
++        unused = _all_unused(_scan(tmp_path, sources))
++
+     assert "conf.settings.CUSTOM_FLAG" not in unused
+     assert "conf.settings_production.PRODUCTION_ONLY" not in unused
+     assert "conf.constants.STALE_CONSTANT" in unused
 diff --git a/test/test_django_wagtail_conventions.py b/test/test_django_wagtail_conventions.py
 index 28388fb..0d56d91 100644
 --- a/test/test_django_wagtail_conventions.py
@@ -986,7 +1045,7 @@ index e44ba3a..3858059 100644
  @pytest.mark.parametrize(
      "condition",
 diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
-index 2386a5c..79b1a78 100644
+index 2386a5c..71b74ac 100644
 --- a/test/test_flask_callback_providers.py
 +++ b/test/test_flask_callback_providers.py
 @@ -39,16 +39,16 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
@@ -1000,6 +1059,9 @@ index 2386a5c..79b1a78 100644
 -        "import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
 -        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n',
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n',
 +        'def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n',
@@ -1007,9 +1069,8 @@ index 2386a5c..79b1a78 100644
 +        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nimport flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n',
 +        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
 +        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
-         "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
-         "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
--        "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
++        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
++        "def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
 +        "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n",
          "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
