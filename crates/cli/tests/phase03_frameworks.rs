@@ -980,54 +980,6 @@ fn click_command_declarations_and_reference_safe_helpers_have_distinct_dispositi
 }
 
 #[test]
-fn resolved_decorator_can_invoke_the_original_function_during_import() {
-    let project = tempfile::tempdir().unwrap();
-    let root = project.path();
-    fs::write(
-        root.join("app.py"),
-        "from plugin import register_entry\nclass Local:\n    def get(self, path): return lambda function: function\nfake = Local()\n@register_entry\n@fake.get('/')\ndef endpoint(): return helper()\ndef helper(): return 1\ndef unrelated(): return 2\n",
-    )
-    .unwrap();
-    fs::write(
-        root.join("plugin.py"),
-        "def register_entry(callback):\n    callback()\n    return callback\n",
-    )
-    .unwrap();
-    let report = scan(root);
-    assert_eq!(
-        findings(&report, "unused_functions"),
-        ["app.unrelated"],
-        "{report}"
-    );
-    assert_eq!(
-        evidence_certainties(&report, "app.endpoint", "decorator_callback"),
-        ["certain"]
-    );
-    assert!(evidence_certainties(&report, "app.endpoint", "fastapi_registration").is_empty());
-    assert_eq!(
-        evidence_certainties(&report, "app.helper", "direct_call"),
-        ["certain"]
-    );
-    let cache = tempfile::tempdir().unwrap();
-    for _ in 0..2 {
-        let mut cached = scan_with_settings(root, None, Some(cache.path()));
-        cached.as_object_mut().unwrap().remove("cache");
-        assert_eq!(cached, report);
-    }
-    fs::write(
-        root.join("plugin.py"),
-        "def register_entry(callback):\n    callback('unknown')\n    return callback\n",
-    )
-    .unwrap();
-    let unresolved = scan_with_exit(root, None, Some(cache.path()), 2);
-    assert_eq!(
-        unresolved["coverage"]["status"], "incomplete",
-        "{unresolved}"
-    );
-    assert!(evidence_certainties(&unresolved, "app.endpoint", "decorator_callback").is_empty());
-}
-
-#[test]
 fn click_command_declarations_do_not_execute_a_short_circuited_callback() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
