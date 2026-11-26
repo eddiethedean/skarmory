@@ -94,6 +94,54 @@ struct SettingsWrites {
 }
 
 impl Graph<'_> {
+    pub(in crate::phase02::analysis) fn external_django_setting_declarations(
+        &mut self,
+        reach: &Reachability,
+    ) -> Vec<Edge> {
+        if !self.django_startup_scopes.is_disjoint(&reach.scopes)
+            || self.modules.contains_key("django")
+        {
+            return Vec::new();
+        }
+        let DjangoSettings::Module(name) = &self.initial_django_settings else {
+            return Vec::new();
+        };
+        let Some(&settings) = self.modules.get(name.as_str()) else {
+            return Vec::new();
+        };
+        let [Some(apps), Some(root)] =
+            ["INSTALLED_APPS", "ROOT_URLCONF"].map(|name| self.local(settings, name, END))
+        else {
+            return Vec::new();
+        };
+        if !matches!(self.binding(apps, END, 0), Value::Sequence(apps)
+            if apps.iter().all(|app| matches!(app, Value::Text(_))))
+        {
+            return Vec::new();
+        }
+        let Value::Text(root) = self.binding(root, END, 0) else {
+            return Vec::new();
+        };
+        let Some(&urls) = self.modules.get(root.as_str()) else {
+            return Vec::new();
+        };
+        if self
+            .local(urls, "urlpatterns", END)
+            .is_none_or(|patterns| !matches!(self.binding(patterns, END, 0), Value::Sequence(_)))
+            || self
+                .django_settings_initializer_writes(settings)
+                .is_none_or(|writes| !writes.modules.is_empty())
+        {
+            return Vec::new();
+        }
+        // The external selection identifies the settings namespace. It does
+        // not establish that an application or a route has started.
+        self.django_setting_bindings(settings)
+            .filter(|&binding| !self.binding_depends_on_branch(binding, END))
+            .map(|binding| possible_edge(binding, "django_setting"))
+            .collect()
+    }
+
     pub(in crate::phase02::analysis) fn django_template_setting(
         &mut self,
         settings: ScopeId,
