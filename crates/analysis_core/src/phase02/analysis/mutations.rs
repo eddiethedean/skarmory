@@ -1311,7 +1311,7 @@ impl Graph<'_> {
     }
 
     pub(super) fn flask_member(
-        &self,
+        &mut self,
         site: Object,
         kind: ObjectKind,
         name: &str,
@@ -1325,11 +1325,24 @@ impl Graph<'_> {
         let class = ReceiverKey::FlaskBase(kind);
         if self.framework_receiver_has_escaped(&receiver, Some(site.0), access)
             || self.framework_receiver_has_escaped(&class, None, access)
-            || self.member_write(&receiver, "__class__", access).is_some()
             || ["__getattr__", "__getattribute__"]
                 .iter()
                 .any(|member| self.member_write(&class, member, access).is_some())
         {
+            return Value::Unknown;
+        }
+        if let Some(class_write) = self.member_write(&receiver, "__class__", access) {
+            if matches!(kind, ObjectKind::FlaskLoginManager)
+                && flask_login_callback(name)
+                && self.member_write(&receiver, name, access).is_none()
+                && let MemberWriteValue::Replacement(Value::Callable(replacement)) = class_write
+                && !replacement.verified
+                && matches!(replacement.receiver, Receiver::Ordinary)
+                && !replacement.implicit_descriptor_receiver
+                && self.closed_flask_login_layout(replacement.target, access)
+            {
+                return self.member(Value::Instance(replacement.target), name, access, 0);
+            }
             return Value::Unknown;
         }
         match self.member_write(&receiver, name, access) {
@@ -1365,6 +1378,20 @@ impl Graph<'_> {
                 }
             }
         }
+    }
+
+    fn closed_flask_login_layout(&mut self, class: SymbolId, access: (ScopeId, Location)) -> bool {
+        // Flask-Login's plain Python manager has the ordinary object layout.
+        // Only a class with that same layout can replace it here.
+        matches!(self.symbols[class].binding, Binding::Definition(definition, _)
+            if definition.kind == DefinitionKind::Class && definition.bases.is_empty())
+            && self.plain_default_provider(class, access, &BTreeSet::new())
+            && ["__slots__", "__dict__", "__weakref__"]
+                .iter()
+                .all(|member| {
+                    self.class_member_at(class, member, 0, Some(access))
+                        .is_none()
+                })
     }
 
     pub(super) fn flask_constructor_changed(
