@@ -32,7 +32,8 @@ fixture bytes for review evidence.
 
 The derived checkout also supplies runnable setup for the reviewed Flask
 replacements, FastAPI nested package imports, Django commands, form
-validation, startup, logging and Celery routing. The review retains each
+validation, startup, logging, Celery routing, and concrete provider
+and optional-import fixtures. The review retains each
 pytest ID and assertion. For fixture setup in a test file, the materializer
 checks the exact edited source lines and protects test signatures,
 parametrization IDs, expected values, and assertions.
@@ -64,7 +65,7 @@ passes on the original assertions.
 | External decorator in the FastAPI evidence suite | The frozen project supplies no `plugin` module. The derived fixture supplies a local shutdown registrar. CPython runs the callback and its helper after initialization, and the SDK records possible shutdown evidence while preserving the no-FastAPI-root assertion. |
 | FastAPI nested projects | With FastAPI 0.141.1, the tool-only namespace fixture fails to import from the repository root and serves `/namespace_route` with HTTP 200 when `backend` is on the import path. The fixture leaves the source root unspecified. The sibling-service fixture fails to import `other` from `backend`. Including `worker` on the path finds `router = None` and fails at router inclusion. |
 | Django function view negatives | Django supports a mounted async function view and can dispatch its provider. A view module that raises while the selected URLconf imports it cannot supply a callback. An unconditional source-proven failure can completely establish that the callback and later URL mappings are unreachable. |
-| Django source-layout admin stubs | The source-root fixture finds both empty files. Adding `src` to the import path selects the inert local `django` package and fails to import `django.apps`. Resolving from the repository root can select the external package. The fixture leaves the import path unspecified. |
+| Django source-layout admin stubs | The frozen fixture leaves the import path unspecified. The derived fixture selects the local source layout explicitly. CPython selects the inert local `django` package and fails to import `django.apps`. |
 | Django command, autoreload and hook tests | The standalone fixtures leave installed apps, command selection, and invocation unspecified. Dispatching `handle`, validation, saving, and queries requires separate lifecycle actions. Escaped callbacks and classes remain unresolved without the external installer's code. |
 | Django corpus URL, error handler, view, signal and app config cases | The fixtures declare genuine framework symbols. Each lacks the matching selected URLconf, mounted view, or Django startup path needed for activation. The declaration and activation evidence remain separate. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1302) |
 | Starlette imperative route corpus case | The pinned Starlette accepts the handler under the `route` parameter. Using `endpoint` as a keyword on `Starlette.add_route` fails before registration. The derived reference supplies the runtime-verified fixture correction. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1300) |
@@ -73,7 +74,7 @@ passes on the original assertions.
 | Pontoon-shaped Django startup | The WSGI fixture fails while loading admin because it omits `django.contrib.contenttypes`. The SDK extracts all sources, reports the unresolved wildcard imports, and keeps the original unused-code checks and bounded declaration evidence in complete file scopes. |
 | Django signature conventions | CPython 3.11 resolves `site` to its frozen non-package module. The original project cannot import `site.checks`, `site.views`, or `site.signals` by name under that interpreter configuration. |
 | Logging configuration | The satellite settings omit `version`, so `dictConfig` raises before invoking either factory. In the path-like lookalike fixture, CPython 3.11 selects frozen `os`, the dictionary fails the `PathLike` guard, and `dictConfig` creates the formatter the original expects to be unused. |
-| Wagtail snippet settings | The view-set class supplies neither a model nor a `register_snippet` call. The analyzer records the related model and block declarations separately. |
+| Wagtail snippet settings | The frozen snippet viewset supplies neither a model nor a `register_snippet` call. The derived fixture registers a real model, and Wagtail consumes its viewset options. |
 | unittest lifecycle corpus case | CPython discovers zero tests in the original module. The original scorer also requires a path whitelist for an unrelated helper. Those declarations remain dormant in the analyzer. [Upstream fixture PR](https://github.com/duriantaco/skylos/pull/1301) |
 
 The 35 cases in `test/test_django_static_entrypoints.py` build JavaScript
@@ -126,20 +127,17 @@ case retains its original zero-argument construction and unread S3 settings.
 Eight original controls cover local lookalikes, shadowed imports, and a
 source package named like Celery.
 
-A separate liveness suite contributes six pending cases. The native scan
-reports unresolved instance writes in the local constructor fixture and
-incomplete subclass resolution in three unavailable lookalike fixtures.
-The venv case checks private dependency search before its public liveness
-assertions. The vendored-package case checks only the private search list
-and still needs scope review for a corresponding native assertion.
+The separate liveness suite exercises a local constructor and three optional
+lookalike imports. The derived lookalike fixtures retain the missing imports
+and define explicit fallback classes using `except ImportError`.
+The original venv case still requires external dependency discovery and public
+liveness. The vendored-package case checks the private search list.
 
-The external-override suite contributes ten pending cases. The pinned
-reference passes all ten. The installed SDK reports incomplete coverage
-for its eight public scan cases, including stdlib ancestry, builtin
-`dict` allocation, and Traitlets, DRF, and Guardian subclasses. Two
-remaining assertion groups exercise only Skylos's private dependency
-search and class index. The inventory records those groups for separate
-native scope review.
+The external-override suite exercises stdlib ancestry, builtin `dict`
+allocation, Traitlets, DRF, Guardian, and an unavailable external base with
+an explicit fallback. The remaining cases require external source lookup or
+assertions on Skylos's private dependency search and class index. The inventory
+preserves those requirements for native scope review.
 
 ### Runtime-derived test expectations
 
@@ -199,7 +197,8 @@ the expected failing assertion as `reference_xfail` in the inventory. The
 receipt records the failure location in `reference_failed_assertion` and
 the preceding completed assertions in `reference_assertions`. Run the candidate
 with the upstream marker disabled. Release credit requires passing the original
-assertions. A reviewed runtime receipt records any mapped candidate assertion
+assertions or an approved exception with an accepted native control. A
+reviewed runtime receipt records any mapped candidate assertion
 failure or failure of the pinned shared fixture's complete-coverage assertion
 when the correction requires incomplete coverage. A passing runtime control
 can qualify the case for the preview while the original failure blocks release.
@@ -226,7 +225,9 @@ python scripts/check_dead_code_gate.py \
 ```
 
 The report includes artifact hashes, receipt contents, and each required case
-and variant's decision. Pass and blocker counts cover required Python cases.
+and variant's decision. The ordinary pass and blocker counts cover the Python
+cases outside the two approved exceptions. The approved cases have their own
+acceptance status and retain their original reference and candidate outcomes.
 The checker exits 1 if a required result is missing,
 blocked, skipped, duplicated, stale, or unsuccessful, or if the inventory is
 incomplete. The existing Phase 0.2 conformance fixtures and independent
