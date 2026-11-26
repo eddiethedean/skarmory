@@ -307,6 +307,67 @@ fn generic_django_storage_constructor_uses_empty_defaults() {
 }
 
 #[test]
+fn wagtail_snippet_options_require_registration_with_the_real_viewset_and_model() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let sources = r#"from django.db import models
+from wagtail.snippets.models import register_snippet
+from wagtail.snippets.views.snippets import SnippetViewSet
+
+class Person(models.Model):
+    name = models.CharField(max_length=20)
+    sort_order = models.IntegerField(default=0)
+
+class PersonViewSet(SnippetViewSet):
+    list_display = ("name",)
+    sort_order_field = "sort_order"
+    adjacent_option = 1
+"#;
+    let register = "register_snippet(Person, viewset=PersonViewSet)\n";
+    for (suffix, registered) in [
+        (register, true),
+        ("", false),
+        (
+            "def register_snippet(model, viewset): pass\nregister_snippet(Person, viewset=PersonViewSet)\n",
+            false,
+        ),
+    ] {
+        fs::write(root.join("app.py"), format!("{sources}{suffix}")).unwrap();
+        let scan_result = scan(root);
+        for option in ["list_display", "sort_order_field"] {
+            let name = format!("app.PersonViewSet.{option}");
+            assert_eq!(
+                findings(&scan_result, "unused_variables").contains(&name.as_str()),
+                !registered
+            );
+            assert_eq!(
+                evidence_certainties(&scan_result, &name, "wagtail_snippet_option"),
+                if registered { vec!["possible"] } else { vec![] }
+            );
+        }
+        assert!(
+            findings(&scan_result, "unused_variables")
+                .contains(&"app.PersonViewSet.adjacent_option")
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, scan_result);
+        }
+    }
+    fs::write(
+        root.join("app.py"),
+        format!("{sources}PersonViewSet.on_register = 1\n{register}"),
+    )
+    .unwrap();
+    assert_eq!(
+        scan_with_exit(root, None, None, 2)["coverage"]["status"],
+        "incomplete"
+    );
+}
+
+#[test]
 fn django_ready_import_requires_an_active_hook_and_a_proven_signal_registration() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

@@ -6055,6 +6055,13 @@ impl<'a> Graph<'a> {
                     Value::Provider(name) if self.phase03 && gin::is_config_loader(&name) => {
                         self.gin_config_call(CallArguments { scope, at: expr.at, before, positional: arguments, keywords });
                     }
+                    Value::Provider(name) if self.phase03 && wagtail::is_snippet_registrar(&name)
+                        && arguments.len() == 1
+                        && matches!(keywords.as_slice(), [(key, _)] if key == "viewset") => {
+                        self.register_wagtail_snippet(CallArguments {
+                            scope, at: expr.at, before, positional: arguments, keywords,
+                        });
+                    }
                     Value::Provider(name) if self.phase03 && gin::is_stop_after_attempt(&name)
                         && gin::supported_stop_arguments(arguments, keywords) => {}
                     Value::Provider(name) if self.phase03 && sanic::is_constructor(&name) => {
@@ -10618,6 +10625,7 @@ impl<'a> Graph<'a> {
                     | wagtail::FIELD_DECLARATION
                     | wagtail::BLOCK_METADATA
                     | wagtail::MODEL_OPTION
+                    | wagtail::SNIPPET_OPTION
                     | wagtail::CALLBACK_PARAMETER
             ) {
                 self.read.insert(id);

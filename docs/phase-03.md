@@ -470,6 +470,9 @@ recognizes bounded Wagtail StructBlock and StreamBlock field declarations and
 literal block metadata. Direct concrete Page, Orderable, and Task models
 retain bounded model fields and options. Documented page preview and task
 permission callbacks can receive possible-use and parameter evidence.
+The Wagtail 7.2 snippet registry can retain literal list-display and sort-order
+options from a direct SnippetViewSet with a resolved Django model. The report
+keeps configuration use separate from view dispatch.
 
 Resolved Celery Redis backends, Django admin list filters, and django-storages
 S3 backends receive possible declaration evidence for their documented class
