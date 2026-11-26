@@ -38,6 +38,7 @@ const DEFAULT_EXCLUDES: &[&str] = &[
 
 pub(super) struct Config {
     pub(super) entrypoints: Vec<Entrypoint>,
+    pub(super) fastapi_router_mode: FastapiRouterMode,
     pub(super) confidence: u8,
     pub(super) quality_enabled: bool,
     pub(super) gate: Gate,
@@ -537,10 +538,20 @@ struct Override {
     whitelist: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum FastapiRouterMode {
+    #[default]
+    Auto,
+    Snapshot,
+    Live,
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct DeadCode {
     entrypoints: Option<Vec<Selector>>,
+    fastapi_router_mode: Option<FastapiRouterMode>,
 }
 
 #[derive(Default, Deserialize)]
@@ -772,6 +783,7 @@ fn load_at(
         ..Gate::default()
     };
     let mut selectors = Vec::new();
+    let mut fastapi_router_mode = FastapiRouterMode::Auto;
     let mut whitelist = WhitelistTables::default();
     let mut path_rules = PathRules::default();
 
@@ -824,11 +836,21 @@ fn load_at(
                 .require_complete
                 .unwrap_or(gate.require_complete);
         }
-        if let Some(values) = layer.dead_code.and_then(|code| code.entrypoints) {
-            selectors = values
-                .into_iter()
-                .map(Entrypoint::new)
-                .collect::<Result<_, _>>()?;
+        if let Some(dead_code) = layer.dead_code {
+            if let Some(values) = dead_code.entrypoints {
+                selectors = values
+                    .into_iter()
+                    .map(Entrypoint::new)
+                    .collect::<Result<_, _>>()?;
+            }
+            if let Some(mode) = dead_code.fastapi_router_mode {
+                if options.profile != super::Profile::SkylosPhase03 {
+                    return Err(ConfigError::new(
+                        "fastapi_router_mode requires the skylos-0.3 profile",
+                    ));
+                }
+                fastapi_router_mode = mode;
+            }
         }
     }
     excludes.extend(options.excludes.iter().cloned());
@@ -879,6 +901,7 @@ fn load_at(
     Ok(Config {
         gate,
         entrypoints: selectors,
+        fastapi_router_mode,
         confidence,
         quality_enabled,
         date,
@@ -1146,6 +1169,8 @@ expires = "not a date"
             file: "main.py".into(),
             line: 1,
             column: 1,
+            method_owner: None,
+            declaration_whitelist: None,
             confidence: 90,
             rule_id: "SKY-U001",
             reason: "no_call_path_from_root",

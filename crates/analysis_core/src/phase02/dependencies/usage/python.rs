@@ -85,6 +85,19 @@ impl<'a> Python<'a> {
                     }
                     bindings.insert(&import.local.text, qualified);
                 }
+                Stmt::ProviderWildcardImport(imports) => {
+                    if let Some(import) = imports.first() {
+                        self.module(statement.at.line, &import.module, "python_import");
+                    }
+                    for import in imports {
+                        bindings.insert(&import.local.text, None);
+                    }
+                }
+                Stmt::ProjectWildcardImport { module, level, .. } => {
+                    if *level == 0 {
+                        self.module(statement.at.line, module, "python_import");
+                    }
+                }
                 Stmt::Assign {
                     names,
                     value,
@@ -106,6 +119,65 @@ impl<'a> Python<'a> {
                     for name in names {
                         bindings.insert(&name.text, origin.clone());
                     }
+                }
+                Stmt::AssignUnpack { names, value } => {
+                    self.expression(value, &bindings);
+                    if let Expr::Sequence { items, .. } = &value.kind
+                        && items.len() == names.len()
+                    {
+                        let origins: Vec<_> = items
+                            .iter()
+                            .map(|item| qualified(item, &bindings))
+                            .collect();
+                        for (name, item) in names.iter().zip(items) {
+                            if python_configuration(self.path, &name.text) {
+                                self.configuration(item, &bindings);
+                            }
+                        }
+                        for (name, origin) in names.iter().zip(origins) {
+                            bindings.insert(&name.text, origin);
+                        }
+                    } else {
+                        for name in names {
+                            bindings.insert(&name.text, None);
+                        }
+                        self.usage.reasons.push(Reason::new(
+                            "unresolved_dependency_configuration",
+                            self.path,
+                            Some(statement.at.line),
+                            "assignment unpacking may change dependency resolution",
+                        ));
+                    }
+                }
+                Stmt::DeleteName(name) => {
+                    bindings.insert(&name.text, None);
+                }
+                Stmt::ForwardSuperInit {
+                    super_name,
+                    positional,
+                    keywords,
+                } => {
+                    self.expression(super_name, &bindings);
+                    self.expression(positional, &bindings);
+                    self.expression(keywords, &bindings);
+                }
+                Stmt::SetGlobalName { value, .. } => {
+                    self.expression(value, &bindings);
+                }
+                Stmt::DjangoSettingsGlobalCall(value) => {
+                    self.expression(value, &bindings);
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "a call can change Django dependency configuration",
+                    ));
+                }
+                Stmt::LiteralRouteLoop {
+                    path, registration, ..
+                } => {
+                    bindings.insert(&path.text, None);
+                    self.expression(registration, &bindings);
                 }
                 Stmt::Define(definition) => {
                     for expression in definition
@@ -154,7 +226,67 @@ impl<'a> Python<'a> {
                         self.expression(value, &bindings);
                     }
                 }
-                Stmt::Assert(value) | Stmt::Evaluate(value) => self.expression(value, &bindings),
+                Stmt::AssignDjangoSettings { environment, value } => {
+                    self.expression(value, &bindings);
+                    self.expression(environment, &bindings);
+                    if qualified(environment, &bindings).as_deref() == Some("os.environ")
+                        && let Expr::Text(module) = &value.kind
+                        && is_module(module)
+                    {
+                        self.module(value.at.line, module, "python_configuration");
+                    } else {
+                        self.usage.reasons.push(Reason::new(
+                            "unresolved_dependency_configuration",
+                            self.path,
+                            Some(statement.at.line),
+                            "Django settings assignment could not be resolved",
+                        ));
+                    }
+                }
+                Stmt::EditDjangoBackendList { receiver, edit } => {
+                    self.expression(receiver, &bindings);
+                    if let Some(value) = edit.value() {
+                        self.expression(value, &bindings);
+                    }
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "Django backend list mutation can change selected dependencies",
+                    ));
+                }
+                Stmt::WriteAttribute {
+                    receiver, value, ..
+                }
+                | Stmt::WriteModuleEntry {
+                    mapping: receiver,
+                    value,
+                    ..
+                }
+                | Stmt::WriteCeleryConfigEntry {
+                    mapping: receiver,
+                    value,
+                    ..
+                } => {
+                    self.expression(receiver, &bindings);
+                    if let Stmt::WriteCeleryConfigEntry { key, .. } = &statement.kind {
+                        self.expression(key, &bindings);
+                    }
+                    if let Some(value) = value {
+                        self.expression(value, &bindings);
+                    }
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "mutable Python attributes may change dependency resolution",
+                    ));
+                }
+                Stmt::Assert(value)
+                | Stmt::Evaluate(value)
+                | Stmt::DiscardedComprehension(value) => {
+                    self.expression(value, &bindings);
+                }
             }
         }
         for statement in body {
@@ -186,7 +318,7 @@ impl<'a> Python<'a> {
     fn configuration(&mut self, value: &Expression, bindings: &Bindings<'_>) {
         match &value.kind {
             Expr::Text(text) => self.module(value.at.line, text, "python_configuration"),
-            Expr::Sequence(values) => {
+            Expr::Sequence { items: values, .. } => {
                 for value in values {
                     self.configuration(value, bindings);
                 }
@@ -196,7 +328,7 @@ impl<'a> Python<'a> {
                     self.configuration(value, bindings);
                 }
             }
-            Expr::Bool(_) | Expr::Scalar => {}
+            Expr::Bool(_) | Expr::Scalar(_) | Expr::IdentityDecoratorLambda => {}
             _ if qualified(value, bindings).is_some_and(|name| name.starts_with("os.environ"))
                 && !self.locals.contains("os") => {}
             _ => self.usage.reasons.push(Reason::new(
@@ -300,6 +432,38 @@ impl<'a> Python<'a> {
                     self.expression(argument, bindings);
                 }
             }
+            Expr::KeywordMappingCall {
+                function,
+                arguments,
+                mapping,
+            } => {
+                self.expression(function, bindings);
+                for argument in arguments {
+                    self.expression(argument, bindings);
+                }
+                self.expression(mapping, bindings);
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "expanded keyword dependency bindings are outside the bounded model",
+                ));
+            }
+            Expr::RepeatedKeywordCall {
+                function,
+                arguments,
+            } => {
+                self.expression(function, bindings);
+                for argument in arguments {
+                    self.expression(argument, bindings);
+                }
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "expanded keyword dependency bindings are outside the bounded model",
+                ));
+            }
             Expr::Member(value, _) => {
                 let origin = qualified(expression, bindings);
                 let plugin = match origin.as_deref() {
@@ -314,10 +478,21 @@ impl<'a> Python<'a> {
                 self.expression(value, bindings);
             }
             Expr::Not(value) | Expr::Await(value) => self.expression(value, bindings),
-            Expr::Sequence(values)
+            Expr::DeferredLambda(value) => {
+                self.expression(value, bindings);
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "deferred callable dependency bindings are outside the bounded model",
+                ));
+            }
+            Expr::Sequence { items: values, .. }
             | Expr::Dictionary(values)
+            | Expr::FormattedString(values)
             | Expr::Boolean { values, .. }
             | Expr::Addition(values)
+            | Expr::Divide(values)
             | Expr::Operands(values) => {
                 for item in values {
                     self.expression(item, bindings);
@@ -349,6 +524,27 @@ impl<'a> Python<'a> {
                 for value in [test, body, otherwise] {
                     self.expression(value, bindings);
                 }
+            }
+            Expr::Comprehension {
+                iterators,
+                elements,
+                ..
+            } => {
+                for iterator in iterators {
+                    self.expression(&iterator.iterable, bindings);
+                    for filter in &iterator.filters {
+                        self.expression(filter, bindings);
+                    }
+                }
+                for element in elements {
+                    self.expression(element, bindings);
+                }
+                self.usage.reasons.push(Reason::new(
+                    "unresolved_dependency_configuration",
+                    self.path,
+                    Some(expression.at.line),
+                    "comprehension-local dependency bindings are outside the bounded model",
+                ));
             }
             _ => {}
         }
@@ -446,10 +642,16 @@ pub(super) fn is_local(locals: &BTreeSet<&str>, module: &str) -> bool {
 fn shadow<'a>(body: &'a [Statement], bindings: &mut Bindings<'a>) {
     for statement in body {
         match &statement.kind {
-            Stmt::Assign { names, .. } => {
+            Stmt::Assign { names, .. } | Stmt::AssignUnpack { names, .. } => {
                 for name in names {
                     bindings.insert(&name.text, None);
                 }
+            }
+            Stmt::DeleteName(name) => {
+                bindings.insert(&name.text, None);
+            }
+            Stmt::LiteralRouteLoop { path, .. } => {
+                bindings.insert(&path.text, None);
             }
             Stmt::Define(definition) => {
                 bindings.insert(&definition.name.text, None);

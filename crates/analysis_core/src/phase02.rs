@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use skarmory_python::phase02::{ModuleFacts, extract};
+use skarmory_python::Location;
+use skarmory_python::phase02::{ModuleFacts, extract, extract_with_project_wildcards};
 
 use crate::fact_cache::{CacheStats, FactCache};
 use crate::grep_verification::{self, Evidence as VerificationEvidence};
@@ -23,6 +24,7 @@ mod javascript;
 mod package_entrypoints;
 mod runtime_evidence;
 pub use runtime_evidence::Input as EvidenceInput;
+mod wildcards;
 pub mod workflow;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -127,10 +129,14 @@ struct Finding {
     file: String,
     line: usize,
     column: usize,
+    method_owner: Option<[usize; 2]>,
+    declaration_whitelist: Option<&'static str>,
     confidence: u8,
     rule_id: &'static str,
     reason: &'static str,
 }
+
+const WEAK_HELPER_FUNCTION: &str = "weak_helper_function";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Evidence {
@@ -146,12 +152,20 @@ struct Analysis {
     definitions: BTreeMap<String, DefinitionContext>,
     findings: Vec<Finding>,
     evidence: Vec<Evidence>,
+    fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     issues: Vec<Issue>,
     uncertainties: Vec<Issue>,
     verification: Vec<VerificationEvidence>,
     rescued_count: usize,
     runtime_evidence: Vec<runtime_evidence::Evidence>,
     runtime_evidence_issues: Vec<Issue>,
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct FastapiRouteDeclaration {
+    file: String,
+    line: usize,
+    qualified_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,6 +182,7 @@ struct AnalyzedFile {
     path: String,
     module: String,
     is_package: bool,
+    fastapi_router_mode: config::FastapiRouterMode,
     facts: ModuleFacts,
 }
 
@@ -204,6 +219,8 @@ struct Diagnostic {
     change_status: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     report_scope: Option<&'static str>,
+    #[serde(skip)]
+    method_owner: Option<[usize; 2]>,
     #[serde(skip)]
     identity_name: String,
     dead_code_evidence: Vec<DecisionEvidence>,
@@ -259,6 +276,7 @@ impl Diagnostic {
             change_status: None,
             report_scope: None,
             identity_name: finding.identity_name,
+            method_owner: finding.method_owner,
             dead_code_evidence: vec![DecisionEvidence {
                 kind: finding.reason,
                 role: "supports_dead",
@@ -297,6 +315,37 @@ impl Categories {
         }
     }
 
+    fn group_unused_class_methods(&mut self, suppressed: &mut Vec<Diagnostic>) -> usize {
+        let class_locations: BTreeMap<_, _> = self
+            .unused_classes
+            .iter()
+            .map(|class| {
+                (
+                    (class.file.as_str(), [class.line, class.column]),
+                    class.change_status,
+                )
+            })
+            .collect();
+        let before = suppressed.len();
+        for mut method in std::mem::take(&mut self.unused_functions) {
+            if method.method_owner.is_some_and(|owner| {
+                class_locations
+                    .get(&(method.file.as_str(), owner))
+                    .is_some_and(|status| {
+                        method.change_status.is_none() || *status == method.change_status
+                    })
+            }) {
+                method.reason = "covered by the unused class finding".into();
+                method.dead_code_disposition = "suppressed";
+                method.dead_code_classification = Some("likely_dead");
+                suppressed.push(method);
+            } else {
+                self.unused_functions.push(method);
+            }
+        }
+        suppressed.len() - before
+    }
+
     fn retain(&mut self, mut keep: impl FnMut(&mut Diagnostic) -> bool) {
         for group in [
             &mut self.unused_functions,
@@ -330,6 +379,8 @@ struct Summary {
     analysis_error_count: usize,
     coverage_status: &'static str,
     languages: BTreeMap<&'static str, usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     javascript_file_analysis: Option<JavaScriptFileAnalysis>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -490,6 +541,15 @@ pub struct Report {
 }
 
 impl Report {
+    fn group_unused_class_methods(&mut self) {
+        if let Some(evidence) = &mut self.analysis_summary.dead_code_evidence {
+            let grouped = self
+                .categories
+                .group_unused_class_methods(&mut self.suppressed);
+            evidence.group_reports(grouped);
+        }
+    }
+
     pub fn is_complete(&self) -> bool {
         self.coverage.status == "complete"
     }
@@ -715,7 +775,9 @@ enum FileFacts {
 }
 
 pub fn scan(path: &Path, options: &Options) -> Result<Report, ConfigError> {
-    scan_with_context(path, options, None, None)
+    let mut report = scan_with_context(path, options, None, None)?;
+    report.group_unused_class_methods();
+    Ok(report)
 }
 
 fn scan_with_context(
@@ -740,6 +802,7 @@ fn scan_selected(
     let enable_quality =
         options.enable_quality.unwrap_or(config.quality_enabled) || options.quality_only;
     let include_dead_code = !options.quality_only;
+    let project_wildcards = phase03 && include_dead_code;
     let grep_verify = include_dead_code && options.grep_verify.unwrap_or(phase03);
     if enable_quality && !phase03 {
         return Err(ConfigError::new(
@@ -754,7 +817,8 @@ fn scan_selected(
             "runtime evidence options require the skylos-0.3 profile",
         ));
     }
-    let roots = if path.is_dir() && path.join("src").is_dir() {
+    let src_is_package = phase03 && path.join("src/__init__.py").is_file();
+    let roots = if path.is_dir() && path.join("src").is_dir() && !src_is_package {
         vec![PathBuf::from("src"), PathBuf::from(".")]
     } else {
         Vec::new()
@@ -762,7 +826,11 @@ fn scan_selected(
     let cache = options.cache_dir.as_ref().map(|directory| {
         FactCache::for_project(
             directory,
-            "phase02-module-v12/ruff-0.0.12/py311/utf8-universal",
+            if project_wildcards {
+                "phase03-module-v40/ruff-0.0.12/py311/utf8-universal"
+            } else {
+                "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
+            },
             path,
             &roots,
         )
@@ -800,6 +868,11 @@ fn scan_selected(
     let mut file_configs = BTreeMap::new();
     let mut directory_configs = BTreeMap::new();
     let mut local_configs = Vec::new();
+    let extract_python = if project_wildcards {
+        extract_with_project_wildcards
+    } else {
+        extract
+    };
     match project.map_file_sources(options.workers, |file, source| {
         let facts = if let Some(extension) =
             preview_source::javascript_extension(OsStr::new(&file.label))
@@ -808,8 +881,8 @@ fn scan_selected(
                 .map(FileFacts::JavaScript)
         } else {
             match &cache {
-                Some(cache) => cache.get_or_extract(source, extract),
-                None => extract(source),
+                Some(cache) => cache.get_or_extract(source, extract_python),
+                None => extract_python(source),
             }
             .map(FileFacts::Python)
         }
@@ -878,13 +951,34 @@ fn scan_selected(
                         }
                         sources.insert(file.label.clone(), source);
                         match facts {
-                            FileFacts::Python(facts) => files.push(AnalyzedFile {
-                                path: file.label.clone(),
-                                module: file.name.clone(),
-                                is_package: Path::new(&file.label).file_name()
-                                    == Some(OsStr::new("__init__.py")),
-                                facts,
-                            }),
+                            FileFacts::Python(facts) => {
+                                if !phase03 && let Some(at) = facts.first_named_condition {
+                                    issues.push(Issue::new(
+                                        "unsupported_construct",
+                                        &file.label,
+                                        "assignment expressions are outside the compatibility subset",
+                                    ).at(at));
+                                    continue;
+                                }
+                                let is_package = Path::new(&file.label).file_name()
+                                    == Some(OsStr::new("__init__.py"));
+                                // The loose-file identity includes the initializer's
+                                // stem when a package sits beneath a project folder.
+                                let module = if phase03 && is_package && file.loose_name {
+                                    file.name.strip_suffix(".__init__").unwrap_or(&file.name)
+                                } else {
+                                    &file.name
+                                };
+                                files.push(AnalyzedFile {
+                                    path: file.label.clone(),
+                                    module: module.to_owned(),
+                                    is_package,
+                                    fastapi_router_mode: config_index
+                                        .map_or(&config, |index| &local_configs[index])
+                                        .fastapi_router_mode,
+                                    facts,
+                                });
+                            }
                             FileFacts::JavaScript(module) => {
                                 js_modules.insert(file.label.clone(), module);
                             }
@@ -906,13 +1000,18 @@ fn scan_selected(
         }
     }
 
-    let dependency_sources_complete = issues.is_empty();
-    let package_entrypoints = (include_dead_code && phase03 && issues.is_empty())
+    let wildcard_issues = if project_wildcards {
+        wildcards::resolve(&project, &mut files)
+    } else {
+        Vec::new()
+    };
+    let dependency_sources_complete = issues.is_empty() && wildcard_issues.is_empty();
+    let package_entrypoints = (include_dead_code && phase03 && dependency_sources_complete)
         .then(|| package_entrypoints::Snapshot::read(path, &files));
     let available_package_entrypoints = package_entrypoints
         .as_ref()
         .filter(|metadata| metadata.issues.is_empty());
-    let runtime = (include_dead_code && phase03 && issues.is_empty()).then(|| {
+    let runtime = (include_dead_code && phase03 && dependency_sources_complete).then(|| {
         runtime_evidence::Snapshot::read(
             path,
             &project,
@@ -922,11 +1021,19 @@ fn scan_selected(
             &options.coverage_file,
         )
     });
-    let verification = (grep_verify && issues.is_empty())
+    let verification = (grep_verify && dependency_sources_complete)
         .then(|| grep_verification::Snapshot::read(&project, Some(&config.selection)));
     let django_settings = (include_dead_code && phase03)
         .then(|| std::env::var_os("DJANGO_SETTINGS_MODULE"))
         .flatten();
+    let django_templates = (include_dead_code && phase03 && path.is_dir())
+        .then(|| analysis::TemplateProject::new(&project, &config.selection));
+    let framework = analysis::FrameworkInputs {
+        settings: django_settings.as_deref(),
+        templates: django_templates.as_ref(),
+        discovery: (phase03 && path.is_dir()).then_some(&project),
+        unresolved_project_wildcards: !wildcard_issues.is_empty(),
+    };
     let mut analysis = if include_dead_code && issues.is_empty() {
         if local_configs.is_empty() {
             analysis::analyze_with_verification(
@@ -936,7 +1043,7 @@ fn scan_selected(
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
-                django_settings.as_deref(),
+                framework,
             )
         } else {
             let mut groups = vec![BTreeSet::new(); local_configs.len()];
@@ -962,12 +1069,13 @@ fn scan_selected(
                 available_package_entrypoints,
                 runtime.as_ref(),
                 phase03,
-                django_settings.as_deref(),
+                framework,
             )
         }
     } else {
         Analysis::default()
     };
+    analysis.issues.extend(wildcard_issues);
     if include_dead_code
         && has_javascript
         && issues.is_empty()
@@ -990,6 +1098,9 @@ fn scan_selected(
         analysis.runtime_evidence_issues.dedup();
     }
     if let Some(inputs) = cleanup_inputs.as_deref_mut() {
+        if let Some(templates) = &django_templates {
+            inputs.policy.extend(templates.input_digests());
+        }
         for config in std::iter::once(&config).chain(&local_configs) {
             inputs.policy.extend(
                 config
@@ -1053,7 +1164,10 @@ fn scan_selected(
                 }),
         );
     }
-    let snapshot_issues = project.verify(stamps);
+    let mut snapshot_issues = project.verify(stamps);
+    if let Some(templates) = django_templates {
+        snapshot_issues.extend(templates.verify());
+    }
     if !snapshot_issues.is_empty()
         && dependency_result.is_some()
         && !config.ignores_rule(dependencies::RULE)
@@ -1182,6 +1296,28 @@ fn scan_selected(
                 }
                 config::Decision::Keep => {}
             }
+            if let Some(reason) = finding.declaration_whitelist {
+                whitelisted.push(Diagnostic::new(
+                    finding,
+                    reason.into(),
+                    "whitelisted",
+                    source,
+                ));
+                continue;
+            }
+            if finding.reason == WEAK_HELPER_FUNCTION {
+                // The pinned reference treats these unreferenced helper names
+                // as abstentions. Keep them separate from usage and coverage.
+                analysis.uncertainties.push(
+                    Issue::new(WEAK_HELPER_FUNCTION, &finding.file, "weak helper function")
+                        .at(Location {
+                            line: finding.line,
+                            column: finding.column,
+                        })
+                        .with_symbol(finding.name, finding.full_name),
+                );
+                continue;
+            }
             // Skylos applies the confidence threshold to bindings and keeps file findings.
             if finding.category == Category::File || finding.confidence >= config.confidence {
                 categories.get_mut(finding.category).push(Diagnostic::new(
@@ -1269,6 +1405,7 @@ fn scan_selected(
             analysis_error_count: issues.len(),
             coverage_status: status,
             languages,
+            fastapi_route_declarations: analysis.fastapi_route_declarations,
             javascript_file_analysis: has_javascript.then_some(JavaScriptFileAnalysis {
                 rule_id: javascript::RULE,
                 status: if javascript_complete {
