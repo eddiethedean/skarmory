@@ -16914,3 +16914,426 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
 runtime_review = { reason = "The imported LOGGING setting omits its schema version. dictConfig rejects it before loading the formatter or filter.", evidence = "CPython 3.11.15 imported the frozen settings and raised ValueError before importing app.formatters. A separate version 1 runtime control constructed both factories.", assertions = ["coverage:complete", "definition:app.settings_logging.LOGGING", "unused:unused_classes:app.formatters.JSONFormatter", "unused:unused_classes:app.formatters.ExtraAdder", "no-evidence:django_logging_factory:*:app.formatters.JSONFormatter", "no-evidence:django_logging_factory:*:app.formatters.ExtraAdder"] }
+
+# Django-template static entrypoints assert browser JavaScript reachability.
+# The Python test runner builds the fixtures; no assertion analyzes Python source.
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_literal_static_script_is_a_file_entrypoint[-static/widget.js]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:49", "test/test_django_static_entrypoints.py:53"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:36 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_literal_static_script_is_a_file_entrypoint[-app/static/widget.js]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:49", "test/test_django_static_entrypoints.py:53"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:36 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_literal_static_script_is_a_file_entrypoint[-app/static/app/widget.js]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:49", "test/test_django_static_entrypoints.py:53"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:36 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_literal_static_script_is_a_file_entrypoint[ type=\"module\"-static/widget.js]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:49", "test/test_django_static_entrypoints.py:53"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:36 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_literal_static_script_is_a_file_entrypoint[ type=\"module\"-app/static/widget.js]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:49", "test/test_django_static_entrypoints.py:53"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:36 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_literal_static_script_is_a_file_entrypoint[ type=\"module\"-app/static/app/widget.js]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:49", "test/test_django_static_entrypoints.py:53"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:36 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_loading_script_does_not_consume_unused_export[]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:68", "test/test_django_static_entrypoints.py:71", "test/test_django_static_entrypoints.py:72", "test/test_django_static_entrypoints.py:73", "test/test_django_static_entrypoints.py:74"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:57 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_loading_script_does_not_consume_unused_export[ type=\"module\"]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:68", "test/test_django_static_entrypoints.py:71", "test/test_django_static_entrypoints.py:72", "test/test_django_static_entrypoints.py:73", "test/test_django_static_entrypoints.py:74"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:57 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_named_handler_reaches_only_called_function_in_loaded_classic_script"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:89", "test/test_django_static_entrypoints.py:90", "test/test_django_static_entrypoints.py:91"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:77 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_module_exports_are_not_global_inline_handlers[ type=\"module\"]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:106"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:95 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_module_exports_are_not_global_inline_handlers[ type=module]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:106"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:95 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_export_declaration_is_not_a_classic_script_global"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:120"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:109 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_template_handler_is_not_assigned_to_another_pages_script"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:136", "test/test_django_static_entrypoints.py:137"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:123 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_commented_handler_does_not_consume_a_loaded_scripts_function"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:149"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:140 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_static_directory_can_itself_be_the_scan_root"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:163"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:152 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_nonloading_template_lookalikes_do_not_create_entrypoints[<script data-src=\"{% static 'widget.js' %}\"></script>]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:184"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:178 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_nonloading_template_lookalikes_do_not_create_entrypoints[<script src=\"{% static asset_name %}\"></script>]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:184"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:178 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_nonloading_template_lookalikes_do_not_create_entrypoints[<script src=\"{% static 'missing.js' %}\"></script>]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:184"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:178 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_nonloading_template_lookalikes_do_not_create_entrypoints[<script type=\"application/json\" src=\"{% static 'widget.js' %}\"></script>]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:184"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:178 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_nonloading_template_lookalikes_do_not_create_entrypoints[<!-- <script src=\"{% static 'widget.js' %}\"></script> -->]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:184"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:178 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_nonloading_template_lookalikes_do_not_create_entrypoints[{# <script src=\"{% static 'widget.js' %}\"></script> #}]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:184"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:178 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_nonloading_template_lookalikes_do_not_create_entrypoints[{% comment %}<script src=\"{% static 'widget.js' %}\"></script>{% endcomment %}]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:184"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:178 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_ambiguous_static_asset_is_not_guessed"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:197", "test/test_django_static_entrypoints.py:199"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:187 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_only_scanned_assets_and_included_templates_create_entrypoints"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:211", "test/test_django_static_entrypoints.py:212"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:202 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_regular_browser_script_url_remains_supported[]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:227", "test/test_django_static_entrypoints.py:228"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:218 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_regular_browser_script_url_remains_supported[ type=\"text/javascript\"]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:227", "test/test_django_static_entrypoints.py:228"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:218 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_regular_browser_script_url_remains_supported[ type=\"application/x-javascript\"]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:227", "test/test_django_static_entrypoints.py:228"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:218 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_loaded_module_keeps_its_imported_dependency_file_reachable"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:245"]
+prerequisites = ["JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:233 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-native-typescript-engine"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_analyzer_preserves_called_handler_and_reports_unused_helper"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:273", "test/test_django_static_entrypoints.py:274", "test/test_django_static_entrypoints.py:275"]
+prerequisites = ["installed-sdk", "JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:258 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-cp311-mixed-sdk"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_analyzer_keeps_uncalled_export_unused_in_loaded_file[]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:294", "test/test_django_static_entrypoints.py:295"]
+prerequisites = ["installed-sdk", "JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:279 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-cp311-mixed-sdk"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_analyzer_keeps_uncalled_export_unused_in_loaded_file[ type=\"module\"]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:294", "test/test_django_static_entrypoints.py:295"]
+prerequisites = ["installed-sdk", "JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:279 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-cp311-mixed-sdk"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_loaded_module_exports_require_actual_consumers[/static/widget.js-False]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:325", "test/test_django_static_entrypoints.py:331", "test/test_django_static_entrypoints.py:332", "test/test_django_static_entrypoints.py:333", "test/test_django_static_entrypoints.py:334", "test/test_django_static_entrypoints.py:335", "test/test_django_static_entrypoints.py:336"]
+prerequisites = ["installed-sdk", "JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:302 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-cp311-mixed-sdk"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_loaded_module_exports_require_actual_consumers[/static/widget.js-True]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:325", "test/test_django_static_entrypoints.py:331", "test/test_django_static_entrypoints.py:332", "test/test_django_static_entrypoints.py:333", "test/test_django_static_entrypoints.py:334", "test/test_django_static_entrypoints.py:335", "test/test_django_static_entrypoints.py:336"]
+prerequisites = ["installed-sdk", "JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:302 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-cp311-mixed-sdk"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_loaded_module_exports_require_actual_consumers[{% static 'widget.js' %}-False]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:325", "test/test_django_static_entrypoints.py:331", "test/test_django_static_entrypoints.py:332", "test/test_django_static_entrypoints.py:333", "test/test_django_static_entrypoints.py:334", "test/test_django_static_entrypoints.py:335", "test/test_django_static_entrypoints.py:336"]
+prerequisites = ["installed-sdk", "JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:302 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-cp311-mixed-sdk"]
+port = ""
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_django_static_entrypoints.py::test_loaded_module_exports_require_actual_consumers[{% static 'widget.js' %}-True]"
+milestone = "0.7"
+languages = ["typescript"]
+source = "test/test_django_static_entrypoints.py"
+assertions = ["test/test_django_static_entrypoints.py:325", "test/test_django_static_entrypoints.py:331", "test/test_django_static_entrypoints.py:332", "test/test_django_static_entrypoints.py:333", "test/test_django_static_entrypoints.py:334", "test/test_django_static_entrypoints.py:335", "test/test_django_static_entrypoints.py:336"]
+prerequisites = ["installed-sdk", "JavaScript/TypeScript frontend and browser entrypoint resolution", "Original inline JavaScript and template fixtures"]
+provenance = "Pinned test/test_django_static_entrypoints.py:302 creates JavaScript assets and browser templates through _sources at line 16."
+variants = ["linux-x86_64-cp311-mixed-sdk"]
+port = ""
+omitted_assertions = []
