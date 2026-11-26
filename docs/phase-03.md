@@ -573,6 +573,8 @@ A direct source Widget selected by an effective field table can receive
 possible validation evidence for its value-from-data method and the arguments
 Django supplies. Other dynamic field tables or validation dispatch produce
 coverage diagnostics.
+A plain source ModelForm on a known model retains literal `Meta.help_texts`
+when Django's stock metaclass reads the options.
 
 A literal CharField constructor with a direct source converter can register
 the converter as part of a source model's field declaration. Its contract
