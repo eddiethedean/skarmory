@@ -5702,6 +5702,115 @@ fn django_standard_contrib_apps_allow_source_startup() {
 }
 
 #[test]
+fn django_field_callbacks_follow_effective_model_and_form_fields() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        root.join("fields.py"),
+        r#"from django import forms
+from django.db import models
+
+class Converted(models.CharField):
+    def from_db_value(self, value, expression, connection):
+        return value
+
+class DormantConverter(models.CharField):
+    def from_db_value(self, value, expression, connection):
+        return value
+
+class Item(models.Model):
+    value = Converted(max_length=15)
+
+class Picker(forms.Widget):
+    def value_from_datadict(self, data, files, name):
+        return data.get(name)
+
+class MaskedPicker(forms.Widget):
+    def value_from_datadict(self, data, files, name):
+        return data.get(name)
+
+class Selection(forms.Form):
+    value = forms.CharField(widget=Picker)
+
+class Maskable(forms.Form):
+    value = forms.CharField(widget=MaskedPicker)
+
+class Masked(Maskable):
+    value = None
+
+class Disabled(forms.Form):
+    value = forms.CharField(widget=MaskedPicker, disabled=True)
+
+Disabled({'value': 'choose'}).is_valid()
+Selection({'value': 'choose'}).is_valid()
+Masked({'value': 'choose'}).is_valid()
+"#,
+    )
+    .unwrap();
+    let report = scan(root);
+    assert_eq!(
+        evidence_certainties(
+            &report,
+            "fields.Converted.from_db_value",
+            "django_model_field_converter_declaration",
+        ),
+        ["possible"]
+    );
+    assert_eq!(
+        evidence_certainties(
+            &report,
+            "fields.Picker.value_from_datadict",
+            "django_widget_validation"
+        ),
+        ["possible"]
+    );
+    let unused = findings(&report, "unused_parameters");
+    for parameter in [
+        "fields.Converted.from_db_value.expression",
+        "fields.Converted.from_db_value.connection",
+        "fields.Picker.value_from_datadict.files",
+    ] {
+        assert!(!unused.contains(&parameter), "{parameter}: {report}");
+        assert_eq!(
+            evidence_certainties(&report, parameter, "django_field_parameter"),
+            ["possible"]
+        );
+    }
+    for parameter in [
+        "fields.DormantConverter.from_db_value.expression",
+        "fields.MaskedPicker.value_from_datadict.files",
+    ] {
+        assert!(unused.contains(&parameter), "{parameter}: {report}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("fields.py"))
+        .unwrap()
+        .write_all(b"payload = {'value': 'choose'}\nSelection(payload).is_valid()\n")
+        .unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue["kind"] == "unresolved_call"
+                    && issue["message"]
+                        == "Django widget data lookup requires a bounded form submission"
+            }),
+        "{opaque}"
+    );
+}
+
+#[test]
 fn django_admin_callbacks_need_an_effective_option_and_a_loaded_module() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
