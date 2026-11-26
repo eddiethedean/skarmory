@@ -88,11 +88,15 @@ engine port checks the route declaration and possible registration
 independently. The Click SDK case remains pending.
 
 The class-attribute provider suite contributes 19 original Python cases.
-Eight SDK ports exercise local lookalikes, a shadowed framework import,
-and a source package named like Celery. All eight require a completed
-analysis and both unused-attribute assertions. The eleven tests that
-depend on external base-class behavior remain required. A diagnostic
-SDK scan reports incomplete coverage for those fixtures.
+The SDK ports use genuine Celery, Django admin, and django-storages providers
+through direct imports, aliases, and a project intermediary. Ten derived
+fixtures export the configured subclass. Celery 5.5.3 and Django 5.2.12
+rejected the original constructor arguments, and the S3 backend in
+django-storages 1.14.6 required configured Django settings. The derived
+inputs preserve all original assertions and case IDs. The generic storage
+case retains its original zero-argument construction and unread S3 settings.
+Eight original controls cover local lookalikes, shadowed imports, and a
+source package named like Celery.
 
 ### Runtime-derived test expectations
 
