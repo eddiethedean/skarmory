@@ -98,6 +98,12 @@ impl<'a> Python<'a> {
                         self.module(statement.at.line, module, "python_import");
                     }
                 }
+                Stmt::OptionalProjectClassFallback {
+                    package, fallback, ..
+                } => {
+                    self.module(statement.at.line, package, "python_import");
+                    bindings = self.suite(fallback, &bindings);
+                }
                 Stmt::Assign {
                     names,
                     value,

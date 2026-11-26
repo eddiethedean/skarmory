@@ -487,6 +487,13 @@ The analyzer records possible declarations when a named trait resolves.
 An ambiguous default and unmodeled construction keep coverage incomplete.
 [Traitlets callbacks](https://traitlets.readthedocs.io/en/stable/api.html)
 
+A module-level optional import can select a plain class from an
+`except ImportError` handler when source discovery proves the requested
+member is absent from an inert, selected regular package. This proof
+uses the verified directory snapshot, including opaque import candidates.
+An unresolved package, an active initializer, or a present member keeps
+coverage incomplete.
+
 Mounted Django DetailViews with resolved model and template context retain
 possible references to source model methods. The preview follows selected
 Django template directories, literal inheritance and includes, and supported

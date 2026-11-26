@@ -103,6 +103,11 @@ pub enum StatementKind {
         level: u32,
         optional: bool,
     },
+    OptionalProjectClassFallback {
+        package: String,
+        missing_member: String,
+        fallback: Vec<Statement>,
+    },
     Assign {
         names: Vec<Name>,
         value: Option<Expression>,
@@ -288,6 +293,39 @@ fn optional_project_wildcard(node: &StmtTry) -> Option<&str> {
         && handler.name.is_none()
         && matches!(handler.body.as_ref(), [Stmt::Pass(_)]))
     .then_some(module)
+}
+
+fn optional_project_class_fallback(node: &StmtTry) -> Option<(&str, &str, &[Stmt])> {
+    let [Stmt::ImportFrom(import)] = node.body.as_ref() else {
+        return None;
+    };
+    let [alias] = import.names.as_slice() else {
+        return None;
+    };
+    let [ExceptHandler::ExceptHandler(handler)] = node.handlers.as_slice() else {
+        return None;
+    };
+    let [Stmt::ClassDef(fallback)] = handler.body.as_ref() else {
+        return None;
+    };
+    let module = import.module.as_ref()?.as_str();
+    let mut components = module.split('.');
+    let package = components.next()?;
+    let missing_member = components.next().unwrap_or(alias.name.as_str());
+    (!node.is_star
+        && !import.is_lazy
+        && import.level == 0
+        && alias.name.as_str() != "*"
+        && node.orelse.is_empty()
+        && node.finalbody.is_empty()
+        && matches!(handler.type_.as_deref(), Some(Expr::Name(name)) if name.id.as_str() == "ImportError")
+        && handler.name.is_none()
+        && fallback.name.as_str() == alias.asname.as_ref().unwrap_or(&alias.name).as_str()
+        && fallback.arguments.is_none()
+        && fallback.decorator_list.is_empty()
+        && fallback.type_params.is_none()
+        && matches!(fallback.body.as_ref(), [Stmt::Pass(_)]))
+    .then_some((package, missing_member, handler.body.as_ref()))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1216,6 +1254,18 @@ impl Lowering<'_> {
                         module: module.into(),
                         level: 1,
                         optional: true,
+                    }
+                }
+                Stmt::Try(node)
+                    if self.4
+                        && self.1 == SyntaxScope::Module
+                        && let Some((package, missing_member, fallback)) =
+                            optional_project_class_fallback(node) =>
+                {
+                    StatementKind::OptionalProjectClassFallback {
+                        package: package.into(),
+                        missing_member: missing_member.into(),
+                        fallback: self.suite(fallback, next)?,
                     }
                 }
                 Stmt::Return(node) => {
