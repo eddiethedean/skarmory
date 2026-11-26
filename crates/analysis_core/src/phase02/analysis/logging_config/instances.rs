@@ -262,6 +262,7 @@ impl<'a> Replay<'a> {
                     || !row.activated_apps.is_empty()
                     || !row.mounts.is_empty()
                     || !row.routes.is_empty()
+                    || !row.optional_flask_routes.is_empty()
                     || !row.starts_django.is_empty()
                     || !row.django_signals.is_empty())
             {

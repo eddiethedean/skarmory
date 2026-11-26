@@ -182,12 +182,22 @@ impl Graph<'_> {
         argument: &Expression,
         before: Location,
     ) -> Option<Value> {
-        let outer = self.django_globals.resolving_callback_read.replace(false);
-        let value = self.identity(scope, argument, before, 0);
-        let observed = std::mem::replace(&mut self.django_globals.resolving_callback_read, outer);
+        let (value, reads_rebound_global) =
+            self.track_rebound_global_reads(|graph| graph.identity(scope, argument, before, 0));
         // Module attributes and imported aliases can read a tracked slot,
         // but this lookup cannot prove when they capture its value.
-        (observed == Some(false)).then_some(value)
+        (!reads_rebound_global).then_some(value)
+    }
+
+    pub(super) fn track_rebound_global_reads(
+        &mut self,
+        resolve: impl FnOnce(&mut Self) -> Value,
+    ) -> (Value, bool) {
+        let outer = self.django_globals.resolving_callback_read.replace(false);
+        let value = resolve(self);
+        let observed = self.django_globals.resolving_callback_read == Some(true);
+        self.django_globals.resolving_callback_read = outer.map(|prior| prior || observed);
+        (value, observed)
     }
 
     pub(super) fn record_django_global_connect(
@@ -343,6 +353,7 @@ impl Graph<'_> {
                 }) || row
                     .routes
                     .iter()
+                    .chain(&row.optional_flask_routes)
                     .any(|&(_, target, _)| relevant_target(target))
             })
         {

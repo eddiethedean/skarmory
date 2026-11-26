@@ -72,6 +72,107 @@ fn names<'a>(report: &'a Value, section: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn strict_filters_keep_a_new_unused_method_when_its_class_is_outside_the_report() {
+    let root = project(&[("model.py", "class Dormant:\n    pass\n")]);
+    let baseline = ".skylos/baseline.json";
+    scan(root.path(), &["--write-baseline", baseline], 0);
+    fs::write(
+        root.path().join("model.py"),
+        "class Dormant:\n    def old_method(self): return 1\n",
+    )
+    .unwrap();
+
+    for filters in [
+        ["--select", "SKY-U001"],
+        ["--diff", "HEAD"],
+        ["--baseline", baseline],
+    ] {
+        let report = scan(root.path(), &["--strict", filters[0], filters[1]], 1);
+        assert_eq!(report["gate"]["verdict"], "failed");
+        assert_eq!(names(&report, "unused_functions"), ["old_method"]);
+        assert!(items(&report, "unused_classes").is_empty());
+        assert!(items(&report, "suppressed").is_empty());
+    }
+
+    let by_file = scan(root.path(), &["--diff-base", "HEAD", "--strict"], 1);
+    assert_eq!(names(&by_file, "unused_classes"), ["Dormant"]);
+    assert!(items(&by_file, "unused_functions").is_empty());
+    assert_eq!(names(&by_file, "suppressed"), ["old_method"]);
+
+    fs::write(
+        root.path().join("model.py"),
+        "class Dormant:  # Revised description\n    def old_method(self): return 1\n",
+    )
+    .unwrap();
+    let impact = scan(
+        root.path(),
+        &["--diff", "HEAD", "--diff-mode", "impact", "--strict"],
+        1,
+    );
+    assert_eq!(names(&impact, "unused_classes"), ["Dormant"]);
+    assert_eq!(impact["unused_functions"][0]["change_status"], "introduced");
+
+    scan(root.path(), &["--write-baseline", baseline], 0);
+    let reapplied = scan(root.path(), &["--baseline", baseline, "--strict"], 0);
+    assert_eq!(
+        reapplied["analysis_summary"]["baseline"]["matched_count"],
+        2
+    );
+    assert_eq!(reapplied["gate"]["verdict"], "passed");
+    let baselined_impact = scan(
+        root.path(),
+        &[
+            "--diff",
+            "HEAD",
+            "--diff-mode",
+            "impact",
+            "--baseline",
+            baseline,
+            "--strict",
+        ],
+        0,
+    );
+    assert_eq!(
+        baselined_impact["analysis_summary"]["pr_impact"]["introduced_count"],
+        1
+    );
+}
+
+#[test]
+fn impact_compares_method_identities_before_grouping() {
+    let class = "class Dormant:\n    def already_unused(self): return 1\n\n    def old_method(self): return 2\n";
+    let source = format!("{class}\nDormant().old_method()\n");
+    let root = project(&[("model.py", &source)]);
+    fs::write(root.path().join("model.py"), class).unwrap();
+
+    let impact = ["--diff", "HEAD", "--diff-mode", "impact", "--strict"];
+    let selected = scan(
+        root.path(),
+        &[&impact[..], &["--select", "SKY-U001"]].concat(),
+        1,
+    );
+    assert_eq!(selected["gate"]["verdict"], "failed");
+    assert_eq!(names(&selected, "unused_functions"), ["old_method"]);
+    assert_eq!(
+        selected["unused_functions"][0]["change_status"],
+        "introduced"
+    );
+    assert_eq!(
+        selected["analysis_summary"]["pr_impact"]["introduced_count"],
+        1
+    );
+
+    let grouped = scan(root.path(), &impact, 1);
+    assert_eq!(names(&grouped, "unused_classes"), ["Dormant"]);
+    assert!(items(&grouped, "unused_functions").is_empty());
+    assert_eq!(names(&grouped, "suppressed"), ["old_method"]);
+    assert_eq!(
+        grouped["analysis_summary"]["pr_impact"]["introduced_count"],
+        1
+    );
+}
+
+#[test]
 fn impact_flags_removed_last_caller_outside_changed_lines() {
     let root = project(&[
         (

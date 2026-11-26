@@ -529,9 +529,18 @@ impl<'a> Graph<'a> {
         }
     }
 
-    pub(super) fn fastapi_lifespan(&mut self, object: Object, site: Site, expression: &Expression) {
+    pub(super) fn fastapi_lifespan(
+        &mut self,
+        object: Object,
+        site: Site,
+        expression: &Expression,
+    ) -> bool {
+        let lifespan = self.identity(site.scope, expression, site.before, 0);
+        if matches!(lifespan, Value::None) {
+            return false;
+        }
         let effects = self.fastapi_effect_scope(site);
-        match self.identity(site.scope, expression, site.before, 0) {
+        match lifespan {
             Value::Callable(invocation) if self.is_fastapi_lifespan(invocation.target) => {
                 self.edge(effects, invocation.target, "fastapi_lifespan", "certain");
             }
@@ -551,6 +560,7 @@ impl<'a> Graph<'a> {
             ),
         }
         self.fastapi.lifespans.insert(object, (site, effects));
+        true
     }
 
     pub(super) fn fastapi_router_lifecycle(
@@ -574,7 +584,28 @@ impl<'a> Graph<'a> {
                 if matches!(callback, Value::NullaryConstantFunction) {
                     continue;
                 }
-                if let Some(target) = self.fastapi_hook_target(callback) {
+                if let Some(invocation) = self.fastapi_callable(callback, false) {
+                    let target = invocation.target;
+                    let Binding::Definition(definition, _) = self.symbols[target].binding else {
+                        unreachable!("FastAPI callable resolution only returns definitions");
+                    };
+                    let supplied = usize::from(
+                        invocation.implicit_descriptor_receiver
+                            || matches!(invocation.receiver, Receiver::Bound(_)),
+                    );
+                    if definition.required_positional_parameter_count > supplied
+                        || definition.positional_parameter_count < supplied
+                            && !definition.has_variadic_positional_parameter
+                        || !definition.required_keyword_only_parameters.is_empty()
+                    {
+                        self.scope_issue(
+                            effects,
+                            expression.at,
+                            "unresolved_registration",
+                            "FastAPI router lifecycle callback must accept a call with zero arguments",
+                        );
+                        continue;
+                    }
                     let certainty = if self.branch_depth == 0 {
                         "certain"
                     } else {
@@ -612,17 +643,17 @@ impl<'a> Graph<'a> {
     }
 
     pub(super) fn fastapi_hook_target(&mut self, value: Value) -> Option<SymbolId> {
-        self.fastapi_callable_target(value, false)
+        self.fastapi_callable(value, false).map(|call| call.target)
     }
 
     pub(super) fn fastapi_dependency_target(&mut self, value: Value) -> Option<SymbolId> {
-        self.fastapi_callable_target(value, true)
+        self.fastapi_callable(value, true).map(|call| call.target)
     }
 
-    fn fastapi_callable_target(&mut self, value: Value, dependency: bool) -> Option<SymbolId> {
-        let callable = match value {
-            Value::Instance(class) => self.class_member(class, "__call__", 0)?,
-            value => value,
+    fn fastapi_callable(&mut self, value: Value, dependency: bool) -> Option<Invocation> {
+        let (callable, instance) = match value {
+            Value::Instance(class) => (self.class_member(class, "__call__", 0)?, Some(class)),
+            value => (value, None),
         };
         let Value::Callable(invocation) = callable else {
             return None;
@@ -632,13 +663,16 @@ impl<'a> Graph<'a> {
             return None;
         };
         let scope = symbol.scope;
+        let invocation = instance.map_or(invocation, |class| {
+            invocation.bind_receiver(Receiver::Bound(class))
+        });
         ((dependency || definition.kind != DefinitionKind::Class)
             && (dependency || !definition.is_generator)
             && definition.decorators.iter().all(|decorator| {
                 let value = self.probe_identity(scope, decorator, definition.name.at);
                 self.local_identity_decorator(value, decorator)
             }))
-        .then_some(invocation.target)
+        .then_some(invocation)
     }
 
     pub(super) fn fastapi_middleware(
@@ -1926,11 +1960,12 @@ impl<'a> Graph<'a> {
         }
         snapshots.visited.insert(key, None);
         let lifecycle_reached = inclusion.is_none_or(|inclusion| inclusion.lifecycle_reached);
+        let conditional = inclusion.is_some_and(|inclusion| inclusion.conditional);
         if lifecycle_reached
             && let Some(&(site, effects)) = self.fastapi.lifespans.get(&object)
             && reach.scopes.contains(&site.scope)
         {
-            self.open_fastapi_effects(effects, reach, pending);
+            self.open_fastapi_lifecycle_effects(effects, conditional, reach, pending);
         }
         // The lifecycle lists and context are merged at inclusion, even when
         // dispatch consults the child router later.
@@ -1938,7 +1973,6 @@ impl<'a> Graph<'a> {
             && (!self.fastapi.lifespans.contains_key(&object)
                 || inclusion.is_some_and(|inclusion| inclusion.legacy_default_reached));
         let mode = inclusion.map_or(self.files[object.0].fastapi_router_mode, |item| item.mode);
-        let conditional = inclusion.is_some_and(|inclusion| inclusion.conditional);
         let plain_query_binding = self.fastapi.plain_query_owners.contains(&object)
             && inclusion.is_none_or(|inclusion| inclusion.plain_query_binding);
         let mut has_routes = false;

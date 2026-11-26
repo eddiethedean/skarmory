@@ -190,7 +190,10 @@ impl Value {
     }
 
     fn is_builtin_scalar(&self) -> bool {
-        matches!(self, Self::Scalar | Self::Bool(_) | Self::Text(_))
+        matches!(
+            self,
+            Self::Scalar | Self::Bool(_) | Self::Text(_) | Self::None
+        )
     }
 
     fn is_builtin_scalar_or_iterable(&self) -> bool {
@@ -332,6 +335,7 @@ struct Scope<'a> {
     activated_apps: Vec<Object>,
     mounts: Vec<(Object, Object)>,
     routes: Vec<(Object, SymbolId, &'static str)>,
+    optional_flask_routes: Vec<(Object, SymbolId, &'static str)>,
     django_settings: DjangoSettings,
     starts_django: Vec<frameworks::DjangoStartup>,
     django_signals: Vec<frameworks::DjangoSignalRegistration>,
@@ -969,6 +973,7 @@ impl<'a> Graph<'a> {
             activated_apps: Vec::new(),
             mounts: Vec::new(),
             routes: Vec::new(),
+            optional_flask_routes: Vec::new(),
             django_settings: self.initial_django_settings.clone(),
             starts_django: Vec::new(),
             django_signals: Vec::new(),
@@ -4225,6 +4230,7 @@ impl<'a> Graph<'a> {
             },
             ExpressionKind::Text(text) => Value::Text(text.clone()),
             ExpressionKind::Bool(value) => Value::Bool(*value),
+            ExpressionKind::None if self.phase03 => Value::None,
             ExpressionKind::Scalar(_) | ExpressionKind::None => Value::Scalar,
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
@@ -4835,7 +4841,7 @@ impl<'a> Graph<'a> {
             .as_chunks::<2>()
             .0
             .iter()
-            .all(|pair| matches!(pair[0], Value::Text(_) | Value::Bool(_) | Value::Scalar))
+            .all(|pair| pair[0].is_builtin_scalar())
     }
 
     fn walk_if_test(
@@ -5684,7 +5690,15 @@ impl<'a> Graph<'a> {
                                         &method,
                                     );
                                 } else {
-                                    self.scopes[scope].routes.push((
+                                    let conditional_teardown = self.branch_depth != 0
+                                        && kind == ObjectKind::FlaskApp
+                                        && method == "teardown_appcontext";
+                                    let routes = if conditional_teardown {
+                                        &mut self.scopes[scope].optional_flask_routes
+                                    } else {
+                                        &mut self.scopes[scope].routes
+                                    };
+                                    routes.push((
                                         parent,
                                         invocation.target,
                                         framework_registration_kind(kind),
@@ -5891,12 +5905,10 @@ impl<'a> Graph<'a> {
                             before,
                         };
                         self.record_fastapi_query_owner(object, site, arguments, keywords, false);
-                        let lifespan = keywords.iter().find(|(name, value)| {
-                            name == "lifespan" && !matches!(value.kind, ExpressionKind::None)
-                        });
-                        if let Some((_, lifespan)) = lifespan {
-                            self.fastapi_lifespan(object, site, lifespan);
-                        }
+                        let custom_lifespan = keywords
+                            .iter()
+                            .find(|(name, _)| name == "lifespan")
+                            .is_some_and(|(_, value)| self.fastapi_lifespan(object, site, value));
                         self.fastapi_defaults(object, site, keywords);
                         for (keyword, value) in keywords {
                             if keyword == "middleware"
@@ -5905,7 +5917,7 @@ impl<'a> Graph<'a> {
                                 self.fastapi_middleware_list(object, site, value);
                             }
                             if keyword == "exception_handlers"
-                                || lifespan.is_none()
+                                || !custom_lifespan
                                     && matches!(keyword.as_str(), "on_startup" | "on_shutdown")
                             {
                                 let value = self.identity(scope, value, before, 0);
@@ -5942,9 +5954,9 @@ impl<'a> Graph<'a> {
                                 before,
                             };
                             self.record_fastapi_query_owner(object, site, arguments, keywords, true);
-                            if let Some((_, lifespan)) = keywords.iter().find(|(name, value)| {
-                                name == "lifespan" && !matches!(value.kind, ExpressionKind::None)
-                            }) {
+                            if let Some((_, lifespan)) =
+                                keywords.iter().find(|(name, _)| name == "lifespan")
+                            {
                                 self.fastapi_lifespan(object, site, lifespan);
                             }
                             for (name, callbacks) in keywords {
@@ -6320,7 +6332,7 @@ impl<'a> Graph<'a> {
                 let key = self.identity(scope, index, before, 0);
                 if !(self.phase03 && is_typing_annotated(&mapping))
                     && (!Self::has_literal_mapping_keys(&mapping)
-                        || !(matches!(key, Value::Text(_) | Value::Bool(_) | Value::Scalar)
+                        || !(key.is_builtin_scalar()
                             || self.is_module_getattr_parameter(scope, index, before)))
                 {
                     self.scope_issue(
@@ -6353,7 +6365,7 @@ impl<'a> Graph<'a> {
                 let mapping = self.identity(scope, container, before, 0);
                 let key = self.identity(scope, element, before, 0);
                 if !Self::has_literal_mapping_keys(&mapping)
-                    || !(matches!(key, Value::Text(_) | Value::Bool(_) | Value::Scalar)
+                    || !(key.is_builtin_scalar()
                         || self.is_module_getattr_parameter(scope, element, before))
                 {
                     self.scope_issue(
@@ -7681,7 +7693,10 @@ impl<'a> Graph<'a> {
         if self.phase03 && self.apply_bounded_tool_decorator(scope, decorator, target, before) {
             return false;
         }
-        match self.call_target_identity(scope, function, before, 0) {
+        let (decorator_value, reads_rebound_global) = self.track_rebound_global_reads(|graph| {
+            graph.call_target_identity(scope, function, before, 0)
+        });
+        match decorator_value {
             Value::Method(_, ObjectKind::AiohttpRouteTable, name)
                 if aiohttp::is_http_decorator(&name)
                     && self.aiohttp_route_declaration(scope, target, decorator, before) =>
@@ -7731,9 +7746,13 @@ impl<'a> Graph<'a> {
                 if !matches!(decorator.kind, ExpressionKind::Call { .. })
                     && flask_login_callback(&name) =>
             {
-                self.scopes[scope]
-                    .routes
-                    .push((object, target, "flask_login_registration"));
+                let routes = if reads_rebound_global {
+                    // The lexical receiver is a candidate until write order is proved.
+                    &mut self.scopes[scope].optional_flask_routes
+                } else {
+                    &mut self.scopes[scope].routes
+                };
+                routes.push((object, target, "flask_login_registration"));
                 return true;
             }
             Value::Method(object, kind, name)
@@ -9805,6 +9824,12 @@ impl<'a> Graph<'a> {
                 {
                     continue;
                 }
+                if !possible && edge.kind == "fastapi_lifespan" && edge.certainty == "possible" {
+                    reach
+                        .optional_framework_callbacks
+                        .insert((edge.target, edge.kind));
+                    continue;
+                }
                 let certainty = if possible { "possible" } else { edge.certainty };
                 if matches!(edge.kind, "fastapi_registration" | "fastapi_dependency")
                     && reach.fastapi_callbacks.insert(edge.target)
@@ -9895,7 +9920,13 @@ impl<'a> Graph<'a> {
                         reach.active_objects.insert(child);
                     }
                 }
-                for &(object, target, kind) in &scope.routes {
+                let routes = scope.routes.iter().map(|route| (route, false)).chain(
+                    scope
+                        .optional_flask_routes
+                        .iter()
+                        .map(|route| (route, true)),
+                );
+                for (&(object, target, kind), optional) in routes {
                     if !reach.active_objects.contains(&object) {
                         continue;
                     }
@@ -9909,7 +9940,13 @@ impl<'a> Graph<'a> {
                             .or_default()
                             .extend(receivers);
                     }
-                    let pending_route = if self.phase03 {
+                    if optional && !possible {
+                        reach.optional_framework_callbacks.insert((target, kind));
+                        continue;
+                    }
+                    let pending_route = if optional {
+                        !reach.evidence.contains(&(target, kind, "possible"))
+                    } else if self.phase03 {
                         !reach.has_evidence(target, kind)
                     } else {
                         !reach.symbols.contains(&target)
@@ -9918,7 +9955,9 @@ impl<'a> Graph<'a> {
                         pending.push_back(Edge {
                             target,
                             kind,
-                            certainty: if matches!(kind, "sanic_listener" | "starlette_route") {
+                            certainty: if optional
+                                || matches!(kind, "sanic_listener" | "starlette_route")
+                            {
                                 "possible"
                             } else {
                                 "certain"
@@ -9974,15 +10013,24 @@ impl<'a> Graph<'a> {
         if !self.phase03 {
             return true;
         }
-        // Keep established routes into a callback's body. Optional
-        // framework paths and their descendants contribute possible evidence.
-        let pending: VecDeque<_> = reach
+        // Close certain reachability first so optional callbacks only add
+        // possible evidence for descendants without an independent path.
+        let mut pending: VecDeque<_> = reach
             .scopes
             .iter()
             .flat_map(|&scope| &self.scopes[scope].edges)
             .filter(|edge| is_deferred_possible_edge(edge.kind))
             .copied()
             .collect();
+        pending.extend(
+            std::mem::take(&mut reach.optional_framework_callbacks)
+                .into_iter()
+                .map(|(target, kind)| Edge {
+                    target,
+                    kind,
+                    certainty: "possible",
+                }),
+        );
         (pending.is_empty() && !self.has_reachable_django_signals(reach))
             || self.traverse(reach, pending, class_bodies, false, true)
     }
@@ -10557,6 +10605,7 @@ struct Reachability {
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_websocket_query_bindings: BTreeMap<SymbolId, bool>,
     fastapi_lifecycle_effects: BTreeSet<(ScopeId, bool)>,
+    optional_framework_callbacks: BTreeSet<(SymbolId, &'static str)>,
     unordered_fastapi_mounts: BTreeSet<usize>,
     version_sensitive_fastapi_mounts: BTreeSet<usize>,
     fastapi_limited: bool,

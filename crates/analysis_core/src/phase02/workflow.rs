@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 
 use super::super::Issue;
 use super::{
-    Categories, ConfigError, EvidenceInput, Options, Profile, Report, config, preview_source, scan,
+    Categories, ConfigError, EvidenceInput, Options, Profile, Report, config, preview_source,
     scan_with_context,
 };
 pub use baseline::Input as BaselineInput;
@@ -124,14 +124,27 @@ pub fn run(path: &Path, options: &Options, settings: &Settings) -> Result<Outcom
             settings.gate || settings.require_complete,
         )?
     } else {
-        (scan(path, &options)?, None)
+        (scan_with_context(path, &options, None, None)?, None)
     };
     if let Some(impact) = &mut report.analysis_summary.pr_impact {
+        let introduced = |item: &super::Diagnostic| {
+            item.change_status.is_some() && (rules.is_empty() || rules.contains(item.rule_id))
+        };
+        let introduced_classes: BTreeSet<_> = report
+            .categories
+            .unused_classes
+            .iter()
+            .filter(|item| introduced(item))
+            .map(|item| (item.file.as_str(), [item.line, item.column]))
+            .collect();
         impact.introduced_count = report
             .categories
             .iter()
             .filter(|item| {
-                item.change_status.is_some() && (rules.is_empty() || rules.contains(item.rule_id))
+                introduced(item)
+                    && item.method_owner.is_none_or(|owner| {
+                        !introduced_classes.contains(&(item.file.as_str(), owner))
+                    })
             })
             .count();
     }
@@ -197,6 +210,9 @@ pub fn run(path: &Path, options: &Options, settings: &Settings) -> Result<Outcom
             });
         }
     }
+
+    // A method can be grouped only under a class finding that survived filtering.
+    report.group_unused_class_methods();
 
     let strict = settings.strict || (settings.gate && report.gate_policy.strict);
     let require_complete =
@@ -285,6 +301,10 @@ impl EvidenceSummary {
                 abstained: abstentions.len(),
             },
         }
+    }
+
+    pub(super) fn group_reports(&mut self, grouped: usize) {
+        self.candidate_decisions.reported -= grouped;
     }
 }
 
