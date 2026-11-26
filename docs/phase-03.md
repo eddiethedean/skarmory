@@ -716,7 +716,9 @@ evidence intact and creates no call or registration evidence.
 [Pinned path classification](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/constants.py#L165-L211)
 
 The Starlette preview records possible HTTP route use through the supported
-`add_route` call on a resolved conventional ASGI application. The aiohttp
+`add_route` call on a resolved conventional ASGI application. A resolved
+`starlette.responses.PlainTextResponse` call with known text or `None` content
+and default response options stays within the analysis model. The aiohttp
 preview records the callback captured by a genuine route table decorator.
 Mounting and serving an aiohttp table requires a separate activation proof.
 Recognized Gunicorn config files contribute possible-use evidence for supported

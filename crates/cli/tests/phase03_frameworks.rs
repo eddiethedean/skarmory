@@ -1591,6 +1591,54 @@ fn click_command_declarations_and_reference_safe_helpers_have_distinct_dispositi
 }
 
 #[test]
+fn starlette_plain_text_responses_require_bounded_content() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("app.py");
+    let source = r#"from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse as TextResponse
+
+app = Starlette()
+
+async def homepage(request):
+    return TextResponse(content="home")
+
+app.add_route("/", route=homepage, methods=["GET"])
+
+def status_page(): return "status"
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.status_page"]);
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &path,
+        source.replace(r#"content="home""#, "content=request"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call" && issue["line"] == 7)
+    );
+
+    fs::write(&path, source).unwrap();
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
+}
+
+#[test]
 fn starlette_routes_require_a_supported_call_and_application() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
