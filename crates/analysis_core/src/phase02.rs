@@ -1056,11 +1056,12 @@ fn scan_selected(
         }
     }
 
-    let wildcard_issues = if project_wildcards {
+    let wildcard_resolution = if project_wildcards {
         wildcards::resolve(&project, &mut files)
     } else {
-        Vec::new()
+        wildcards::Resolution::default()
     };
+    let wildcard_issues = wildcard_resolution.issues;
     let dependency_sources_complete = issues.is_empty() && wildcard_issues.is_empty();
     let package_entrypoints = (include_dead_code && phase03 && dependency_sources_complete)
         .then(|| package_entrypoints::Snapshot::read(path, &files));
@@ -1099,6 +1100,7 @@ fn scan_selected(
         gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
+        wildcard_guards: Some(&wildcard_resolution.guards),
         #[cfg(test)]
         fastapi_call_event_limit: None,
     };

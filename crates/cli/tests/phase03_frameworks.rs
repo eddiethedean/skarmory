@@ -5008,6 +5008,60 @@ fn project_wildcard_reads_finite_settings_exports_from_a_selected_sibling() {
 }
 
 #[test]
+fn project_wildcards_follow_the_selected_nested_settings_branch() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let settings = root.join("project/settings");
+    fs::create_dir_all(&settings).unwrap();
+    fs::write(root.join("project/__init__.py"), "").unwrap();
+    fs::write(
+        settings.join("__init__.py"),
+        "import sys\nfrom .base import *\ntry:\n    from .local import *\nexcept ImportError:\n    pass\nif DEV:\n    from .dev import *\n",
+    ).unwrap();
+    fs::write(
+        settings.join("dev.py"),
+        "import project.settings.base as base\nAPPS = base.APPS + ('development',)\nCONFIG = {'flag': True}\n",
+    ).unwrap();
+    for dev in [true, false] {
+        fs::write(
+            settings.join("base.py"),
+            format!(
+                "DEV = {}\nAPPS = ('shop',)\nif DEV:\n    SESSION = True\nDORMANT = 'keep'\n",
+                if dev { "True" } else { "False" },
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("consumer.py"),
+            if dev {
+                "from project.settings import APPS, CONFIG, SESSION\nassert APPS\nassert CONFIG\nassert SESSION\n"
+            } else {
+                "from project.settings import APPS\nassert APPS\n"
+            },
+        ).unwrap();
+        let report = scan(root);
+        let used = findings(&report, "unused_variables");
+        assert!(used.contains(&"project.settings.base.DORMANT"), "{report}");
+        assert_eq!(
+            used.contains(&"project.settings.dev.CONFIG"),
+            !dev,
+            "{report}"
+        );
+        assert_eq!(
+            used.contains(&"project.settings.base.SESSION"),
+            !dev,
+            "{report}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
 fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incomplete() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -5026,13 +5080,14 @@ fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incompl
     let report = scan(root);
     assert!(!findings(&report, "unused_variables").contains(&"conf.base.CUSTOM_FLAG"));
 
-    for guard in ["True", "False"] {
+    fs::write(conf.join("local.py"), "CUSTOM_FLAG = False\n").unwrap();
+    for guard in ["True", "unknown"] {
         let body = format!(
             "{source}try:\n    from .local import *\nexcept ImportError:\n    pass\n\
              if {guard}:\n    from .dev import *\nRETAINED = True\n"
         );
         fs::write(&initializer, body).unwrap();
-        let uncached = scan_with_exit(root, None, None, 2);
+        let uncached = scan_with_excludes(root, None, None, &["conf/local.py"], 2);
         assert_eq!(uncached["coverage"]["status"], "incomplete", "{uncached}");
         assert_eq!(uncached["coverage"]["extracted_files"], 3, "{uncached}");
         assert!(
@@ -5077,7 +5132,8 @@ fn relative_settings_wildcards_keep_unproven_optional_and_nested_imports_incompl
             "{uncached}"
         );
         for _ in 0..2 {
-            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            let mut cached =
+                scan_with_excludes(root, None, Some(cache.path()), &["conf/local.py"], 2);
             cached.as_object_mut().unwrap().remove("cache");
             assert_eq!(cached, uncached);
         }
