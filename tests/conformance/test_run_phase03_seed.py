@@ -1,6 +1,7 @@
 import hashlib
 import json
 import platform
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -223,8 +224,16 @@ class CorpusReceiptTests(unittest.TestCase):
         assertions = ["absent:unused_variables:id"]
         case = {"source": CORPUS_SOURCE, "assertions": assertions, "prerequisites": []}
         expected = {fixture: "b" * 64}
-        for candidate in (expected, {fixture: "c" * 64}, None):
-            with self.subTest(candidate=candidate), TemporaryDirectory() as temporary:
+        for candidate, reference_times_out in (
+            (expected, False),
+            ({fixture: "c" * 64}, False),
+            (None, False),
+            (expected, True),
+        ):
+            with (
+                self.subTest(candidate=candidate, reference_times_out=reference_times_out),
+                TemporaryDirectory() as temporary,
+            ):
                 root = Path(temporary)
                 (root / "uv.lock").write_bytes(lock)
                 artifact = root / "candidate.whl"
@@ -235,9 +244,13 @@ class CorpusReceiptTests(unittest.TestCase):
                     variant=variant["id"], fastapi_wheels=None,
                 )
 
-                def run_worker(command, **_kwargs):
+                def run_worker(command, *, timeout, **_kwargs):
+                    reference = command[-3] == "reference"
+                    self.assertEqual(timeout, 300 if reference else 180)
+                    if reference and reference_times_out:
+                        raise subprocess.TimeoutExpired(command, timeout)
                     result = {"status": "passed", "assertions": assertions, "prerequisites": {}}
-                    fingerprints = expected if command[-3] == "reference" else candidate
+                    fingerprints = expected if reference else candidate
                     if fingerprints is not None:
                         result["fixture_sha256"] = fingerprints
                     Path(command[-1]).write_text(json.dumps({case_id: result}), encoding="utf-8")
@@ -256,12 +269,18 @@ class CorpusReceiptTests(unittest.TestCase):
 
                 receipt = json.loads(args.output.read_text(encoding="utf-8"))
                 result = receipt["results"][0]
-                if candidate == expected:
+                if candidate == expected and not reference_times_out:
                     self.assertEqual(receipt["runner_status"], "passed")
                     self.assertEqual(result["fixture_sha256"], expected)
                 else:
                     self.assertEqual(receipt["runner_status"], "error")
                     self.assertNotIn("fixture_sha256", result)
+                if reference_times_out:
+                    self.assertEqual(result["reference_status"], "error")
+                    self.assertTrue(any(
+                        error.startswith("reference:") and "timed out after 300" in error
+                        for error in receipt["runner_errors"]
+                    ))
 
 
 if __name__ == "__main__":

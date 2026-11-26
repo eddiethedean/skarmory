@@ -340,7 +340,10 @@ fixture bytes.
 
 For versions below 0.3, matching pull requests and manual workflow runs check
 each mapped SDK, CLI, and engine case's `preview_status` and upload the full
-gate decision. Publication of 0.3 and later requires the full decision to pass,
+gate decision. The main SDK reference worker can run for up to five minutes.
+Candidate workers and reference workers for the smaller shards have a
+three-minute limit. A worker timeout records a failed receipt and blocks
+qualification. Publication of 0.3 and later requires the full decision to pass,
 including a complete inventory and an ordinary pass for every required case.
 
 Run the checker regression tests with the following command.
