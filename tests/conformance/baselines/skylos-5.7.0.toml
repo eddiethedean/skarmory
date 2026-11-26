@@ -52,9 +52,9 @@ disabled = "Block the optional skylos_fast import before importing Skylos."
 enabled = "Load the source-built skylos_fast module and require successful native discovery."
 
 [phase03_reference]
-git_revision = "87ce593471736c72d9fc17223b25f8d76edf8eea"
+git_revision = "f13efeea01df8ceacc008a7bb5842ece7bdd07ca"
 patch = "skylos-5.7.0-phase03-fixtures.patch"
-patch_sha256 = "64039921d222557c67b5f90256528daf7775fc66fe3f956672bcee12ece0465b"
+patch_sha256 = "413ef90d8fb525e8d6fb8eb03d0ba1e20ba5452a9b6158f888d7065b97ae6294"
 fixture_license = "skylos-5.7.0-LICENSE.txt"
 
 [[phase03_reference.inline_corrections]]
