@@ -479,6 +479,13 @@ S3 backends receive possible declaration evidence for their documented class
 attributes. The declaration leaves constructor and callback execution to the
 call analysis. The generic django-storages base supports a zero-argument call
 when the inherited empty defaults and ordinary attribute lookup are preserved.
+
+The selected Django `STORAGES` mapping can name a direct, uncustomized
+`ManifestStaticFilesStorage` subclass. A selected DRF
+`DEFAULT_PAGINATION_CLASS` can retain stock `PageNumberPagination` options
+for a literal page-size query parameter and limit. Calls to a direct
+`APIException` subclass retain literal defaults used by the inherited
+constructor when the corresponding arguments are omitted or `None`.
 Related controls cover project-local lookalikes, provider aliases, and unknown
 constructor behavior.
 [Celery Redis backend](https://docs.celeryq.dev/en/v5.5.3/_modules/celery/backends/redis.html) ·
