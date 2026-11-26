@@ -425,11 +425,10 @@ impl<'a> Replay<'a> {
         );
         let result = body_without_docstring(definition)
             .iter()
-            .try_for_each(|statement| {
-                let StatementKind::Evaluate(expression) = &statement.kind else {
-                    return None;
-                };
-                self.mutate(body, expression)
+            .try_for_each(|statement| match &statement.kind {
+                StatementKind::Evaluate(expression) => self.mutate(body, expression),
+                StatementKind::WriteModuleEntry { .. } => self.statement(graph, body, statement),
+                _ => None,
             });
         self.names = previous;
         result?;
@@ -1185,12 +1184,30 @@ impl<'a> Graph<'a> {
                             })
                         ) || matches!(&statement.kind, StatementKind::Define(definition)
                                 if plain_function(definition))
+                            || self.logging_pathlike_alias(file, statement)
                     }))
             {
                 return false;
             }
         }
         true
+    }
+
+    fn logging_pathlike_alias(&self, file: ScopeId, statement: &Statement) -> bool {
+        // A source module may expose the builtin dict type as a local
+        // PathLike provider. Reading an unshadowed builtin has no
+        // initializer effects on the logging API.
+        matches!(
+            &statement.kind,
+            StatementKind::Assign {
+                names,
+                value: Some(Expression { kind: ExpressionKind::Name(value), .. }),
+                annotation: None,
+            } if matches!(names.as_slice(), [name] if name.text == "PathLike")
+                && value == "dict"
+                && !self.scopes[file].open_wildcard
+                && matches!(self.lexical_binding(file, value, statement.at, true), LexicalBinding::Missing)
+        )
     }
 
     fn record_logging_factory(

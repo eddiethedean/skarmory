@@ -994,6 +994,65 @@ fn gin_registry_and_wrapper_lookalikes_need_resolved_providers() {
 }
 
 #[test]
+fn dictionary_type_alias_allows_a_bounded_logging_config_write() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/__init__.py"), "").unwrap();
+    fs::write(
+        root.join("pkg/formatters.py"),
+        "class Active: pass\nclass Retired: pass\n",
+    )
+    .unwrap();
+    let lookalike = root.join("path_policy.py");
+    fs::write(&lookalike, "PathLike = dict\n").unwrap();
+    let source = "import logging.config\nimport path_policy as os\ndef unknown(config): config['formatters'] = {}\nCONFIG = {'version': 1, 'formatters': {'active': {'()': 'pkg.formatters.Active'}}}\nif isinstance(CONFIG, os.PathLike):\n    unknown(CONFIG)\nlogging.config.dictConfig(CONFIG)\n";
+    let app = root.join("app.py");
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_classes"),
+        ["pkg.formatters.Active", "pkg.formatters.Retired"],
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::remove_file(&lookalike).unwrap();
+    let os_shadow = root.join("os.py");
+    fs::write(&os_shadow, "class PathLike: pass\n").unwrap();
+    let frozen_os_source = source
+        .replace("import path_policy as os", "import os")
+        .replace("def unknown(config): config['formatters'] = {}\n", "");
+    fs::write(&app, frozen_os_source).unwrap();
+    let stdlib = scan_with_settings(root, None, Some(cache.path()));
+    assert_eq!(
+        findings(&stdlib, "unused_classes"),
+        ["pkg.formatters.Retired"]
+    );
+
+    fs::remove_file(os_shadow).unwrap();
+    fs::write(&lookalike, "PathLike = dict\n").unwrap();
+    fs::write(
+        &app,
+        source.replace("config['formatters'] = {}", "mutate_unknown(config)"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call"),
+        "{incomplete}"
+    );
+}
+
+#[test]
 fn reached_stdlib_logging_binds_os_before_a_local_pathlike_stub() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
