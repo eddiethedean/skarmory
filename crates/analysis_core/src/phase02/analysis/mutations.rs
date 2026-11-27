@@ -49,6 +49,7 @@ pub(super) struct Mutations {
     flask_login_effect_calls: BTreeMap<(ScopeId, [usize; 2]), FlaskLoginEffectCall>,
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     unmodeled_class_writes: BTreeSet<SymbolId>,
+    deferred_member_writes: BTreeMap<ReceiverKey, BTreeSet<String>>,
     framework_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
@@ -67,6 +68,85 @@ impl<'a> Graph<'a> {
                 false,
                 track_framework_escapes,
             );
+        }
+        let reads = std::mem::take(&mut self.read);
+        for scope in self.files.len()..self.scopes.len() {
+            self.index_deferred_proof_writes(scope, self.scopes[scope].body);
+        }
+        self.read = reads;
+    }
+
+    fn index_deferred_proof_writes(&mut self, scope: ScopeId, body: &[Statement]) {
+        for statement in body {
+            let (receiver, member) = match &statement.kind {
+                StatementKind::WriteAttribute {
+                    receiver, member, ..
+                } if is_truth_hook(member) || member == "__getattr__" => (receiver, member),
+                StatementKind::Evaluate(Expression {
+                    kind:
+                        ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        },
+                    ..
+                }) if keywords.is_empty()
+                    && let [
+                        receiver,
+                        Expression {
+                            kind: ExpressionKind::Text(member),
+                            ..
+                        },
+                        rest @ ..,
+                    ] = arguments.as_slice()
+                    && (is_truth_hook(member) || member == "__getattr__")
+                    && let Value::Provider(provider) =
+                        self.probe_identity(scope, function, statement.at)
+                    && matches!(
+                        (provider.as_str(), rest.len()),
+                        ("builtins.setattr", 1) | ("builtins.delattr", 0)
+                    ) =>
+                {
+                    (receiver, member)
+                }
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } => {
+                    let known = self.indexed_bool(scope, test, statement.at, 0);
+                    if known != Some(false) {
+                        self.index_deferred_proof_writes(scope, body);
+                    }
+                    if known != Some(true) {
+                        self.index_deferred_proof_writes(scope, otherwise);
+                    }
+                    continue;
+                }
+                StatementKind::With { body, .. } => {
+                    self.index_deferred_proof_writes(scope, body);
+                    continue;
+                }
+                StatementKind::Return(_) | StatementKind::Raise(_) => break,
+                _ => continue,
+            };
+            let receiver = match self.probe_identity(scope, receiver, statement.at) {
+                Value::Callable(invocation)
+                    if is_truth_hook(member) && self.is_class(invocation.target) =>
+                {
+                    ReceiverKey::Class(invocation.target)
+                }
+                Value::Module(file) if member == "__getattr__" => {
+                    ReceiverKey::Module(self.files[file].module.clone())
+                }
+                _ => continue,
+            };
+            // The module index cannot order a deferred write against the lookup.
+            self.mutations
+                .deferred_member_writes
+                .entry(receiver)
+                .or_default()
+                .insert(member.clone());
         }
     }
 
@@ -467,10 +547,22 @@ impl<'a> Graph<'a> {
         let Some(receiver) = self.mutation_receiver(&receiver) else {
             return;
         };
-        let changes_lazy_provider = matches!(&receiver, ReceiverKey::Module(module)
+        let changes_lazy_lookup = matches!(&receiver, ReceiverKey::Module(module)
             if matches!((module.as_str(), member),
-                ("typing", "TYPE_CHECKING") | ("importlib", "import_module") | ("builtins", "getattr")));
-        if !changes_lazy_provider && !self.modeled_mutation_member(&receiver, member) {
+                ("typing", "TYPE_CHECKING") | ("importlib", "import_module") | ("builtins", "getattr"))
+                || member == "__getattr__" && self.modules.contains_key(module.as_str()));
+        let changes_truth_hook = if let ReceiverKey::Class(class) = &receiver
+            && is_truth_hook(member)
+        {
+            self.mutations.unmodeled_class_writes.insert(*class);
+            true
+        } else {
+            false
+        };
+        if !changes_lazy_lookup
+            && !changes_truth_hook
+            && !self.modeled_mutation_member(&receiver, member)
+        {
             if let ReceiverKey::Class(class) = receiver {
                 self.mutations.unmodeled_class_writes.insert(class);
             }
@@ -501,11 +593,12 @@ impl<'a> Graph<'a> {
             }
             _ => None,
         };
-        // Explicit lazy-provider writes invalidate the proof without modeling
-        // the effects of changing a process-wide provider.
+        // A write to a provider or hook invalidates the corresponding proof.
+        // Dispatch through the replacement stays outside the bounded model.
         let value = if let Some(replacement) = login_replacement {
             MemberWriteValue::Replacement(replacement)
-        } else if changes_lazy_provider
+        } else if changes_lazy_lookup
+            || changes_truth_hook
             || conditional
             || deletes_inherited_method
             || matches!(
@@ -2141,6 +2234,14 @@ impl<'a> Graph<'a> {
         name: &str,
         access: (ScopeId, Location),
     ) -> Option<MemberWriteValue> {
+        if self
+            .mutations
+            .deferred_member_writes
+            .get(receiver)
+            .is_some_and(|members| members.contains(name))
+        {
+            return Some(MemberWriteValue::Ambiguous);
+        }
         let original = match receiver {
             ReceiverKey::Class(class) => Some(self.scopes[self.symbols[*class].scope].file),
             ReceiverKey::Module(module) => self.modules.get(module.as_str()).copied(),
@@ -2206,6 +2307,10 @@ impl<'a> Graph<'a> {
             })
             .map(|write| write.value.clone())
     }
+}
+
+fn is_truth_hook(member: &str) -> bool {
+    matches!(member, "__bool__" | "__len__")
 }
 
 fn mock_start(expression: &Expression) -> Option<(&Expression, &[Expression])> {

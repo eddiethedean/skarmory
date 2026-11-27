@@ -102,6 +102,93 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn lazy_package_hook_replacement_withholds_the_original_target() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    let initializer = root.join("pkg/__init__.py");
+    let source = r#"import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .worker import Thing
+
+__all__ = ["Thing"]
+
+def __getattr__(name):
+    if name == "Thing":
+        loaded = importlib.import_module("pkg.worker")
+        return getattr(loaded, name)
+    raise AttributeError(name)
+"#;
+    fs::write(&initializer, source).unwrap();
+    fs::write(root.join("pkg/worker.py"), "def Thing(): return 1\n").unwrap();
+    let consumer = root.join("consumer.py");
+    fs::write(&consumer, "from pkg import Thing\nThing()\n").unwrap();
+    let control = scan(root);
+    for kind in ["direct_call", "public_export"] {
+        assert_eq!(
+            evidence_certainties(&control, "pkg.worker.Thing", kind),
+            ["certain"],
+            "{control}"
+        );
+    }
+
+    for write in [
+        "pkg.__getattr__ = replacement",
+        "setattr(pkg, '__getattr__', replacement)",
+        "def install():\n    setattr(pkg, '__getattr__', replacement)\ninstall()",
+    ] {
+        fs::write(
+            &consumer,
+            format!(
+                "import pkg\ndef alternate(): return 2\n\
+                 def replacement(name): return alternate\n{write}\n\
+                 from pkg import Thing\nThing()\n"
+            ),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_lazy_export"),
+            "{report}"
+        );
+        assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+        for kind in ["direct_call", "public_export"] {
+            assert!(
+                evidence_certainties(&report, "pkg.worker.Thing", kind).is_empty(),
+                "{report}"
+            );
+        }
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(&initializer, source.replace("[\"Thing\"]", "[]")).unwrap();
+    fs::write(
+        &consumer,
+        "import pkg\nfrom pkg import Thing\nThing()\n\
+         def replacement(name): return None\nsetattr(pkg, '__getattr__', replacement)\n",
+    )
+    .unwrap();
+    let captured = scan(root);
+    assert_eq!(
+        evidence_certainties(&captured, "pkg.worker.Thing", "direct_call"),
+        ["certain"],
+        "{captured}"
+    );
+}
+
+#[test]
 fn explicit_truth_tests_follow_the_selected_receiver_hook() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -145,6 +232,61 @@ class Sized:
 }
 
 #[test]
+fn truth_tests_abstain_after_an_unresolved_hook_write() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"def selected_helper(): return True
+def fallback_helper(): return 1
+
+class Job:
+    def __bool__(self): return False
+    def __len__(self): return fallback_helper()
+
+def replacement(self): return selected_helper()
+"#;
+    for (mutation, live_helper) in [
+        (
+            "setattr(Job, \"__bool__\", replacement)",
+            "main.selected_helper",
+        ),
+        ("Job.__bool__ = replacement", "main.selected_helper"),
+        (
+            "def configure():\n    setattr(Job, \"__bool__\", replacement)\nconfigure()",
+            "main.selected_helper",
+        ),
+        ("delattr(Job, \"__bool__\")", "main.fallback_helper"),
+    ] {
+        for operation in ["print(bool(Job()))", "assert Job()"] {
+            fs::write(
+                root.join("main.py"),
+                format!("{source}{mutation}\n{operation}\n"),
+            )
+            .unwrap();
+            let report = scan_with_exit(root, None, None, 2);
+            assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_truth_test"),
+                "{report}"
+            );
+            assert!(
+                evidence_certainties(&report, "main.Job.__bool__", "truth_test").is_empty(),
+                "{report}"
+            );
+            assert!(!findings(&report, "unused_functions").contains(&live_helper));
+
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
 fn literal_format_expansion_reads_the_named_local_binding() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -179,6 +321,47 @@ print(render())
             .any(|issue| issue["kind"] == "unsupported_construct"),
         "{opaque}"
     );
+}
+
+#[test]
+fn literal_format_expansion_refreshes_a_previously_captured_namespace() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(
+        root.join("pkg/__init__.py"),
+        r#"__all__ = ["response_context"]
+
+def handle():
+    return 42
+
+def response_context():
+    context = locals()
+    status = "ready"
+    retry_interval = 30
+    def action():
+        return handle()
+    print("{status}".format(**locals()))
+    return context
+"#,
+    )
+    .unwrap();
+
+    let serial = scan(root);
+    assert!(findings(&serial, "unused_variables").is_empty(), "{serial}");
+    assert!(findings(&serial, "unused_functions").is_empty(), "{serial}");
+    assert_eq!(
+        evidence_certainties(&serial, "pkg.response_context.action", "local_namespace"),
+        ["possible"],
+        "{serial}"
+    );
+
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, serial);
+    }
 }
 
 #[test]

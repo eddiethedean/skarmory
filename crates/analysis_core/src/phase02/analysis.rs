@@ -2722,6 +2722,12 @@ impl<'a> Graph<'a> {
         if has_implicit_module_member(member, self.files[file].is_package) {
             return ModuleMember::Unknown;
         }
+        if self
+            .module_member_write(&self.files[file].module, "__getattr__", access)
+            .is_some()
+        {
+            return ModuleMember::OpaqueHook;
+        }
         let hook = self.local(file, "__getattr__", before);
         let lazy = hook.map_or(LazyMember::Missing, |hook| {
             self.lazy_lookup(hook, member, before)
@@ -10959,14 +10965,21 @@ impl<'a> Graph<'a> {
         let hook = self.local(file, "__getattr__", END);
         let mut lazy_members = BTreeMap::new();
         if let Some(hook) = hook {
-            let fallback = self.lazy_dispatch(hook, END, |name, scope, body, argument| {
-                if !name.starts_with('_') && self.local(file, name, END).is_none() {
-                    lazy_members
-                        .entry(name)
-                        .or_insert_with(|| self.lazy_branch(scope, body, argument));
-                }
-                None
-            });
+            let fallback = if self
+                .module_member_write(&self.files[file].module, "__getattr__", (file, END))
+                .is_some()
+            {
+                LazyMember::Unknown
+            } else {
+                self.lazy_dispatch(hook, END, |name, scope, body, argument| {
+                    if !name.starts_with('_') && self.local(file, name, END).is_none() {
+                        lazy_members
+                            .entry(name)
+                            .or_insert_with(|| self.lazy_branch(scope, body, argument));
+                    }
+                    None
+                })
+            };
             if !matches!(fallback, LazyMember::Missing) {
                 self.scope_issue(
                     file,

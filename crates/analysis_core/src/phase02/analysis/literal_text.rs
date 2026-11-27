@@ -306,7 +306,12 @@ impl<'a> Graph<'a> {
         }
         self.walk_expression(scope, function, before, true);
         self.walk_expression(scope, locals, before, true);
-        self.read.extend(bindings);
+        if self.scopes[scope].namespace_reads.is_empty() {
+            self.read.extend(bindings);
+        } else {
+            // Python 3.11 can refresh the dictionary from an earlier locals() call.
+            self.read_local_namespace(scope, before, mapping.at);
+        }
         true
     }
 
