@@ -580,6 +580,62 @@ fn gate_coverage_is_independent_of_the_verdict_and_display_filters() {
 }
 
 #[test]
+fn method_cycle_reports_the_decision_for_each_unused_member() {
+    let source = "class Worker:\n    def first(self): return self.second()\n    def second(self): return self.first()\n    def idle(self): return 0\nworker = Worker()\n";
+    let root = project(&[("worker.py", source)]);
+    let methods = ["worker.Worker.first", "worker.Worker.second"];
+    let dead = scan(root.path(), &["--json"], 0);
+    assert_eq!(
+        names(&dead, "unused_functions"),
+        ["first", "second", "idle"]
+    );
+    for method in methods {
+        let symbol = items(&dead["dead_code_evidence"], "symbols")
+            .iter()
+            .find(|symbol| symbol["qualified_name"] == method)
+            .expect("each reported method has its own decision");
+        assert_eq!(
+            symbol["decision"]["reason_tags"],
+            serde_json::json!(["no_reachable_callers"])
+        );
+        assert_eq!(symbol["evidence"], serde_json::json!([]));
+    }
+    assert!(
+        !items(&dead["dead_code_evidence"], "symbols")
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "worker.Worker.idle" && symbol.get("decision").is_some()
+            })
+    );
+    let filtered = scan(root.path(), &["--json", "--select", "SKY-U002"], 0);
+    assert!(
+        items(&filtered["dead_code_evidence"], "symbols")
+            .iter()
+            .all(|symbol| symbol.get("decision").is_none())
+    );
+
+    fs::write(
+        root.path().join("worker.py"),
+        format!("{source}worker.first()\n"),
+    )
+    .unwrap();
+    let live = scan(root.path(), &["--json"], 0);
+    assert_eq!(names(&live, "unused_functions"), ["idle"]);
+    for method in methods {
+        let symbol = items(&live["dead_code_evidence"], "symbols")
+            .iter()
+            .find(|symbol| symbol["qualified_name"] == method)
+            .expect("live method evidence");
+        assert!(symbol.get("decision").is_none(), "{symbol}");
+        assert!(
+            items(symbol, "evidence")
+                .iter()
+                .any(|row| row["kind"] == "direct_call")
+        );
+    }
+}
+
+#[test]
 fn json_ci_preserves_findings_evidence_coverage_and_sarif() {
     let root = project(&[(
         "app.py",

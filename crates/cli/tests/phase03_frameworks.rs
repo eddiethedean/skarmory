@@ -31,6 +31,17 @@ fn scan_with_excludes(
     excludes: &[&str],
     code: i32,
 ) -> Value {
+    scan_target_with_excludes(project, ".", settings, cache, excludes, code)
+}
+
+fn scan_target_with_excludes(
+    project: &Path,
+    target: &str,
+    settings: Option<&str>,
+    cache: Option<&Path>,
+    excludes: &[&str],
+    code: i32,
+) -> Value {
     fs::write(project.join(".skylos.toml"), "root = true\n").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
     command.env_remove("DJANGO_SETTINGS_MODULE");
@@ -49,7 +60,7 @@ fn scan_with_excludes(
         .args([
             "--profile",
             "skylos-0.3",
-            ".",
+            target,
             "--json",
             "--no-grep-verify",
             "--confidence",
@@ -88,6 +99,111 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
         .filter(|edge| edge["kind"] == kind)
         .map(|edge| edge["certainty"].as_str().unwrap())
         .collect()
+}
+
+#[test]
+fn partial_source_selection_abstains_from_unrooted_method_groups() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("consumers")).unwrap();
+    let consumer = root.join("consumers/main.py");
+    fs::write(
+        &consumer,
+        "from worker import worker\nworker.advance_phase(3)\n",
+    )
+    .unwrap();
+    fs::write(root.join("selected.py"), "flag = True\nprint(flag)\n").unwrap();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("worker.py"),
+        r#"def reached_from_group(): return 3
+def unrelated(): return 4
+
+class PacketWorker:
+    def advance_phase(self, count):
+        return self.finish_phase(count - 1) if count else reached_from_group()
+
+    def finish_phase(self, count):
+        return self.advance_phase(count - 1) if count else 2
+
+    def idle(self): return 0
+
+class OtherWorker:
+    def advance_phase(self, count): return 0
+
+worker = PacketWorker()
+other = OtherWorker()
+"#,
+    )
+    .unwrap();
+    let method_group = [
+        "worker.PacketWorker.advance_phase",
+        "worker.PacketWorker.finish_phase",
+        "worker.reached_from_group",
+    ];
+    let idle = [
+        "worker.OtherWorker.advance_phase",
+        "worker.PacketWorker.idle",
+        "worker.unrelated",
+    ];
+    for (path, excludes) in [
+        ("worker.py", [].as_slice()),
+        (".", ["consumers"].as_slice()),
+    ] {
+        let serial = scan_target_with_excludes(root, path, None, None, excludes, 0);
+        assert_eq!(serial["coverage"]["status"], "complete", "{serial}");
+        assert_eq!(findings(&serial, "unused_functions"), idle, "{serial}");
+        assert_eq!(
+            findings(&serial, "dead_code_abstentions"),
+            method_group,
+            "{serial}"
+        );
+        for name in method_group {
+            assert!(
+                evidence_certainties(&serial, name, "direct_call").is_empty(),
+                "{serial}"
+            );
+        }
+        for _ in 0..2 {
+            let mut cached =
+                scan_target_with_excludes(root, path, None, Some(cache.path()), excludes, 0);
+            cached.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(cached, serial);
+        }
+    }
+
+    let full = scan(root);
+    assert_eq!(findings(&full, "unused_functions"), idle, "{full}");
+    assert!(
+        findings(&full, "dead_code_abstentions").is_empty(),
+        "{full}"
+    );
+    fs::remove_file(consumer).unwrap();
+    let full = scan(root);
+    let mut expected = [idle, method_group].concat();
+    expected.sort_unstable();
+    assert_eq!(findings(&full, "unused_functions"), expected, "{full}");
+    assert!(
+        findings(&full, "dead_code_abstentions").is_empty(),
+        "{full}"
+    );
+    fs::create_dir(root.join("vendor")).unwrap();
+    fs::write(
+        root.join("vendor/consumer.py"),
+        "from worker import worker\nworker.advance_phase(3)\n",
+    )
+    .unwrap();
+    let redundant = scan_with_excludes(root, None, None, &["vendor"], 0);
+    assert_eq!(
+        findings(&redundant, "unused_functions"),
+        expected,
+        "{redundant}"
+    );
+    assert!(
+        findings(&redundant, "dead_code_abstentions").is_empty(),
+        "{redundant}"
+    );
 }
 
 #[test]

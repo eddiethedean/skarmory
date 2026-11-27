@@ -143,6 +143,7 @@ struct Finding {
 }
 
 const WEAK_HELPER_FUNCTION: &str = "weak_helper_function";
+const NO_REACHABLE_CALLERS: &str = "no_reachable_callers";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Evidence {
@@ -457,6 +458,13 @@ struct SymbolEvidence {
     file: String,
     line: usize,
     evidence: Vec<SymbolEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision: Option<SymbolDecision>,
+}
+
+#[derive(Debug, Serialize)]
+struct SymbolDecision {
+    reason_tags: [&'static str; 1],
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -511,8 +519,58 @@ impl RetainedEvidence {
                     file,
                     line,
                     evidence: evidence.into_iter().collect(),
+                    decision: None,
                 })
                 .collect(),
+        }
+    }
+
+    fn record_unreachable_methods(&mut self, findings: &[Diagnostic]) {
+        let Self::Grouped { symbols } = self else {
+            return;
+        };
+        let methods: BTreeSet<_> = findings
+            .iter()
+            .filter(|finding| {
+                finding
+                    .dead_code_evidence
+                    .iter()
+                    .any(|event| event.kind == NO_REACHABLE_CALLERS)
+            })
+            .map(|finding| (finding.subject(), finding.file.as_str(), finding.line))
+            .collect();
+        let mut added = Vec::new();
+        for (name, file, line) in methods {
+            let decision = Some(SymbolDecision {
+                reason_tags: [NO_REACHABLE_CALLERS],
+            });
+            match symbols.binary_search_by(|symbol| {
+                (
+                    symbol.qualified_name.as_str(),
+                    symbol.file.as_str(),
+                    symbol.line,
+                )
+                    .cmp(&(name, file, line))
+            }) {
+                Ok(index) => symbols[index].decision = decision,
+                Err(_) => added.push(SymbolEvidence {
+                    qualified_name: name.into(),
+                    file: file.into(),
+                    line,
+                    evidence: Vec::new(),
+                    decision,
+                }),
+            }
+        }
+        if !added.is_empty() {
+            symbols.extend(added);
+            symbols.sort_unstable_by(|left, right| {
+                (&left.qualified_name, &left.file, left.line).cmp(&(
+                    &right.qualified_name,
+                    &right.file,
+                    right.line,
+                ))
+            });
         }
     }
 }
@@ -572,6 +630,9 @@ impl Report {
                 .categories
                 .group_unused_class_methods(&mut self.suppressed);
             evidence.group_reports(grouped);
+            if let Some(retained) = &mut self.dead_code_evidence {
+                retained.record_unreachable_methods(&self.categories.unused_functions);
+            }
         }
     }
 
@@ -890,7 +951,7 @@ fn scan_selected(
         FactCache::for_project(
             directory,
             if project_wildcards {
-                "phase03-module-v46/ruff-0.0.12/py311/utf8-universal"
+                "phase03-module-v47/ruff-0.0.12/py311/utf8-universal"
             } else {
                 "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
             },
@@ -1106,6 +1167,12 @@ fn scan_selected(
         templates: django_templates.as_ref(),
         gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
+        partial_sources: phase03
+            && (path.is_file()
+                || project.exclusions.iter().any(|exclusion| {
+                    exclusion.reason == "configured_exclusion"
+                        && !config.selection.is_default_exclusion(&exclusion.path)
+                })),
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
         wildcard_guards: Some(&wildcard_resolution.guards),
         #[cfg(test)]

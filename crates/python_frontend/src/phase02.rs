@@ -448,6 +448,54 @@ pub enum ExpressionKind {
     Operands(Vec<Expression>),
 }
 
+/// Parse the non-executable subset of a quoted type annotation.
+pub fn quoted_annotation(source: &str, at: Location) -> Option<Expression> {
+    fn lower(node: &Expr, at: Location, depth: usize) -> Option<Expression> {
+        if depth >= MAX_NESTING {
+            return None;
+        }
+        let next = |node: &Expr| lower(node, at, depth + 1);
+        let kind = match node {
+            Expr::Name(node) => ExpressionKind::Name(node.id.to_string()),
+            Expr::Attribute(node) => {
+                ExpressionKind::Member(Box::new(next(&node.value)?), node.attr.to_string())
+            }
+            Expr::Subscript(node) => ExpressionKind::Subscript {
+                value: Box::new(next(&node.value)?),
+                index: Box::new(next(&node.slice)?),
+            },
+            Expr::BinOp(node) if node.op == Operator::BitOr => {
+                ExpressionKind::Operands(vec![next(&node.left)?, next(&node.right)?])
+            }
+            Expr::Tuple(node) => {
+                ExpressionKind::Operands(node.elts.iter().map(next).collect::<Option<_>>()?)
+            }
+            Expr::List(node) => {
+                ExpressionKind::Operands(node.elts.iter().map(next).collect::<Option<_>>()?)
+            }
+            Expr::StringLiteral(node) => ExpressionKind::Text(node.value.to_str().into()),
+            Expr::NoneLiteral(_) => ExpressionKind::None,
+            Expr::EllipsisLiteral(_) => ExpressionKind::Scalar(None),
+            _ => return None,
+        };
+        Some(Expression { at, kind })
+    }
+
+    if source.len() > 4096 {
+        return None;
+    }
+    let options = crate::ParseOptions::from(crate::Mode::Expression)
+        .with_target_version(ruff_python_ast::PythonVersion::PY311);
+    let parsed = crate::parse_unchecked(source.trim(), options);
+    if !parsed.errors().is_empty() || !parsed.unsupported_syntax_errors().is_empty() {
+        return None;
+    }
+    let Mod::Expression(expression) = parsed.syntax() else {
+        return None;
+    };
+    lower(&expression.body, at, 0)
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ComprehensionForm {
     Generator,
@@ -1696,6 +1744,15 @@ impl Lowering<'_> {
         self.check(expression, depth)?;
         let descend = |node: &Expr| self.annotation(node, depth + 1);
         let references = match expression {
+            Expr::Subscript(node) if self.4 => {
+                return Ok(Expression {
+                    at: self.0.locate(expression.start()),
+                    kind: ExpressionKind::Subscript {
+                        value: Box::new(descend(&node.value)?),
+                        index: Box::new(descend(&node.slice)?),
+                    },
+                });
+            }
             Expr::Subscript(node) => vec![descend(&node.value)?, descend(&node.slice)?],
             Expr::BinOp(node) if node.op == ruff_python_ast::Operator::BitOr => {
                 vec![descend(&node.left)?, descend(&node.right)?]

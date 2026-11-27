@@ -380,7 +380,7 @@ jobs:
             --sdk-python "$sdk_python" \
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
-            --diagnostics --output phase03-evidence/sdk-method-diagnostics.json
+            --diagnostics --output phase03-evidence/sdk-diagnostics.json
       - name: Record frozen Python reachability reference results
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         working-directory: phase03-skylos-frozen
@@ -397,7 +397,11 @@ jobs:
           "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
             test/test_method_reachability.py test/test_method_reachability_safety.py \
             --junitxml="$GITHUB_WORKSPACE/phase03-evidence/methods-frozen-reference.xml"
-      - name: Verify the frozen method reachability inventory
+          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
+            test/test_dead_code_local_bindings.py test/test_dead_code_import_evidence.py \
+            test/test_provider_method_precision.py \
+            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/bindings-and-providers-frozen-reference.xml"
+      - name: Verify the frozen method and binding inventories
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |
           PYTHONPATH=scripts python - <<'PY'
@@ -410,9 +414,15 @@ jobs:
           _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
           sdk = required[os.environ["DEAD_CODE_SDK_VARIANT"]]
           cli = required[os.environ["DEAD_CODE_CLI_VARIANT"]]
-          frozen = ElementTree.parse(Path("phase03-evidence/methods-frozen-reference.xml"))
-          for module in ("test_method_reachability", "test_method_reachability_safety"):
-              source = f"test/{module}.py"
+          evidence = Path("phase03-evidence")
+          for suite, source in (
+              ("methods", "test/test_method_reachability.py"),
+              ("methods", "test/test_method_reachability_safety.py"),
+              ("bindings-and-providers", "test/test_dead_code_local_bindings.py"),
+              ("bindings-and-providers", "test/test_dead_code_import_evidence.py"),
+              ("bindings-and-providers", "test/test_provider_method_precision.py"),
+          ):
+              frozen = ElementTree.parse(evidence / f"{suite}-frozen-reference.xml")
               frozen_ids = passed_pytest_ids(frozen, source)
               sdk_ids = {case_id for case_id, case in sdk.items() if case["source"] == source}
               cli_ids = {case_id for case_id, case in cli.items() if case["source"] == source}
@@ -479,13 +489,6 @@ jobs:
             --artifact target/release/skarmory \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/cli.receipt.json
-          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
-            --upstream phase03-skylos \
-            --inventory tests/conformance/phase03-inventory.toml \
-            --variant "$DEAD_CODE_CLI_VARIANT" \
-            --artifact target/release/skarmory \
-            --candidate-revision "$(git rev-parse HEAD)" \
-            --diagnostics --output phase03-evidence/cli-method-diagnostics.json
       - name: Run the native engine conformance shard
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |

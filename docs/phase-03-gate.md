@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,574 cases to Phase 0.3 and defers 42 to later language
+inventory assigns 1,675 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -232,8 +232,8 @@ to fresh local names. An overwrite can release an object and run its finalizer.
 
 The inventory accounts for all 80 cases in the pinned
 `test_method_reachability.py` and `test_method_reachability_safety.py` suites.
-All 80 pass on frozen Skylos. The unchanged assertions qualify 53 cases on
-the installed Skarmory SDK and one on the native CLI in the local macOS
+All 80 pass on frozen Skylos. The unchanged assertions qualify 55 cases on
+the installed Skarmory SDK and two on the native CLI in the local macOS
 ARM64 CPython 3.11 replay. CI checks that the frozen pytest IDs match the
 SDK and CLI inventory entries and replays the mapped cases on Linux.
 
@@ -265,16 +265,30 @@ finalizer or a return value that cannot be proved scalar leaves coverage
 incomplete. The frozen cases exercise both forms with grep verification
 enabled and disabled.
 
-The remaining 26 cases are required blockers. The inventory records the
-coverage diagnostics for unsupported receiver operations, and identifies
-fixtures that import an absent external provider. Two partial-scan variants
-produce complete candidate reports with incorrect unused-method findings.
-The changed-file fixture still needs an SDK port for its scan selector.
-The CLI cycle fixture finds the dead methods but fails its per-symbol
-decision evidence assertion. The release
-workflow publishes separate SDK and CLI diagnostic receipts for the 25
-replayable blockers. The changed-file case remains without a candidate
-receipt. Diagnostic outcomes carry no release credit.
+File-only scans and directory scans with effective additional exclusions
+abstain from reporting unrooted, statically referenced methods and their
+callees. A caller outside the selected sources could reach the group.
+The report records the abstention separately from coverage and still reports
+unrelated unused definitions. In a whole-project scan, reported methods with
+unrooted callers carry a per-symbol `no_reachable_callers` decision tag.
+
+The remaining 23 cases are required blockers. The SDK diagnostics record
+unsupported receiver operations and fixtures that import an absent external
+provider. The changed-file case still needs an SDK scan selector and has no
+candidate receipt.
+
+### Local bindings, import evidence, and provider methods
+
+The frozen reference checks all 101 cases in `test_dead_code_local_bindings.py`,
+`test_dead_code_import_evidence.py`, and `test_provider_method_precision.py`.
+The inventory preserves the original assertions, fixture setup and grep modes.
+The installed-wheel replay qualifies 3 local-binding cases, 6 import-evidence
+cases, and 12 provider-method cases. Imports read in bounded quoted type
+annotations count as uses. The analyzer leaves quoted calls unevaluated and
+does not treat `Literal` values or `Annotated` metadata as type references.
+Diagnostics retain incomplete coverage, failed assertions, and cases where
+the native report cannot establish the evidence required by the assertion.
+The remaining 80 cases carry no release credit.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

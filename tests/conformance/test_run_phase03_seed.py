@@ -46,19 +46,24 @@ class FrozenReferenceTests(unittest.TestCase):
 
 
 class DiagnosticPortTests(unittest.TestCase):
-    def test_method_diagnostics_and_release_ports_are_separate(self):
+    def test_sdk_diagnostics_and_release_ports_are_separate(self):
         args = SimpleNamespace(
             inventory=ROOT / "tests/conformance/phase03-inventory.toml",
-            sdk_python=None, variant="linux-x86_64-cp311-python-cli", diagnostics=False,
+            sdk_python=Path(sys.executable), variant="linux-x86_64-cp311-python-sdk",
+            diagnostics=False,
         )
-        method = "test/test_method_reachability.py::test_default_cli_reports_methods_and_explains_unreachable_groups"
+        method = "test/test_method_reachability.py::test_partial_scan_does_not_prove_method_cycles_dead"
+        binding = "test/test_dead_code_local_bindings.py"
         with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
             _, _, _, release = port_cases(args)
             args.diagnostics = True
             _, _, _, diagnostics = port_cases(args)
 
-        self.assertIn(f"{method}[same-name]", release)
-        self.assertIn(f"{method}[cycle]", diagnostics)
+        self.assertIn(f"{method}[file]", release)
+        self.assertIn(f"{method}[excluded-directory]", release)
+        self.assertNotIn(f"{method}[changed-file]", release.keys() | diagnostics.keys())
+        self.assertIn(f"{binding}::test_unused_local_is_reported_when_other_functions_use_the_same_name", release)
+        self.assertIn(f"{binding}::test_local_read_through_locals_is_kept", diagnostics)
         self.assertFalse(release.keys() & diagnostics.keys())
 
 

@@ -649,6 +649,7 @@ pub(super) struct FrameworkInputs<'a> {
     pub(super) templates: Option<&'a TemplateProject<'a>>,
     pub(super) gin: Option<&'a GinProject<'a>>,
     pub(super) discovery: Option<&'a crate::preview_source::Project>,
+    pub(super) partial_sources: bool,
     pub(super) external_classes: Option<&'a external_classes::ExternalClassIndex>,
     pub(super) unresolved_project_wildcards: bool,
     pub(super) wildcard_guards: Option<&'a super::wildcards::Guards>,
@@ -914,7 +915,14 @@ pub(super) fn analyze_with_verification(
         .map_or_else(Default::default, |snapshot| {
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
-    let mut analysis = graph.finish(roots, possible_roots, verification);
+    graph.report_failed_terminal_module_consumers();
+    let mut analysis = graph.finish(
+        roots,
+        possible_roots,
+        verification,
+        framework.templates,
+        framework.partial_sources,
+    );
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -7803,10 +7811,15 @@ impl<'a> Graph<'a> {
         before: Location,
         annotation: &Expression,
     ) -> Value {
-        // The frontend lowers subscription and tuple annotations into nested
-        // operand groups. Resolve the generic's binding before using metadata.
-        if let ExpressionKind::Operands(parts) = &annotation.kind
-            && let [generic, arguments] = parts.as_slice()
+        let subscription = match &annotation.kind {
+            ExpressionKind::Subscript { value, index } => Some((value.as_ref(), index.as_ref())),
+            ExpressionKind::Operands(parts) => match parts.as_slice() {
+                [generic, arguments] => Some((generic, arguments)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((generic, arguments)) = subscription
             && is_typing_annotated(&self.probe_identity(scope, generic, before))
             && let ExpressionKind::Operands(arguments) = &arguments.kind
             && let Some((annotation, metadata)) = arguments.split_first()
@@ -7937,17 +7950,106 @@ impl<'a> Graph<'a> {
     }
 
     fn annotation(&mut self, scope: ScopeId, expr: &Expression, before: Location, evaluated: bool) {
+        if self.phase03 {
+            self.quoted_annotation_reads(scope, expr, before, false, 0);
+        }
+        self.walk_annotation(scope, expr, before, evaluated);
+    }
+
+    fn quoted_annotation_reads(
+        &mut self,
+        scope: ScopeId,
+        expr: &Expression,
+        before: Location,
+        quoted: bool,
+        depth: usize,
+    ) {
+        if depth >= MAX_BINDING_CHAIN {
+            return;
+        }
+        let next = depth + 1;
+        match &expr.kind {
+            ExpressionKind::Text(text) => {
+                if let Some(parsed) = skarmory_python::phase02::quoted_annotation(text, expr.at) {
+                    self.quoted_annotation_reads(scope, &parsed, before, true, next);
+                }
+            }
+            ExpressionKind::Name(name) if quoted => {
+                if let Some(binding) = self.lexical(scope, name, before)
+                    && matches!(self.symbols[binding].binding, Binding::Import(_))
+                {
+                    // A type reference consumes an import without executing it.
+                    self.read.insert(binding);
+                }
+            }
+            ExpressionKind::Member(base, _) if quoted => {
+                self.quoted_annotation_reads(scope, base, before, true, next);
+            }
+            ExpressionKind::Subscript { value, index } => {
+                self.quoted_annotation_reads(scope, value, before, quoted, next);
+                let Value::Provider(name) = self.probe_identity(scope, value, before) else {
+                    return;
+                };
+                if matches!(
+                    name.as_str(),
+                    "typing.Annotated" | "typing_extensions.Annotated"
+                ) {
+                    if let ExpressionKind::Operands(arguments) = &index.kind
+                        && let Some(first) = arguments.first()
+                    {
+                        self.quoted_annotation_reads(scope, first, before, quoted, next);
+                    }
+                } else if matches!(
+                    name.as_str(),
+                    "typing.Callable"
+                        | "typing.Dict"
+                        | "typing.List"
+                        | "typing.Optional"
+                        | "typing.Sequence"
+                        | "typing.Set"
+                        | "typing.Tuple"
+                        | "typing.Union"
+                        | "builtins.dict"
+                        | "builtins.frozenset"
+                        | "builtins.list"
+                        | "builtins.set"
+                        | "builtins.tuple"
+                        | "collections.abc.Callable"
+                ) {
+                    self.quoted_annotation_reads(scope, index, before, quoted, next);
+                }
+            }
+            ExpressionKind::Operands(values) => {
+                for value in values {
+                    self.quoted_annotation_reads(scope, value, before, quoted, next);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_annotation(
+        &mut self,
+        scope: ScopeId,
+        expr: &Expression,
+        before: Location,
+        evaluated: bool,
+    ) {
         let evaluated = evaluated
             && !self.files[self.scopes[scope].file]
                 .facts
                 .postponed_annotations;
         match &expr.kind {
+            ExpressionKind::Subscript { value, index } if self.phase03 => {
+                self.walk_annotation(scope, value, before, evaluated);
+                self.walk_annotation(scope, index, before, evaluated);
+            }
             ExpressionKind::Addition(values)
             | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values)
             | ExpressionKind::Sequence { items: values, .. } => {
                 for reference in values {
-                    self.annotation(scope, reference, before, evaluated);
+                    self.walk_annotation(scope, reference, before, evaluated);
                 }
             }
             ExpressionKind::Call { .. }
@@ -11560,12 +11662,49 @@ impl<'a> Graph<'a> {
         (reach, static_reach, verification, converged)
     }
 
+    fn unrooted_method_callables(
+        &self,
+        reachable_symbols: &BTreeSet<SymbolId>,
+    ) -> BTreeSet<SymbolId> {
+        // Start with methods referenced by static calls and follow their
+        // callees. Skip symbols that already have a path from a root.
+        let mut pending: Vec<_> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| &scope.edges)
+            .filter_map(|edge| {
+                let target = &self.symbols[edge.target];
+                (edge.kind == "direct_call"
+                    && self.scopes[target.scope]
+                        .owner
+                        .is_some_and(|owner| self.is_class(owner)))
+                .then_some(edge.target)
+            })
+            .collect();
+        let mut referenced = BTreeSet::new();
+        while let Some(target) = pending.pop() {
+            if reachable_symbols.contains(&target) || !referenced.insert(target) {
+                continue;
+            }
+            if let Binding::Definition(_, body) = self.symbols[target].binding {
+                pending.extend(
+                    self.scopes[body]
+                        .edges
+                        .iter()
+                        .filter_map(|edge| (edge.kind == "direct_call").then_some(edge.target)),
+                );
+            }
+        }
+        referenced
+    }
+
     fn finish(
         mut self,
         roots: Vec<Edge>,
         mut possible_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
         templates: Option<&TemplateProject<'_>>,
+        partial_sources: bool,
     ) -> Analysis {
         // Declaration hints retain only the definition in the compatibility
         // report. Leave them out of the execution graph and parameter analysis.
@@ -11663,6 +11802,11 @@ impl<'a> Graph<'a> {
             evidence,
             ..
         } = reach;
+        let unrooted_method_callables = if self.phase03 {
+            self.unrooted_method_callables(&reachable_symbols)
+        } else {
+            BTreeSet::new()
+        };
         let django_class_declarations: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
@@ -11829,20 +11973,19 @@ impl<'a> Graph<'a> {
                         && !coverage_declarations.contains(&id)
                         && def.kind != DefinitionKind::Class =>
                 {
+                    let is_method = scope.owner.is_some_and(|id| self.is_class(id));
                     (
                         Category::Function,
                         "SKY-U001",
-                        if public && scope.owner.is_some_and(|id| self.is_class(id)) {
-                            80
-                        } else {
-                            90
-                        },
+                        if public && is_method { 80 } else { 90 },
                         if self.phase03
                             && scope.owner.is_none()
                             && !self.direct.contains(&id)
                             && (name.starts_with("format_") || name.ends_with("_name"))
                         {
                             WEAK_HELPER_FUNCTION
+                        } else if is_method && unrooted_method_callables.contains(&id) {
+                            super::NO_REACHABLE_CALLERS
                         } else {
                             "no_call_path_from_root"
                         },
@@ -11921,6 +12064,21 @@ impl<'a> Graph<'a> {
             } else {
                 full_name.clone()
             };
+            if partial_sources
+                && category == Category::Function
+                && unrooted_method_callables.contains(&id)
+            {
+                self.uncertainties.push(
+                    Issue::new(
+                        "partial_scope_method_reachability",
+                        &self.files[scope.file].path,
+                        "a statically referenced method group can have callers outside the selected sources",
+                    )
+                    .at(symbol.name.at)
+                    .with_symbol(name, full_name),
+                );
+                continue;
+            }
             findings.push(Finding {
                 category,
                 name,
@@ -13126,6 +13284,43 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn quoted_annotations_keep_type_imports_without_reading_metadata_or_executing_calls() {
+        let source = r#"from typing import Annotated as Meta, Literal as Choice, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from types_local import Context, Parameter
+from types_local import Metadata, Option, create
+
+def use(nested: "Optional['Parameter']", direct: Meta["Context", "Metadata"],
+        choice: Choice["Option"], unevaluated: "create()"):
+    return nested, direct, choice, unevaluated
+
+use(None, None, None, None)
+"#;
+        for future in ["", "from __future__ import annotations\n"] {
+            let code = format!("{future}{source}");
+            let mut app = module("app.py", "app", "");
+            app.facts = skarmory_python::phase02::extract_with_project_wildcards(&code).unwrap();
+            let result = analyze_phase03(
+                &[
+                    app,
+                    module(
+                        "types_local.py",
+                        "types_local",
+                        "class Context: pass\nclass Parameter: pass\nclass Metadata: pass\nclass Option: pass\ndef create(): return 3\n",
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{:?}", result.issues);
+            assert_eq!(
+                names(&result, Category::Import),
+                ["Metadata", "Option", "create"]
+            );
+            assert!(names(&result, Category::Function).contains(&"create"));
+        }
     }
 
     #[test]

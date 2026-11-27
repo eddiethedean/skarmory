@@ -243,6 +243,13 @@ fn translate_glob(pattern: &str) -> String {
 }
 
 impl Selection {
+    pub(super) fn is_default_exclusion(&self, label: &str) -> bool {
+        self.defaults
+            && label
+                .split('/')
+                .any(|part| DEFAULT_EXCLUDES.contains(&part) || part.ends_with(".egg-info"))
+    }
+
     pub(crate) fn exclusion(&self, label: &str) -> Option<&'static str> {
         self.exclusion_matching(label, |_| true)
     }
@@ -270,11 +277,7 @@ impl Selection {
         {
             return Some("configured_exclusion");
         }
-        if self.defaults
-            && label
-                .split('/')
-                .any(|part| DEFAULT_EXCLUDES.contains(&part) || part.ends_with(".egg-info"))
-        {
+        if self.is_default_exclusion(label) {
             return Some("default_exclusion");
         }
         None
