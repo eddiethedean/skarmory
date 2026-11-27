@@ -31,6 +31,50 @@ pub(super) struct FreshProviderArgument {
 }
 
 impl<'a> Graph<'a> {
+    pub(super) fn invoke_unpacked_source_provider(
+        &mut self,
+        callee: Value,
+        call: CallArguments<'_>,
+    ) -> bool {
+        let Value::Callable(invocation) = callee else {
+            return false;
+        };
+        let Binding::Definition(wrapper, scope) = self.symbols[invocation.target].binding else {
+            return false;
+        };
+        if invocation.verified
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || invocation.implicit_descriptor_receiver
+            || self.scopes[scope].parent != Some(self.scopes[scope].file)
+            || !field_dispatch::plain_method(wrapper, 1)
+            || !matches!(wrapper_return(wrapper), Some((_, returned, None))
+                if provider_member(returned).is_some_and(|(receiver, _, _)|
+                    receiver == wrapper.parameters[0].text))
+        {
+            return false;
+        }
+        let argument = match (call.positional, call.keywords) {
+            ([argument], []) => argument,
+            ([], [(name, argument)]) if *name == wrapper.parameters[0].text => argument,
+            _ => return false,
+        };
+        let Some(class) = self.plain_provider_constructor(call.scope, argument, call.before) else {
+            return false;
+        };
+        let access = (call.scope, call.before);
+        // The temporary receiver can release its last reference when the
+        // call returns, so a finalizer would make this proof incomplete.
+        if !self.plain_default_provider(class, access, &BTreeSet::new())
+            || self
+                .class_member_at(class, "__del__", 0, Some(access))
+                .is_some()
+        {
+            return false;
+        }
+        self.call_invocation(invocation, call, "certain");
+        true
+    }
+
     pub(super) fn defer_source_provider_call(&mut self, scope: ScopeId, call: &Expression) -> bool {
         let row = &self.scopes[scope];
         let Some(owner) = row.owner else {

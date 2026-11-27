@@ -232,7 +232,7 @@ to fresh local names. An overwrite can release an object and run its finalizer.
 
 The inventory accounts for all 80 cases in the pinned
 `test_method_reachability.py` and `test_method_reachability_safety.py` suites.
-All 80 pass on frozen Skylos. The unchanged assertions qualify 49 cases on
+All 80 pass on frozen Skylos. The unchanged assertions qualify 53 cases on
 the installed Skarmory SDK and one on the native CLI in the local macOS
 ARM64 CPython 3.11 replay. CI checks that the frozen pytest IDs match the
 SDK and CLI inventory entries and replays the mapped cases on Linux.
@@ -258,14 +258,20 @@ fresh instance and its method bindings. A possible finalizer on the receiver
 or an intervening instance leaves coverage incomplete, as do unmodeled
 mutation and escape.
 
-The remaining 30 cases are required blockers. The inventory records the
+A named, one-parameter wrapper can dispatch directly to a method on a fresh
+instance from a plain zero-argument constructor, supplied through a single
+`*(value,)` tuple or `**{'name': value}` dictionary. A possible receiver
+finalizer leaves coverage incomplete. The frozen cases exercise both forms
+with grep verification enabled and disabled.
+
+The remaining 26 cases are required blockers. The inventory records the
 coverage diagnostics for unsupported receiver operations, and identifies
 fixtures that import an absent external provider. Two partial-scan variants
 produce complete candidate reports with incorrect unused-method findings.
 The changed-file fixture still needs an SDK port for its scan selector.
 The CLI cycle fixture finds the dead methods but fails its per-symbol
 decision evidence assertion. The release
-workflow publishes separate SDK and CLI diagnostic receipts for the 29
+workflow publishes separate SDK and CLI diagnostic receipts for the 25
 replayable blockers. The changed-file case remains without a candidate
 receipt. Diagnostic outcomes carry no release credit.
 

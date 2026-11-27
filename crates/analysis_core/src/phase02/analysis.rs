@@ -3996,6 +3996,7 @@ impl<'a> Graph<'a> {
                 expression.kind,
                 ExpressionKind::Await(_)
                     | ExpressionKind::FormattedString(_)
+                    | ExpressionKind::SingleArgumentExpansion { .. }
                     | ExpressionKind::KeywordMappingCall { .. }
                     | ExpressionKind::RepeatedKeywordCall { .. }
                     | ExpressionKind::Comprehension { .. }
@@ -5034,6 +5035,7 @@ impl<'a> Graph<'a> {
                 Value::DjangoInvalidRegistration
             }
             ExpressionKind::Await(_)
+            | ExpressionKind::SingleArgumentExpansion { .. }
             | ExpressionKind::KeywordMappingCall { .. }
             | ExpressionKind::RepeatedKeywordCall { .. }
             | ExpressionKind::ForwardingCall { .. } => Value::Unknown,
@@ -5847,6 +5849,51 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::SingleArgumentExpansion {
+                function,
+                arguments,
+                keywords,
+            } => {
+                self.walk_expression(scope, function, before, true);
+                for value in arguments
+                    .iter()
+                    .chain(keywords.iter().map(|(_, value)| value))
+                {
+                    self.walk(scope, value, before);
+                }
+                let callee = self.call_target_identity(scope, function, before, 0);
+                if self.phase03
+                    && let [(key, value)] = keywords.as_slice()
+                    && let Value::Method(object, ObjectKind::CeleryApp, method) = &callee
+                    && method == "conf.update"
+                {
+                    let value = self.identity(scope, value, before, 0);
+                    self.record_celery_config_value(
+                        *object,
+                        scope,
+                        expr.at,
+                        Value::Mapping(vec![Value::Text(key.clone()), value]),
+                    );
+                } else if !self.phase03
+                    || !self.invoke_unpacked_source_provider(
+                        callee,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unsupported_construct",
+                        "argument expansion is outside the bounded source receiver model",
+                    );
+                }
+            }
             ExpressionKind::ForwardingCall {
                 function,
                 positional,
@@ -7902,6 +7949,7 @@ impl<'a> Graph<'a> {
                 }
             }
             ExpressionKind::Call { .. }
+            | ExpressionKind::SingleArgumentExpansion { .. }
             | ExpressionKind::KeywordMappingCall { .. }
             | ExpressionKind::RepeatedKeywordCall { .. }
                 if evaluated =>
@@ -12121,6 +12169,11 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::DeferredLambda(value)
             | ExpressionKind::Await(value) => expressions.push(value),
             ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            }
+            | ExpressionKind::SingleArgumentExpansion {
                 function,
                 arguments,
                 keywords,

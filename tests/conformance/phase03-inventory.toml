@@ -19406,10 +19406,8 @@ assertions = ["test/test_method_reachability_safety.py:18", "test/test_method_re
 prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Positional receiver expansion reports unsupported_construct during expression extraction."
 
 [[cases]]
 id = "test/test_method_reachability_safety.py::test_unpacked_argument_is_not_removed_from_receiver_candidates[dispatch(*(Remote(),))-True]"
@@ -19420,10 +19418,8 @@ assertions = ["test/test_method_reachability_safety.py:18", "test/test_method_re
 prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Positional receiver expansion reports unsupported_construct during expression extraction."
 
 [[cases]]
 id = "test/test_method_reachability_safety.py::test_unpacked_argument_is_not_removed_from_receiver_candidates[dispatch(**{'receiver': Remote()})-False]"
@@ -19434,10 +19430,8 @@ assertions = ["test/test_method_reachability_safety.py:18", "test/test_method_re
 prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Keyword receiver expansion reports unsupported_construct for an unbounded keyword expansion."
 
 [[cases]]
 id = "test/test_method_reachability_safety.py::test_unpacked_argument_is_not_removed_from_receiver_candidates[dispatch(**{'receiver': Remote()})-True]"
@@ -19448,10 +19442,8 @@ assertions = ["test/test_method_reachability_safety.py:18", "test/test_method_re
 prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Keyword receiver expansion reports unsupported_construct for an unbounded keyword expansion."
 
 [[cases]]
 id = "test/test_method_reachability_safety.py::test_bound_method_alias_keeps_transitive_helpers"

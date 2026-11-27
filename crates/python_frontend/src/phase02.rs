@@ -370,6 +370,11 @@ pub enum ExpressionKind {
         arguments: Vec<Expression>,
         keywords: Vec<(String, Expression)>,
     },
+    SingleArgumentExpansion {
+        function: Box<Expression>,
+        arguments: Vec<Expression>,
+        keywords: Vec<(String, Expression)>,
+    },
     ForwardingCall {
         function: Box<Expression>,
         positional: Box<Expression>,
@@ -1719,6 +1724,37 @@ impl Lowering<'_> {
                     Box::new(lower(&node.value)?),
                     self.attribute_name(node.attr.as_str()),
                 )
+            }
+            Expr::Call(node)
+                if self.4
+                    && matches!(node.func.as_ref(), Expr::Name(_))
+                    && let ([Expr::Starred(expansion)], []) =
+                        (node.arguments.args.as_ref(), node.arguments.keywords.as_slice())
+                    && let Expr::Tuple(tuple) = expansion.value.as_ref()
+                    && let [value] = tuple.elts.as_slice()
+                    && !matches!(value, Expr::Starred(_)) =>
+            {
+                ExpressionKind::SingleArgumentExpansion {
+                    function: Box::new(lower(&node.func)?),
+                    arguments: vec![self.expression(value, next + 2)?],
+                    keywords: Vec::new(),
+                }
+            }
+            Expr::Call(node)
+                if self.4
+                    && matches!(node.func.as_ref(), Expr::Name(_))
+                    && node.arguments.args.is_empty()
+                    && let [expansion] = node.arguments.keywords.as_slice()
+                    && expansion.arg.is_none()
+                    && let Expr::Dict(mapping) = &expansion.value
+                    && let [item] = mapping.items.as_slice()
+                    && let Some(Expr::StringLiteral(key)) = &item.key =>
+            {
+                ExpressionKind::SingleArgumentExpansion {
+                    function: Box::new(lower(&node.func)?),
+                    arguments: Vec::new(),
+                    keywords: vec![(key.value.to_str().into(), self.expression(&item.value, next + 1)?)],
+                }
             }
             Expr::Call(node)
                 if let [Expr::Starred(positional)] = node.arguments.args.as_ref()

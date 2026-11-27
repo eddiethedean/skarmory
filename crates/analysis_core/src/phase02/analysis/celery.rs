@@ -178,6 +178,16 @@ impl Graph<'_> {
         at: Location,
     ) {
         let value = self.identity(scope, mapping, before, 0);
+        self.record_celery_config_value(object, scope, at, value);
+    }
+
+    pub(super) fn record_celery_config_value(
+        &mut self,
+        object: Object,
+        scope: ScopeId,
+        at: Location,
+        value: Value,
+    ) {
         if matches!(&value, Value::Mapping(items) if items.as_chunks::<2>().0.iter().all(|[key, _]| matches!(key, Value::Text(_))))
         {
             if let Some(routes) = configured_mapping_member(&value, "task_routes") {

@@ -13507,6 +13507,136 @@ fn assert_provider_cache_equivalence(root: &Path, cache: &Path, report: &Value, 
 }
 
 #[test]
+fn source_provider_dispatch_resolves_literal_argument_unpacking() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let main = root.join("main.py");
+    let declarations = r#"from helper import live
+
+class Local:
+    def accept(self): return 0
+
+class Remote:
+    def accept(self): return live()
+
+def dispatch(receiver):
+    return receiver.accept()
+
+dispatch(Local())
+"#;
+    fs::write(
+        root.join("helper.py"),
+        "def live(): return 1\ndef dormant(): return 2\n",
+    )
+    .unwrap();
+    for call in [
+        "dispatch(*(Remote(),))",
+        "dispatch(**{'receiver': Remote()})",
+    ] {
+        fs::write(&main, format!("{declarations}{call}\n")).unwrap();
+        let report = scan(root);
+        assert_provider_call(&report, "main.Local.accept", "certain");
+        assert_provider_call(&report, "main.Remote.accept", "certain");
+        assert_provider_call(&report, "helper.live", "certain");
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["helper.dormant"],
+            "{report}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    let with_finalizers = format!(
+        "{declarations}\n{}",
+        r#"def release(): print("released")
+
+class FinalizingRemote(Remote):
+    def __del__(self): release()
+
+class InheritedFinalizer(FinalizingRemote):
+    pass
+
+"#
+    );
+    for (prefix, call) in [
+        (
+            declarations,
+            "arguments = (Remote(),)\ndispatch(*arguments)",
+        ),
+        (
+            declarations,
+            "arguments = {'receiver': Remote()}\ndispatch(**arguments)",
+        ),
+        (
+            declarations,
+            "dispatch(receiver=Local(), **{'receiver': Remote()})",
+        ),
+        (declarations, "dispatch(*(Remote(), Local()))"),
+        (with_finalizers.as_str(), "dispatch(*(FinalizingRemote(),))"),
+        (
+            with_finalizers.as_str(),
+            "dispatch(**{'receiver': InheritedFinalizer()})",
+        ),
+    ] {
+        let source = format!("{prefix}{call}\n");
+        let line = source.lines().count();
+        fs::write(&main, source).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unsupported_construct"
+                        && issue["file"] == "main.py"
+                        && issue["line"] == line
+                }),
+            "{report}"
+        );
+        assert!(
+            !provider_call(&report, "main.Remote.accept", "certain"),
+            "{report}"
+        );
+        assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+        assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+    }
+}
+
+#[test]
+fn source_provider_dispatch_does_not_enter_wrapper_after_raising_unpacked_constructor() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let main = root.join("main.py");
+    let declarations = r#"class Raising:
+    def __init__(self): raise RuntimeError
+    def accept(self): return 1
+
+def dispatch(receiver):
+    return receiver.accept()
+
+"#;
+    for call in [
+        "dispatch(*(Raising(),))",
+        "dispatch(**{'receiver': Raising()})",
+    ] {
+        fs::write(&main, format!("{declarations}{call}\n")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            !provider_call(&report, "main.dispatch", "certain"),
+            "{report}"
+        );
+        assert!(
+            !provider_call(&report, "main.Raising.accept", "certain"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
 fn source_provider_dispatch_follows_a_fresh_instance_assigned_to_a_name() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
