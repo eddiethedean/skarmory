@@ -220,6 +220,29 @@ impl Value {
     }
 }
 
+#[derive(Default)]
+struct FactoryReturns {
+    classes: BTreeSet<SymbolId>,
+    unresolved_alternative: bool,
+}
+
+impl FactoryReturns {
+    fn record(&mut self, value: &Value) {
+        match value {
+            Value::Instance(class) => {
+                self.classes.insert(*class);
+            }
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.record(value);
+                }
+            }
+            value if value.contains_unknown() => self.unresolved_alternative = true,
+            _ => {}
+        }
+    }
+}
+
 #[derive(Clone)]
 struct NamespaceCopy {
     owner: ScopeId,
@@ -909,7 +932,7 @@ struct Graph<'a> {
     by_location: BTreeMap<(ScopeId, usize, usize), SymbolId>,
     read: BTreeSet<SymbolId>,
     namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
-    factory_returns: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    factory_returns: BTreeMap<SymbolId, FactoryReturns>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
     conditional_groups: BTreeMap<SymbolId, Vec<(usize, bool)>>,
@@ -5231,7 +5254,13 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn record_factory_return(&mut self, scope: ScopeId, result: &Value) {
+    fn record_factory_return(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        result: &Value,
+    ) {
         let Some(factory) = self.scopes[scope].owner else {
             return;
         };
@@ -5242,17 +5271,51 @@ impl<'a> Graph<'a> {
         {
             return;
         }
-        let values = match result {
-            Value::Alternatives(values) => values.as_slice(),
-            value => std::slice::from_ref(value),
+        let mut returns = FactoryReturns::default();
+        if matches!(result, Value::Unknown)
+            && matches!(expression.kind, ExpressionKind::Conditional { .. })
+        {
+            // The ordinary identity merge deliberately drops partial
+            // alternatives. An exported result can still expose a class from
+            // a branch whose identity is known.
+            self.collect_factory_return_arms(scope, expression, before, 0, &mut returns);
+        } else {
+            returns.record(result);
+        }
+        if !returns.classes.is_empty() {
+            let recorded = self.factory_returns.entry(factory).or_default();
+            recorded.classes.extend(returns.classes);
+            recorded.unresolved_alternative |= returns.unresolved_alternative;
+        }
+    }
+
+    fn collect_factory_return_arms(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+        returns: &mut FactoryReturns,
+    ) {
+        if depth >= MAX_BINDING_CHAIN {
+            returns.unresolved_alternative = true;
+            return;
+        }
+        let ExpressionKind::Conditional {
+            test,
+            body,
+            otherwise,
+        } = &expression.kind
+        else {
+            returns.record(&self.probe_identity(scope, expression, before));
+            return;
         };
-        for value in values {
-            if let Value::Instance(class) = value {
-                self.factory_returns
-                    .entry(factory)
-                    .or_default()
-                    .insert(*class);
-            }
+        let condition = self.probe_identity(scope, test, before);
+        if !matches!(condition, Value::Bool(false)) {
+            self.collect_factory_return_arms(scope, body, before, depth + 1, returns);
+        }
+        if !matches!(condition, Value::Bool(true)) {
+            self.collect_factory_return_arms(scope, otherwise, before, depth + 1, returns);
         }
     }
 
@@ -8251,7 +8314,7 @@ impl<'a> Graph<'a> {
                         self.walk(scope, value, at);
                         let result = self.identity(scope, value, at, 0);
                         if self.phase03 {
-                            self.record_factory_return(scope, &result);
+                            self.record_factory_return(scope, value, at, &result);
                         }
                         if !matches!(result, Value::DeferredComprehension)
                             || !self.phase03
@@ -10183,12 +10246,26 @@ impl<'a> Graph<'a> {
                         self.constructor(scope, target, "constructor", "possible", at);
                         vec![Value::Instance(target)]
                     } else if matches!(kind, "public_export" | "explicit_re_export")
-                        && let Some(classes) = self.factory_returns.get(&target)
+                        && let Some(returns) = self.factory_returns.get(&target)
                         && exported_factories.insert(target)
                     {
                         // An external caller may consume the return value. Keep
                         // that use separate from calls that discard the result.
-                        classes.iter().copied().map(Value::Instance).collect()
+                        let members = returns
+                            .classes
+                            .iter()
+                            .copied()
+                            .map(Value::Instance)
+                            .collect();
+                        if returns.unresolved_alternative {
+                            self.scope_issue(
+                                scope,
+                                at,
+                                "unresolved_export",
+                                "an exported factory can return an unresolved value",
+                            );
+                        }
+                        members
                     } else {
                         Vec::new()
                     }

@@ -180,6 +180,76 @@ make_service(False)
 }
 
 #[test]
+fn exported_factory_preserves_known_return_arms_when_a_fallback_is_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let app = project.path().join("app.py");
+    fs::write(
+        project.path().join("helpers.py"),
+        "def used(): return 1\ndef unused(): return 2\n",
+    )
+    .unwrap();
+    let source = r#"from helpers import used
+
+class Service:
+    def run(self):
+        return used()
+"#;
+    for (guard, exports, exit, possible) in [
+        ("flag", "__all__ = ['factory']", 2, true),
+        ("flag", "__all__ = []\nfactory(True)", 0, false),
+        ("True", "__all__ = ['factory']", 0, true),
+        ("False", "__all__ = ['factory']", 0, false),
+    ] {
+        fs::write(
+            &app,
+            format!(
+                "{source}\ndef factory(flag, fallback=None):\n    return Service() if {guard} else fallback\n{exports}\n",
+            ),
+        )
+        .unwrap();
+        let serial = scan_with_exit(project.path(), None, None, exit);
+        let coverage = &serial["coverage"];
+        assert_eq!(
+            coverage["status"],
+            if exit == 0 { "complete" } else { "incomplete" },
+            "{serial}"
+        );
+        assert_eq!(
+            coverage["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_export"),
+            exit == 2,
+            "{serial}"
+        );
+        assert_eq!(
+            evidence_certainties(&serial, "app.Service.run", "public_export"),
+            if possible {
+                vec!["possible"]
+            } else {
+                Vec::new()
+            },
+            "{serial}"
+        );
+        let unused = findings(&serial, "unused_functions");
+        let suppressed = findings(&serial, "suppressed");
+        assert_eq!(
+            unused.contains(&"app.Service.run") || suppressed.contains(&"app.Service.run"),
+            !possible,
+            "{serial}"
+        );
+        assert_eq!(unused.contains(&"helpers.used"), !possible, "{serial}");
+        for _ in 0..2 {
+            let mut parallel = scan_with_exit(project.path(), None, Some(cache.path()), exit);
+            parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(parallel, serial);
+        }
+    }
+}
+
+#[test]
 fn closure_safety_retains_bindings_from_straight_line_finally() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

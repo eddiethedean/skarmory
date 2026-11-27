@@ -246,8 +246,10 @@ with the uncached report for each state.
 
 For an exported module-level function that directly or conditionally returns
 a statically identified instance, the analyzer keeps that instance's public
-methods as possible uses. Calling an unexported factory and discarding its
-result leaves its uncalled methods eligible for findings.
+methods as possible uses. If a conditional return also has an unresolved
+branch, the known methods keep that evidence and the scan reports incomplete
+coverage. Calling an unexported factory and discarding its result leaves its
+uncalled methods eligible for findings.
 
 The analyzer also follows positional and keyword dispatch from a named
 instance created by a plain constructor at module scope. This covers a
