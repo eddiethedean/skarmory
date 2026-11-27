@@ -254,8 +254,9 @@ uncalled methods eligible for findings.
 The analyzer also follows positional and keyword dispatch from a named
 instance created by a plain constructor at module scope. This covers a
 standalone call with one argument when intervening statements preserve the
-fresh instance and its method bindings. Unmodeled mutation or escape still
-leaves coverage incomplete.
+fresh instance and its method bindings. A possible finalizer on the receiver
+or an intervening instance leaves coverage incomplete, as do unmodeled
+mutation and escape.
 
 The remaining 30 cases are required blockers. The inventory records the
 coverage diagnostics for unsupported receiver operations, and identifies

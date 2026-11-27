@@ -234,16 +234,27 @@ impl<'a> Graph<'a> {
     fn named_provider_stays_fresh(
         &mut self,
         scope: ScopeId,
+        class: SymbolId,
         assigned: Location,
         called: Location,
         invalidated: &BTreeSet<SymbolId>,
     ) -> bool {
+        // The receiver can outlive the call. Its finalizer can run when a
+        // later assignment drops the last reference.
+        if self
+            .class_member_at(class, "__del__", 0, Some((scope, assigned)))
+            .is_some()
+        {
+            return false;
+        }
+
         let body = self.scopes[scope].body;
         let start = body.partition_point(|statement| position(statement.at) <= position(assigned));
         let end = body.partition_point(|statement| position(statement.at) < position(called));
         // Each intervening assignment has a new destination and an inert
         // initializer. This rules out escapes, reflection and releasing a
-        // previous object whose finalizer could mutate the receiver.
+        // previous object. A new instance may also have a finalizer that
+        // runs after the call.
         end.saturating_sub(start) <= MAX_PROVIDER_ASSIGNMENTS
             && body.get(start..end).is_some_and(|statements| {
                 statements.iter().all(|statement| {
@@ -260,11 +271,11 @@ impl<'a> Graph<'a> {
                         ) || self
                             .plain_provider_constructor(scope, value, statement.at)
                             .is_some_and(|class| {
-                                self.plain_default_provider(
-                                    class,
-                                    (scope, statement.at),
-                                    invalidated,
-                                )
+                                let access = (scope, statement.at);
+                                self.plain_default_provider(class, access, invalidated)
+                                    && self
+                                        .class_member_at(class, "__del__", 0, Some(access))
+                                        .is_none()
                             }))
                 })
             })
@@ -402,7 +413,13 @@ impl<'a> Graph<'a> {
         let class = match (site.receiver, input) {
             (ProviderReceiver::Argument, ProviderInput::Class(argument)) => {
                 if let Some((assigned, called)) = argument.assignment
-                    && !self.named_provider_stays_fresh(access.0, assigned, called, invalidated)
+                    && !self.named_provider_stays_fresh(
+                        access.0,
+                        argument.class,
+                        assigned,
+                        called,
+                        invalidated,
+                    )
                 {
                     return None;
                 }

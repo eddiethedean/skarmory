@@ -13545,6 +13545,59 @@ spare = Spare()
 }
 
 #[test]
+fn source_provider_dispatch_leaves_named_instance_finalizers_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("main.py");
+    let wrapper = r#"def release(): print("released")
+
+def run(provider):
+    return provider.execute()
+
+"#;
+    fs::write(root.join("helper.py"), "def unused(): pass\n").unwrap();
+    for fixture in [
+        r#"class Provider:
+    def execute(self): return 1
+    def __del__(self): release()
+
+provider = Provider()
+run(provider)
+provider = None
+"#,
+        r#"class Resource:
+    def __del__(self): release()
+
+class Provider(Resource):
+    def execute(self): return 1
+
+provider = Provider()
+run(provider)
+provider = None
+"#,
+        r#"class Provider:
+    def execute(self): return 1
+
+class Resource:
+    def __del__(self): release()
+
+provider = Provider()
+spare = Resource()
+run(provider)
+spare = None
+"#,
+    ] {
+        fs::write(&source, format!("{wrapper}{fixture}")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert_provider_dispatch_unresolved(&report, "main.py", 4);
+        assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+        assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+    }
+}
+
+#[test]
 fn source_provider_dispatch_does_not_invoke_a_factory_class_before_definition() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
