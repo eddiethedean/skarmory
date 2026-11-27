@@ -21,6 +21,7 @@ from run_phase03_seed import (
     check_candidate_wheel,
     environment,
     port_cases,
+    proved_changed_file_scope,
     scan_candidate,
     write_receipt,
 )
@@ -61,7 +62,7 @@ class DiagnosticPortTests(unittest.TestCase):
 
         self.assertIn(f"{method}[file]", release)
         self.assertIn(f"{method}[excluded-directory]", release)
-        self.assertNotIn(f"{method}[changed-file]", release.keys() | diagnostics.keys())
+        self.assertIn(f"{method}[changed-file]", release)
         self.assertIn(f"{binding}::test_unused_local_is_reported_when_other_functions_use_the_same_name", release)
         self.assertIn(f"{binding}::test_local_read_through_locals_is_kept", diagnostics)
         self.assertFalse(release.keys() & diagnostics.keys())
@@ -275,6 +276,10 @@ class CandidateScanTests(unittest.TestCase):
                     "trace_file": "trace.json",
                 },
             ),
+            (
+                {"changed_files": {Path("worker.py"), "app.py"}},
+                {"changed_files": ["app.py", "worker.py"]},
+            ),
         ):
             with (
                 self.subTest(options=options),
@@ -285,6 +290,27 @@ class CandidateScanTests(unittest.TestCase):
                 self.assertEqual(
                     payload, ["fixture", {"profile": "skylos-0.3", **expected}]
                 )
+
+    def test_changed_file_proof_requires_full_coverage_and_selected_findings(self):
+        project = Path.cwd()
+        full = {
+            "coverage": {"status": "complete", "selected_files": 2},
+            "selected_paths": ["consumer.py", "worker.py"],
+        }
+        projected = {
+            **full,
+            "report_scope": "changed_files",
+            "unused_functions": [{"file": "worker.py"}],
+        }
+        changed = {project / "worker.py"}
+        self.assertTrue(proved_changed_file_scope(projected, full, project, changed))
+        for bad in (
+            {**projected, "report_scope": "full"},
+            {**projected, "selected_paths": ["worker.py"]},
+            {**projected, "coverage": {"status": "incomplete"}},
+            {**projected, "unused_functions": [{"file": "consumer.py"}]},
+        ):
+            self.assertFalse(proved_changed_file_scope(bad, full, project, changed))
 
 
 class CorpusReceiptTests(unittest.TestCase):

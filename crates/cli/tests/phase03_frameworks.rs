@@ -207,6 +207,111 @@ other = OtherWorker()
 }
 
 #[test]
+fn fresh_builtin_property_dispatch_uses_the_getters_result() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"from support import release
+
+class ReturnedResource:
+    def __del__(self): release()
+
+class Payload:
+    def deliver(self): return 1
+
+class Envelope:
+    @property
+    def payload(self): return Payload()
+    def deliver(self): return 0
+
+Envelope().payload.deliver()
+"#;
+    fs::write(root.join("support.py"), "def release(): return None\n").unwrap();
+    let path = root.join("worker.py");
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(unused.contains(&"worker.Envelope.deliver"), "{report}");
+    assert!(!unused.contains(&"worker.Payload.deliver"), "{report}");
+    for name in ["worker.Envelope.payload", "worker.Payload.deliver"] {
+        assert_eq!(
+            evidence_certainties(&report, name, "direct_call"),
+            ["certain"]
+        );
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &path,
+        source.replace("return 1", "return ReturnedResource()"),
+    )
+    .unwrap();
+    let with_finalizer = scan_with_exit(root, None, None, 2);
+    assert!(
+        with_finalizer["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_finalizer" }),
+        "{with_finalizer}"
+    );
+    assert!(!findings(&with_finalizer, "unused_functions").contains(&"support.release"));
+
+    fs::write(
+        &path,
+        source.replace(
+            "Envelope().payload.deliver()",
+            "box = Envelope()\nbox.payload.deliver()",
+        ),
+    )
+    .unwrap();
+    let named = scan_with_exit(root, None, None, 2);
+    assert!(
+        named["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_descriptor" }),
+        "{named}"
+    );
+
+    // A descriptor in the class member table must not be invoked as an
+    // ordinary method when a subclass supplies the receiver.
+    fs::write(
+        &path,
+        r#"class Receiver:
+    def __call__(self): return 1
+
+class Base:
+    @property
+    def delegate(self): return Receiver()
+    def run(self): return self.delegate()
+
+class Child(Base): pass
+Child().run()
+"#,
+    )
+    .unwrap();
+    let inherited = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&inherited, "worker.Base.delegate", "direct_call").is_empty());
+
+    fs::write(
+        &path,
+        source.replace(
+            "class Envelope:",
+            "property = staticmethod\n\nclass Envelope:",
+        ),
+    )
+    .unwrap();
+    let shadowed = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&shadowed, "worker.Payload.deliver", "direct_call").is_empty());
+}
+
+#[test]
 fn exported_factory_retains_only_the_public_methods_of_returned_instances() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -432,6 +537,49 @@ class Resource:
         let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn closure_import_rebinding_keeps_possible_finalizers_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("helper.py"), "def release(): print('released')\n").unwrap();
+    for imports in [
+        "    from math import floor as reader",
+        "    if flag:\n        from math import floor as reader\n    else:\n        from math import ceil as reader",
+    ] {
+        let source = format!(
+            r#"from helper import release
+class Resource:
+    def __del__(self): release()
+def choose(flag):
+    reader = Resource()
+{imports}
+    def build():
+        return reader
+    return build()
+print(choose(True))
+"#
+        );
+        fs::write(root.join("worker.py"), source).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding"),
+            "{report}"
+        );
+        assert!(!findings(&report, "unused_functions").contains(&"helper.release"));
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
     }
 }
 

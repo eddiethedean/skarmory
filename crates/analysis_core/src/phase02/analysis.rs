@@ -53,6 +53,7 @@ mod metaclasses;
 mod mutations;
 mod pydantic;
 mod sanic;
+mod source_properties;
 mod source_provider_calls;
 mod starlette;
 mod terminal;
@@ -78,6 +79,7 @@ type Object = (usize, usize, usize);
 #[derive(Clone)]
 enum Value {
     Callable(Invocation),
+    SourceProperty(Invocation),
     Instance(SymbolId),
     Alternatives(Vec<Value>),
     ReceiverParameter(SymbolId),
@@ -705,6 +707,7 @@ pub(super) fn analyze_with_verification(
         receiver_calls: Vec::new(),
         fresh_field_calls: BTreeMap::new(),
         fresh_field_invocations: Vec::new(),
+        source_property_invocations: Vec::new(),
         constructor_hook_stores: Vec::new(),
         source_provider_calls: BTreeMap::new(),
         unpacked_source_provider_calls: BTreeSet::new(),
@@ -858,6 +861,7 @@ pub(super) fn analyze_with_verification(
     }
     if phase03 {
         graph.resolve_fresh_field_invocations();
+        graph.resolve_source_property_invocations();
         graph.collect_logging_configs();
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
@@ -963,6 +967,7 @@ struct Graph<'a> {
     receiver_calls: Vec<ReceiverCall>,
     fresh_field_calls: BTreeMap<SymbolId, Location>,
     fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
+    source_property_invocations: Vec<source_properties::SourcePropertyInvocation>,
     constructor_hook_stores: Vec<field_dispatch::ConstructorHookStore>,
     source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
     unpacked_source_provider_calls: BTreeSet<(ScopeId, [usize; 2])>,
@@ -3303,6 +3308,17 @@ impl<'a> Graph<'a> {
                     }
                     return Value::Unknown;
                 }
+                if matches!(member, Value::SourceProperty(_)) {
+                    if matches!(base, Value::Instance(_)) {
+                        self.scope_issue(
+                            access.0,
+                            access.1,
+                            "unresolved_descriptor",
+                            "property access requires a bounded fresh receiver and immediate call",
+                        );
+                    }
+                    return Value::Unknown;
+                }
                 if let Value::Callable(invocation) = member
                     && self.receiver_parameter(invocation.target).is_some()
                 {
@@ -3656,6 +3672,21 @@ impl<'a> Graph<'a> {
     }
 
     fn class_member_at(
+        &mut self,
+        id: SymbolId,
+        name: &str,
+        depth: usize,
+        access: Option<(ScopeId, Location)>,
+    ) -> Option<Value> {
+        let value = self.class_member_lookup(id, name, depth, access)?;
+        Some(if self.phase03 {
+            self.source_property_value(value)
+        } else {
+            value
+        })
+    }
+
+    fn class_member_lookup(
         &mut self,
         id: SymbolId,
         name: &str,
@@ -6000,6 +6031,13 @@ impl<'a> Graph<'a> {
                 keywords,
             } => {
                 if self.phase03
+                    && arguments.is_empty()
+                    && keywords.is_empty()
+                    && self.walk_source_property_call(scope, function, before, expr.at)
+                {
+                    return;
+                }
+                if self.phase03
                     && self.walk_literal_text_call(
                         function,
                         CallArguments {
@@ -6937,8 +6975,10 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name)
-                        if self.phase03 && name == "pathlib.Path"
-                            && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
+                        if self.phase03
+                            && (self.literal_pathlib_constructor(&name, (scope, before), arguments, keywords)
+                                || name == "pathlib.Path"
+                                    && self.source_project_path(scope, before, arguments, keywords).is_some()) => {}
                     Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
                     Value::Provider(name) if self.phase03 && name == "json.dumps"
                         && arguments.len() == 1 && keywords.is_empty()
@@ -9265,6 +9305,10 @@ impl<'a> Graph<'a> {
                     name.as_str(),
                     "builtins.staticmethod" | "builtins.classmethod"
                 ) => {}
+            Value::Provider(name)
+                if self.phase03
+                    && name == "builtins.property"
+                    && self.source_property_getter(target).is_some() => {}
             Value::Provider(name)
                 if self.phase03
                     && name == "builtins.property"
@@ -12133,7 +12177,7 @@ impl<'a> Graph<'a> {
                     Issue::new(
                         "partial_scope_method_reachability",
                         &self.files[scope.file].path,
-                        "a statically referenced method group can have callers outside the selected sources",
+                        "this reporting scope cannot establish that a statically referenced method group has no callers",
                     )
                     .at(symbol.name.at)
                     .with_symbol(name, full_name),
@@ -13345,6 +13389,72 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn literal_pathlib_constructors_resolve_imports_without_invoking_fspath() {
+        let packages = [
+            module("pkg/__init__.py", "pkg", ""),
+            module("pkg/unused.py", "pkg.unused", "from pathlib import Path\n"),
+            module("pkg/tools.py", "pkg.tools", "from pathlib import Path\n"),
+            module(
+                "pkg/app.py",
+                "pkg.app",
+                "from pathlib import PurePath\nfrom pkg.tools import Path\nprint(Path('.'), PurePath('src'))\n",
+            ),
+        ];
+        let report = analyze_phase03(&packages, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let unused: Vec<_> = report
+            .findings
+            .iter()
+            .filter_map(|finding| {
+                (finding.category == Category::Import).then_some(finding.file.as_str())
+            })
+            .collect();
+        assert_eq!(unused, ["pkg/unused.py"]);
+
+        for source in [
+            "from pathlib import Path\nclass Input:\n    def __fspath__(self): return '.'\nPath(Input())\n",
+            "from pathlib import Path\ndef replace(cls, value): return value\nPath.__new__ = replace\nPath('.')\n",
+        ] {
+            let report = analyze_phase03(&[module("app.py", "app", source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"),
+                "{:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_closure_call_reads_both_prior_import_arms() {
+        let report = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                r#"def choose(flag):
+    from math import floor as reader
+    if flag:
+        from json import loads as reader
+    else:
+        from pickle import loads as reader
+
+    def build():
+        return reader
+
+    return build()
+
+print(choose(True))
+"#,
+            )],
+            &[],
+        );
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Import), ["floor"]);
     }
 
     #[test]

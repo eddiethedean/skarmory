@@ -337,6 +337,28 @@ impl<'a> Graph<'a> {
         let key = self.lexical_binding_key(outer, name);
         let separate_name = |name: &str| self.lexical_binding_key(outer, name) != key;
         let separate_value = |value: &Expression| self.separate_closure_value(outer, value, &key);
+        let import_before_closure = |statement: &Statement| {
+            let StatementKind::Import(import) = &statement.kind else {
+                return false;
+            };
+            if position(statement.at) >= position(closure.name.at) {
+                return false;
+            }
+            // Replacing a local object during an import can run its finalizer.
+            // Check earlier versions as a conditional import may be skipped.
+            let mut before = statement.at;
+            for _ in 0..MAX_BINDING_CHAIN {
+                let Some(previous) = self.local(outer, &import.local.text, before) else {
+                    return true;
+                };
+                let symbol = &self.symbols[previous];
+                if !matches!(symbol.binding, Binding::Import(_)) {
+                    return false;
+                }
+                before = symbol.name.at;
+            }
+            false
+        };
         let separate_guarded_decorator = |definition: &Definition| {
             let at = definition.name.at;
             let [decorator] = definition.decorators.as_slice() else {
@@ -380,16 +402,17 @@ impl<'a> Graph<'a> {
                         && !body.is_empty()
                         && !otherwise.is_empty()
                         && body.iter().chain(otherwise).all(|statement| {
-                            matches!(&statement.kind,
-                                StatementKind::Assign { value: Some(value), annotation: None, .. }
-                                if separate_value(value))
+                            import_before_closure(statement)
+                                || matches!(&statement.kind,
+                                    StatementKind::Assign { value: Some(value), annotation: None, .. }
+                                    if separate_value(value))
                         })
                 }
                 StatementKind::Evaluate(Expression {
                     kind: ExpressionKind::Text(_),
                     ..
                 }) => true,
-                _ => false,
+                _ => import_before_closure(statement),
             }))
         .then_some(ClosureCall {
             at: call.at,

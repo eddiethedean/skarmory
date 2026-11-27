@@ -456,6 +456,7 @@ fn write_skylos_report(
             .map(workflow::BaselineInput::File)
             .or_else(|| args.baseline_ref.map(workflow::BaselineInput::Revision));
         let settings = workflow::Settings {
+            changed_files: None,
             diff: args.diff.or(args.diff_base),
             diff_mode,
             baseline,

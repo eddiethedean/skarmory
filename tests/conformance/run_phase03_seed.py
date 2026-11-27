@@ -57,6 +57,8 @@ SCRIPT = Path(__file__).resolve()
 SOURCE_EDIT_CACHE = "installed-sdk-source-edit-cache-reuse"
 METHOD_CACHE_CASE = f"{METHOD_SOURCE}::test_cache_tracks_adding_and_removing_method_roots"
 METHOD_CACHE = "installed-sdk-method-root-cache-equivalence"
+CHANGED_FILE_CASE = f"{METHOD_SOURCE}::test_partial_scan_does_not_prove_method_cycles_dead[changed-file]"
+CHANGED_FILE_SCOPE = "installed-sdk-changed-file-scope"
 PROJECT_VENV_CASE = (
     "test/test_framework_class_attr_liveness.py::test_project_venv_site_packages_are_external_search_dirs"
 )
@@ -137,6 +139,8 @@ def scan_candidate(sdk_python, path, options, dependency_paths=()):
             return os.fspath(value)
         if isinstance(value, dict):
             return {key: json_value(item) for key, item in value.items()}
+        if isinstance(value, (set, frozenset)):
+            return sorted(json_value(item) for item in value)
         if isinstance(value, (list, tuple)):
             return [json_value(item) for item in value]
         return value
@@ -151,6 +155,26 @@ def scan_candidate(sdk_python, path, options, dependency_paths=()):
         env=environment(), text=True, capture_output=True, timeout=60,
         check=True,
     ).stdout
+
+
+def proved_changed_file_scope(report, full, project, changed_files):
+    if report.get("report_scope") != "changed_files" or not changed_files:
+        return False
+    project = Path(project).resolve()
+    requested = {(project / file).resolve() for file in changed_files}
+    if not all(path.is_relative_to(project) for path in requested):
+        return False
+    selected = {path.relative_to(project).as_posix() for path in requested}
+    return (
+        report["selected_paths"] == full["selected_paths"]
+        and report["coverage"] == full["coverage"]
+        and selected < set(full["selected_paths"])
+        and all(
+            finding["file"] in selected
+            for name, findings in report.items() if name.startswith("unused_") and isinstance(findings, list)
+            for finding in findings
+        )
+    )
 
 
 def port_cases(args):
@@ -179,6 +203,9 @@ def port_cases(args):
         raise ValueError("missing native CLI adapter for a mapped case")
     if layer == "sdk" and args.sdk_python is None:
         raise ValueError("--sdk-python is required for the SDK variant")
+    if any(CHANGED_FILE_SCOPE in case["prerequisites"] and (layer != "sdk" or key != CHANGED_FILE_CASE)
+           for key, case in cases.items()):
+        raise ValueError("missing native SDK adapter for a mapped changed-file case")
     if any(
         UNUSED_DEPENDENCY_PREREQUISITE in case["prerequisites"]
         and (layer != "sdk" or case["source"] not in UNUSED_DEPENDENCY_SOURCES)
@@ -515,6 +542,7 @@ def pytest_worker(args):
             self.live_router_receipts = set()
             self.source_edit_cache = set()
             self.method_root_cache = set()
+            self.changed_file_scopes = set()
             self.import_scope_prerequisites = {}
             self.runtime_results = {}
 
@@ -570,6 +598,14 @@ def pytest_worker(args):
                     self.runtime_results.setdefault(key, []).append(runtime)
                 elif report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
+                if CHANGED_FILE_SCOPE in case["prerequisites"]:
+                    full = json.loads(scan_candidate(
+                        args.sdk_python, path,
+                        {name: value for name, value in options.items() if name != "changed_files"},
+                    ))
+                    if not proved_changed_file_scope(report, full, path, options.get("changed_files")):
+                        pytest.fail("changed-file report did not preserve whole-project analysis")
+                    self.changed_file_scopes.add(key)
                 self.scans.add(key)
                 if method_cache is not None:
                     method_cache.observe(report)
@@ -799,6 +835,8 @@ def pytest_worker(args):
                 proven = key in capture.source_edit_cache
             elif required == METHOD_CACHE:
                 proven = key in capture.method_root_cache
+            elif required == CHANGED_FILE_SCOPE:
+                proven = key in capture.changed_file_scopes
             elif required == "runtime-trace-rejected":
                 proven = key in capture.trace_rejections
             prerequisites[required] = "passed" if proven else "blocked"

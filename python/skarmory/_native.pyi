@@ -18,6 +18,7 @@ class _ScanOptions(TypedDict):
     grep_verify: bool
 
 class _WorkflowOptions(TypedDict):
+    changed_files: Sequence[str] | None
     diff: str | None
     diff_mode: Literal["lines", "files", "impact"]
     baseline: str | None

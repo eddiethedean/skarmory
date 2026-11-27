@@ -52,6 +52,8 @@ struct SkylosOptions {
 #[derive(FromPyObject)]
 #[pyo3(from_item_all)]
 struct WorkflowOptions {
+    #[pyo3(default)]
+    changed_files: Option<Vec<PathBuf>>,
     diff: Option<String>,
     diff_mode: String,
     baseline: Option<PathBuf>,
@@ -94,6 +96,7 @@ impl WorkflowOptions {
             .transpose()
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(workflow::Settings {
+            changed_files: self.changed_files,
             diff: self.diff,
             diff_mode,
             baseline,

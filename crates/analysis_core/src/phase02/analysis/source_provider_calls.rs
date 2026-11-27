@@ -261,7 +261,7 @@ impl<'a> Graph<'a> {
         (!constructor.verified).then_some(constructor.target)
     }
 
-    fn plain_provider_constructor(
+    pub(super) fn plain_provider_constructor(
         &mut self,
         scope: ScopeId,
         expression: &Expression,
@@ -461,7 +461,7 @@ impl<'a> Graph<'a> {
         self.source_provider_invalidated = Some(invalidated);
     }
 
-    fn source_provider_returns_scalar(
+    pub(super) fn source_provider_returns_scalar(
         &mut self,
         target: SymbolId,
         invalidated: &BTreeSet<SymbolId>,

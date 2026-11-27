@@ -401,7 +401,10 @@ jobs:
             test/test_dead_code_local_bindings.py test/test_dead_code_import_evidence.py \
             test/test_provider_method_precision.py \
             --junitxml="$GITHUB_WORKSPACE/phase03-evidence/bindings-and-providers-frozen-reference.xml"
-      - name: Verify the frozen method and binding inventories
+          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
+            test/test_dead_code_proof_regressions.py \
+            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/proof-regressions-frozen-reference.xml"
+      - name: Verify the frozen Python reachability inventories
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |
           PYTHONPATH=scripts python - <<'PY'
@@ -414,6 +417,7 @@ jobs:
           _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
           sdk = required[os.environ["DEAD_CODE_SDK_VARIANT"]]
           cli = required[os.environ["DEAD_CODE_CLI_VARIANT"]]
+          engine = required[os.environ["DEAD_CODE_ENGINE_VARIANT"]]
           evidence = Path("phase03-evidence")
           for suite, source in (
               ("methods", "test/test_method_reachability.py"),
@@ -421,14 +425,15 @@ jobs:
               ("bindings-and-providers", "test/test_dead_code_local_bindings.py"),
               ("bindings-and-providers", "test/test_dead_code_import_evidence.py"),
               ("bindings-and-providers", "test/test_provider_method_precision.py"),
+              ("proof-regressions", "test/test_dead_code_proof_regressions.py"),
           ):
               frozen = ElementTree.parse(evidence / f"{suite}-frozen-reference.xml")
               frozen_ids = passed_pytest_ids(frozen, source)
-              sdk_ids = {case_id for case_id, case in sdk.items() if case["source"] == source}
-              cli_ids = {case_id for case_id, case in cli.items() if case["source"] == source}
-              if not frozen_ids or sdk_ids & cli_ids or sdk_ids | cli_ids != frozen_ids:
-                  raise SystemExit(f"Required SDK and CLI cases must match the frozen suite: {source}")
-              print(f"{source}: {len(sdk_ids)} SDK cases and {len(cli_ids)} CLI cases")
+              layers = [{case_id for case_id, case in layer.items() if case["source"] == source}
+                        for layer in (sdk, cli, engine)]
+              if not frozen_ids or set.union(*layers) != frozen_ids or sum(map(len, layers)) != len(frozen_ids):
+                  raise SystemExit(f"Required cases must match the frozen suite: {source}")
+              print(f"{source}: {len(frozen_ids)} audited cases")
           PY
       - name: Verify coverage of the frozen closure safety suite
         if: env.DEAD_CODE_GATE_ENABLED == 'true'

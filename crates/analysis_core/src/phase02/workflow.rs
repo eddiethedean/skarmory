@@ -6,7 +6,7 @@ mod git;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 use super::super::Issue;
 use super::{
     Categories, ConfigError, EvidenceInput, Options, Profile, Report, config, preview_source,
-    scan_with_context,
+    scan_selected, scan_with_context,
 };
 pub use baseline::Input as BaselineInput;
 pub(super) use baseline::Summary as BaselineSummary;
@@ -58,6 +58,7 @@ impl Severity {
 
 #[derive(Default)]
 pub struct Settings {
+    pub changed_files: Option<Vec<PathBuf>>,
     pub diff: Option<String>,
     pub diff_mode: DiffMode,
     pub baseline: Option<BaselineInput>,
@@ -86,12 +87,18 @@ pub fn run(path: &Path, options: &Options, settings: &Settings) -> Result<Outcom
             "the requested diff mode requires a Git diff base",
         ));
     }
+    if settings.changed_files.is_some() && settings.diff.is_some() {
+        return Err(ConfigError::new(
+            "changed_files and diff are mutually exclusive",
+        ));
+    }
     if settings.force && !settings.gate {
         return Err(ConfigError::new("force requires a configured gate"));
     }
     if settings.write_baseline.is_some()
         && (settings.baseline.is_some()
             || settings.diff.is_some()
+            || settings.changed_files.is_some()
             || settings.severity.is_some()
             || !settings.rules.is_empty())
     {
@@ -115,6 +122,12 @@ pub fn run(path: &Path, options: &Options, settings: &Settings) -> Result<Outcom
         ));
     }
 
+    let explicit_files = settings.changed_files.is_some();
+    let mode = if explicit_files {
+        DiffMode::Files
+    } else {
+        settings.diff_mode
+    };
     let (mut report, changes) = if let Some(reference) = &settings.diff {
         scan_diff(
             path,
@@ -124,7 +137,17 @@ pub fn run(path: &Path, options: &Options, settings: &Settings) -> Result<Outcom
             settings.gate || settings.require_complete,
         )?
     } else {
-        (scan_with_context(path, &options, None, None)?, None)
+        let changes = settings
+            .changed_files
+            .as_deref()
+            .map(|files| Changes::explicit_files(path, files))
+            .transpose()?;
+        // An explicit file report keeps the full source set for resolution.
+        // The reference still abstains on otherwise unrooted method groups.
+        (
+            scan_selected(path, &options, None, None, None, explicit_files)?,
+            changes,
+        )
     };
     if let Some(impact) = &mut report.analysis_summary.pr_impact {
         let introduced = |item: &super::Diagnostic| {
@@ -199,15 +222,23 @@ pub fn run(path: &Path, options: &Options, settings: &Settings) -> Result<Outcom
     }
     if let Some(changes) = &changes {
         report.categories.retain(|item| {
-            item.change_status.is_some()
-                || changes.includes(&item.file, item.line, settings.diff_mode)
+            item.change_status.is_some() || changes.includes(&item.file, item.line, mode)
         });
         if let Some(quality) = &mut report.quality {
             quality.retain(|item| {
                 item.relative_file
                     .as_deref()
-                    .is_some_and(|path| changes.includes(path, item.line, settings.diff_mode))
+                    .is_some_and(|path| changes.includes(path, item.line, mode))
             });
+        }
+        if explicit_files {
+            report.report_scope = Some("changed_files");
+            report
+                .suppressed
+                .retain(|item| changes.includes(&item.file, item.line, mode));
+            report
+                .whitelisted
+                .retain(|item| changes.includes(&item.file, item.line, mode));
         }
     }
 
@@ -217,7 +248,7 @@ pub fn run(path: &Path, options: &Options, settings: &Settings) -> Result<Outcom
     let strict = settings.strict || (settings.gate && report.gate_policy.strict);
     let require_complete =
         strict || settings.require_complete || report.gate_policy.require_complete;
-    let coverage = Assessment::new(&report, changes.as_ref(), settings.diff_mode);
+    let coverage = Assessment::new(&report, changes.as_ref(), mode);
     let baseline_failure = report
         .analysis_summary
         .baseline
@@ -564,6 +595,36 @@ struct Changes {
 }
 
 impl Changes {
+    fn explicit_files(path: &Path, files: &[PathBuf]) -> Result<Self, ConfigError> {
+        let target = path.canonicalize().map_err(ConfigError::new)?;
+        let root = if target.is_file() {
+            target.parent().expect("a file has a parent")
+        } else {
+            &target
+        };
+        let mut result = Self::default();
+        for file in files {
+            let full = root.join(file);
+            let resolved = match full.canonicalize() {
+                Ok(path) => path,
+                // Deleted files can be part of the caller's change set.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(ConfigError::new(format!(
+                        "could not resolve {}: {error}",
+                        full.display()
+                    )));
+                }
+            };
+            if let Ok(path) = resolved.strip_prefix(root) {
+                result
+                    .changed
+                    .insert(preview_source::display(path), Vec::new());
+            }
+        }
+        Ok(result)
+    }
+
     fn read(
         repository: &git::Repository,
         base: &git::Base,

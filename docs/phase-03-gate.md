@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,675 cases to Phase 0.3 and defers 42 to later language
+inventory assigns 1,738 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -232,7 +232,7 @@ to fresh local names. An overwrite can release an object and run its finalizer.
 
 The inventory accounts for all 80 cases in the pinned
 `test_method_reachability.py` and `test_method_reachability_safety.py` suites.
-All 80 pass on frozen Skylos. The unchanged assertions qualify 55 cases on
+All 80 pass on frozen Skylos. The unchanged assertions qualify 57 cases on
 the installed Skarmory SDK and two on the native CLI in the local macOS
 ARM64 CPython 3.11 replay. CI checks that the frozen pytest IDs match the
 SDK and CLI inventory entries and replays the mapped cases on Linux.
@@ -265,6 +265,11 @@ finalizer or a return value that cannot be proved scalar leaves coverage
 incomplete. The frozen cases exercise both forms with grep verification
 enabled and disabled.
 
+An immediate method call through a builtin property can use the result of
+a source-owned getter that returns a fresh instance. The analyzer checks
+that the constructors and method bindings are stable and reports incomplete
+coverage when a temporary may run a finalizer.
+
 File-only scans and directory scans with effective additional exclusions
 abstain from reporting unrooted, statically referenced methods and their
 callees. A caller outside the selected sources could reach the group.
@@ -272,24 +277,40 @@ The report records the abstention separately from coverage and still reports
 unrelated unused definitions. In a whole-project scan, reported methods with
 unrooted callers carry a per-symbol `no_reachable_callers` decision tag.
 
-The remaining 23 cases are required blockers. The SDK diagnostics record
-unsupported receiver operations and fixtures that import an absent external
-provider. The changed-file case still needs an SDK scan selector and has no
-candidate receipt.
+The SDK accepts `changed_files` as an explicit report selector for a directory
+scan. It analyzes the full project, including callers outside the selected
+files, then limits findings to the requested files. The pinned case compares
+the source selection and coverage against a full SDK scan. The changed-file
+report uses the same method-group abstention as the other partial reports.
+The remaining 21 method cases have diagnostic receipts and block publication.
 
 ### Local bindings, import evidence, and provider methods
 
 The frozen reference checks all 101 cases in `test_dead_code_local_bindings.py`,
 `test_dead_code_import_evidence.py`, and `test_provider_method_precision.py`.
 The inventory preserves the original assertions, fixture setup and grep modes.
-The installed-wheel replay qualifies 3 local-binding cases, 6 import-evidence
+The installed-wheel replay qualifies 6 local-binding cases, 6 import-evidence
 cases, and 12 provider-method cases. Imports read in bounded quoted type
 annotations count as uses, including imports on each feasible conditional
 path. The analyzer skips `Literal` values and `Annotated` metadata when
 resolving type references. Quoted calls remain unevaluated.
+Calls to the standard `Path` and `PurePath` constructors with one literal
+string preserve the import reads without resolving path protocol calls on
+arbitrary objects. A terminal call to a local closure can read imports from
+bounded branches that complete before the closure is defined.
+
 Diagnostics retain incomplete coverage, failed assertions, and cases where
 the native report cannot establish the evidence required by the assertion.
-The remaining 80 cases carry no release credit.
+The remaining 77 cases carry no release credit.
+
+### Dead-code proof regressions
+
+All 63 frozen cases in `test_dead_code_proof_regressions.py` pass on Skylos.
+The installed Skarmory SDK qualifies 25 of the public analysis cases with the
+original assertions. The diagnostics record the remaining 29 SDK cases.
+Nine internal tests of deprecation facts and lazy-export proofs require
+native engine ports. The workflow checks the complete frozen case list
+against the SDK, CLI, and engine inventory entries.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

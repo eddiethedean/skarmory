@@ -580,6 +580,8 @@ pub struct Report {
     schema_version: u8,
     profile: &'static str,
     selected_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report_scope: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     external_dependency_roots: Vec<String>,
     exclusions: Vec<Exclusion>,
@@ -900,7 +902,7 @@ fn scan_with_context(
     policy: Option<&config::Policy>,
     diff_sources: Option<&mut BTreeMap<String, String>>,
 ) -> Result<Report, ConfigError> {
-    scan_selected(path, options, policy, diff_sources, None)
+    scan_selected(path, options, policy, diff_sources, None, false)
 }
 
 fn scan_selected(
@@ -909,6 +911,7 @@ fn scan_selected(
     policy: Option<&config::Policy>,
     mut diff_sources: Option<&mut BTreeMap<String, String>>,
     mut cleanup_inputs: Option<&mut cleanup::Inputs>,
+    changed_file_report: bool,
 ) -> Result<Report, ConfigError> {
     validate_category(options.category.as_deref())?;
     let config = config::load_for_scan(path, options, policy)?;
@@ -1168,7 +1171,8 @@ fn scan_selected(
         gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
         partial_sources: phase03
-            && (path.is_file()
+            && (changed_file_report
+                || path.is_file()
                 || project.exclusions.iter().any(|exclusion| {
                     exclusion.reason == "configured_exclusion"
                         && !config.selection.is_default_exclusion(&exclusion.path)
@@ -1622,6 +1626,7 @@ fn scan_selected(
             issues,
         },
         selected_paths,
+        report_scope: None,
         external_dependency_roots,
         exclusions: project.exclusions,
         generated_sources,

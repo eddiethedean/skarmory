@@ -515,6 +515,77 @@ class SdkTests(unittest.TestCase):
                 self.assertEqual(report, json.loads(result.stdout))
 
     @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
+    def test_phase03_changed_files_filters_findings_after_analyzing_callers(self):
+        with TemporaryDirectory() as directory, TemporaryDirectory() as cache:
+            project = Path(directory)
+            worker = project / "worker.py"
+            worker.write_text(
+                "class Worker:\n"
+                "    def advance(self, count):\n"
+                "        return self.finish(count - 1) if count else 1\n"
+                "    def finish(self, count):\n"
+                "        return self.advance(count - 1) if count else 2\n"
+                "worker = Worker()\n"
+                "def idle(): return 3\n",
+                encoding="utf-8",
+            )
+            caller = project / "caller.py"
+            caller.write_text(
+                "from worker import worker\nworker.advance(3)\ndef dormant(): return 4\n",
+                encoding="utf-8",
+            )
+            options = dict(profile="skylos-0.3", conf=0, trace_file=False, grep_verify=False)
+            full = json.loads(skylos.analyze(project, **options))
+            self.assertEqual({row["full_name"] for row in full["unused_functions"]},
+                             {"caller.dormant", "worker.idle"})
+            selected = json.loads(skylos.analyze(
+                project, changed_files={str(worker.resolve())}, **options,
+            ))
+            self.assertEqual(selected["report_scope"], "changed_files")
+            for field in ("selected_paths", "coverage", "dead_code_evidence"):
+                self.assertEqual(selected[field], full[field])
+            self.assertEqual(selected["coverage"]["status"], "complete")
+            self.assertEqual([row["full_name"] for row in selected["unused_functions"]],
+                             ["worker.idle"])
+
+            for _ in range(2):
+                cached = json.loads(skylos.analyze(
+                    project, changed_files=[Path("./worker.py"), "absent.py"],
+                    workers=2, cache_dir=cache, **options,
+                ))
+                self.assertIn("cache", cached)
+                cached.pop("cache")
+                self.assertEqual(cached, selected)
+
+            empty = json.loads(skylos.analyze(project, changed_files=[], **options))
+            self.assertEqual(empty["coverage"], full["coverage"])
+            self.assertEqual(empty["unused_functions"], [])
+
+            caller.write_text("def dormant(): return 4\n", encoding="utf-8")
+            unrooted = json.loads(skylos.analyze(project, changed_files=[worker], **options))
+            self.assertEqual(unrooted["coverage"]["status"], "complete")
+            self.assertEqual([row["full_name"] for row in unrooted["unused_functions"]],
+                             ["worker.idle"])
+            self.assertEqual({row["full_name"] for row in unrooted["dead_code_abstentions"]},
+                             {"worker.Worker.advance", "worker.Worker.finish"})
+            unrestricted = json.loads(skylos.analyze(project, **options))
+            self.assertEqual({row["full_name"] for row in unrestricted["unused_functions"]},
+                             {"caller.dormant", "worker.idle", "worker.Worker.advance", "worker.Worker.finish"})
+
+            caller.write_text("def broken(\n", encoding="utf-8")
+            incomplete = json.loads(skylos.analyze(project, changed_files=[worker], **options))
+            self.assertEqual(incomplete["coverage"]["status"], "incomplete")
+            self.assertEqual(incomplete["unused_functions"], [])
+            self.assertIn("caller.py", {row["file"] for row in incomplete["analysis_errors"]})
+
+            with self.assertRaisesRegex(TypeError, "changed_files"):
+                skylos.analyze(project, changed_files="worker.py", **options)
+            with self.assertRaisesRegex(TypeError, "skylos-0.3"):
+                skylos.analyze(project, changed_files=[worker])
+            with self.assertRaisesRegex(ValueError, "changed_files.*diff"):
+                skylos.analyze(project, changed_files=[worker], diff="HEAD", **options)
+
+    @unittest.skipUnless(NATIVE_PRESENT or NATIVE_REQUIRED, "requires an installed wheel")
     def test_phase03_javascript_file_reachability_and_cli_parity(self):
         with TemporaryDirectory() as directory:
             project = Path(directory)
