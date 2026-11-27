@@ -10182,7 +10182,7 @@ impl<'a> Graph<'a> {
                     {
                         self.constructor(scope, target, "constructor", "possible", at);
                         vec![Value::Instance(target)]
-                    } else if kind != "local_namespace"
+                    } else if matches!(kind, "public_export" | "explicit_re_export")
                         && let Some(classes) = self.factory_returns.get(&target)
                         && exported_factories.insert(target)
                     {
@@ -10299,6 +10299,11 @@ impl<'a> Graph<'a> {
                     "possible",
                 )
             }));
+        }
+        if !exported_factories.is_empty() {
+            // Inherited methods of returned instances introduce new receivers
+            // after the initial receiver pass.
+            self.resolve_receiver_calls();
         }
     }
 

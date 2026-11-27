@@ -20000,10 +20000,8 @@ assertions = ["test/test_method_reachability.py:166"]
 prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
 [[cases]]
 id = "test/test_method_reachability.py::test_local_argument_flow_does_not_lose_a_live_method[positional-True]"
@@ -20014,10 +20012,8 @@ assertions = ["test/test_method_reachability.py:166"]
 prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
 [[cases]]
 id = "test/test_method_reachability.py::test_local_argument_flow_does_not_lose_a_live_method[keyword-False]"
@@ -20028,10 +20024,8 @@ assertions = ["test/test_method_reachability.py:166"]
 prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
 [[cases]]
 id = "test/test_method_reachability.py::test_local_argument_flow_does_not_lose_a_live_method[keyword-True]"
@@ -20042,10 +20036,8 @@ assertions = ["test/test_method_reachability.py:166"]
 prerequisites = ["test/test_method_reachability.py:19", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "The pinned test/test_method_reachability.py:16-24 helpers write the test's inline project and call the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Dispatch through a known local variable passed as an argument reports unresolved_call; the bounded provider model requires a fresh instance."
 
 [[cases]]
 id = "test/test_method_reachability.py::test_multiple_possible_receivers_preserve_live_methods[receiver-reassignment]"

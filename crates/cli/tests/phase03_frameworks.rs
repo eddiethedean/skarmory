@@ -101,10 +101,14 @@ fn exported_factory_retains_only_the_public_methods_of_returned_instances() {
     .unwrap();
     let source = r#"from neighbors import used, unused
 
-class Service:
+class Base:
     def run(self):
         return self._dispatch()
 
+    def _dispatch(self):
+        return unused()
+
+class Service(Base):
     def _dispatch(self):
         return used()
 
@@ -130,14 +134,15 @@ make_service(False)
         fs::write(&app, format!("{source}\n{exports}\n")).unwrap();
         let serial = scan(project.path());
         let unused = findings(&serial, "unused_functions");
+        assert!(unused.contains(&"app.Base._dispatch"), "{serial}");
         assert!(unused.contains(&"app.Decoy.run"), "{serial}");
         assert!(unused.contains(&"app.Service._unexposed"), "{serial}");
         assert!(unused.contains(&"neighbors.unused"), "{serial}");
-        for name in ["app.Service.run", "app.Service._dispatch", "neighbors.used"] {
+        for name in ["app.Base.run", "app.Service._dispatch", "neighbors.used"] {
             assert_eq!(unused.contains(&name), !exported, "{name}: {serial}");
         }
         assert_eq!(
-            evidence_certainties(&serial, "app.Service.run", "public_export"),
+            evidence_certainties(&serial, "app.Base.run", "public_export"),
             if exported {
                 vec!["possible"]
             } else {
@@ -151,6 +156,27 @@ make_service(False)
             assert_eq!(parallel, serial);
         }
     }
+
+    fs::write(
+        &app,
+        format!("{source}\ndef main():\n    return Service()\n"),
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("pyproject.toml"),
+        "[project]\nname = 'example'\n[project.scripts]\nexample = 'app:main'\n",
+    )
+    .unwrap();
+    let console = scan(project.path());
+    assert_eq!(
+        evidence_certainties(&console, "app.main", "package_entrypoint"),
+        ["certain"],
+        "{console}"
+    );
+    assert!(
+        findings(&console, "unused_functions").contains(&"app.Base.run"),
+        "{console}"
+    );
 }
 
 #[test]
