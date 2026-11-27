@@ -91,6 +91,69 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn exported_factory_retains_only_the_public_methods_of_returned_instances() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("neighbors.py"),
+        "def used(): return 1\ndef unused(): return 2\n",
+    )
+    .unwrap();
+    let source = r#"from neighbors import used, unused
+
+class Service:
+    def run(self):
+        return self._dispatch()
+
+    def _dispatch(self):
+        return used()
+
+    def _unexposed(self):
+        return 0
+
+class Decoy:
+    def run(self):
+        return unused()
+
+def make_service(flag):
+    Decoy()
+    return Service() if flag else None
+
+make_service(False)
+"#;
+    let app = project.path().join("app.py");
+    for (exports, exported) in [
+        ("__all__ = ['make_service']", true),
+        ("__all__ = []", false),
+        ("__all__ = ['make_service']", true),
+    ] {
+        fs::write(&app, format!("{source}\n{exports}\n")).unwrap();
+        let serial = scan(project.path());
+        let unused = findings(&serial, "unused_functions");
+        assert!(unused.contains(&"app.Decoy.run"), "{serial}");
+        assert!(unused.contains(&"app.Service._unexposed"), "{serial}");
+        assert!(unused.contains(&"neighbors.unused"), "{serial}");
+        for name in ["app.Service.run", "app.Service._dispatch", "neighbors.used"] {
+            assert_eq!(unused.contains(&name), !exported, "{name}: {serial}");
+        }
+        assert_eq!(
+            evidence_certainties(&serial, "app.Service.run", "public_export"),
+            if exported {
+                vec!["possible"]
+            } else {
+                Vec::new()
+            },
+            "{serial}"
+        );
+        for _ in 0..2 {
+            let mut parallel = scan_with_settings(project.path(), None, Some(cache.path()));
+            parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(parallel, serial);
+        }
+    }
+}
+
+#[test]
 fn closure_safety_retains_bindings_from_straight_line_finally() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

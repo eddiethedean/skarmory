@@ -659,6 +659,7 @@ pub(super) fn analyze_with_verification(
         by_location: BTreeMap::new(),
         read: BTreeSet::new(),
         namespace_exports: BTreeMap::new(),
+        factory_returns: BTreeMap::new(),
         direct: BTreeSet::new(),
         conditional: BTreeMap::new(),
         conditional_groups: BTreeMap::new(),
@@ -908,6 +909,7 @@ struct Graph<'a> {
     by_location: BTreeMap<(ScopeId, usize, usize), SymbolId>,
     read: BTreeSet<SymbolId>,
     namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
+    factory_returns: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
     conditional_groups: BTreeMap<SymbolId, Vec<(usize, bool)>>,
@@ -5229,6 +5231,31 @@ impl<'a> Graph<'a> {
         }
     }
 
+    fn record_factory_return(&mut self, scope: ScopeId, result: &Value) {
+        let Some(factory) = self.scopes[scope].owner else {
+            return;
+        };
+        let symbol = &self.symbols[factory];
+        if self.scopes[symbol.scope].parent.is_some()
+            || !matches!(symbol.binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Function && !definition.is_generator)
+        {
+            return;
+        }
+        let values = match result {
+            Value::Alternatives(values) => values.as_slice(),
+            value => std::slice::from_ref(value),
+        };
+        for value in values {
+            if let Value::Instance(class) = value {
+                self.factory_returns
+                    .entry(factory)
+                    .or_default()
+                    .insert(*class);
+            }
+        }
+    }
+
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
             Value::Callable(invocation) => {
@@ -8223,6 +8250,9 @@ impl<'a> Graph<'a> {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
                         let result = self.identity(scope, value, at, 0);
+                        if self.phase03 {
+                            self.record_factory_return(scope, &result);
+                        }
                         if !matches!(result, Value::DeferredComprehension)
                             || !self.phase03
                             || !self.scopes[scope].owner.is_some_and(|owner| {
@@ -10115,6 +10145,7 @@ impl<'a> Graph<'a> {
             .collect();
         let mut modules = BTreeSet::new();
         let mut exported_constructors = BTreeSet::new();
+        let mut exported_factories = BTreeSet::new();
         let mut visited_instances = BTreeSet::new();
         let mut visited_namespaces = BTreeSet::new();
         let mut visited_namespace_copies = BTreeSet::new();
@@ -10146,10 +10177,18 @@ impl<'a> Graph<'a> {
                             "a callable may escape through a function namespace",
                         );
                     }
-                    let class = invocation.target;
-                    if self.is_class(class) && exported_constructors.insert((visit_scope, class)) {
-                        self.constructor(scope, class, "constructor", "possible", at);
-                        vec![Value::Instance(class)]
+                    let target = invocation.target;
+                    if self.is_class(target) && exported_constructors.insert((visit_scope, target))
+                    {
+                        self.constructor(scope, target, "constructor", "possible", at);
+                        vec![Value::Instance(target)]
+                    } else if kind != "local_namespace"
+                        && let Some(classes) = self.factory_returns.get(&target)
+                        && exported_factories.insert(target)
+                    {
+                        // An external caller may consume the return value. Keep
+                        // that use separate from calls that discard the result.
+                        classes.iter().copied().map(Value::Instance).collect()
                     } else {
                         Vec::new()
                     }

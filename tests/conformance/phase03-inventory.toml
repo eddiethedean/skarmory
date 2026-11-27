@@ -19354,10 +19354,8 @@ assertions = ["test/test_method_reachability_safety.py:18", "test/test_method_re
 prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete SDK scan reports Service.run and Service.finish unused even though the exported factory returns Service instances."
 
 [[cases]]
 id = "test/test_method_reachability_safety.py::test_exported_factory_keeps_returned_instance_methods_possible[True]"
@@ -19368,10 +19366,8 @@ assertions = ["test/test_method_reachability_safety.py:18", "test/test_method_re
 prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete SDK scan reports Service.run and Service.finish unused even though the exported factory returns Service instances."
 
 [[cases]]
 id = "test/test_method_reachability_safety.py::test_callback_escape_does_not_close_its_argument_types[False]"
@@ -19560,10 +19556,8 @@ assertions = ["test/test_method_reachability_safety.py:18", "test/test_method_re
 prerequisites = ["test/test_method_reachability_safety.py:14", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "The pinned test/test_method_reachability_safety.py:12-20 helper writes the test's inline worker.py and calls the SDK."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The complete SDK scan reports Worker.start and Worker.finish unused even though an exported factory can return Worker instances."
 
 [[cases]]
 id = "test/test_method_reachability_safety.py::test_receiver_escapes_through_compound_expressions[conditional-argument]"
