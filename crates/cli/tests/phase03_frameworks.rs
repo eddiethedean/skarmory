@@ -102,6 +102,161 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn report_preserves_requested_exclusion_order_and_selected_sources() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for dir in ["scratch", "prototypes"] {
+        fs::create_dir(root.join(dir)).unwrap();
+        fs::write(root.join(dir).join("sample.py"), "print(1)\n").unwrap();
+    }
+    fs::write(root.join("app.py"), "print(2)\n").unwrap();
+    let full = scan(root);
+    assert_eq!(
+        full["selected_paths"],
+        serde_json::json!(["app.py", "prototypes/sample.py", "scratch/sample.py"])
+    );
+    let scoped = scan_with_excludes(root, None, None, &["scratch", "prototypes"], 0);
+    assert_eq!(scoped["selected_paths"], serde_json::json!(["app.py"]));
+    assert_eq!(
+        scoped["analysis_summary"]["excluded_folders"],
+        serde_json::json!(["scratch", "prototypes"])
+    );
+    assert_eq!(scoped["coverage"]["status"], "complete");
+}
+
+#[test]
+fn typing_cast_reads_quoted_imports_only_for_the_stdlib_provider() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("models.py"), "class Action:\n    pass\n").unwrap();
+    fs::write(root.join("local.py"), "def cast(typ, val): return val\n").unwrap();
+    for (provider, expected) in [("typing", Vec::new()), ("local", vec!["models.Action"])] {
+        fs::write(
+            root.join("app.py"),
+            format!(
+                "from {provider} import cast as as_action\nfrom models import Action\ndef normalize(action):\n    return as_action('Action', action)\nprint(normalize(1))\n"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(findings(&report, "unused_imports"), expected, "{report}");
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(cached, report);
+    }
+    for patch in [
+        "setattr(typing, 'cast', None)",
+        "def install(module):\n    setattr(module, 'cast', None)\ninstall(typing)",
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!(
+                "import typing\nfrom models import Action\n{patch}\ntyping.cast('Action', 1)\n"
+            ),
+        )
+        .unwrap();
+        let invalid = scan_with_exit(root, None, None, 2);
+        assert_eq!(invalid["coverage"]["status"], "incomplete", "{invalid}");
+    }
+}
+
+#[test]
+fn stdlib_json_literals_do_not_exercise_a_same_named_method() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("invoice.py"),
+        "class Invoice:\n    def dump(self, payload): return payload\n",
+    )
+    .unwrap();
+    let app = root.join("app.py");
+    let source = "import json as codec\nfrom invoice import Invoice\ninvoice = Invoice()\nserialized = codec.dumps({'amount': 3})\nwith open('report.json', 'w') as stream:\n    codec.dump({}, stream)\n";
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["invoice.Invoice.dump"]
+    );
+    assert!(evidence_certainties(&report, "invoice.Invoice.dump", "direct_call").is_empty());
+    assert!(!root.join("report.json").exists());
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(cached, report);
+    }
+    for (original, unsupported) in [
+        ("'amount': 3", "'amount': b'wide'"),
+        ("'report.json', 'w'", "'report.json', 'wb'"),
+        ("codec.dump({}, stream)", "codec.dump({}, invoice)"),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec, 'dump', None)",
+        ),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec, '_default_encoder', None)",
+        ),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec.JSONEncoder, 'encode', None)",
+        ),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec.encoder, 'encode_basestring_ascii', None)",
+        ),
+    ] {
+        fs::write(&app, source.replace(original, unsupported)).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(!root.join("report.json").exists());
+    }
+}
+
+#[test]
+fn deprecation_decorator_requires_a_plain_function() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let import = "from typing_extensions import deprecated as retire\n";
+    fs::write(
+        &app,
+        format!("{import}@retire('old')\ndef previous(): return 1\n"),
+    )
+    .unwrap();
+    let report = scan(root);
+    let functions = report["unused_functions"].as_array().unwrap();
+    assert_eq!(functions.len(), 1, "{report}");
+    assert_eq!(functions[0]["full_name"], "app.previous");
+    assert_eq!(functions[0]["confidence"], 40);
+    assert_eq!(
+        functions[0]["confidence_factors"],
+        serde_json::json!(["deprecated_api"])
+    );
+
+    for decorators in [
+        "    @retire('old')\n    @classmethod\n",
+        "    @classmethod\n    @retire('old')\n",
+    ] {
+        fs::write(
+            &app,
+            format!("{import}class Provider:\n{decorators}    def previous(cls): return 1\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_decorator"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
 fn lazy_table_imports_require_a_safe_path_probe() {
     let cache = tempfile::tempdir().unwrap();
     let unguarded = "def __getattr__(name):\n    module, attr = _LAZY[name]\n";

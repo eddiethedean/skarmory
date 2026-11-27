@@ -29,6 +29,7 @@ from run_phase03_seed import (
     port_cases,
     proved_changed_file_projection,
     proved_changed_file_scope,
+    proved_json_provider_dispatch,
     scan_candidate,
     write_receipt,
 )
@@ -80,8 +81,12 @@ class DiagnosticPortTests(unittest.TestCase):
         method = "test/test_method_reachability.py::test_partial_scan_does_not_prove_method_cycles_dead"
         binding = "test/test_dead_code_local_bindings.py"
         with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            with self.assertRaisesRegex(ValueError, "mixed SDK parity case requires --native-cli"):
+                port_cases(args)
+            args.native_cli = Path("target/release/skarmory")
             _, _, _, release = port_cases(args)
             args.diagnostics = True
+            args.native_cli = None
             _, _, _, diagnostics = port_cases(args)
 
         self.assertIn(f"{method}[file]", release)
@@ -405,6 +410,36 @@ class CandidateScanTests(unittest.TestCase):
                 controls = scan.call_args_list
                 self.assertNotIn("changed_files", controls[0].args[2])
                 self.assertEqual([file.name for file in controls[1].args[2]["changed_files"]], ["selected.py"])
+
+
+class ProviderPrecisionTests(unittest.TestCase):
+    def test_json_provider_control_requires_certain_method_evidence(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            for file in ("app.py", "invoice.py"):
+                (project / file).write_bytes(b"# original fixture\n")
+            target = "invoice.Invoice.dump"
+            original = {
+                "coverage": {"status": "complete"},
+                "selected_paths": ["app.py", "invoice.py"],
+                "unused_functions": [{"full_name": target}],
+                "dead_code_evidence": {"symbols": []},
+            }
+            empty = {**original, "unused_functions": []}
+            activated = {
+                **empty,
+                "dead_code_evidence": {"symbols": [{
+                    "qualified_name": target,
+                    "evidence": [{"kind": "direct_call", "certainty": "certain"}],
+                }]},
+            }
+            for control, passes in ((empty, False), (activated, True)):
+                with (
+                    self.subTest(passes=passes),
+                    patch("run_phase03_seed.scan_candidate", return_value=json.dumps(control)),
+                ):
+                    self.assertIs(proved_json_provider_dispatch(None, project, {}, original), passes)
+            self.assertEqual((project / "app.py").read_bytes(), b"# original fixture\n")
 
 
 class CorpusReceiptTests(unittest.TestCase):

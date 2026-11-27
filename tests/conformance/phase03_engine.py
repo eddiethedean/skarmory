@@ -144,7 +144,17 @@ LAZY_CASES.update({
     for mutation in ('_LAZY["Thing"] = ("pkg.other", "Other")', "rewrite(_LAZY)", "other = _LAZY")
 })
 LAZY_CASES[f"{LAZY_SOURCE}::{LAZY_TABLE_PARENT_FUNCTION}"] = (LAZY_TABLE_PARENT_FUNCTION, (), 540, [])
-TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES, *EXTERNAL_CASES, *LAZY_CASES, BUDGET_CASE}
+DEPRECATION_SOURCE = "test/test_dead_code_proof_regressions.py"
+DEPRECATION_TEST = "phase02::analysis::deprecation::tests::pinned_deprecation_facts"
+DEPRECATION_ALIAS = f"{DEPRECATION_SOURCE}::test_aliased_pep702_decorator_is_resolved"
+DEPRECATION_SHADOW = f"{DEPRECATION_SOURCE}::test_deprecation_cache_notices_new_provider_shadow"
+DEPRECATION_CASES = {
+    DEPRECATION_ALIAS: ("test_aliased_pep702_decorator_is_resolved", [127], 120),
+    DEPRECATION_SHADOW: ("test_deprecation_cache_notices_new_provider_shadow", [137, 141], 131),
+}
+TRACED_ENGINE_CASES = {
+    *INCLUDE_CASES, *TRUTH_CASES, *EXTERNAL_CASES, *LAZY_CASES, *DEPRECATION_CASES, BUDGET_CASE,
+}
 ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES, *EXCEPTION_CONTROLS}
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -555,6 +565,65 @@ def replay_lazy_export_guard(key, source, fixture, argv, env, trace):
     return outcome, fixtures, {"lazy_exports": report, "assertion_error": failure}
 
 
+def replay_deprecation_facts(key, source, fixture, argv, env, trace):
+    original = source[DEPRECATION_CASES[key][0]]
+    snapshots = []
+    project = fixture / "project"
+    project.mkdir()
+    report_path = fixture / "deprecation-report.json"
+
+    def native_facts(filename):
+        shadow_expected = key == DEPRECATION_SHADOW and len(snapshots) == 1
+        if len(snapshots) >= (2 if key == DEPRECATION_SHADOW else 1):
+            raise ValueError("the original test performed an extra deprecation lookup")
+        source_path = project / "app.py"
+        shadow_path = project / "warnings.py"
+        if (Path(filename).resolve() != source_path or not source_path.is_file()
+                or shadow_path.is_file() != shadow_expected):
+            raise ValueError("the original deprecation lookup must use the staged project sources")
+        files = sorted(project.glob("*.py"))
+        fixtures = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+        if snapshots and snapshots[0][1]["app.py"] != fixtures["app.py"]:
+            raise ValueError("the provider shadow control must keep the original application bytes")
+        report_path.unlink(missing_ok=True)
+        outcome = subprocess.run(
+            argv, capture_output=True, text=True, timeout=60, check=False,
+            env={
+                **env,
+                "SKARMORY_PHASE03_DEPRECATION_FIXTURE": str(project),
+                "SKARMORY_PHASE03_DEPRECATION_REPORT": str(report_path),
+            },
+        )
+        snapshots.append((outcome, fixtures, None))
+        if not passed_exact_test(outcome, DEPRECATION_TEST):
+            raise ValueError("the named native deprecation facts test failed")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        snapshots[-1] = outcome, fixtures, report
+        if report["cache"] != {"hits": int(shadow_expected), "misses": 1,
+                             "writes": 1, "write_failures": 0}:
+            raise ValueError("native analysis did not reuse the application facts with the new provider")
+        # The pinned assertions use only the function component of the facts.
+        return None, frozenset(map(tuple, report["functions"]))
+
+    previous_trace = sys.gettrace()
+    failure = None
+    try:
+        with patch.dict(original.__globals__, {"deprecation_facts": native_facts}):
+            sys.settrace(trace)
+            original(project)
+    except (AssertionError, ValueError, OSError) as error:
+        failure = str(error)
+    finally:
+        sys.settrace(previous_trace)
+    if not snapshots:
+        raise ValueError("the original deprecation proof did not invoke native analysis")
+    outcome, fixtures, _ = snapshots[-1]
+    return outcome, fixtures, {
+        "snapshots": [{"fixture_sha256": hashes, "report": report} for _, hashes, report in snapshots],
+        "assertion_error": failure,
+    }
+
+
 def replay_exception_control(key, source, fixture, argv, env):
     import pytest
     from skylos.deadcode import fastapi_liveness
@@ -633,6 +702,11 @@ def engine_case(args, key, case, env, trace=None):
         _, _, line, prerequisites = LAZY_CASES[key]
         source_file, assertions, test = LAZY_SOURCE, [f"{LAZY_SOURCE}:{line}"], LAZY_TEST
         prerequisites = [*prerequisites, "native-lazy-export-proof"]
+    elif key in DEPRECATION_CASES:
+        _, lines, fixture = DEPRECATION_CASES[key]
+        source_file, test = DEPRECATION_SOURCE, DEPRECATION_TEST
+        assertions = [f"{source_file}:{line}" for line in lines]
+        prerequisites = [f"{source_file}:{fixture}", "native-deprecation-facts"]
     elif key in EXCEPTION_CONTROLS:
         source_file, _, test, assertions, prerequisites = EXCEPTION_CONTROLS[key]
     else:
@@ -661,6 +735,8 @@ def engine_case(args, key, case, env, trace=None):
             outcome, fixtures, details = replay_external_classes(key, source, fixture, argv, env, trace)
         elif key in LAZY_CASES:
             outcome, fixtures, details = replay_lazy_export_guard(key, source, fixture, argv, env, trace)
+        elif key in DEPRECATION_CASES:
+            outcome, fixtures, details = replay_deprecation_facts(key, source, fixture, argv, env, trace)
         elif key in EXCEPTION_CONTROLS:
             outcome, fixtures, details = replay_exception_control(key, source, fixture, argv, env)
         elif key == CASE:

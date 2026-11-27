@@ -20500,10 +20500,8 @@ assertions = ["test/test_dead_code_import_evidence.py:123", "test/test_dead_code
 prerequisites = ["test/test_dead_code_import_evidence.py:14", "test/test_dead_code_import_evidence.py:122", "test/test_dead_code_import_evidence.py:124", "test/test_dead_code_import_evidence.py:125", "installed-sdk", "grep-verification"]
 provenance = "Original pinned pytest case and inline project written by test/test_dead_code_import_evidence.py:13-14 using test/fixture_paths.py::write_fixture."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The warnings.warn call leaves coverage incomplete before the confidence-factor assertions."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_a_same_named_dictionary_key_elsewhere_does_not_keep_an_import"
@@ -21066,10 +21064,8 @@ assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_m
 prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call, unresolved_context_manager) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_stdlib_module_call_does_not_consume_a_unique_local_method[False-80]"
@@ -21080,10 +21076,8 @@ assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_m
 prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call, unresolved_context_manager) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_stdlib_module_call_does_not_consume_a_unique_local_method[True-0]"
@@ -21094,10 +21088,8 @@ assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_m
 prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification", "native-provider-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call, unresolved_context_manager) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_stdlib_module_call_does_not_consume_a_unique_local_method[True-80]"
@@ -21108,10 +21100,8 @@ assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_m
 prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification", "native-provider-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call, unresolved_context_manager) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_uncalled_consumer_cannot_rescue_an_external_provider_method[False-0]"
@@ -21670,10 +21660,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:87", "test/test_dead_cod
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the original function but does not apply the pinned deprecation confidence cap of 40."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_proved_deprecated_api_still_has_confidence_cap[from warnings import warn as alert\\nfrom builtins import FutureWarning as Category\\ndef candidate():\\n    alert(\"use new API\", category=Category)\\n]"
@@ -21684,10 +21672,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:87", "test/test_dead_cod
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the original function but does not apply the pinned deprecation confidence cap of 40."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_proved_deprecated_api_still_has_confidence_cap[def candidate():\\n    import warnings\\n    warnings.warn(\"use new API\", DeprecationWarning)\\n]"
@@ -21698,10 +21684,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:87", "test/test_dead_cod
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the original function but does not apply the pinned deprecation confidence cap of 40."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_proved_deprecated_api_still_has_confidence_cap[from warnings import deprecated\\n@deprecated(\"use new API\")\\ndef candidate():\\n    return 1\\n]"
@@ -21726,10 +21710,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:87", "test/test_dead_cod
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the original function but does not apply the pinned deprecation confidence cap of 40."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_proved_deprecated_api_still_has_confidence_cap[def candidate():\\n    \"\"\"Old entry point kept for backwards compatibility.\"\"\"\\n    return 1\\n]"
@@ -21740,10 +21722,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:87", "test/test_dead_cod
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the original function but does not apply the pinned deprecation confidence cap of 40."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_unproved_deprecation_does_not_hide_candidate[def warn(message, category):\\n    return message, category\\nwarn(\"not a warning\", DeprecationWarning)\\ndef candidate():\\n    return 1\\n]"
@@ -21852,9 +21832,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:127"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:120", "native-deprecation-facts"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 119–127."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original deprecation-facts assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_deprecation_cache_notices_new_provider_shadow"
@@ -21865,9 +21844,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:137", "test/test_dead_co
 prerequisites = ["test/test_dead_code_proof_regressions.py:131", "native-deprecation-facts"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 130–141."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original deprecation-facts assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_literal_module_metadata_before_warning_preserves_deprecation"
@@ -21878,10 +21856,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:158"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports incomplete coverage (unresolved_call) at app.py:4."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_arbitrary_effect_before_warning_is_not_leading_deprecation"
@@ -21906,10 +21882,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:205"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the explicitly retired compatibility function as unused at the original confidence threshold."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_retired_compatibility_entry_needs_explicit_retirement[Legacy method for backwards compatibility. Use register_command instead.-True]"
@@ -21920,10 +21894,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:205"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the explicitly retired compatibility function as unused at the original confidence threshold."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_retired_compatibility_entry_needs_explicit_retirement[Current function supports backwards compatibility for old input files.-False]"
@@ -22928,9 +22900,8 @@ assertions = ["test/test_reachability_integration_qa.py:397", "test/test_reachab
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification", "installed-sdk-native-cli-parity"]
 provenance = "Pinned inline project generated by the original test at lines 369–408 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The original test compares one installed SDK report with one real native CLI report. The current runner cannot bind both artifacts to the same original case."
 
 # Original Python analyzer cases covering package surfaces, suppressions, and reachability.
 
@@ -23049,10 +23020,8 @@ assertions = ["test/test_analyzer.py:1328"]
 prerequisites = ["test/test_analyzer.py:1315", "installed-sdk", "grep-verification-disabled"]
 provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1314-1328."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The original assertions still fail because the imported type used only in the quoted cast is reported unused."
 
 [[cases]]
 id = "test/test_analyzer.py::TestAnalyze::test_noqa_f401_suppresses_only_matching_unused_import"
@@ -23162,12 +23131,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_analyzer.py"
 assertions = ["test/test_analyzer.py:2055"]
-prerequisites = ["test/test_analyzer.py:2035", "test/test_analyzer.py:2044", "installed-sdk", "grep-verification-disabled"]
+prerequisites = ["test/test_analyzer.py:2035", "test/test_analyzer.py:2044", "installed-sdk", "grep-verification-disabled", "installed-sdk-malformed-config-recovery"]
 provenance = "Original pinned fixture and assertions at test/test_analyzer.py:2032-2056."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = ["test/test_analyzer.py:2056"]
-blocker = "The installed SDK rejects the original malformed pyproject.toml during configuration loading, before it can report the unused function."
 
 [[cases]]
 id = "test/test_analyzer.py::TestConfiguredDeadCodeEntrypoints::test_configured_class_entrypoint_matches_path_and_base"
@@ -23326,6 +23294,56 @@ source = "test/test_analyzer.py"
 assertions = ["test/test_analyzer.py:4077", "test/test_analyzer.py:4078", "test/test_analyzer.py:4079"]
 prerequisites = ["test/test_analyzer.py:4059", "installed-sdk", "grep-verification-disabled"]
 provenance = "Original pinned fixture and assertions at test/test_analyzer.py:4057-4079."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+# Original SDK source selection and report cases.
+
+[[cases]]
+id = "test/test_analyzer.py::TestSkylos::test_trace_file_false_ignores_existing_project_root_trace"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:313", "test/test_analyzer.py:314"]
+prerequisites = ["test/test_analyzer.py:287", "test/test_analyzer.py:291", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:285–314."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_analyze_with_exclusions"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1796"]
+prerequisites = ["test/test_analyzer.py:1789", "test/test_analyzer.py:1791", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:96–140 and 1786–1796."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_analyze_empty_directory"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:2831", "test/test_analyzer.py:2832"]
+prerequisites = ["test/test_analyzer.py:2827", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:2826–2841."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestProcFile::test_empty_file_reporting"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3236", "test/test_analyzer.py:3240", "test/test_analyzer.py:3241", "test/test_analyzer.py:3242", "test/test_analyzer.py:3245", "test/test_analyzer.py:3246", "test/test_analyzer.py:3247"]
+prerequisites = ["test/test_analyzer.py:3226", "test/test_analyzer.py:3228", "test/test_analyzer.py:3231", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3224–3247."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []

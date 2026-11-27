@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,812 cases to Phase 0.3 and defers 42 to later language
+inventory assigns 1,816 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -304,8 +304,8 @@ model leaves coverage incomplete.
 The frozen reference checks all 101 cases in `test_dead_code_local_bindings.py`,
 `test_dead_code_import_evidence.py`, and `test_provider_method_precision.py`.
 The inventory preserves the original assertions, fixture setup and grep modes.
-The installed-wheel replay qualifies 7 local-binding cases, 8 import-evidence
-cases, and 12 provider-method cases. Imports read in bounded quoted type
+The installed-wheel replay qualifies 7 local-binding cases, 9 import-evidence
+cases, and 16 provider-method cases. Imports read in bounded quoted type
 annotations count as uses, including imports on each feasible conditional
 path. The analyzer skips `Literal` values and `Annotated` metadata when
 resolving type references. Quoted calls remain unevaluated.
@@ -316,6 +316,12 @@ bounded branches that complete before the closure is defined.
 A literal `str.format(**locals())` call with one simple named field reads
 the corresponding local binding when its value is a builtin scalar.
 Formatting that may invoke a user-defined hook remains incomplete.
+Calls to the genuine `typing.cast` can read imports in a quoted type argument
+without evaluating the string. The native analyzer also handles default
+`json.dumps` for literal values and a bounded `json.dump` into a text stream
+from builtin `open`. The JSON cases pair the original scan with an installed
+SDK control that proves a real call to the otherwise unused invoice method.
+Provider replacements and unresolved writes can invalidate these proofs.
 Two import cases exercise a function that reads the replacement of an
 imported callable. A straight-line proof checks that neither the reader
 nor the replacement can be called before the overwrite has completed.
@@ -324,12 +330,12 @@ this analysis incomplete.
 
 Diagnostics retain incomplete coverage, failed assertions, and cases where
 the native report cannot establish the evidence required by the assertion.
-The remaining 74 cases carry no release credit.
+The remaining 69 cases carry no release credit.
 
 ### Dead-code proof regressions
 
 All 63 frozen cases in `test_dead_code_proof_regressions.py` pass on Skylos.
-The installed Skarmory SDK qualifies 29 public analysis cases with the
+The installed Skarmory SDK qualifies 37 public analysis cases with the
 original assertions. Seven internal lazy-export cases qualify against the
 native engine. The analyzer can match a type-only import to the exact name
 and provider returned by a bounded lazy getter, including a getter that
@@ -344,17 +350,25 @@ Both replays use a package so the original unguarded hook is never called
 to provide `__path__`. The analyzer withholds a lazy-table import proof when
 the facade or builtin loader target could run an unresolved `__path__` probe.
 
-The diagnostics record the remaining 25 SDK cases. Two internal tests of
-deprecation facts still require native engine ports. The workflow checks the
+Bounded deprecation evidence caps the finding confidence at 40 and records
+`deprecated_api`. The SDK cases cover recognized docstrings and leading
+warnings from the genuine provider, including warnings after passive module
+metadata. Two native engine cases check the aliased `typing_extensions`
+decorator and verify that adding a local `warnings.py` invalidates the proof
+when the application source is served from the fact cache.
+
+The diagnostics record the remaining 17 SDK cases. The workflow checks the
 complete frozen case list against the SDK, CLI, and engine inventory entries.
 
 ### Reachability integration
 
 The frozen reference passes all 51 cases in
-`test_reachability_integration_qa.py`. The installed SDK qualifies 47 cases and
+`test_reachability_integration_qa.py`. The installed SDK qualifies 48 cases and
 the native CLI qualifies one. Two unresolved receiver cases have diagnostic
-receipts. The case that compares the SDK and native CLI needs a port that
-uses both artifacts in the original comparison.
+receipts. The paired SDK and native CLI case verifies that grep evidence can
+retain an imported function declaration while reporting the unread alias.
+The SDK receipt binds the companion CLI digest to the release input with
+`--native-cli` and executes the original comparison against both artifacts.
 
 The changed-file cases compare whole-project source selection and coverage
 before checking the projected findings. Two cache cases compare findings,
@@ -363,15 +377,17 @@ and misses after source edits or repeated scans of external configuration.
 
 ### Analyzer regression tranche
 
-The frozen workflow runs 34 reviewed cases from `test/test_analyzer.py` by
+The frozen workflow runs 38 reviewed cases from `test/test_analyzer.py` by
 their class-qualified pytest IDs. They cover package surfaces, source
-selection, suppressions, and reachability. Fifteen qualify through the
+selection, suppressions, and reachability. Twenty-one qualify through the
 installed SDK, including four cases for `# noqa: F401`. The native
 frontend associates that directive with the Python import aliases it covers,
-and the Rust report retains each suppression as evidence. Seventeen cases
-have diagnostic receipts and two still require candidate ports. The
-malformed-configuration case requires the unused-function assertion and
-records its separate danger-rule assertion outside Phase 0.3.
+and the Rust report retains each suppression as evidence. Sixteen cases
+have diagnostic receipts and one still requires a candidate port. The
+malformed-configuration replay verifies that the installed SDK warns about
+unusable legacy fields in a discovered `pyproject.toml` and still reports
+the unused function. Its independent danger-rule assertion stays outside
+Phase 0.3.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

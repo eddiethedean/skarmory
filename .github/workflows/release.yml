@@ -351,6 +351,13 @@ jobs:
         with:
           name: release-python-manylinux-x86_64
           path: phase03-wheel
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        with:
+          toolchain: '1.98.1'
+      - name: Build the native CLI conformance artifact
+        if: env.DEAD_CODE_GATE_ENABLED == 'true'
+        run: cargo build --locked --release -p skarmory_cli --bin skarmory
       - name: Run the installed SDK conformance shard
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         shell: bash
@@ -370,6 +377,7 @@ jobs:
             --inventory tests/conformance/phase03-inventory.toml \
             --variant "$DEAD_CODE_SDK_VARIANT" \
             --sdk-python "$sdk_python" \
+            --native-cli target/release/skarmory \
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/sdk.receipt.json
@@ -501,14 +509,9 @@ jobs:
             --artifact "${wheels[0]}" \
             --candidate-revision "$(git rev-parse HEAD)" \
             --output phase03-evidence/sdk-fastapi.receipt.json
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        with:
-          toolchain: '1.98.1'
       - name: Run the native CLI conformance shard
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |
-          cargo build --locked --release -p skarmory_cli --bin skarmory
           phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
             --upstream phase03-skylos \
             --inventory tests/conformance/phase03-inventory.toml \

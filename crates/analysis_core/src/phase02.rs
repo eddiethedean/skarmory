@@ -138,6 +138,7 @@ struct Finding {
     method_owner: Option<[usize; 2]>,
     declaration_whitelist: Option<&'static str>,
     confidence: u8,
+    deprecated_api: bool,
     rule_id: &'static str,
     reason: &'static str,
 }
@@ -290,7 +291,9 @@ impl Diagnostic {
             column: finding.column,
             confidence: (!file || javascript_file).then_some(finding.confidence),
             severity: file.then_some("LOW"),
-            confidence_factors: javascript_file.then_some([finding.reason]),
+            confidence_factors: javascript_file
+                .then_some([finding.reason])
+                .or_else(|| finding.deprecated_api.then_some(["deprecated_api"])),
             message,
             category: file.then_some("DEAD_CODE"),
             rule_id: finding.rule_id,
@@ -405,6 +408,8 @@ struct Summary {
     analysis_error_count: usize,
     coverage_status: &'static str,
     languages: BTreeMap<&'static str, usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excluded_folders: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1627,6 +1632,7 @@ fn scan_selected(
             analysis_error_count: issues.len(),
             coverage_status: status,
             languages,
+            excluded_folders: phase03.then(|| options.excludes.clone()),
             fastapi_route_declarations: analysis.fastapi_route_declarations,
             javascript_file_analysis: has_javascript.then_some(JavaScriptFileAnalysis {
                 rule_id: javascript::RULE,

@@ -19,6 +19,7 @@ RESULT_STATUSES = {
     "passed", "failed", "xfailed", "xpassed", "skipped", "blocked", "error",
 }
 REVIEW_PORT = "tests/conformance/run_phase03_seed.py"
+SDK_CLI_PARITY = "installed-sdk-native-cli-parity"
 FRAMEWORK_CORPUS_SOURCE = "corpus/manifest.json"
 REVIEW_COVERAGE_ASSERTION = "test/web_framework_fixtures.py:16"
 APPROVED_EXCEPTION_TESTS = {
@@ -646,6 +647,10 @@ def evaluate(
             else:
                 try:
                     reasons.extend(verify_preview_result(result, case))
+                    if SDK_CLI_PARITY in case["prerequisites"]:
+                        cli_digest = report["artifacts"].get("cli", {}).get("sha256")
+                        if cli_digest is None or result.get("native_cli_sha256") != cli_digest:
+                            reasons.append("native CLI parity artifact does not match the release input")
                     if case_fixtures and not fixture_blockers:
                         expected_hashes = {name: item["sha256"] for name, item in case_fixtures.items()}
                         if result.get("fixture_sha256") != expected_hashes:

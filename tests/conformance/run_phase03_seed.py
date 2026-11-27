@@ -17,12 +17,23 @@ from phase03_cli import (
     CLEANUP_CASES,
     CONTROL_PAIR_CASES,
     METHOD_SOURCE,
+    SDK_CLI_PARITY_CASE,
     WORKFLOW_SOURCES,
     CleanupCaseCli,
+    GrepParityCli,
     PairedSourceCli,
     WorkflowCaseCli,
 )
 from phase03_cleanup_execution import CLEANUP_EXECUTION_CASES, CleanupExecutionCli
+from phase03_config import (
+    CASE as CONFIG_RECOVERY_CASE,
+    OMITTED_ASSERTION as CONFIG_OMITTED_ASSERTION,
+    PREREQUISITE as CONFIG_RECOVERY_PROOF,
+    candidate_options as config_recovery_options,
+    candidate_test as config_recovery_test,
+    validate_scope as validate_config_recovery_scope,
+    verify_recovery as verify_config_recovery,
+)
 from phase03_dependencies import (
     DECLARATION_CASE,
     DECLARATION_PREREQUISITES,
@@ -75,6 +86,9 @@ CHANGED_FILE_CASES = {
       for grep in (False, True)),
 }
 CHANGED_FILE_SCOPE = "installed-sdk-changed-file-scope"
+SDK_CLI_PARITY = "installed-sdk-native-cli-parity"
+JSON_PROVIDER_CASE = "test/test_provider_method_precision.py::test_stdlib_module_call_does_not_consume_a_unique_local_method["
+PROVIDER_METHOD_EVIDENCE = "native-provider-method-evidence"
 PROJECT_VENV_CASE = (
     "test/test_framework_class_attr_liveness.py::test_project_venv_site_packages_are_external_search_dirs"
 )
@@ -216,6 +230,40 @@ def proved_changed_file_projection(sdk_python, grep_verify):
             and {(row["file"], row["full_name"]) for row in projected["unused_functions"]} == {inside}
         )
 
+
+def proved_json_provider_dispatch(sdk_python, path, options, report):
+    target = "invoice.Invoice.dump"
+    selected = ["app.py", "invoice.py"]
+
+    def unused(candidate):
+        return any(row["full_name"] == target for row in candidate["unused_functions"])
+
+    def called(candidate):
+        return any(
+            row["qualified_name"] == target
+            and {"kind": "direct_call", "certainty": "certain"} in row["evidence"]
+            for row in candidate["dead_code_evidence"]["symbols"]
+        )
+
+    if report["selected_paths"] != selected or not unused(report) or called(report):
+        return False
+    # Repeat the real SDK scan on an independent control that differs by
+    # one call on the known receiver. The original pytest fixture is intact.
+    with TemporaryDirectory(prefix="skarmory-json-dispatch-control-") as directory:
+        project = Path(directory)
+        for file in selected:
+            (project / file).write_bytes((Path(path) / file).read_bytes())
+        with (project / "app.py").open("ab") as source:
+            source.write(b"\ninvoice.dump({})\n")
+        control = json.loads(scan_candidate(sdk_python, project, options))
+    return (
+        control["coverage"]["status"] == "complete"
+        and control["selected_paths"] == selected
+        and not unused(control)
+        and called(control)
+    )
+
+
 def port_cases(args):
     from check_dead_code_gate import read_inventory
 
@@ -242,6 +290,15 @@ def port_cases(args):
         raise ValueError("missing native CLI adapter for a mapped case")
     if layer == "sdk" and args.sdk_python is None:
         raise ValueError("--sdk-python is required for the SDK variant")
+    for key, case in cases.items():
+        if (SDK_CLI_PARITY in case["prerequisites"]) != (key == SDK_CLI_PARITY_CASE):
+            raise ValueError("missing native CLI adapter for a mapped SDK parity case")
+        if key.startswith(JSON_PROVIDER_CASE) and PROVIDER_METHOD_EVIDENCE not in case["prerequisites"]:
+            raise ValueError("the JSON provider cases require the native method evidence control")
+    if SDK_CLI_PARITY_CASE in cases and (
+        layer != "sdk" or getattr(args, "native_cli", None) is None
+    ):
+        raise ValueError("the mixed SDK parity case requires --native-cli and the SDK variant")
     if any(
         CHANGED_FILE_SCOPE in case["prerequisites"] and (layer != "sdk" or key not in CHANGED_FILE_CASES)
         for key, case in cases.items()
@@ -252,6 +309,10 @@ def port_cases(args):
         expected_proof = {FACT_CACHE_CASES[key][0]} if key in FACT_CACHE_CASES else set()
         if proofs != expected_proof or (proofs and layer != "sdk"):
             raise ValueError("missing native SDK adapter for a mapped fact-cache case")
+        if key == CONFIG_RECOVERY_CASE or CONFIG_RECOVERY_PROOF in case["prerequisites"]:
+            if key != CONFIG_RECOVERY_CASE or layer != "sdk":
+                raise ValueError("the malformed-config port requires its pinned SDK case")
+            validate_config_recovery_scope(case)
     if any(
         UNUSED_DEPENDENCY_PREREQUISITE in case["prerequisites"]
         and (layer != "sdk" or case["source"] not in UNUSED_DEPENDENCY_SOURCES)
@@ -588,6 +649,9 @@ def pytest_worker(args):
             self.source_edit_cache = set()
             self.fact_cache_replays = set()
             self.changed_file_scopes = set()
+            self.config_recoveries = set()
+            self.sdk_cli_parity = set()
+            self.provider_method_proofs = set()
             self.import_scope_prerequisites = {}
             self.runtime_results = {}
 
@@ -601,8 +665,11 @@ def pytest_worker(args):
             cache_path = None
             scans_with_cache = []
             fact_cache = None
+            parity_cli = None
 
             def analyze(path, **options):
+                if key == CONFIG_RECOVERY_CASE:
+                    options = config_recovery_options(path, options)
                 if fact_cache is not None:
                     if key == CONFIG_CACHE_CASE and not fact_cache.observed:
                         # The original stable-input case only requests cache-enabled scans.
@@ -647,6 +714,16 @@ def pytest_worker(args):
                     self.runtime_results.setdefault(key, []).append(runtime)
                 elif report["coverage"]["status"] != "complete":
                     pytest.fail(f"candidate scan incomplete: {report['coverage']}")
+                if key == CONFIG_RECOVERY_CASE:
+                    verify_config_recovery(path, report)
+                    self.config_recoveries.add(key)
+                elif parity_cli is not None:
+                    parity_cli.verify_sdk(path, options, report)
+                    self.sdk_cli_parity.add(key)
+                if key.startswith(JSON_PROVIDER_CASE):
+                    if not proved_json_provider_dispatch(args.sdk_python, path, options, report):
+                        pytest.fail("the native provider control did not distinguish an actual method call")
+                    self.provider_method_proofs.add(key)
                 if CHANGED_FILE_SCOPE in case["prerequisites"]:
                     full = json.loads(scan_candidate(
                         args.sdk_python, path,
@@ -719,6 +796,8 @@ def pytest_worker(args):
             with ExitStack() as stack:
                 patch = stack.enter_context(pytest.MonkeyPatch.context())
                 if args.mode == "candidate":
+                    if key == CONFIG_RECOVERY_CASE:
+                        patch.setattr(item, "obj", config_recovery_test(item.obj))
                     if key in FACT_CACHE_CASES:
                         _, file_count, expected_hits = FACT_CACHE_CASES[key]
                         directory = stack.enter_context(TemporaryDirectory(prefix="skarmory-pinned-fact-cache-"))
@@ -754,6 +833,10 @@ def pytest_worker(args):
                         else:
                             cli = WorkflowCaseCli(args.artifact, item.funcargs["tmp_path"], key)
                             patch.setattr(item.module.cli, "main", cli.run)
+                    elif key == SDK_CLI_PARITY_CASE:
+                        parity_cli = GrepParityCli(args.native_cli, item.funcargs["tmp_path"])
+                        patch.setattr(item.module, "subprocess", parity_cli)
+                        patch.setattr(item.module, "analyze", analyze)
                     elif key.startswith(IMPORT_SCOPE_CASE):
                         def fastapi_project(_definitions, _parsed, path):
                             def collect():
@@ -888,11 +971,23 @@ def pytest_worker(args):
                 proven = key in capture.fact_cache_replays
             elif required == CHANGED_FILE_SCOPE:
                 proven = key in capture.changed_file_scopes
+            elif required == CONFIG_RECOVERY_PROOF:
+                proven = key in capture.config_recoveries
+            elif required == SDK_CLI_PARITY:
+                proven = key in capture.sdk_cli_parity
+            elif required == PROVIDER_METHOD_EVIDENCE:
+                proven = key in capture.provider_method_proofs
             elif required == "runtime-trace-rejected":
                 proven = key in capture.trace_rejections
             prerequisites[required] = "passed" if proven else "blocked"
         reached = [assertion for assertion in case["assertions"] if assertion in lines]
         outcome = capture.outcomes.get(key, "error")
+        if (
+            key == CONFIG_RECOVERY_CASE
+            and outcome == "passed"
+            and (CONFIG_OMITTED_ASSERTION in lines) != (args.mode == "reference")
+        ):
+            outcome = "blocked"
         proved = (
             key in capture.scans
             and all(value == "passed" for value in prerequisites.values())
@@ -931,6 +1026,8 @@ def write_receipt(args):
     revision = inventory["reference_revision"]
     validate_revision(args.candidate_revision, "candidate revision")
     artifact_digest = sha256(args.artifact)
+    native_cli = args.native_cli if SDK_CLI_PARITY_CASE in cases else None
+    native_cli_digest = sha256(native_cli) if native_cli is not None else None
     env = environment()
     with TemporaryDirectory(prefix="skarmory-phase03-") as temporary:
         work = Path(temporary).resolve()
@@ -949,6 +1046,8 @@ def write_receipt(args):
             common.extend(("--sdk-python", str(args.sdk_python)))
         if args.fastapi_wheels is not None:
             common.extend(("--fastapi-wheels", str(args.fastapi_wheels)))
+        if native_cli is not None:
+            common.extend(("--native-cli", str(native_cli)))
         if args.diagnostics:
             common.append("--diagnostics")
         for mode in ("reference", "candidate"):
@@ -990,6 +1089,8 @@ def write_receipt(args):
 
     if sha256(args.artifact) != artifact_digest:
         errors.append("candidate artifact changed during execution")
+    if native_cli is not None and sha256(native_cli) != native_cli_digest:
+        errors.append("companion native CLI artifact changed during execution")
     results = []
     for case_id, case in cases.items():
         reference = reports.get("reference", {}).get(case_id, {})
@@ -1035,6 +1136,9 @@ def write_receipt(args):
             }
         if case_id in ENGINE_CASES:
             result["native_test"] = candidate.get("native_test")
+        if (case_id == SDK_CLI_PARITY_CASE
+                and result["prerequisites"].get(SDK_CLI_PARITY) == "passed"):
+            result["native_cli_sha256"] = native_cli_digest
         results.append(result)
     receipt = {
         "schema_version": 1,
@@ -1066,6 +1170,7 @@ def main():
     parser.add_argument("--inventory", required=True, type=Path)
     parser.add_argument("--variant", required=True)
     parser.add_argument("--sdk-python", type=Path)
+    parser.add_argument("--native-cli", type=Path)
     parser.add_argument("--fastapi-wheels", type=Path)
     parser.add_argument("--artifact", required=True, type=Path)
     parser.add_argument("--candidate-revision")
@@ -1074,7 +1179,7 @@ def main():
     parser.add_argument("--mode", choices=("reference", "candidate"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.upstream = args.upstream.resolve()
-    for name in ("inventory", "sdk_python", "fastapi_wheels", "output", "artifact"):
+    for name in ("inventory", "sdk_python", "native_cli", "fastapi_wheels", "output", "artifact"):
         path = getattr(args, name)
         if path is not None:
             # Preserve the venv interpreter symlink and its sys.prefix.

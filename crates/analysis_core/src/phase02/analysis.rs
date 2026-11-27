@@ -28,6 +28,7 @@ mod celery_routes;
 mod class_parameter_calls;
 mod closures;
 mod comprehension;
+mod deprecation;
 mod django_checks;
 mod django_choices;
 mod django_forms;
@@ -752,7 +753,9 @@ pub(super) fn analyze_with_verification(
         iteration_locals: Vec::new(),
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
+        grep_import_declarations: BTreeMap::new(),
         phase03,
+        bounded_deprecation: phase03 && !framework.partial_sources,
         terminal_proofs: entrypoints.is_empty()
             && package_entrypoints.is_none_or(|snapshot| snapshot.entries.is_empty())
             && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
@@ -1018,7 +1021,9 @@ struct Graph<'a> {
     iteration_locals: Vec<([usize; 2], Value)>,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
+    grep_import_declarations: BTreeMap<SymbolId, SymbolId>,
     phase03: bool,
+    bounded_deprecation: bool,
     terminal_proofs: bool,
     failed_terminal_modules: BTreeSet<ScopeId>,
     failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
@@ -2180,6 +2185,23 @@ impl<'a> Graph<'a> {
             }
             if let ModuleMember::Binding(id, _) = &lookup {
                 self.record_django_global_read(scope, *id, import.local.at);
+                let target_scope = self.symbols[*id].scope;
+                if self.phase03
+                    && self.grep_verify
+                    && scope == source_scope
+                    && scope == source
+                    && target_scope != source
+                    && before.is_none()
+                    && let Some(alias) = binding
+                    && !self.conditional.contains_key(&alias)
+                    && !self.binding_depends_on_branch(*id, END)
+                    && !self.has_module_binding_write(target_scope, member)
+                    && !member.starts_with('_')
+                    && matches!(self.symbols[*id].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function && definition.decorators.is_empty())
+                {
+                    self.grep_import_declarations.insert(alias, *id);
+                }
             }
             match lookup {
                 ModuleMember::Lazy(_, branch) => return Some(branch),
@@ -4737,6 +4759,18 @@ impl<'a> Graph<'a> {
                 Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {
                     recurse(self, &arguments[0])
                 }
+                Value::Provider(name) if self.phase03 && name == "typing.cast" => {
+                    if let [_, value] = arguments.as_slice()
+                        && keywords.is_empty()
+                        && self
+                            .module_member_write("typing", "cast", (scope, before))
+                            .is_none()
+                    {
+                        recurse(self, value)
+                    } else {
+                        Value::Unknown
+                    }
+                }
                 Value::IdentityDefaultFunction(default) if keywords.is_empty() => {
                     match arguments.as_slice() {
                         [] => *default,
@@ -7253,6 +7287,18 @@ impl<'a> Graph<'a> {
                                 || name == "pathlib.Path"
                                     && self.source_project_path(scope, before, arguments, keywords).is_some()) => {}
                     Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "typing.cast"
+                        && let [target, _] = arguments.as_slice() && keywords.is_empty()
+                        && self.module_member_write("typing", "cast", (scope, before)).is_none() =>
+                    {
+                        if matches!(target.kind, ExpressionKind::Text(_)) {
+                            self.quoted_annotation_reads(scope, target, before, false, 0);
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && name == "json.dumps"
+                        && let [value] = arguments.as_slice() && keywords.is_empty()
+                        && literal_json_value(value, 0)
+                        && self.unmodified_json_encoder((scope, before)) => {}
                     Value::Provider(name) if self.phase03 && name == "json.dumps"
                         && arguments.len() == 1 && keywords.is_empty()
                         && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
@@ -7645,6 +7691,90 @@ impl<'a> Graph<'a> {
             ),
             _ => {}
         }
+    }
+
+    fn walk_literal_json_file_write(
+        &mut self,
+        scope: ScopeId,
+        items: &[(Expression, Option<Name>)],
+        body: &[Statement],
+        before: Location,
+    ) -> bool {
+        let [(stream, Some(output))] = items else {
+            return false;
+        };
+        let [
+            Statement {
+                kind: StatementKind::Evaluate(write),
+                at,
+            },
+        ] = body
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function: open,
+            arguments: open_arguments,
+            keywords: open_keywords,
+        } = &stream.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function: dump,
+            arguments,
+            keywords,
+        } = &write.kind
+        else {
+            return false;
+        };
+        let [payload, target] = arguments.as_slice() else {
+            return false;
+        };
+        if !keywords.is_empty()
+            || !open_keywords.is_empty()
+            || !matches!(open_arguments.as_slice(), [path, mode]
+                if matches!(path.kind, ExpressionKind::Text(_))
+                    && matches!(&mode.kind, ExpressionKind::Text(mode) if mode == "w"))
+            || !matches!(&target.kind, ExpressionKind::Name(name) if name == &output.text)
+            || !literal_json_value(payload, 0)
+            || !self.unmodified_json_encoder((scope, *at))
+            || !matches!(self.probe_identity(scope, open, before),
+                Value::Provider(name) if name == "builtins.open")
+            || self
+                .module_member_write("builtins", "open", (scope, before))
+                .is_some()
+            || !matches!(self.probe_identity(scope, dump, *at),
+                Value::Provider(name) if name == "json.dump")
+        {
+            return false;
+        }
+        // The only consumer receives the original builtin text stream and
+        // a literal value. Record the reads without invoking file I/O.
+        self.walk(scope, stream, before);
+        self.walk(scope, dump, *at);
+        self.walk(scope, payload, *at);
+        self.walk(scope, target, *at);
+        true
+    }
+
+    fn unmodified_json_encoder(&self, access: (ScopeId, Location)) -> bool {
+        [
+            ("json", "JSONEncoder"),
+            ("json", "_default_encoder"),
+            ("json.encoder", "JSONEncoder"),
+        ]
+        .into_iter()
+        .all(|(module, name)| self.module_member_write(module, name, access).is_none())
+            && mutations::JSON_ENCODER_PROVIDERS.iter().all(|module| {
+                mutations::JSON_ENCODER_MEMBERS
+                    .iter()
+                    .all(|name| self.module_member_write(module, name, access).is_none())
+            })
+            && mutations::JSON_ENCODER_GLOBALS.iter().all(|name| {
+                self.module_member_write("json.encoder", name, access)
+                    .is_none()
+            })
     }
 
     fn call_invocation(
@@ -8486,6 +8616,9 @@ impl<'a> Graph<'a> {
     }
 
     fn suite(&mut self, scope: ScopeId, body: &[Statement]) -> bool {
+        let warning = (self.phase03 && std::ptr::eq(body, self.scopes[scope].body))
+            .then(|| self.leading_deprecation_warning(scope))
+            .flatten();
         for statement in body {
             let at = statement.at;
             if self.phase03 && self.prove_terminal_module_failure(scope, statement) {
@@ -8911,6 +9044,22 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::Evaluate(value) => {
+                    if warning.is_some_and(|warning| position(warning) == position(at))
+                        && let ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        } = &value.kind
+                    {
+                        self.walk(scope, function, at);
+                        for argument in arguments
+                            .iter()
+                            .chain(keywords.iter().map(|(_, value)| value))
+                        {
+                            self.walk(scope, argument, at);
+                        }
+                        continue;
+                    }
                     if !self.phase03
                         || !(self.discarded_generator_call(scope, value, at)
                             || self.walk_flask_globals_update(scope, value, at)
@@ -8998,6 +9147,9 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::With { items, body } => {
+                    if self.phase03 && self.walk_literal_json_file_write(scope, items, body, at) {
+                        continue;
+                    }
                     for (expression, _) in items {
                         self.walk(scope, expression, at);
                         if !matches!(self.identity(scope, expression, at, 0), Value::Executor) {
@@ -9200,6 +9352,12 @@ impl<'a> Graph<'a> {
         self.walk(scope, function, before);
         for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
             self.walk(scope, value, before);
+        }
+        if self.phase03
+            && let Binding::Definition(definition, _) = self.symbols[target].binding
+            && self.deprecation_decorator(scope, definition, decorator, before)
+        {
+            return true;
         }
         if self.phase03 && self.record_fastapi_parameter_route(scope, decorator, target, before) {
             return false;
@@ -12224,6 +12382,28 @@ impl<'a> Graph<'a> {
         self.report_fastapi_websocket_query_failures(&reach);
         #[cfg(test)]
         let fastapi_initializer_evidence = self.fastapi_initializer_evidence(&reach);
+        let mut imported_declarations = BTreeSet::new();
+        for (&alias, &target) in &self.grep_import_declarations {
+            let symbol = &self.symbols[alias];
+            if self.read.contains(&alias)
+                || reach.symbols.contains(&target)
+                || !reach.scopes.contains(&symbol.scope)
+            {
+                continue;
+            }
+            if verification.evidence.len() >= grep_verification::MAX_EVIDENCE {
+                self.issues.push(grep_verification::evidence_limit());
+                break;
+            }
+            imported_declarations.insert(target);
+            verification.evidence.push(self.verification_evidence(
+                target,
+                &self.files[self.scopes[symbol.scope].file].path,
+                symbol.name.at,
+                "imported_symbol",
+            ));
+        }
+        verification.rescued_count += imported_declarations.len();
         let Reachability {
             scopes: reachable_scopes,
             symbols: reachable_symbols,
@@ -12407,6 +12587,13 @@ impl<'a> Graph<'a> {
         }
         let mut definitions = BTreeMap::new();
         let mut unreachable_function_evidence = Vec::new();
+        let deprecated_modules: BTreeSet<_> = if self.phase03 && !partial_sources {
+            (0..self.files.len())
+                .filter(|&file| self.leading_deprecation_warning(file).is_some())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         for (id, symbol) in self.symbols.iter().enumerate() {
             if matches!(symbol.binding, Binding::Deleted) {
                 continue;
@@ -12436,6 +12623,7 @@ impl<'a> Graph<'a> {
                 Binding::Definition(def, _)
                     if !reachable_symbols.contains(&id)
                         && !coverage_declarations.contains(&id)
+                        && !imported_declarations.contains(&id)
                         && def.kind != DefinitionKind::Class =>
                 {
                     let is_method = scope.owner.is_some_and(|id| self.is_class(id));
@@ -12578,6 +12766,17 @@ impl<'a> Graph<'a> {
                     continue;
                 }
             }
+            let method_owner = scope
+                .owner
+                .filter(|&owner| category == Category::Function && self.is_class(owner))
+                .map(|owner| position(self.symbols[owner].name.at));
+            let deprecated_api = self.phase03
+                && !partial_sources
+                && (matches!(symbol.binding, Binding::Definition(definition, body)
+                    if self.deprecated_definition(symbol.scope, body, definition))
+                    || category != Category::Parameter
+                        && method_owner.is_none()
+                        && deprecated_modules.contains(&scope.file));
             findings.push(Finding {
                 category,
                 name,
@@ -12586,12 +12785,14 @@ impl<'a> Graph<'a> {
                 file: self.files[scope.file].path.clone(),
                 line: symbol.name.at.line,
                 column: symbol.name.at.column,
-                method_owner: scope
-                    .owner
-                    .filter(|&owner| category == Category::Function && self.is_class(owner))
-                    .map(|owner| position(self.symbols[owner].name.at)),
+                method_owner,
                 declaration_whitelist: self.framework_class_whitelists.get(&id).copied(),
-                confidence,
+                confidence: if deprecated_api {
+                    confidence.min(40)
+                } else {
+                    confidence
+                },
+                deprecated_api,
                 rule_id,
                 reason,
             });
@@ -12615,6 +12816,7 @@ impl<'a> Graph<'a> {
                     method_owner: None,
                     declaration_whitelist: None,
                     confidence: 100,
+                    deprecated_api: false,
                     rule_id: "SKY-E002",
                     reason: "empty_or_docstring_only",
                 });
@@ -13224,6 +13426,30 @@ fn is_fastapi_field_marker(name: &str) -> bool {
 
 fn is_typer_constructor(name: &str) -> bool {
     matches!(name, "typer.Typer" | "typer.main.Typer")
+}
+
+fn literal_json_value(expression: &Expression, depth: usize) -> bool {
+    if depth >= MAX_BINDING_CHAIN {
+        return false;
+    }
+    match &expression.kind {
+        ExpressionKind::None
+        | ExpressionKind::Bool(_)
+        | ExpressionKind::Scalar(Some(_))
+        | ExpressionKind::Text(_) => true,
+        ExpressionKind::Sequence { items, .. } => {
+            items.iter().all(|item| literal_json_value(item, depth + 1))
+        }
+        ExpressionKind::Dictionary(items) => {
+            let (pairs, rest) = items.as_chunks::<2>();
+            rest.is_empty()
+                && pairs.iter().all(|[key, value]| {
+                    matches!(key.kind, ExpressionKind::Text(_))
+                        && literal_json_value(value, depth + 1)
+                })
+        }
+        _ => false,
+    }
 }
 
 fn is_known_call(name: &str, phase03: bool) -> bool {

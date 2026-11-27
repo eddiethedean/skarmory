@@ -116,13 +116,16 @@ port = "crates/analysis_core/tests/resolve.rs"
             }],
         }
 
-    def run_gate(self, *receipts, artifacts=True, fixture_root=None, diagnostic_inventory=None):
+    def run_gate(self, *receipts, artifacts=True, fixture_root=None, diagnostic_inventory=None,
+                 companion=None):
         command = [
             sys.executable, str(GATE), "--inventory", str(self.inventory),
             "--candidate-revision", CANDIDATE, "--report", str(self.report),
         ]
         if artifacts:
             command.extend(["--artifact", f"candidate={self.artifact}"])
+        if companion is not None:
+            command.extend(["--artifact", f"cli={companion}"])
         if fixture_root is not None:
             command.extend(["--fixture-root", str(fixture_root)])
         if diagnostic_inventory is not None:
@@ -153,6 +156,33 @@ port = "crates/analysis_core/tests/resolve.rs"
         self.assertEqual({case["case_id"] for case in report["cases"]}, {CASE_ID, NATIVE_CASE})
         self.assertEqual(report["ledgers"][1]["results"][0]["reference_status"], "xfailed")
         self.assertEqual(report["artifacts"]["candidate"]["sha256"], digest(self.artifact))
+
+    def test_mixed_sdk_parity_requires_the_exact_native_cli_artifact(self):
+        self.write_inventory()
+        parity = "installed-sdk-native-cli-parity"
+        self.inventory.write_text(self.inventory.read_text().replace(
+            f'prerequisites = ["{PREREQUISITE}"]',
+            f'prerequisites = ["{PREREQUISITE}", "{parity}"]',
+            1,
+        ).replace('environment = "native-lock"\nartifact = "candidate"',
+                  'environment = "native-lock"\nartifact = "cli"'))
+        companion = self.folder / "native-cli"
+        companion.write_bytes(b"native cli")
+        sdk = self.receipt("python-sdk")
+        native = self.receipt("python-engine")
+        native["artifact_sha256"] = digest(companion)
+        result = sdk["results"][0]
+        result["prerequisites"][parity] = "passed"
+        for incorrect_digest in (None, digest(self.artifact)):
+            with self.subTest(incorrect_digest=incorrect_digest):
+                result["native_cli_sha256"] = incorrect_digest
+                self.assert_blocked(
+                    [sdk, native], "native CLI parity artifact", companion=companion,
+                )
+        result["native_cli_sha256"] = digest(companion)
+        run, report = self.run_gate(sdk, native, companion=companion)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(report["status"], "passed")
 
     def test_a_passing_diagnostic_receipt_cannot_qualify_a_release_case(self):
         self.write_inventory()

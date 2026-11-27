@@ -54,30 +54,59 @@ pub(super) struct Mutations {
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
 
-fn lazy_lookup_provider_member(module: &str, member: &str) -> bool {
-    matches!(
-        (module, member),
-        ("typing", "TYPE_CHECKING")
-            | ("importlib", "import_module")
-            | (
-                "builtins",
-                "getattr" | "__import__" | "KeyError" | "AttributeError"
-            )
-    )
+pub(super) const JSON_ENCODER_PROVIDERS: &[&str] = &[
+    "json.JSONEncoder",
+    "json.encoder.JSONEncoder",
+    "json._default_encoder",
+];
+pub(super) const JSON_ENCODER_MEMBERS: &[&str] = &["encode", "iterencode", "default"];
+pub(super) const JSON_ENCODER_GLOBALS: &[&str] = &[
+    "encode_basestring",
+    "encode_basestring_ascii",
+    "c_make_encoder",
+    "_make_iterencode",
+];
+
+fn stdlib_mutation_providers(member: &str) -> &'static [&'static str] {
+    match member {
+        "cast" => &["typing"],
+        "open" => &["builtins"],
+        "dump" | "dumps" | "_default_encoder" => &["json"],
+        "JSONEncoder" => &["json", "json.encoder"],
+        member if JSON_ENCODER_MEMBERS.contains(&member) => JSON_ENCODER_PROVIDERS,
+        member if JSON_ENCODER_GLOBALS.contains(&member) => &["json.encoder"],
+        _ => &[],
+    }
 }
 
-fn deferred_lazy_lookup_member(member: &str) -> bool {
-    matches!(
-        member,
-        "__getattr__"
-            | "_LAZY"
-            | "getattr"
-            | "__import__"
-            | "KeyError"
-            | "AttributeError"
-            | "TYPE_CHECKING"
-            | "import_module"
-    )
+fn tracked_provider_member(module: &str, member: &str) -> bool {
+    deprecation::provider_member(module, member)
+        || stdlib_mutation_providers(member).contains(&module)
+        || matches!(
+            (module, member),
+            ("typing", "TYPE_CHECKING")
+                | ("importlib", "import_module")
+                | (
+                    "builtins",
+                    "getattr" | "__import__" | "KeyError" | "AttributeError"
+                )
+        )
+}
+
+fn tracked_deferred_member(member: &str) -> bool {
+    deprecation::deferred_member(member)
+        || !stdlib_mutation_providers(member).is_empty()
+        || matches!(
+            member,
+            "__getattr__"
+                | "_LAZY"
+                | "getattr"
+                | "__import__"
+                | "KeyError"
+                | "AttributeError"
+                | "TYPE_CHECKING"
+                | "import_module"
+        )
 }
 
 impl<'a> Graph<'a> {
@@ -107,9 +136,7 @@ impl<'a> Graph<'a> {
             let (receiver, member) = match &statement.kind {
                 StatementKind::WriteAttribute {
                     receiver, member, ..
-                } if is_truth_hook(member) || deferred_lazy_lookup_member(member) => {
-                    (receiver, member)
-                }
+                } if is_truth_hook(member) || tracked_deferred_member(member) => (receiver, member),
                 StatementKind::Evaluate(Expression {
                     kind:
                         ExpressionKind::Call {
@@ -127,7 +154,7 @@ impl<'a> Graph<'a> {
                         },
                         rest @ ..,
                     ] = arguments.as_slice()
-                    && (is_truth_hook(member) || deferred_lazy_lookup_member(member))
+                    && (is_truth_hook(member) || tracked_deferred_member(member))
                     && let Value::Provider(provider) =
                         self.probe_identity(scope, function, statement.at)
                     && matches!(
@@ -167,8 +194,21 @@ impl<'a> Graph<'a> {
                 Value::Module(file) if matches!(member.as_str(), "__getattr__" | "_LAZY") => {
                     ReceiverKey::Module(self.files[file].module.clone())
                 }
-                Value::Provider(module) if lazy_lookup_provider_member(&module, member) => {
+                Value::Provider(module) if tracked_provider_member(&module, member) => {
                     ReceiverKey::Module(module)
+                }
+                Value::Unknown | Value::ReceiverParameter(_) => {
+                    // A source wrapper may receive the provider through its
+                    // parameters. Keep the proof bounded when those writes
+                    // cannot be ordered against a later call.
+                    for module in stdlib_mutation_providers(member) {
+                        self.mutations
+                            .deferred_member_writes
+                            .entry(ReceiverKey::Module((*module).into()))
+                            .or_default()
+                            .insert(member.clone());
+                    }
+                    continue;
                 }
                 _ => continue,
             };
@@ -579,7 +619,7 @@ impl<'a> Graph<'a> {
             return;
         };
         let changes_lazy_lookup = matches!(&receiver, ReceiverKey::Module(module)
-            if lazy_lookup_provider_member(module, member)
+            if tracked_provider_member(module, member)
                 || matches!(member, "__getattr__" | "_LAZY")
                     && self.modules.contains_key(module.as_str()));
         let changes_truth_hook = if let ReceiverKey::Class(class) = &receiver
@@ -1956,7 +1996,11 @@ impl<'a> Graph<'a> {
             }
             Value::Provider(module)
                 if provider_module(module)
-                    || matches!(module.as_str(), "typing" | "importlib" | "builtins")
+                    || matches!(
+                        module.as_str(),
+                        "typing" | "importlib" | "json" | "json.encoder" | "builtins"
+                    )
+                    || JSON_ENCODER_PROVIDERS.contains(&module.as_str())
                     || is_django_signal(module)
                     || module == "celery.signals.setup_logging" =>
             {

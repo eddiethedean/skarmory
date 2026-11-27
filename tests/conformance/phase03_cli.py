@@ -1,5 +1,6 @@
 """Bridge pinned real-CLI cases to the candidate executable."""
 
+import hashlib
 import inspect
 import json
 import shlex
@@ -12,6 +13,10 @@ from textwrap import dedent
 CASE = (
     "test/test_reachability_integration_qa.py"
     "::test_real_cli_reports_dead_cycle_and_keeps_live_variant"
+)
+SDK_CLI_PARITY_CASE = (
+    "test/test_reachability_integration_qa.py"
+    "::test_unused_import_does_not_share_its_function_grep_verdict"
 )
 METHOD_SOURCE = "test/test_method_reachability.py"
 METHOD_CLI_CASE = f"{METHOD_SOURCE}::test_default_cli_reports_methods_and_explains_unreachable_groups"
@@ -53,28 +58,9 @@ class PairedSourceCli:
         return len(self.completed_sources) == len(set(self.completed_sources)) == 2
 
     def run(self, command, **kwargs):
-        # Translate the public interface while preserving the fixture and omitted options.
-        if (
-            len(command) != 7
-            or command[:3] != [sys.executable, "-c", "from skylos.cli import main; main()"]
-            or command[4:] != ["--format", "json", "--no-upload"]
-        ):
-            raise ValueError(f"unexpected pinned CLI command: {command!r}")
-        project = Path(command[3])
-        if not project.is_absolute():
-            raise ValueError("pinned CLI project path must be absolute")
+        project = pinned_json_project(command)
         source = (project / "worker.py").read_bytes()
-        # The reference needs PYTHONPATH to import its source checkout. The native
-        # candidate receives only the scan path and no source-checkout injection.
-        kwargs["env"] = {
-            name: value for name, value in kwargs["env"].items()
-            if name != "PYTHONPATH"
-        }
-        completed = subprocess.run(
-            [str(self.binary), str(project), "--profile", "skylos-0.3", "--json"],
-            check=False,
-            **kwargs,
-        )
+        completed = run_json_cli(self.binary, project, **kwargs)
         if completed.returncode == 0:
             report = json.loads(completed.stdout)
             if (
@@ -83,6 +69,84 @@ class PairedSourceCli:
             ):
                 self.completed_sources.append(source)
         return completed
+
+
+def pinned_json_project(command):
+    # Translate the public interface while preserving the fixture and omitted options.
+    if (
+        len(command) != 7
+        or command[:3] != [sys.executable, "-c", "from skylos.cli import main; main()"]
+        or command[4:] != ["--format", "json", "--no-upload"]
+    ):
+        raise ValueError(f"unexpected pinned CLI command: {command!r}")
+    project = Path(command[3])
+    if not project.is_absolute():
+        raise ValueError("pinned CLI project path must be absolute")
+    return project
+
+
+def run_json_cli(binary, project, **kwargs):
+    # Keep the reference source checkout out of the native invocation.
+    kwargs["env"] = {
+        name: value for name, value in kwargs["env"].items() if name != "PYTHONPATH"
+    }
+    return subprocess.run(
+        [str(binary), str(project), "--profile", "skylos-0.3", "--json"],
+        check=False,
+        **kwargs,
+    )
+
+
+class GrepParityCli:
+    paths = ("importer.py", "worker.py")
+
+    def __init__(self, binary, fixture):
+        self.binary = binary
+        self.fixture = fixture.resolve()
+        self.cli_sources = None
+        self.cli_report = None
+        self.proved = False
+
+    def sources(self):
+        return tuple(
+            hashlib.sha256((self.fixture / path).read_bytes()).hexdigest() for path in self.paths
+        )
+
+    def run(self, command, **kwargs):
+        project = pinned_json_project(command)
+        if project != self.fixture or self.cli_sources is not None:
+            raise ValueError("mixed parity requires one native CLI scan of the pinned fixture")
+        self.cli_sources = self.sources()
+        completed = run_json_cli(self.binary, project, **kwargs)
+        if self.sources() != self.cli_sources:
+            raise ValueError("the native CLI scan changed the pinned fixture")
+        if completed.returncode == 0:
+            self.cli_report = json.loads(completed.stdout)
+        return completed
+
+    def verify_sdk(self, path, options, report):
+        if (Path(path) != self.fixture or options != {"trace_file": False}
+                or self.proved or self.cli_report is None or self.sources() != self.cli_sources):
+            raise ValueError("mixed parity requires matched native CLI and installed SDK scans")
+        fields = (
+            "profile", "selected_paths", "coverage", "unused_functions", "unused_imports",
+            "grep_verification_evidence",
+        )
+        if (
+            report["profile"] != "skylos-5.7.0-python-dead-code-phase03"
+            or sorted(report["selected_paths"]) != list(self.paths)
+            or report["coverage"] != {
+                "status": "complete", "selected_files": 2, "extracted_files": 2, "issues": [],
+            }
+            or any(
+                item["analysis_summary"]["grep_verify"]["enabled"] is not True
+                or item.get("runtime_evidence")
+                for item in (report, self.cli_report)
+            )
+            or any(report.get(field) != self.cli_report.get(field) for field in fields)
+        ):
+            raise ValueError("the pinned CLI and SDK reports disagree on the import verification")
+        self.proved = True
 
 
 class WorkflowCaseCli:
