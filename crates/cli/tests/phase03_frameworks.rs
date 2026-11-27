@@ -102,6 +102,70 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn lazy_table_imports_require_a_safe_path_probe() {
+    let cache = tempfile::tempdir().unwrap();
+    let unguarded = "def __getattr__(name):\n    module, attr = _LAZY[name]\n";
+    let guarded = "def __getattr__(name):\n    try:\n        module, attr = _LAZY[name]\n    except KeyError:\n        raise AttributeError(name) from None\n";
+    for (is_package, wrap, provider_hook, complete) in [
+        (true, unguarded, "", true),
+        (false, unguarded, "", false),
+        (false, guarded, "", true),
+        (
+            true,
+            guarded,
+            "def __getattr__(name):\n    raise RuntimeError(name)\n",
+            false,
+        ),
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let owner = if is_package {
+            fs::create_dir(root.join("facade")).unwrap();
+            "facade/__init__.py"
+        } else {
+            "facade.py"
+        };
+        fs::write(
+            root.join(owner),
+            format!(
+                "_LAZY = {{'Thing': ('provider', 'Thing')}}\n{wrap}    return getattr(__import__(module, fromlist=[attr]), attr)\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("provider.py"),
+            format!("def Thing(): return 1\n{provider_hook}"),
+        )
+        .unwrap();
+        fs::write(root.join("main.py"), "from facade import Thing\nThing()\n").unwrap();
+
+        let exit = if complete { 0 } else { 2 };
+        let report = scan_with_exit(root, None, None, exit);
+        let calls = evidence_certainties(&report, "provider.Thing", "direct_call");
+        if complete {
+            assert_eq!(report["coverage"]["status"], "complete", "{report}");
+            assert_eq!(calls, ["certain"], "{report}");
+        } else {
+            assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+            assert!(calls.is_empty(), "{report}");
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_lazy_export"),
+                "{report}"
+            );
+        }
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), exit);
+            cached.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
 fn lazy_package_hook_replacement_withholds_the_original_target() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

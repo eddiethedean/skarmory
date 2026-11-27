@@ -2765,6 +2765,20 @@ impl<'a> Graph<'a> {
         let lazy = hook.map_or(LazyMember::Missing, |hook| {
             self.lazy_lookup(hook, member, before)
         });
+        if matches!(mode, ModuleMemberAccess::FromImport)
+            && let (Some(hook), LazyMember::Branch(branch)) = (hook, &lazy)
+            && branch.table_target.is_some()
+            && (self.has_module_binding_write(file, "__path__")
+                || (!self.files[file].is_package
+                    && !matches!(
+                        self.lazy_lookup(hook, "__path__", before),
+                        LazyMember::Missing
+                    )))
+        {
+            // From-import probes __path__ before asking a module hook for
+            // the named export. An unguarded table can raise KeyError here.
+            return ModuleMember::OpaqueHook;
+        }
         if let Some(child) = child {
             match self.submodule_attachment(file, child, None, access, mode) {
                 SubmoduleAttachment::Attached(import) => {
@@ -13622,6 +13636,7 @@ mod tests {
         source: &str,
         shadow: Option<&str>,
         consumer: &str,
+        app_path: &str,
     ) -> (BTreeMap<&'static str, String>, Analysis) {
         let phase03_module = |path: &str, module: &str, source: &str| AnalyzedFile {
             path: path.into(),
@@ -13631,7 +13646,7 @@ mod tests {
             facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
         };
         let mut files = vec![
-            phase03_module("app.py", "app", source),
+            phase03_module(app_path, "app", source),
             phase03_module("pkg/__init__.py", "pkg", ""),
             phase03_module("pkg/mod.py", "pkg.mod", "def Thing(): return 1\n"),
             phase03_module("consumer.py", "consumer", consumer),
@@ -13677,15 +13692,23 @@ mod tests {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => panic!("unable to read the native lazy table control: {error}"),
             };
+        // These original table hooks let unknown names raise KeyError. Use
+        // a package for both replays so from-import has a real __path__.
+        let app_path = if table_control.is_some() {
+            "app/__init__.py"
+        } else {
+            "app.py"
+        };
         let (control, positive) = lazy_guard_report(
             table_control.as_deref().unwrap_or(&source),
             None,
             LAZY_EXPORT_CONSUMER,
+            app_path,
         );
         assert!(positive.issues.is_empty(), "{:?}", positive.issues);
         assert_eq!(control, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
         let (exports, report) = if shadow.is_some() || table_control.is_some() {
-            lazy_guard_report(&source, shadow.as_deref(), LAZY_EXPORT_CONSUMER)
+            lazy_guard_report(&source, shadow.as_deref(), LAZY_EXPORT_CONSUMER, app_path)
         } else {
             (control, positive)
         };
@@ -13705,7 +13728,8 @@ mod tests {
         let builtin = format!("{table}{builtin_hook}");
         let guarded = format!("import importlib\n{table}{guarded_hook}");
         for source in [&builtin, &guarded] {
-            let (exports, report) = lazy_guard_report(source, None, LAZY_EXPORT_CONSUMER);
+            let (exports, report) =
+                lazy_guard_report(source, None, LAZY_EXPORT_CONSUMER, "app/__init__.py");
             assert!(report.issues.is_empty(), "{:?}", report.issues);
             assert_eq!(exports, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
         }
@@ -13719,7 +13743,8 @@ mod tests {
             format!("import importlib\nfrom other import KeyError\n{table}{guarded_hook}"),
             format!("import importlib\nfrom other import AttributeError\n{table}{guarded_hook}"),
         ] {
-            let (exports, report) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER);
+            let (exports, report) =
+                lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER, "app/__init__.py");
             assert!(exports.is_empty(), "{source}\n{exports:?}");
             assert!(
                 report
@@ -13739,7 +13764,7 @@ mod tests {
             "import builtins\ndef replace():\n    builtins.__import__ = None\nreplace()\n",
         ] {
             let consumer = format!("{exposure}{LAZY_EXPORT_CONSUMER}");
-            let (exports, report) = lazy_guard_report(&builtin, None, &consumer);
+            let (exports, report) = lazy_guard_report(&builtin, None, &consumer, "app/__init__.py");
             assert!(exports.is_empty(), "{exposure}\n{exports:?}");
             assert!(
                 report
@@ -13757,7 +13782,7 @@ mod tests {
         let prefix = "import importlib\n__all__ = ['Thing']\n";
         let hook = "def __getattr__(name):\n    if name in __all__:\n        return getattr(importlib.import_module('pkg.mod'), name)\n    raise AttributeError(name)\n";
         let source = format!("{prefix}{hook}");
-        let (exports, report) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER);
+        let (exports, report) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER, "app.py");
         assert!(report.issues.is_empty(), "{:?}", report.issues);
         assert_eq!(exports, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
 
@@ -13770,6 +13795,7 @@ mod tests {
                 &format!("{prefix}{intervening}{hook}"),
                 None,
                 LAZY_EXPORT_CONSUMER,
+                "app.py",
             );
             assert!(exports.is_empty(), "{exports:?}");
             assert!(
@@ -13788,7 +13814,7 @@ mod tests {
             "import app\napp.__all__ = []\n",
         ] {
             let consumer = format!("{exposure}{LAZY_EXPORT_CONSUMER}");
-            let (exports, report) = lazy_guard_report(&source, None, &consumer);
+            let (exports, report) = lazy_guard_report(&source, None, &consumer, "app.py");
             assert!(exports.is_empty(), "{exports:?}");
             assert!(
                 report

@@ -194,12 +194,15 @@ impl<'a> Graph<'a> {
             if !names.insert(export) {
                 return None;
             }
-            // Builtin __import__ may process fromlist before getattr when
-            // a loaded module acts as a package. Bound this form to leaves.
+            // Builtin __import__ probes __path__ before processing fromlist.
+            // A leaf can still supply that attribute through its own hook.
             if provider.is_none()
                 && !self.modules.get(module.as_str()).is_some_and(|&target| {
                     !self.files[target].is_package
                         && !self.scopes[target].names.contains_key("__path__")
+                        && !self.scopes[target].names.contains_key("__getattr__")
+                        && !self.has_module_binding_write(target, "__path__")
+                        && !self.has_module_binding_write(target, "__getattr__")
                 })
             {
                 return None;

@@ -340,6 +340,9 @@ The analyzer also resolves an unexposed literal table of module and attribute
 pairs when the getter uses a proved loader and attribute lookup. The native
 replays pair each frozen mutation, escape, and missing-`fromlist` case with
 a control that proves the target through the corresponding stable table.
+Both replays use a package so the original unguarded hook is never called
+to provide `__path__`. The analyzer withholds a lazy-table import proof when
+the facade or builtin loader target could run an unresolved `__path__` probe.
 
 The diagnostics record the remaining 25 SDK cases. Two internal tests of
 deprecation facts still require native engine ports. The workflow checks the
@@ -366,7 +369,9 @@ selection, suppressions, and reachability. Fifteen qualify through the
 installed SDK, including four cases for `# noqa: F401`. The native
 frontend associates that directive with the Python import aliases it covers,
 and the Rust report retains each suppression as evidence. Seventeen cases
-have diagnostic receipts and two still require candidate ports.
+have diagnostic receipts and two still require candidate ports. The
+malformed-configuration case requires the unused-function assertion and
+records its separate danger-rule assertion outside Phase 0.3.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

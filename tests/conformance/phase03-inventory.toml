@@ -23161,13 +23161,13 @@ id = "test/test_analyzer.py::TestAnalyze::test_analyze_malformed_pyproject_confi
 milestone = "0.3"
 languages = ["python"]
 source = "test/test_analyzer.py"
-assertions = ["test/test_analyzer.py:2055", "test/test_analyzer.py:2056"]
+assertions = ["test/test_analyzer.py:2055"]
 prerequisites = ["test/test_analyzer.py:2035", "test/test_analyzer.py:2044", "installed-sdk", "grep-verification-disabled"]
 provenance = "Original pinned fixture and assertions at test/test_analyzer.py:2032-2056."
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
-omitted_assertions = []
-blocker = "The original test requires both unused-function output and a SKY-D201 danger finding for the same malformed configuration. The Phase 0.3 SDK has no combined port for these assertions."
+omitted_assertions = ["test/test_analyzer.py:2056"]
+blocker = "The installed SDK rejects the original malformed pyproject.toml during configuration loading, before it can report the unused function."
 
 [[cases]]
 id = "test/test_analyzer.py::TestConfiguredDeadCodeEntrypoints::test_configured_class_entrypoint_matches_path_and_base"
