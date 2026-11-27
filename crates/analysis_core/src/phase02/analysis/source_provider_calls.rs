@@ -71,6 +71,8 @@ impl<'a> Graph<'a> {
         {
             return false;
         }
+        self.unpacked_source_provider_calls
+            .insert((call.scope, position(call.at)));
         self.call_invocation(invocation, call, "certain");
         true
     }
@@ -419,6 +421,18 @@ impl<'a> Graph<'a> {
                     complete = false;
                     continue;
                 };
+                if self
+                    .unpacked_source_provider_calls
+                    .contains(&(caller, position(at)))
+                    && !self.source_provider_returns_scalar(target, &invalidated, 0)
+                {
+                    self.scope_issue(
+                        caller,
+                        at,
+                        "unresolved_finalizer",
+                        "the unpacked provider call may return a value with an unmodeled finalizer",
+                    );
+                }
                 self.direct.insert(target);
                 let certainty = if possible || conditional {
                     "possible"
@@ -445,6 +459,60 @@ impl<'a> Graph<'a> {
             }
         }
         self.source_provider_invalidated = Some(invalidated);
+    }
+
+    fn source_provider_returns_scalar(
+        &mut self,
+        target: SymbolId,
+        invalidated: &BTreeSet<SymbolId>,
+        depth: usize,
+    ) -> bool {
+        if depth >= MAX_BINDING_CHAIN || invalidated.contains(&target) {
+            return false;
+        }
+        let Binding::Definition(definition, scope) = self.symbols[target].binding else {
+            return false;
+        };
+        let body = body_without_docstring(definition);
+        if body.is_empty() {
+            return true;
+        }
+        let [
+            Statement {
+                kind: StatementKind::Return(value),
+                at,
+            },
+        ] = body
+        else {
+            return false;
+        };
+        let Some(value) = value else {
+            return true;
+        };
+        match &value.kind {
+            ExpressionKind::Text(_)
+            | ExpressionKind::Scalar(_)
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::None => true,
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } if arguments.is_empty() && keywords.is_empty() => {
+                let Value::Callable(callee) = self.probe_identity(scope, function, *at) else {
+                    return false;
+                };
+                let Binding::Definition(helper, _) = self.symbols[callee.target].binding else {
+                    return false;
+                };
+                !callee.verified
+                    && matches!(callee.receiver, Receiver::Ordinary)
+                    && !callee.implicit_descriptor_receiver
+                    && field_dispatch::plain_method(helper, 0)
+                    && self.source_provider_returns_scalar(callee.target, invalidated, depth + 1)
+            }
+            _ => false,
+        }
     }
 
     fn source_provider_target(

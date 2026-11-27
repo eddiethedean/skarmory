@@ -261,8 +261,9 @@ mutation and escape.
 A named, one-parameter wrapper can dispatch directly to a method on a fresh
 instance from a plain zero-argument constructor, supplied through a single
 `*(value,)` tuple or `**{'name': value}` dictionary. A possible receiver
-finalizer leaves coverage incomplete. The frozen cases exercise both forms
-with grep verification enabled and disabled.
+finalizer or a return value that cannot be proved scalar leaves coverage
+incomplete. The frozen cases exercise both forms with grep verification
+enabled and disabled.
 
 The remaining 26 cases are required blockers. The inventory records the
 coverage diagnostics for unsupported receiver operations, and identifies

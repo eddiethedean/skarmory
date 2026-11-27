@@ -13606,6 +13606,45 @@ class InheritedFinalizer(FinalizingRemote):
 }
 
 #[test]
+fn source_provider_dispatch_leaves_unpacked_return_finalizers_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("helper.py"), "def release(): print('released')\n").unwrap();
+    for result in ["Resource()", "create_resource()"] {
+        for call in [
+            "dispatch(*(Provider(),))",
+            "dispatch(**{'receiver': Provider()})",
+        ] {
+            fs::write(
+                root.join("main.py"),
+                format!(
+                    "from helper import release\n\
+                     class Resource:\n    def __del__(self): release()\n\
+                     def create_resource(): return Resource()\n\
+                     class Provider:\n    def accept(self): return {result}\n\
+                     def dispatch(receiver): return receiver.accept()\n{call}\n"
+                ),
+            )
+            .unwrap();
+            let report = scan_with_exit(root, None, None, 2);
+            assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_finalizer"),
+                "{report}"
+            );
+            assert_provider_call(&report, "main.Provider.accept", "certain");
+            assert!(!findings(&report, "unused_functions").contains(&"helper.release"));
+            assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+        }
+    }
+}
+
+#[test]
 fn source_provider_dispatch_does_not_enter_wrapper_after_raising_unpacked_constructor() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
