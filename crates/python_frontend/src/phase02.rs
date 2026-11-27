@@ -97,7 +97,11 @@ pub struct ModuleFacts {
     pub body: Vec<Statement>,
     pub empty: bool,
     pub inline_ignores: Vec<InlineIgnore>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub noqa_f401_imports: BTreeSet<[usize; 2]>,
     pub postponed_annotations: bool,
+    #[serde(default)]
+    pub explicit_lazy_table_access: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_named_condition: Option<Location>,
 }
@@ -134,6 +138,16 @@ pub enum StatementKind {
         names: Vec<Name>,
         value: Option<Expression>,
         annotation: Option<Expression>,
+    },
+    AssignUnpack {
+        names: Vec<Name>,
+        value: Expression,
+    },
+    GuardedLazyUnpack {
+        names: Vec<Name>,
+        value: Expression,
+        key_error_at: Location,
+        attribute_error_at: Location,
     },
     AssignDjangoSettings {
         environment: Expression,
@@ -298,6 +312,47 @@ fn provider_wildcard_members(module: &str) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+fn guarded_lazy_unpack(node: &StmtTry) -> Option<(&[Expr], &Expr, &Expr, &Expr)> {
+    let [Stmt::Assign(assignment)] = node.body.as_ref() else {
+        return None;
+    };
+    let [Expr::Tuple(targets)] = assignment.targets.as_slice() else {
+        return None;
+    };
+    let [Expr::Name(module), Expr::Name(attribute)] = targets.elts.as_slice() else {
+        return None;
+    };
+    let Expr::Subscript(lookup) = assignment.value.as_ref() else {
+        return None;
+    };
+    let (Expr::Name(table), Expr::Name(selector)) = (lookup.value.as_ref(), lookup.slice.as_ref())
+    else {
+        return None;
+    };
+    let [ExceptHandler::ExceptHandler(handler)] = node.handlers.as_slice() else {
+        return None;
+    };
+    let key_error = handler.type_.as_deref()?;
+    let [Stmt::Raise(raise)] = handler.body.as_ref() else {
+        return None;
+    };
+    let Expr::Call(exception) = raise.exc.as_deref()? else {
+        return None;
+    };
+    (!node.is_star
+        && node.orelse.is_empty()
+        && node.finalbody.is_empty()
+        && table.id.as_str() == "_LAZY"
+        && module.id != attribute.id
+        && matches!(key_error, Expr::Name(name) if name.id.as_str() == "KeyError")
+        && handler.name.is_none()
+        && raise.cause.as_deref().is_none_or(|cause| matches!(cause, Expr::NoneLiteral(_)))
+        && matches!(exception.func.as_ref(), Expr::Name(name) if name.id.as_str() == "AttributeError")
+        && matches!(exception.arguments.args.as_ref(), [Expr::Name(name)] if name.id == selector.id)
+        && exception.arguments.keywords.is_empty())
+    .then_some((&targets.elts, &assignment.value, key_error, &exception.func))
 }
 
 fn optional_project_wildcard(node: &StmtTry) -> Option<&str> {
@@ -539,6 +594,7 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         unreachable!("module mode always produces a module AST");
     };
     let mut inline_ignores = Vec::new();
+    let mut noqa_lines = BTreeMap::new();
     let mut block_start = None;
     for token in parsed
         .tokens()
@@ -549,6 +605,9 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         let comment = &source[usize::from(range.start())..usize::from(range.end())];
         let line = lines.locate(range.start()).line;
         let marker = comment.trim_start_matches('#').trim().to_ascii_lowercase();
+        if project_wildcards && let Some(suppresses) = noqa_import_code(&marker) {
+            noqa_lines.insert(line, suppresses);
+        }
         let directive = marker.strip_prefix("skylos:").map(str::trim);
         match directive {
             Some("ignore-start") => {
@@ -592,17 +651,45 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         None,
     )
     .suite(&syntax.body, 0)?;
+    let mut noqa = NoqaImportAliases {
+        lines: &lines,
+        codes: &noqa_lines,
+        aliases: BTreeSet::new(),
+    };
+    if noqa_lines.values().any(|&suppresses| suppresses) {
+        noqa.visit_body(&syntax.body);
+    }
+    let mut table_references = LazyTableReferences::default();
+    if project_wildcards {
+        table_references.visit_body(&syntax.body);
+    }
     Ok(ModuleFacts {
         body,
+        explicit_lazy_table_access: table_references.0,
         first_named_condition: named_condition.get(),
         empty,
         inline_ignores,
+        noqa_f401_imports: noqa.aliases,
         postponed_annotations: syntax.body.iter().any(|statement|
             matches!(statement, Stmt::ImportFrom(node)
                 if node.level == 0 && node.module.as_ref().is_some_and(|name| name.as_str() == "__future__")
                     && node.names.iter().any(|alias| alias.name.as_str() == "annotations"))
         ),
     })
+}
+
+#[derive(Default)]
+struct LazyTableReferences(bool);
+
+impl<'ast> Visitor<'ast> for LazyTableReferences {
+    fn visit_expr(&mut self, expression: &'ast Expr) {
+        match expression {
+            Expr::Attribute(node) if node.attr.as_str() == "_LAZY" => self.0 = true,
+            Expr::StringLiteral(node) if node.value.to_str() == "_LAZY" => self.0 = true,
+            _ if !self.0 => visitor::walk_expr(self, expression),
+            _ => {}
+        }
+    }
 }
 
 fn append_block(
@@ -650,6 +737,59 @@ fn ignore_rules(lower: &str) -> Option<Vec<String>> {
         .map(str::to_ascii_uppercase)
         .collect();
     (!rules.is_empty()).then_some(rules)
+}
+
+fn noqa_import_code(lower: &str) -> Option<bool> {
+    let codes = lower
+        .split('#')
+        .find_map(|segment| segment.trim_start().strip_prefix("noqa:"))?;
+    let mut has_code = false;
+    for word in codes.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if word == "f401" {
+            return Some(true);
+        }
+        if let Some(digits) = word.find(|c: char| c.is_ascii_digit())
+            && digits > 0
+            && word[..digits].bytes().all(|b| b.is_ascii_alphabetic())
+            && word[digits..].bytes().all(|b| b.is_ascii_digit())
+        {
+            has_code = true;
+        }
+    }
+    has_code.then_some(false)
+}
+
+struct NoqaImportAliases<'a> {
+    lines: &'a Lines,
+    codes: &'a BTreeMap<usize, bool>,
+    aliases: BTreeSet<[usize; 2]>,
+}
+
+impl<'ast> Visitor<'ast> for NoqaImportAliases<'_> {
+    fn visit_stmt(&mut self, statement: &'ast Stmt) {
+        let aliases = match statement {
+            Stmt::Import(node) => &node.names,
+            Stmt::ImportFrom(node) => &node.names,
+            _ => return visitor::walk_stmt(self, statement),
+        };
+        let start = self.lines.locate(statement.start()).line;
+        let end = self.lines.locate(statement.end()).line;
+        for alias in aliases.iter().filter(|alias| alias.name.as_str() != "*") {
+            let line = self.lines.locate(alias.start()).line;
+            // The pinned baseline uses the first directive on these three lines.
+            if [start, line, end]
+                .into_iter()
+                .find_map(|line| self.codes.get(&line))
+                == Some(&true)
+            {
+                let identifier = alias.asname.as_ref().unwrap_or(&alias.name);
+                let at = self.lines.locate(identifier.start());
+                self.aliases.insert([at.line, at.column]);
+            }
+        }
+    }
+
+    fn visit_expr(&mut self, _: &'ast Expr) {}
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1654,6 +1794,25 @@ impl Lowering<'_> {
                         package: package.into(),
                         missing_member: missing_member.into(),
                         fallback: self.suite(fallback, next)?,
+                    }
+                }
+                Stmt::Try(node)
+                    if self.4
+                        && self.1 == SyntaxScope::Function
+                        && self.6.is_some_and(|bindings| {
+                            bindings.node.name.as_str() == "__getattr__"
+                        })
+                        && let Some((names, lookup, key_error, attribute_error)) =
+                            guarded_lazy_unpack(node) =>
+                {
+                    StatementKind::GuardedLazyUnpack {
+                        names: names
+                            .iter()
+                            .map(|name| self.target(name))
+                            .collect::<Result<_, _>>()?,
+                        value: expression(lookup)?,
+                        key_error_at: self.0.locate(key_error.start()),
+                        attribute_error_at: self.0.locate(attribute_error.start()),
                     }
                 }
                 Stmt::Try(node)

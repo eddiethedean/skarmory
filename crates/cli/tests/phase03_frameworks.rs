@@ -365,6 +365,142 @@ def response_context():
 }
 
 #[test]
+fn function_groups_preserve_partial_scope_and_explain_complete_findings() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("consumers")).unwrap();
+    fs::write(
+        root.join("worker.py"),
+        r#"def alpha(count):
+    return beta(count - 1) if count else 1
+
+def beta(count):
+    return alpha(count - 1) if count else 2
+
+def entry():
+    return alpha(2)
+
+def unrelated():
+    return 3
+"#,
+    )
+    .unwrap();
+    let full = scan(root);
+    let symbols = full["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for name in ["worker.alpha", "worker.beta"] {
+        let row = symbols
+            .iter()
+            .find(|row| row["qualified_name"] == name)
+            .unwrap_or_else(|| panic!("missing evidence for {name}: {full}"));
+        assert_eq!(
+            row["decision"]["reason_tags"],
+            serde_json::json!(["no_reachable_callers"])
+        );
+        assert_eq!(
+            evidence_certainties(&full, name, "no_reachable_callers"),
+            ["certain"]
+        );
+    }
+    let entry = symbols
+        .iter()
+        .find(|row| row["qualified_name"] == "worker.entry")
+        .unwrap();
+    assert_eq!(
+        entry["decision"]["reason_tags"],
+        serde_json::json!(["no_refs"])
+    );
+    assert_eq!(
+        evidence_certainties(&full, "worker.entry", "no_static_references"),
+        ["certain"]
+    );
+
+    fs::write(
+        root.join("consumers/main.py"),
+        "from worker import entry\nprint(entry())\n",
+    )
+    .unwrap();
+    let live = scan(root);
+    assert_eq!(findings(&live, "unused_functions"), ["worker.unrelated"]);
+    assert!(evidence_certainties(&live, "worker.alpha", "no_reachable_callers").is_empty());
+
+    for (target, excludes) in [("worker.py", &[][..]), (".", &["consumers"][..])] {
+        let result = scan_target_with_excludes(root, target, None, None, excludes, 0);
+        assert_eq!(result["coverage"]["status"], "complete", "{result}");
+        assert_eq!(
+            findings(&result, "unused_functions"),
+            ["worker.entry", "worker.unrelated"]
+        );
+        assert_eq!(
+            findings(&result, "dead_code_abstentions"),
+            ["worker.alpha", "worker.beta"]
+        );
+        let mut cached =
+            scan_target_with_excludes(root, target, None, Some(cache.path()), excludes, 0);
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, result);
+    }
+}
+
+#[test]
+fn from_imports_withhold_no_static_reference_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/__init__.py"), "").unwrap();
+    let definitions = "def dispatch(): return 1\ndef receive(): return 2\n";
+    fs::write(root.join("worker.py"), definitions).unwrap();
+    fs::write(root.join("pkg/worker.py"), definitions).unwrap();
+    fs::write(
+        root.join("pkg/consumer.py"),
+        "from worker import dispatch\n\ndef dormant():\n    from .worker import receive as alias\n",
+    )
+    .unwrap();
+
+    let report = scan(root);
+    for name in ["worker.dispatch", "pkg.worker.receive"] {
+        assert!(findings(&report, "unused_functions").contains(&name));
+        assert!(
+            evidence_certainties(&report, name, "no_static_references").is_empty(),
+            "{report}"
+        );
+    }
+    for name in ["pkg.worker.dispatch", "worker.receive"] {
+        assert_eq!(
+            evidence_certainties(&report, name, "no_static_references"),
+            ["certain"],
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn unresolved_dormant_references_withhold_no_static_reference_evidence() {
+    for (path, source) in [
+        (
+            "worker.py",
+            "def target(): pass\ndef target(): pass\ndef dormant(): target()\n",
+        ),
+        (
+            "app.py",
+            "import worker\ndef dormant(index):\n    options = [worker]\n    options[index].target()\n",
+        ),
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(root.join("worker.py"), "def target(): pass\n").unwrap();
+        fs::write(root.join(path), source).unwrap();
+
+        let report = scan(root);
+        assert!(findings(&report, "unused_functions").contains(&"worker.target"));
+        assert!(
+            evidence_certainties(&report, "worker.target", "no_static_references").is_empty(),
+            "{report}"
+        );
+    }
+}
+
+#[test]
 fn partial_source_selection_abstains_from_unrooted_method_groups() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -14868,4 +15004,74 @@ fn django_settings_cannot_read_aliases_from_a_failed_initializer() {
         assert!(evidence_certainties(&report, target, "django_setting").is_empty());
     }
     assert!(evidence_certainties(&report, "wsgi.application", "django_application").is_empty());
+}
+
+#[test]
+fn module_binding_timing_uses_a_definite_overwrite_before_the_reader_runs() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("source.py"), "def original(x): return x\n").unwrap();
+    fs::write(root.join("main.py"), "from mod import use\nuse()\n").unwrap();
+    for prefix in [
+        "from source import original as work\ndef reader(): return work(1)\n",
+        "def reader(): return work(1)\nfrom source import original as work\n",
+    ] {
+        fs::write(
+            root.join("mod.py"),
+            format!("{prefix}def work(x): return x * 2\ndef use(): return reader()\ndef unused(): pass\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert!(
+            report["unused_imports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["file"] == "mod.py" && row["full_name"] == "source.original" }),
+            "{report}"
+        );
+        let functions = findings(&report, "unused_functions");
+        assert!(functions.contains(&"mod.unused"), "{report}");
+        assert!(functions.contains(&"source.original"), "{report}");
+        assert!(!functions.contains(&"mod.work"), "{report}");
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn module_binding_timing_preserves_possible_early_reads() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("source.py"), "def original(x): return x\n").unwrap();
+    fs::write(root.join("main.py"), "from mod import use\nuse()\n").unwrap();
+    for (before, after, reader_line) in [
+        ("", "reader()\n", 2),
+        ("", "invoke(reader)\n", 2),
+        (
+            "class Trigger:\n    def __del__(self):\n        print(reader())\ntrigger = Trigger()\n",
+            "trigger = None\n",
+            6,
+        ),
+    ] {
+        fs::write(
+            root.join("mod.py"),
+            format!("from source import original as work\n{before}def reader(): return work(1)\n{after}def work(x): return x * 2\ndef use(): return reader()\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding" && issue["line"] == reader_line),
+            "{report}"
+        );
+    }
 }

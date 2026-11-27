@@ -1028,7 +1028,7 @@ fn terminal_call(body: &[Statement]) -> Option<(&[Statement], &Expression, &[Exp
     }
 }
 
-fn passive_definition(definition: &Definition) -> bool {
+pub(super) fn passive_definition(definition: &Definition) -> bool {
     definition.decorators.is_empty() && passive_definition_body(definition)
 }
 
@@ -1044,7 +1044,7 @@ fn passive_definition_body(definition: &Definition) -> bool {
         }
 }
 
-fn inert_default(value: &Expression) -> bool {
+pub(super) fn inert_default(value: &Expression) -> bool {
     matches!(
         value.kind,
         ExpressionKind::None

@@ -127,6 +127,8 @@ EXTERNAL_CASES = {
 LAZY_SOURCE = "test/test_dead_code_proof_regressions.py"
 LAZY_GUARD_FUNCTION = "test_lazy_guard_proof_returns_the_actual_target"
 LAZY_SHADOW_FUNCTION = "test_local_importlib_provider_does_not_prove_lazy_export"
+LAZY_TABLE_MUTATION_FUNCTION = "test_mutated_or_escaped_lazy_table_is_not_proof"
+LAZY_TABLE_PARENT_FUNCTION = "test_dotted_builtin_import_without_fromlist_returns_parent_module"
 LAZY_TEST = "phase02::analysis::tests::pinned_lazy_export_guard"
 LAZY_CASES = {
     f"{LAZY_SOURCE}::{LAZY_GUARD_FUNCTION}[{guard}]": (LAZY_GUARD_FUNCTION, (guard,), 511, [])
@@ -135,6 +137,13 @@ LAZY_CASES = {
 LAZY_CASES[f"{LAZY_SOURCE}::{LAZY_SHADOW_FUNCTION}"] = (
     LAZY_SHADOW_FUNCTION, (), 556, [f"{LAZY_SOURCE}:544"],
 )
+LAZY_CASES.update({
+    f"{LAZY_SOURCE}::{LAZY_TABLE_MUTATION_FUNCTION}[{mutation}]": (
+        LAZY_TABLE_MUTATION_FUNCTION, (mutation,), 531, [],
+    )
+    for mutation in ('_LAZY["Thing"] = ("pkg.other", "Other")', "rewrite(_LAZY)", "other = _LAZY")
+})
+LAZY_CASES[f"{LAZY_SOURCE}::{LAZY_TABLE_PARENT_FUNCTION}"] = (LAZY_TABLE_PARENT_FUNCTION, (), 540, [])
 TRACED_ENGINE_CASES = {*INCLUDE_CASES, *TRUTH_CASES, *EXTERNAL_CASES, *LAZY_CASES, BUDGET_CASE}
 ENGINE_CASES = {CASE, IMPORT_ROOT_CASE, *TRACED_ENGINE_CASES, *EXCEPTION_CONTROLS}
 ROOT = Path(__file__).resolve().parents[2]
@@ -474,9 +483,11 @@ def replay_lazy_export_guard(key, source, fixture, argv, env, trace):
     original = source[function]
     app_path = fixture / "app.py"
     shadow_path = fixture / "importlib.py"
+    control_path = fixture / "lazy-table-control.py"
     report_path = fixture / "lazy-export-report.json"
     shadowed = function == LAZY_SHADOW_FUNCTION
-    expected_complete = not shadowed
+    table_rejected = function in {LAZY_TABLE_MUTATION_FUNCTION, LAZY_TABLE_PARENT_FUNCTION}
+    expected_complete = not (shadowed or table_rejected)
     parsed = None
     stage = None
     report = None
@@ -487,6 +498,14 @@ def replay_lazy_export_guard(key, source, fixture, argv, env, trace):
             raise ValueError("the original proof must parse one Python source string")
         parsed = ast.parse(text)
         app_path.write_bytes(text.encode("utf-8"))
+        if table_rejected:
+            if function == LAZY_TABLE_MUTATION_FUNCTION:
+                old, new = f"\n{arguments[0]}\n", "\n"
+            else:
+                old, new = "__import__(module)", "__import__(module, fromlist=[attr])"
+            if text.count(old) != 1:
+                raise ValueError("the original table fixture must contain its one expected defect")
+            control_path.write_bytes(text.replace(old, new, 1).encode("utf-8"))
         return parsed
 
     def prove(tree, filename):
@@ -494,7 +513,11 @@ def replay_lazy_export_guard(key, source, fixture, argv, env, trace):
         if (stage is not None or parsed is None or tree is not parsed
                 or Path(filename) != app_path or shadow_path.is_file() != shadowed):
             raise ValueError("the original proof must use its staged source and provider fixture")
-        inputs = (app_path, shadow_path) if shadowed else (app_path,)
+        inputs = [app_path]
+        if shadowed:
+            inputs.append(shadow_path)
+        if table_rejected:
+            inputs.append(control_path)
         fixtures = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
         outcome = subprocess.run(
             argv, capture_output=True, text=True, timeout=60, check=False,
@@ -510,8 +533,8 @@ def replay_lazy_export_guard(key, source, fixture, argv, env, trace):
         report = json.loads(report_path.read_text(encoding="utf-8"))
         if (not isinstance(report, dict) or not isinstance(report.get("exports"), dict)
                 or report.get("complete") is not expected_complete
-                or report.get("unresolved") is not shadowed):
-            raise ValueError("native analysis must prove the target or report the shadowed lookup")
+                or report.get("unresolved") is not (shadowed or table_rejected)):
+            raise ValueError("native analysis must prove the target or report the unproven lookup")
         return report["exports"]
 
     previous_trace = sys.gettrace()

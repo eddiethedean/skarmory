@@ -126,7 +126,8 @@ impl<'a> Python<'a> {
                         bindings.insert(&name.text, origin.clone());
                     }
                 }
-                Stmt::AssignUnpack { names, value } => {
+                Stmt::AssignUnpack { names, value }
+                | Stmt::GuardedLazyUnpack { names, value, .. } => {
                     self.expression(value, &bindings);
                     if let Expr::Sequence { items, .. } = &value.kind
                         && items.len() == names.len()

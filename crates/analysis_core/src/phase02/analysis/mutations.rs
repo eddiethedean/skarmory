@@ -54,6 +54,32 @@ pub(super) struct Mutations {
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
 
+fn lazy_lookup_provider_member(module: &str, member: &str) -> bool {
+    matches!(
+        (module, member),
+        ("typing", "TYPE_CHECKING")
+            | ("importlib", "import_module")
+            | (
+                "builtins",
+                "getattr" | "__import__" | "KeyError" | "AttributeError"
+            )
+    )
+}
+
+fn deferred_lazy_lookup_member(member: &str) -> bool {
+    matches!(
+        member,
+        "__getattr__"
+            | "_LAZY"
+            | "getattr"
+            | "__import__"
+            | "KeyError"
+            | "AttributeError"
+            | "TYPE_CHECKING"
+            | "import_module"
+    )
+}
+
 impl<'a> Graph<'a> {
     pub(super) fn index_framework_mutations(&mut self) {
         let track_framework_escapes = self.symbols.iter().any(|symbol| {
@@ -81,7 +107,9 @@ impl<'a> Graph<'a> {
             let (receiver, member) = match &statement.kind {
                 StatementKind::WriteAttribute {
                     receiver, member, ..
-                } if is_truth_hook(member) || member == "__getattr__" => (receiver, member),
+                } if is_truth_hook(member) || deferred_lazy_lookup_member(member) => {
+                    (receiver, member)
+                }
                 StatementKind::Evaluate(Expression {
                     kind:
                         ExpressionKind::Call {
@@ -99,7 +127,7 @@ impl<'a> Graph<'a> {
                         },
                         rest @ ..,
                     ] = arguments.as_slice()
-                    && (is_truth_hook(member) || member == "__getattr__")
+                    && (is_truth_hook(member) || deferred_lazy_lookup_member(member))
                     && let Value::Provider(provider) =
                         self.probe_identity(scope, function, statement.at)
                     && matches!(
@@ -136,8 +164,11 @@ impl<'a> Graph<'a> {
                 {
                     ReceiverKey::Class(invocation.target)
                 }
-                Value::Module(file) if member == "__getattr__" => {
+                Value::Module(file) if matches!(member.as_str(), "__getattr__" | "_LAZY") => {
                     ReceiverKey::Module(self.files[file].module.clone())
+                }
+                Value::Provider(module) if lazy_lookup_provider_member(&module, member) => {
+                    ReceiverKey::Module(module)
                 }
                 _ => continue,
             };
@@ -548,9 +579,9 @@ impl<'a> Graph<'a> {
             return;
         };
         let changes_lazy_lookup = matches!(&receiver, ReceiverKey::Module(module)
-            if matches!((module.as_str(), member),
-                ("typing", "TYPE_CHECKING") | ("importlib", "import_module") | ("builtins", "getattr"))
-                || member == "__getattr__" && self.modules.contains_key(module.as_str()));
+            if lazy_lookup_provider_member(module, member)
+                || matches!(member, "__getattr__" | "_LAZY")
+                    && self.modules.contains_key(module.as_str()));
         let changes_truth_hook = if let ReceiverKey::Class(class) = &receiver
             && is_truth_hook(member)
         {
@@ -1688,6 +1719,20 @@ impl<'a> Graph<'a> {
             }
         }
         Some(fields)
+    }
+
+    pub(super) fn has_module_binding_write(&self, file: ScopeId, name: &str) -> bool {
+        let module = &self.files[file].module;
+        self.mutations
+            .module_globals
+            .get(&file)
+            .is_some_and(|members| members.contains_key(name))
+            || self
+                .mutations
+                .members
+                .get(&ReceiverKey::Module(module.clone()))
+                .is_some_and(|members| members.contains_key(name))
+            || self.mutations.modules.contains_key(module)
     }
 
     pub(super) fn module_global_write(

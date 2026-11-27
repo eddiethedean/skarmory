@@ -62,9 +62,14 @@ def passed_pytest_ids(report, source):
     module = source.removesuffix(".py").replace("/", ".")
     passed = set()
     for record in report.iter("testcase"):
-        if record.attrib["classname"] != module:
+        classname = record.attrib["classname"]
+        if classname == module:
+            scope = ""
+        elif classname.startswith(f"{module}."):
+            scope = classname.removeprefix(f"{module}.").replace(".", "::") + "::"
+        else:
             continue
-        case_id = f"{source}::{record.attrib['name']}"
+        case_id = f"{source}::{scope}{record.attrib['name']}"
         for outcome in ("skipped", "failure", "error"):
             if record.find(outcome) is not None:
                 raise ValueError(f"{case_id}: frozen reference did not pass ({outcome})")

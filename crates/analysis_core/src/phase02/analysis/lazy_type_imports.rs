@@ -126,6 +126,10 @@ impl Graph<'_> {
         let LazyMember::Branch(branch) = self.lazy_lookup(hook, export, END) else {
             return false;
         };
+        if let Some(target) = branch.table_target {
+            return target.attribute == member
+                && self.lazy_import_target_matches(file, import, target.module, member);
+        }
         let ExpressionKind::Call {
             function,
             arguments,
@@ -190,11 +194,7 @@ impl Graph<'_> {
         else {
             return false;
         };
-        let Some(&target_file) = self.modules.get(target.as_str()) else {
-            return false;
-        };
         keywords.is_empty()
-            && target_file != file
             && self.lazy_provider_member(
                 branch.scope,
                 function,
@@ -202,9 +202,23 @@ impl Graph<'_> {
                 "importlib",
                 "import_module",
             )
+            && self.lazy_import_target_matches(file, import, target, member)
+    }
+
+    fn lazy_import_target_matches(
+        &self,
+        file: ScopeId,
+        import: &Import,
+        target: &str,
+        member: &str,
+    ) -> bool {
+        let Some(&target_file) = self.modules.get(target) else {
+            return false;
+        };
+        target_file != file
             && self
                 .import_module(file, import)
-                .is_some_and(|source| source == *target)
+                .is_some_and(|source| source == target)
             && target
                 .match_indices('.')
                 .all(|(end, _)| self.lazy_import_parent(target, end).is_some())
@@ -217,7 +231,7 @@ impl Graph<'_> {
             })
     }
 
-    fn lazy_provider_member(
+    pub(super) fn lazy_provider_member(
         &self,
         scope: ScopeId,
         expression: &Expression,

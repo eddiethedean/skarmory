@@ -193,6 +193,29 @@ def proved_changed_file_scope(report, full, project, changed_files):
     )
 
 
+
+def proved_changed_file_projection(sdk_python, grep_verify):
+    # Keep the pinned fixtures intact and exercise projection in a separate
+    # project with real findings on both sides of the requested file set.
+    with TemporaryDirectory(prefix="skarmory-changed-file-control-") as directory:
+        project = Path(directory)
+        selected = project / "selected.py"
+        selected.write_text("def selected_unused(): return 1\n", encoding="utf-8")
+        (project / "outside.py").write_text("def outside_unused(): return 2\n", encoding="utf-8")
+        options = {"grep_verify": grep_verify, "trace_file": False, "coverage_file": False}
+        selection = [selected]
+        full = json.loads(scan_candidate(sdk_python, project, options))
+        projected = json.loads(scan_candidate(sdk_python, project, {**options, "changed_files": selection}))
+        inside = ("selected.py", "selected.selected_unused")
+        outside = ("outside.py", "outside.outside_unused")
+        return (
+            full["coverage"]["status"] == "complete"
+            and proved_changed_file_scope(projected, full, project, selection)
+            and projected["dead_code_evidence"] == full["dead_code_evidence"]
+            and {(row["file"], row["full_name"]) for row in full["unused_functions"]} == {inside, outside}
+            and {(row["file"], row["full_name"]) for row in projected["unused_functions"]} == {inside}
+        )
+
 def port_cases(args):
     from check_dead_code_gate import read_inventory
 
@@ -631,6 +654,8 @@ def pytest_worker(args):
                     ))
                     if not proved_changed_file_scope(report, full, path, options.get("changed_files")):
                         pytest.fail("changed-file report did not preserve whole-project analysis")
+                    if not proved_changed_file_projection(args.sdk_python, options.get("grep_verify", True)):
+                        pytest.fail("changed-file reporting did not project the positive control findings")
                     self.changed_file_scopes.add(key)
                 self.scans.add(key)
                 if fact_cache is not None:

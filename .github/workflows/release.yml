@@ -407,6 +407,23 @@ jobs:
           "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
             test/test_reachability_integration_qa.py \
             --junitxml="$GITHUB_WORKSPACE/phase03-evidence/reachability-integration-frozen-reference.xml"
+          analyzer_cases="$(PYTHONPATH="$GITHUB_WORKSPACE/scripts" "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+          from check_dead_code_gate import read_inventory
+
+          inventory = Path(os.environ["GITHUB_WORKSPACE"]) / "tests/conformance/phase03-inventory.toml"
+          _, _, _, required = read_inventory(inventory)
+          layers = (required[os.environ[f"DEAD_CODE_{layer}_VARIANT"]] for layer in ("SDK", "CLI", "ENGINE"))
+          print("\n".join(sorted(case_id for cases in layers for case_id, case in cases.items()
+                                  if case["source"] == "test/test_analyzer.py")))
+          PY
+          )"
+          test -n "$analyzer_cases"
+          mapfile -t analyzer_case_ids <<< "$analyzer_cases"
+          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
+            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/analyzer-frozen-reference.xml" \
+            "${analyzer_case_ids[@]}"
       - name: Verify the frozen Python reachability inventories
         if: env.DEAD_CODE_GATE_ENABLED == 'true'
         run: |
@@ -430,6 +447,7 @@ jobs:
               ("bindings-and-providers", "test/test_provider_method_precision.py"),
               ("proof-regressions", "test/test_dead_code_proof_regressions.py"),
               ("reachability-integration", "test/test_reachability_integration_qa.py"),
+              ("analyzer", "test/test_analyzer.py"),
           ):
               frozen = ElementTree.parse(evidence / f"{suite}-frozen-reference.xml")
               frozen_ids = passed_pytest_ids(frozen, source)

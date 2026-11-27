@@ -144,6 +144,7 @@ struct Finding {
 
 const WEAK_HELPER_FUNCTION: &str = "weak_helper_function";
 const NO_REACHABLE_CALLERS: &str = "no_reachable_callers";
+const NO_STATIC_REFERENCES: &str = "no_static_references";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Evidence {
@@ -159,6 +160,7 @@ struct Analysis {
     definitions: BTreeMap<String, DefinitionContext>,
     findings: Vec<Finding>,
     evidence: Vec<Evidence>,
+    unreachable_function_evidence: Vec<Evidence>,
     fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     #[cfg(test)]
     fastapi_initializer_evidence: FastapiInitializerEvidence,
@@ -514,12 +516,22 @@ impl RetainedEvidence {
         Self::Grouped {
             symbols: symbols
                 .into_iter()
-                .map(|((qualified_name, file, line), evidence)| SymbolEvidence {
-                    qualified_name,
-                    file,
-                    line,
-                    evidence: evidence.into_iter().collect(),
-                    decision: None,
+                .map(|((qualified_name, file, line), evidence)| {
+                    let decision = evidence.iter().find_map(|event| {
+                        let tag = match event.kind {
+                            NO_REACHABLE_CALLERS => NO_REACHABLE_CALLERS,
+                            NO_STATIC_REFERENCES => "no_refs",
+                            _ => return None,
+                        };
+                        Some(SymbolDecision { reason_tags: [tag] })
+                    });
+                    SymbolEvidence {
+                        qualified_name,
+                        file,
+                        line,
+                        evidence: evidence.into_iter().collect(),
+                        decision,
+                    }
                 })
                 .collect(),
         }
@@ -532,10 +544,11 @@ impl RetainedEvidence {
         let methods: BTreeSet<_> = findings
             .iter()
             .filter(|finding| {
-                finding
-                    .dead_code_evidence
-                    .iter()
-                    .any(|event| event.kind == NO_REACHABLE_CALLERS)
+                finding.method_owner.is_some()
+                    && finding
+                        .dead_code_evidence
+                        .iter()
+                        .any(|event| event.kind == NO_REACHABLE_CALLERS)
             })
             .map(|finding| (finding.subject(), finding.file.as_str(), finding.line))
             .collect();
@@ -954,7 +967,7 @@ fn scan_selected(
         FactCache::for_project(
             directory,
             if project_wildcards {
-                "phase03-module-v47/ruff-0.0.12/py311/utf8-universal"
+                "phase03-module-v49/ruff-0.0.12/py311/utf8-universal"
             } else {
                 "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
             },
@@ -1171,12 +1184,12 @@ fn scan_selected(
         gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
         partial_sources: phase03
-            && (changed_file_report
-                || path.is_file()
+            && (path.is_file()
                 || project.exclusions.iter().any(|exclusion| {
                     exclusion.reason == "configured_exclusion"
                         && !config.selection.is_default_exclusion(&exclusion.path)
                 })),
+        changed_file_report: phase03 && changed_file_report,
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
         wildcard_guards: Some(&wildcard_resolution.guards),
         #[cfg(test)]
@@ -1439,7 +1452,8 @@ fn scan_selected(
                 continue;
             }
             let source = sources.get(&finding.file).map(String::as_str);
-            let inline = file_facts.get(finding.file.as_str()).is_some_and(|facts| {
+            let facts = file_facts.get(finding.file.as_str());
+            let inline = facts.is_some_and(|facts| {
                 facts.inline_ignores.iter().any(|entry| {
                     entry.line == finding.line
                         && (entry.rules.is_empty()
@@ -1454,13 +1468,23 @@ fn scan_selected(
                     && js_modules
                         .get(&finding.file)
                         .is_some_and(|module| module.ignore_file));
-            if inline {
-                suppressed.push(Diagnostic::new(
+            let noqa_f401 = finding.category == Category::Import
+                && facts.is_some_and(|facts| {
+                    facts
+                        .noqa_f401_imports
+                        .contains(&[finding.line, finding.column])
+                });
+            if inline || noqa_f401 {
+                let mut diagnostic = Diagnostic::new(
                     finding,
                     "inline ignore comment".into(),
                     "suppressed",
                     source,
-                ));
+                );
+                if !inline && noqa_f401 {
+                    diagnostic.suppression_code = Some("noqa:F401");
+                }
+                suppressed.push(diagnostic);
                 continue;
             }
             let effective = file_configs
@@ -1579,8 +1603,12 @@ fn scan_selected(
             .into_iter()
             .collect(),
     });
+    let mut retained_events = analysis.evidence;
+    if python_complete {
+        retained_events.append(&mut analysis.unreachable_function_evidence);
+    }
     let retained_evidence =
-        RetainedEvidence::for_profile(options.profile, analysis.evidence, &analysis.verification);
+        RetainedEvidence::for_profile(options.profile, retained_events, &analysis.verification);
     let (quality, unused_dependency_analysis, dependency_usage_evidence) =
         if let Some(result) = dependency_result {
             (Some(result.findings), Some(result.receipt), result.evidence)

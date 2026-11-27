@@ -20650,10 +20650,8 @@ assertions = ["test/test_dead_code_import_evidence.py:441"]
 prerequisites = ["test/test_dead_code_import_evidence.py:14", "test/test_dead_code_import_evidence.py:18", "installed-sdk", "grep-verification"]
 provenance = "Original pinned pytest case and inline project written by test/test_dead_code_import_evidence.py:13-14 using test/fixture_paths.py::write_fixture."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The called function's global lookup after a straight-line overwrite is unresolved."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_typing_alias_value_strings_do_not_use_an_import[from typing import Literal as Choice-Choice[\"Parameter\"]]"
@@ -20782,10 +20780,8 @@ assertions = ["test/test_dead_code_import_evidence.py:599"]
 prerequisites = ["test/test_dead_code_import_evidence.py:14", "test/test_dead_code_import_evidence.py:18", "installed-sdk", "grep-verification"]
 provenance = "Original pinned pytest case and inline project written by test/test_dead_code_import_evidence.py:13-14 using test/fixture_paths.py::write_fixture."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The indirect call's fast lookup after the overwrite is unresolved."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_a_function_defined_only_in_the_fallback_cannot_use_the_other_import"
@@ -22314,9 +22310,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:531"]
 prerequisites = ["native-lazy-export-proof"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 524–531."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original lazy-export proof map assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_mutated_or_escaped_lazy_table_is_not_proof[rewrite(_LAZY)]"
@@ -22327,9 +22322,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:531"]
 prerequisites = ["native-lazy-export-proof"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 524–531."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original lazy-export proof map assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_mutated_or_escaped_lazy_table_is_not_proof[other = _LAZY]"
@@ -22340,9 +22334,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:531"]
 prerequisites = ["native-lazy-export-proof"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 524–531."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original lazy-export proof map assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_dotted_builtin_import_without_fromlist_returns_parent_module"
@@ -22353,9 +22346,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:540"]
 prerequisites = ["native-lazy-export-proof"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 534–540."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original lazy-export proof map assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_local_importlib_provider_does_not_prove_lazy_export"
@@ -22390,10 +22382,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:585"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports incomplete coverage (unsupported_construct) at pkg/__init__.py:8."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_lookalike_lazy_import_temporary_cannot_hide_mismatched_import"
@@ -22754,10 +22744,8 @@ assertions = ["test/test_reachability_integration_qa.py:203"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a file scan, although the original caller is outside its selected scope."
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[file-True]"
@@ -22768,10 +22756,8 @@ assertions = ["test/test_reachability_integration_qa.py:203"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a file scan, although the original caller is outside its selected scope."
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[changed-file-False]"
@@ -22806,10 +22792,8 @@ assertions = ["test/test_reachability_integration_qa.py:203"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a directory with exclusions scan, although the original caller is outside its selected scope."
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[excluded-directory-True]"
@@ -22820,10 +22804,8 @@ assertions = ["test/test_reachability_integration_qa.py:203"]
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a directory with exclusions scan, although the original caller is outside its selected scope."
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_grep_cache_observes_adding_and_removing_a_real_caller"
@@ -22858,10 +22840,8 @@ assertions = ["test/test_reachability_integration_qa.py:299", "test/test_reachab
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "Pinned inline project generated by the original test at lines 289–304 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK's raw per-symbol evidence lacks the original report's decision reason tags for the unrooted recursive group and independently unused entry."
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_qualified_calls_distinguish_duplicate_module_basenames[False-False]"
@@ -22872,10 +22852,8 @@ assertions = ["test/test_reachability_integration_qa.py:330", "test/test_reachab
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
 provenance = "Pinned inline project generated by the original test at lines 318–339 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK distinguishes the two packages in its findings, but its raw per-symbol evidence does not expose the original no_refs and no_reachable_callers decision tags."
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_qualified_calls_distinguish_duplicate_module_basenames[False-True]"
@@ -22886,10 +22864,8 @@ assertions = ["test/test_reachability_integration_qa.py:330", "test/test_reachab
 prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
 provenance = "Pinned inline project generated by the original test at lines 318–339 using the unchanged file writer at lines 20–22."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK distinguishes the two packages in its findings, but its raw per-symbol evidence does not expose the original no_refs and no_reachable_callers decision tags."
 
 [[cases]]
 id = "test/test_reachability_integration_qa.py::test_qualified_calls_distinguish_duplicate_module_basenames[True-False]"
@@ -22955,3 +22931,401 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 blocker = "The original test compares one installed SDK report with one real native CLI report. The current runner cannot bind both artifacts to the same original case."
+
+# Original Python analyzer cases covering package surfaces, suppressions, and reachability.
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_init_explicit_all_only_keeps_declared_symbols_live"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1090", "test/test_analyzer.py:1091", "test/test_analyzer.py:1092", "test/test_analyzer.py:1093", "test/test_analyzer.py:1094", "test/test_analyzer.py:1095", "test/test_analyzer.py:1096", "test/test_analyzer.py:1097"]
+prerequisites = ["test/test_analyzer.py:1051", "test/test_analyzer.py:1062", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1048-1097."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_init_empty_explicit_all_exports_nothing"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1124", "test/test_analyzer.py:1125"]
+prerequisites = ["test/test_analyzer.py:1102", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1099-1125."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_init_static_all_mutations_remain_authoritative"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1160", "test/test_analyzer.py:1161", "test/test_analyzer.py:1162", "test/test_analyzer.py:1163", "test/test_analyzer.py:1164"]
+prerequisites = ["test/test_analyzer.py:1130", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1127-1164."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the augmented __all__ assignment is outside the supported source subset."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_init_dynamic_all_mutation_falls_back_to_public_surface"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1196", "test/test_analyzer.py:1197", "test/test_analyzer.py:1198"]
+prerequisites = ["test/test_analyzer.py:1169", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1166-1198."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the dynamic __all__ mutation has an unresolved call in pkg/__init__.py."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_dynamic_all_preserves_observed_exports_in_regular_module"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1226", "test/test_analyzer.py:1227"]
+prerequisites = ["test/test_analyzer.py:1201", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1200-1227."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the dynamic __all__ mutation has an unresolved call in app.py."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_external_init_reexport_does_not_rescue_unrelated_local_name"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1256"]
+prerequisites = ["test/test_analyzer.py:1234", "test/test_analyzer.py:1238", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1229-1256."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_init_without_explicit_all_remains_a_public_surface"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1282", "test/test_analyzer.py:1283"]
+prerequisites = ["test/test_analyzer.py:1261", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1258-1283."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the public function in the package initializer is reported unused without an explicit __all__."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_package_subdir_scan_keeps_absolute_imports_live"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1311", "test/test_analyzer.py:1312"]
+prerequisites = ["test/test_analyzer.py:1286", "test/test_analyzer.py:1289", "test/test_analyzer.py:1290", "test/test_analyzer.py:1296", "test/test_analyzer.py:1300", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1285-1312."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the package-local API is reported unused when scanning that package below the project root."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_cast_string_type_reference_keeps_import_live"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1328"]
+prerequisites = ["test/test_analyzer.py:1315", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1314-1328."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the imported type used only in the quoted cast is reported unused."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_noqa_f401_suppresses_only_matching_unused_import"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1353", "test/test_analyzer.py:1354", "test/test_analyzer.py:1355"]
+prerequisites = ["test/test_analyzer.py:1331", "test/test_analyzer.py:1335", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1330-1355."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_noqa_f401_on_multiline_import_statement_suppresses_aliases"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1440", "test/test_analyzer.py:1441"]
+prerequisites = ["test/test_analyzer.py:1423", "test/test_analyzer.py:1427", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1422-1441."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_noqa_f401_on_multiline_import_close_suppresses_aliases"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1461", "test/test_analyzer.py:1462"]
+prerequisites = ["test/test_analyzer.py:1444", "test/test_analyzer.py:1448", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1443-1462."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_noqa_f401_on_second_import_does_not_suppress_first_import"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1476", "test/test_analyzer.py:1477"]
+prerequisites = ["test/test_analyzer.py:1465", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1464-1477."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_noqa_f401_does_not_suppress_unused_variable"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1490"]
+prerequisites = ["test/test_analyzer.py:1480", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1479-1490."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_package_scan_resolves_relative_and_module_import_styles"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1662", "test/test_analyzer.py:1663", "test/test_analyzer.py:1664", "test/test_analyzer.py:1665"]
+prerequisites = ["test/test_analyzer.py:1632", "test/test_analyzer.py:1633", "test/test_analyzer.py:1639", "test/test_analyzer.py:1648", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1629-1665."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the scanned package's relative import is reported as escaping the selected package."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_project_scan_strips_common_python_source_root"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1693", "test/test_analyzer.py:1694"]
+prerequisites = ["test/test_analyzer.py:1668", "test/test_analyzer.py:1671", "test/test_analyzer.py:1672", "test/test_analyzer.py:1678", "test/test_analyzer.py:1682", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1667-1694."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the API is reported unused when the Python package lives under the original lib directory."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_package_scan_without_project_root_matches_package_import_prefix"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:1723", "test/test_analyzer.py:1724"]
+prerequisites = ["test/test_analyzer.py:1701", "test/test_analyzer.py:1702", "test/test_analyzer.py:1708", "test/test_analyzer.py:1712", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1696-1724."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the API is reported unused when an absolute import names the package at the scan root without an outer project configuration."
+
+[[cases]]
+id = "test/test_analyzer.py::TestAnalyze::test_analyze_malformed_pyproject_config_does_not_suppress_findings"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:2055", "test/test_analyzer.py:2056"]
+prerequisites = ["test/test_analyzer.py:2035", "test/test_analyzer.py:2044", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:2032-2056."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The original test requires both unused-function output and a SKY-D201 danger finding for the same malformed configuration. The Phase 0.3 SDK has no combined port for these assertions."
+
+[[cases]]
+id = "test/test_analyzer.py::TestConfiguredDeadCodeEntrypoints::test_configured_class_entrypoint_matches_path_and_base"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3553", "test/test_analyzer.py:3554", "test/test_analyzer.py:3555"]
+prerequisites = []
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3513-3555."
+variants = ["linux-x86_64-cp311-python-engine"]
+port = ""
+omitted_assertions = []
+blocker = "The pinned test applies the reference's internal penalty function to mocks. A corresponding native engine port and assertion mapping are unimplemented."
+
+[[cases]]
+id = "test/test_analyzer.py::TestConfiguredDeadCodeEntrypoints::test_configured_method_entrypoint_matches_parent_base"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3593", "test/test_analyzer.py:3594"]
+prerequisites = ["test/test_analyzer.py:3558", "test/test_analyzer.py:3571", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3557-3594."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the configured create method is reported unused despite matching its class and parent base."
+
+[[cases]]
+id = "test/test_analyzer.py::TestConfiguredDeadCodeEntrypoints::test_configured_function_entrypoint_matches_decorator"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3627", "test/test_analyzer.py:3628"]
+prerequisites = ["test/test_analyzer.py:3597", "test/test_analyzer.py:3609", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3596-3628."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the boot function is reported unused despite matching the configured entrypoint decorator."
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_respects_ignore_pragmas"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3680", "test/test_analyzer.py:3681", "test/test_analyzer.py:3682"]
+prerequisites = ["test/test_analyzer.py:3658", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3656-3682."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_suppresses_override_method_parameters"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3835", "test/test_analyzer.py:3836", "test/test_analyzer.py:3837"]
+prerequisites = ["test/test_analyzer.py:3804", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3802-3837."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because typing override decorator identity is unresolved."
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_suppresses_sqlalchemy_listener_parameters"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3862", "test/test_analyzer.py:3863"]
+prerequisites = ["test/test_analyzer.py:3841", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3839-3863."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_marks_private_helper_dead_when_only_called_by_dead_method"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3888", "test/test_analyzer.py:3889"]
+prerequisites = ["test/test_analyzer.py:3869", "installed-sdk", "grep-verification"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3865-3889."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The original assertions still fail because the unused method names are unqualified, while the test expects Helper.run and Helper._helper in the name field."
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_keeps_method_refs_receiver_specific"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3920", "test/test_analyzer.py:3921", "test/test_analyzer.py:3922", "test/test_analyzer.py:3923"]
+prerequisites = ["test/test_analyzer.py:3893", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3891-3923."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the method parameter's subscript is outside the bounded literal mapping model."
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_protocol_methods_only_live_for_reachable_implementers"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:3968", "test/test_analyzer.py:3969", "test/test_analyzer.py:3970"]
+prerequisites = ["test/test_analyzer.py:3929", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3925-3970."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the typing Protocol subclass hook and indirect method call are unresolved."
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_bound_dispatch_receiver_refs_stay_callsite_specific"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:4021", "test/test_analyzer.py:4022", "test/test_analyzer.py:4023", "test/test_analyzer.py:4024"]
+prerequisites = ["test/test_analyzer.py:3976", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3972-4024."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the typing Protocol subclass hook and indirect method call are unresolved."
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_explicit_protocol_implementer_method_can_be_dead"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:4054", "test/test_analyzer.py:4055"]
+prerequisites = ["test/test_analyzer.py:4028", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:4026-4055."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage because the typing Protocol and explicit implementer's subclass hooks are unresolved."
+
+[[cases]]
+id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_dead_class_suppresses_owned_method_duplicates"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_analyzer.py"
+assertions = ["test/test_analyzer.py:4077", "test/test_analyzer.py:4078", "test/test_analyzer.py:4079"]
+prerequisites = ["test/test_analyzer.py:4059", "installed-sdk", "grep-verification-disabled"]
+provenance = "Original pinned fixture and assertions at test/test_analyzer.py:4057-4079."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []

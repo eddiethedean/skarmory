@@ -27,6 +27,7 @@ from run_phase03_seed import (
     check_candidate_wheel,
     environment,
     port_cases,
+    proved_changed_file_projection,
     proved_changed_file_scope,
     scan_candidate,
     write_receipt,
@@ -50,6 +51,23 @@ class FrozenReferenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, f"frozen reference did not pass \\({outcome}\\)"):
                     passed_pytest_ids(report, source)
                 testcase.remove(marker)
+
+    def test_frozen_result_accepts_class_qualified_node_ids(self):
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            from check_dead_code_gate import passed_pytest_ids
+
+        report = ElementTree.fromstring(
+            '<testsuite>'
+            '<testcase classname="test.test_analyzer.TestAnalyze" name="test_import[local]" />'
+            '<testcase classname="test.test_analyzer_other.TestAnalyze" name="test_import"><failure />'
+            '</testcase></testsuite>'
+        )
+        source = "test/test_analyzer.py"
+        self.assertEqual(passed_pytest_ids(report, source), {f"{source}::TestAnalyze::test_import[local]"})
+        testcase = report.find("testcase")
+        ElementTree.SubElement(testcase, "skipped")
+        with self.assertRaisesRegex(ValueError, "TestAnalyze::test_import.*did not pass"):
+            passed_pytest_ids(report, source)
 
 
 class DiagnosticPortTests(unittest.TestCase):
@@ -361,6 +379,32 @@ class CandidateScanTests(unittest.TestCase):
             {**projected, "unused_functions": [{"file": "consumer.py"}]},
         ):
             self.assertFalse(proved_changed_file_scope(bad, full, project, changed))
+
+
+    def test_changed_file_projection_requires_observable_filtering(self):
+        inside = {"file": "selected.py", "full_name": "selected.selected_unused"}
+        outside = {"file": "outside.py", "full_name": "outside.outside_unused"}
+        full = {
+            "coverage": {"status": "complete", "selected_files": 2},
+            "selected_paths": ["outside.py", "selected.py"],
+            "unused_functions": [inside, outside],
+            "dead_code_evidence": {"symbols": [inside, outside]},
+        }
+        projected = {**full, "report_scope": "changed_files", "unused_functions": [inside]}
+        for report, passes in (
+            (projected, True),
+            ({**full, "report_scope": "changed_files"}, False),
+            ({**projected, "unused_functions": []}, False),
+            ({**projected, "dead_code_evidence": {"symbols": [inside]}}, False),
+        ):
+            with (
+                self.subTest(report=report),
+                patch("run_phase03_seed.scan_candidate", side_effect=[json.dumps(full), json.dumps(report)]) as scan,
+            ):
+                self.assertIs(proved_changed_file_projection(Path("sdk/bin/python"), False), passes)
+                controls = scan.call_args_list
+                self.assertNotIn("changed_files", controls[0].args[2])
+                self.assertEqual([file.name for file in controls[1].args[2]["changed_files"]], ["selected.py"])
 
 
 class CorpusReceiptTests(unittest.TestCase):

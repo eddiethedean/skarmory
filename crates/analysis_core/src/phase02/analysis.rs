@@ -46,11 +46,13 @@ mod flask;
 mod frameworks;
 mod gin;
 mod gunicorn;
+mod lazy_tables;
 mod lazy_type_imports;
 mod literal_text;
 mod logging_config;
 mod mcp_tools;
 mod metaclasses;
+mod module_import_timing;
 mod mutations;
 mod pydantic;
 mod sanic;
@@ -527,6 +529,7 @@ struct LazyBranch<'a> {
     value: &'a Expression,
     at: Location,
     argument: Option<(SymbolId, &'a str)>,
+    table_target: Option<lazy_tables::LazyTableTarget<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -660,6 +663,7 @@ pub(super) struct FrameworkInputs<'a> {
     pub(super) gin: Option<&'a GinProject<'a>>,
     pub(super) discovery: Option<&'a crate::preview_source::Project>,
     pub(super) partial_sources: bool,
+    pub(super) changed_file_report: bool,
     pub(super) external_classes: Option<&'a external_classes::ExternalClassIndex>,
     pub(super) unresolved_project_wildcards: bool,
     pub(super) wildcard_guards: Option<&'a super::wildcards::Guards>,
@@ -691,6 +695,11 @@ pub(super) fn analyze_with_verification(
         symbols: Vec::new(),
         direct_submodule_imports: BTreeMap::new(),
         exposed_export_lists: BTreeSet::new(),
+        exposed_lazy_tables: BTreeSet::new(),
+        explicit_lazy_table_access: phase03
+            && files
+                .iter()
+                .any(|file| file.facts.explicit_lazy_table_access),
         by_location: BTreeMap::new(),
         read: BTreeSet::new(),
         namespace_exports: BTreeMap::new(),
@@ -937,6 +946,7 @@ pub(super) fn analyze_with_verification(
         verification,
         framework.templates,
         framework.partial_sources,
+        framework.changed_file_report,
     );
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
@@ -954,6 +964,8 @@ struct Graph<'a> {
     symbols: Vec<Symbol<'a>>,
     direct_submodule_imports: BTreeMap<usize, Vec<SymbolId>>,
     exposed_export_lists: BTreeSet<ScopeId>,
+    exposed_lazy_tables: BTreeSet<ScopeId>,
+    explicit_lazy_table_access: bool,
     by_location: BTreeMap<(ScopeId, usize, usize), SymbolId>,
     read: BTreeSet<SymbolId>,
     namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
@@ -1168,6 +1180,11 @@ impl<'a> Graph<'a> {
                 StatementKind::Assign { names, value, .. } => {
                     for name in names {
                         self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
+                    }
+                }
+                StatementKind::GuardedLazyUnpack { names, .. } => {
+                    for name in names {
+                        self.bind(scope, name, Binding::Variable(None, statement.at));
                     }
                 }
                 StatementKind::AssignUnpack { names, value } => {
@@ -1822,6 +1839,15 @@ impl<'a> Graph<'a> {
                 }) {
                     self.exposed_export_lists.insert(file);
                 }
+                let exposed_table = match import.member.as_deref() {
+                    None | Some("_LAZY") => module_file,
+                    _ => loaded_child,
+                };
+                if let Some(file) = exposed_table
+                    .filter(|&file| file != source && self.scopes[file].names.contains_key("_LAZY"))
+                {
+                    self.exposed_lazy_tables.insert(file);
+                }
             }
             let loads_module = unconditional
                 && module_file.is_some_and(|file| {
@@ -1854,6 +1880,13 @@ impl<'a> Graph<'a> {
                     && self.scopes[target].names.contains_key("__all__")
                 {
                     self.exposed_export_lists.insert(target);
+                }
+                if self.phase03
+                    && import.exposes_top_level
+                    && target != source
+                    && self.scopes[target].names.contains_key("_LAZY")
+                {
+                    self.exposed_lazy_tables.insert(target);
                 }
                 // A successful dotted import also runs its parent packages.
                 // The source and its own ancestors may still be initializing.
@@ -2905,7 +2938,24 @@ impl<'a> Graph<'a> {
             argument: branch.argument,
             temporary: branch.temporary,
         };
-        let value = self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation);
+        let value = if depth >= MAX_BINDING_CHAIN {
+            Value::Unknown
+        } else if let Some(target) = branch.table_target {
+            self.read.insert(target.table);
+            self.read.extend(target.provider);
+            self.lazy_loaded_module(branch.scope, target.module, execution_scope)
+                .map_or(Value::Unknown, |file| {
+                    self.lazy_attribute(
+                        Value::Module(file),
+                        target.attribute,
+                        (branch.scope, branch.at),
+                        depth + 1,
+                        execution_scope,
+                    )
+                })
+        } else {
+            self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation)
+        };
         if value.contains_unknown() && self.scope_issues.len() == first_issue {
             self.scope_issue(
                 branch.scope,
@@ -2972,27 +3022,9 @@ impl<'a> Graph<'a> {
                 }
                 (Value::Provider(provider), [name]) if provider == "importlib.import_module" => {
                     if let Value::Text(name) = recurse(self, name)
-                        && let Some(&target) = self.modules.get(name.as_str())
-                        && !within_package(&self.files[self.scopes[scope].file].module, &name)
+                        && let Some(target) = self.lazy_loaded_module(scope, &name, execution_scope)
                     {
-                        // An omitted initializer can change the imported module or
-                        // prevent it from loading. This path requires selected packages.
-                        let parents: Option<Vec<_>> = name
-                            .match_indices('.')
-                            .map(|(end, _)| self.lazy_import_parent(&name, end))
-                            .collect();
-                        if let Some(parents) = parents {
-                            if let Some(caller) = execution_scope {
-                                let caller_module = &self.files[self.scopes[caller].file].module;
-                                self.scopes[caller]
-                                    .imports
-                                    .extend(parents.into_iter().filter(|&file| {
-                                        !within_package(caller_module, &self.files[file].module)
-                                    }));
-                                self.scopes[caller].imports.push(target);
-                            }
-                            return Value::Module(target);
-                        }
+                        return Value::Module(target);
                     }
                 }
                 _ => {}
@@ -3005,6 +3037,35 @@ impl<'a> Graph<'a> {
             "effects of the lazy return expression are outside the bounded model",
         );
         Value::Unknown
+    }
+
+    fn lazy_loaded_module(
+        &mut self,
+        scope: ScopeId,
+        name: &str,
+        execution_scope: Option<ScopeId>,
+    ) -> Option<ScopeId> {
+        let &target = self.modules.get(name)?;
+        if within_package(&self.files[self.scopes[scope].file].module, name) {
+            return None;
+        }
+        // An omitted initializer can change the imported module or prevent it
+        // from loading. This path requires selected parent packages.
+        let parents: Option<Vec<_>> = name
+            .match_indices('.')
+            .map(|(end, _)| self.lazy_import_parent(name, end))
+            .collect();
+        let parents = parents?;
+        if let Some(caller) = execution_scope {
+            let caller_module = &self.files[self.scopes[caller].file].module;
+            self.scopes[caller].imports.extend(
+                parents
+                    .into_iter()
+                    .filter(|&file| !within_package(caller_module, &self.files[file].module)),
+            );
+            self.scopes[caller].imports.push(target);
+        }
+        Some(target)
     }
 
     fn lazy_import_parent(&self, name: &str, end: usize) -> Option<usize> {
@@ -3060,8 +3121,8 @@ impl<'a> Graph<'a> {
     }
 
     fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
-        self.lazy_dispatch(id, before, |name, scope, body, argument| {
-            (name == member).then(|| self.lazy_branch(scope, body, argument))
+        self.lazy_dispatch(id, before, |name, branch| {
+            (name == member).then_some(branch)
         })
     }
 
@@ -3069,12 +3130,7 @@ impl<'a> Graph<'a> {
         &self,
         id: SymbolId,
         before: Location,
-        mut visit: impl FnMut(
-            &'a str,
-            ScopeId,
-            &'a [Statement],
-            Option<(SymbolId, &'a str)>,
-        ) -> Option<LazyMember<'a>>,
+        mut visit: impl FnMut(&'a str, LazyMember<'a>) -> Option<LazyMember<'a>>,
     ) -> LazyMember<'a> {
         if self.binding_depends_on_branch(id, before) {
             return LazyMember::Conditional;
@@ -3096,6 +3152,16 @@ impl<'a> Graph<'a> {
             .by_location
             .get(&(scope, parameter.at.line, parameter.at.column))
             .copied();
+        if self.phase03
+            && let Some(table) = self.proven_lazy_table(scope, definition, parameter)
+        {
+            for (name, branch) in table.branches {
+                if let Some(result) = visit(name, LazyMember::Branch(branch)) {
+                    return result;
+                }
+            }
+            return table.fallback;
+        }
         // Prove literal dispatch only, after ordinary module lookup failed.
         for statement in &definition.body {
             if let StatementKind::Raise(Some(exception)) = &statement.kind {
@@ -3160,9 +3226,7 @@ impl<'a> Graph<'a> {
                     };
                     if let Some(result) = visit(
                         name,
-                        scope,
-                        body,
-                        parameter_id.map(|id| (id, name.as_str())),
+                        self.lazy_branch(scope, body, parameter_id.map(|id| (id, name.as_str()))),
                     ) {
                         return result;
                     }
@@ -3192,9 +3256,7 @@ impl<'a> Graph<'a> {
                     };
                     if let Some(result) = visit(
                         text,
-                        scope,
-                        body,
-                        parameter_id.map(|id| (id, text.as_str())),
+                        self.lazy_branch(scope, body, parameter_id.map(|id| (id, text.as_str()))),
                     ) {
                         return result;
                     }
@@ -3220,9 +3282,7 @@ impl<'a> Graph<'a> {
             }
             if let Some(result) = visit(
                 text,
-                scope,
-                body,
-                parameter_id.map(|id| (id, text.as_str())),
+                self.lazy_branch(scope, body, parameter_id.map(|id| (id, text.as_str()))),
             ) {
                 return result;
             }
@@ -3349,6 +3409,7 @@ impl<'a> Graph<'a> {
             value,
             at: *at,
             argument,
+            table_target: None,
         })
     }
 
@@ -4372,6 +4433,15 @@ impl<'a> Graph<'a> {
                             .and_then(|name| names.get(name))
                             .map_or(0, Vec::len);
                         if primary + private > 1 {
+                            if self.phase03
+                                && !lazy
+                                && private == 0
+                                && binding_scope == self.scopes[scope].file
+                                && let Some(value) = self
+                                    .settled_module_import_read(scope, expression, name, id, depth)
+                            {
+                                return value;
+                            }
                             self.scope_issue(scope, expression.at, "ambiguous_binding",
                                 "an enclosing name has multiple bindings and the active version is unresolved");
                             return Value::Unknown;
@@ -5468,7 +5538,7 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn report_unbound_receiver_calls(&mut self, reach: &Reachability) {
+    fn report_unbound_receiver_calls(&mut self, reach: &Reachability) -> bool {
         let resolved: BTreeSet<_> = self
             .resolved_receiver_calls
             .iter()
@@ -5476,8 +5546,13 @@ impl<'a> Graph<'a> {
             .map(|&(index, _)| index)
             .chain(reach.resolved_django_reloader_parameters.iter().copied())
             .collect();
+        let mut unresolved = false;
         for (index, call) in self.receiver_calls.iter().enumerate() {
-            if reach.scopes.contains(&call.scope) && !resolved.contains(&index) {
+            if resolved.contains(&index) {
+                continue;
+            }
+            unresolved = true;
+            if reach.scopes.contains(&call.scope) {
                 self.issues.push(
                     Issue::new(
                         "unresolved_call",
@@ -5488,6 +5563,7 @@ impl<'a> Graph<'a> {
                 );
             }
         }
+        unresolved
     }
 
     fn record_factory_return(
@@ -8564,6 +8640,51 @@ impl<'a> Graph<'a> {
                         self.annotation(scope, annotation, at, evaluated);
                     }
                 }
+                StatementKind::GuardedLazyUnpack { value, .. } => {
+                    self.walk(scope, value, at);
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_lazy_export",
+                        "guarded table lookup outside a proven module export",
+                    );
+                }
+                StatementKind::AssignUnpack { names, value } => {
+                    if !self.phase03 {
+                        self.issue(
+                            self.scopes[scope].file,
+                            at,
+                            "unsupported_construct",
+                            "unpacking is outside the compatibility subset",
+                        );
+                        continue;
+                    }
+                    self.walk(scope, value, at);
+                    let known_length = match &value.kind {
+                        ExpressionKind::Sequence { items, .. } => Some(items.len()),
+                        _ => self
+                            .literal_split_items(scope, value, at, 0)
+                            .map(|items| items.len()),
+                    };
+                    match known_length {
+                        Some(length) if length == names.len() => {}
+                        Some(_) => {
+                            self.scope_issue(
+                                scope,
+                                at,
+                                "invalid_unpack",
+                                "assignment unpacking has a known element count mismatch",
+                            );
+                            return true;
+                        }
+                        _ => self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_unpack",
+                            "assignment unpacking requires a bounded list or tuple value",
+                        ),
+                    }
+                }
                 StatementKind::AssignDjangoSettings { environment, value } => {
                     self.walk(scope, value, at);
                     self.walk(scope, environment, at);
@@ -10971,11 +11092,9 @@ impl<'a> Graph<'a> {
             {
                 LazyMember::Unknown
             } else {
-                self.lazy_dispatch(hook, END, |name, scope, body, argument| {
+                self.lazy_dispatch(hook, END, |name, branch| {
                     if !name.starts_with('_') && self.local(file, name, END).is_none() {
-                        lazy_members
-                            .entry(name)
-                            .or_insert_with(|| self.lazy_branch(scope, body, argument));
+                        lazy_members.entry(name).or_insert(branch);
                     }
                     None
                 })
@@ -11999,6 +12118,7 @@ impl<'a> Graph<'a> {
         snapshot: Option<&grep_verification::Snapshot>,
         templates: Option<&TemplateProject<'_>>,
         partial_sources: bool,
+        changed_file_report: bool,
     ) -> Analysis {
         // Declaration hints retain only the definition in the compatibility
         // report. Leave them out of the execution graph and parameter analysis.
@@ -12048,7 +12168,7 @@ impl<'a> Graph<'a> {
         if !converged {
             self.issues.push(framework_limit());
         }
-        self.report_unbound_receiver_calls(&reach);
+        let unresolved_receiver_calls = self.report_unbound_receiver_calls(&reach);
         self.report_unmodeled_registry_reads(&reach);
         self.report_fresh_field_calls(&reach);
         self.report_constructor_hook_stores(&reach);
@@ -12096,6 +12216,42 @@ impl<'a> Graph<'a> {
             evidence,
             ..
         } = reach;
+        // Coverage can omit diagnostics in dormant code. A claim about all
+        // static references still needs the bindings in those scopes.
+        let can_rule_out_references = self.phase03
+            && !partial_sources
+            && !unresolved_receiver_calls
+            && self.issues.is_empty()
+            && self.scope_issues.is_empty();
+        let mut unrooted_references = BTreeMap::<_, bool>::new();
+        if self.phase03 {
+            for edge in self.scopes.iter().flat_map(|scope| &scope.edges) {
+                if !reachable_symbols.contains(&edge.target) {
+                    // Record whether any static reference is a direct call.
+                    *unrooted_references.entry(edge.target).or_default() |=
+                        edge.kind == "direct_call";
+                }
+            }
+            // A from-import references the source binding even if its local
+            // alias is unread. Unknown rebinding order rules out a no-refs
+            // decision for each definition of the imported name.
+            for symbol in &self.symbols {
+                if let Binding::Import(import) = symbol.binding
+                    && let Some(member) = &import.member
+                    && let Some(module) = self.import_module(self.scopes[symbol.scope].file, import)
+                    && let Some(&file) = self.modules.get(module.as_str())
+                    && let Some(bindings) = self.scopes[file].names.get(member.as_str())
+                {
+                    for &id in bindings {
+                        if !reachable_symbols.contains(&id)
+                            && matches!(self.symbols[id].binding, Binding::Definition(..))
+                        {
+                            unrooted_references.entry(id).or_default();
+                        }
+                    }
+                }
+            }
+        }
         let unrooted_method_callables = if self.phase03 {
             self.unrooted_method_callables(&reachable_symbols)
         } else {
@@ -12236,6 +12392,7 @@ impl<'a> Graph<'a> {
             });
         }
         let mut definitions = BTreeMap::new();
+        let mut unreachable_function_evidence = Vec::new();
         for (id, symbol) in self.symbols.iter().enumerate() {
             if matches!(symbol.binding, Binding::Deleted) {
                 continue;
@@ -12268,21 +12425,45 @@ impl<'a> Graph<'a> {
                         && def.kind != DefinitionKind::Class =>
                 {
                     let is_method = scope.owner.is_some_and(|id| self.is_class(id));
+                    let reason = if self.phase03
+                        && scope.owner.is_none()
+                        && !self.direct.contains(&id)
+                        && (name.starts_with("format_") || name.ends_with("_name"))
+                    {
+                        WEAK_HELPER_FUNCTION
+                    } else if (is_method && unrooted_method_callables.contains(&id))
+                        || (!is_method && unrooted_references.get(&id) == Some(&true))
+                    {
+                        super::NO_REACHABLE_CALLERS
+                    } else if can_rule_out_references
+                        && scope.owner.is_none()
+                        && !unrooted_references.contains_key(&id)
+                        && !self.read.contains(&id)
+                    {
+                        super::NO_STATIC_REFERENCES
+                    } else {
+                        "no_call_path_from_root"
+                    };
+                    if !is_method
+                        && !partial_sources
+                        && matches!(
+                            reason,
+                            super::NO_REACHABLE_CALLERS | super::NO_STATIC_REFERENCES
+                        )
+                    {
+                        unreachable_function_evidence.push(Evidence {
+                            file: self.files[scope.file].path.clone(),
+                            line: symbol.name.at.line,
+                            full_name: self.full_name(id),
+                            kind: reason,
+                            certainty: "certain",
+                        });
+                    }
                     (
                         Category::Function,
                         "SKY-U001",
                         if public && is_method { 80 } else { 90 },
-                        if self.phase03
-                            && scope.owner.is_none()
-                            && !self.direct.contains(&id)
-                            && (name.starts_with("format_") || name.ends_with("_name"))
-                        {
-                            WEAK_HELPER_FUNCTION
-                        } else if is_method && unrooted_method_callables.contains(&id) {
-                            super::NO_REACHABLE_CALLERS
-                        } else {
-                            "no_call_path_from_root"
-                        },
+                        reason,
                     )
                 }
                 Binding::Import(_) if !self.read.contains(&id) => {
@@ -12358,20 +12539,30 @@ impl<'a> Graph<'a> {
             } else {
                 full_name.clone()
             };
-            if partial_sources
-                && category == Category::Function
-                && unrooted_method_callables.contains(&id)
-            {
-                self.uncertainties.push(
-                    Issue::new(
+            if (partial_sources || changed_file_report) && category == Category::Function {
+                let abstention = if unrooted_method_callables.contains(&id) {
+                    Some((
                         "partial_scope_method_reachability",
-                        &self.files[scope.file].path,
                         "this reporting scope cannot establish that a statically referenced method group has no callers",
-                    )
-                    .at(symbol.name.at)
-                    .with_symbol(name, full_name),
-                );
-                continue;
+                    ))
+                } else if unrooted_references.get(&id) == Some(&true)
+                    && scope.owner.is_none_or(|owner| !self.is_class(owner))
+                {
+                    Some((
+                        "partial_scope_function_reachability",
+                        "this reporting scope cannot establish that a statically referenced function has no callers",
+                    ))
+                } else {
+                    None
+                };
+                if let Some((kind, message)) = abstention {
+                    self.uncertainties.push(
+                        Issue::new(kind, &self.files[scope.file].path, message)
+                            .at(symbol.name.at)
+                            .with_symbol(name, full_name),
+                    );
+                    continue;
+                }
             }
             findings.push(Finding {
                 category,
@@ -12442,6 +12633,7 @@ impl<'a> Graph<'a> {
             findings,
             definitions,
             evidence: retained,
+            unreachable_function_evidence,
             fastapi_route_declarations,
             #[cfg(test)]
             fastapi_initializer_evidence,
@@ -12568,6 +12760,11 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 if class && !postponed {
                     expressions.extend(annotation);
                 }
+            }
+            StatementKind::AssignUnpack { names, value }
+            | StatementKind::GuardedLazyUnpack { names, value, .. } => {
+                assigned.extend(names.iter().map(|name| name.text.as_str()));
+                expressions.push(value);
             }
             StatementKind::AssignDjangoSettings { environment, value } => {
                 expressions.push(environment);
@@ -12731,7 +12928,9 @@ fn suite_binds_name(body: &[Statement], name: &str) -> bool {
         StatementKind::ProviderWildcardImport(imports) => {
             imports.iter().any(|import| import.local.text == name)
         }
-        StatementKind::Assign { names, .. } | StatementKind::AssignUnpack { names, .. } => {
+        StatementKind::Assign { names, .. }
+        | StatementKind::AssignUnpack { names, .. }
+        | StatementKind::GuardedLazyUnpack { names, .. } => {
             names.iter().any(|target| target.text == name)
         }
         StatementKind::LiteralRouteLoop { path, .. } => path.text == name,
@@ -13424,20 +13623,32 @@ mod tests {
         shadow: Option<&str>,
         consumer: &str,
     ) -> (BTreeMap<&'static str, String>, Analysis) {
+        let phase03_module = |path: &str, module: &str, source: &str| AnalyzedFile {
+            path: path.into(),
+            module: module.into(),
+            is_package: path.ends_with("__init__.py"),
+            fastapi_router_mode: FastapiRouterMode::Auto,
+            facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+        };
         let mut files = vec![
-            module("app.py", "app", source),
-            module("pkg/__init__.py", "pkg", ""),
-            module("pkg/mod.py", "pkg.mod", "def Thing(): return 1\n"),
-            module("consumer.py", "consumer", consumer),
+            phase03_module("app.py", "app", source),
+            phase03_module("pkg/__init__.py", "pkg", ""),
+            phase03_module("pkg/mod.py", "pkg.mod", "def Thing(): return 1\n"),
+            phase03_module("consumer.py", "consumer", consumer),
         ];
         if let Some(shadow) = shadow {
-            files.push(module("importlib.py", "importlib", shadow));
+            files.push(phase03_module("importlib.py", "importlib", shadow));
         }
         let report = analyze_phase03(&files, &[]);
         let resolved = report
             .evidence
             .iter()
-            .filter(|evidence| evidence.kind == "direct_call" && evidence.certainty == "certain")
+            .filter(|evidence| {
+                // Ignore fixture setup calls in the consumer itself.
+                evidence.file != "consumer.py"
+                    && evidence.kind == "direct_call"
+                    && evidence.certainty == "certain"
+            })
             .map(|evidence| evidence.full_name.as_str())
             .collect::<BTreeSet<_>>();
         let exports = match resolved.into_iter().collect::<Vec<_>>().as_slice() {
@@ -13460,11 +13671,21 @@ mod tests {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => panic!("unable to read the pinned local importlib provider: {error}"),
         };
-        let (control, positive) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER);
+        let table_control =
+            match std::fs::read_to_string(fixture.with_file_name("lazy-table-control.py")) {
+                Ok(source) => Some(source),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => panic!("unable to read the native lazy table control: {error}"),
+            };
+        let (control, positive) = lazy_guard_report(
+            table_control.as_deref().unwrap_or(&source),
+            None,
+            LAZY_EXPORT_CONSUMER,
+        );
         assert!(positive.issues.is_empty(), "{:?}", positive.issues);
         assert_eq!(control, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
-        let (exports, report) = if let Some(shadow) = shadow {
-            lazy_guard_report(&source, Some(&shadow), LAZY_EXPORT_CONSUMER)
+        let (exports, report) = if shadow.is_some() || table_control.is_some() {
+            lazy_guard_report(&source, shadow.as_deref(), LAZY_EXPORT_CONSUMER)
         } else {
             (control, positive)
         };
@@ -13474,6 +13695,61 @@ mod tests {
             "unresolved": report.issues.iter().any(|issue| issue.kind == "unresolved_lazy_export"),
         });
         std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn lazy_export_table_requires_stable_rows_and_a_proven_loader() {
+        let table = "_LAZY = {'Thing': ('pkg.mod', 'Thing')}\n";
+        let builtin_hook = "def __getattr__(name):\n    module, attr = _LAZY[name]\n    return getattr(__import__(module, fromlist=[attr]), attr)\n";
+        let guarded_hook = "def __getattr__(name):\n    try:\n        module, attr = _LAZY[name]\n    except KeyError:\n        raise AttributeError(name) from None\n    return getattr(importlib.import_module(module), attr)\n";
+        let builtin = format!("{table}{builtin_hook}");
+        let guarded = format!("import importlib\n{table}{guarded_hook}");
+        for source in [&builtin, &guarded] {
+            let (exports, report) = lazy_guard_report(source, None, LAZY_EXPORT_CONSUMER);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert_eq!(exports, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
+        }
+
+        for source in [
+            builtin.replace("fromlist=[attr]", "fromlist=[]"),
+            format!("{table}other = _LAZY\n{builtin_hook}"),
+            format!("{table}_LAZY['Thing'] = ('pkg.other', 'Other')\n{builtin_hook}"),
+            format!("{table}rewrite(_LAZY)\n{builtin_hook}"),
+            format!("{table}from other import __import__\n{builtin_hook}"),
+            format!("import importlib\nfrom other import KeyError\n{table}{guarded_hook}"),
+            format!("import importlib\nfrom other import AttributeError\n{table}{guarded_hook}"),
+        ] {
+            let (exports, report) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER);
+            assert!(exports.is_empty(), "{source}\n{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{source}\n{:?}",
+                report.issues
+            );
+        }
+        for exposure in [
+            "from app import _LAZY as mapping\nmapping.clear()\n",
+            "import app\napp._LAZY.clear()\n",
+            "from app import __doc__\nimport sys\nsys.modules['app']._LAZY.clear()\n",
+            "getattr(__import__('app'), '_LAZY').clear()\n",
+            "import builtins\nbuiltins.__import__ = None\n",
+            "import builtins\ndef replace():\n    builtins.__import__ = None\nreplace()\n",
+        ] {
+            let consumer = format!("{exposure}{LAZY_EXPORT_CONSUMER}");
+            let (exports, report) = lazy_guard_report(&builtin, None, &consumer);
+            assert!(exports.is_empty(), "{exposure}\n{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{exposure}\n{:?}",
+                report.issues
+            );
+        }
     }
 
     #[test]
