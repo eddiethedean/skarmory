@@ -106,10 +106,11 @@ sets. The separate legacy fallback test requires no public analysis error
 even when its internal proof is incomplete. Native coverage records an
 exhausted budget explicitly and preserves unresolved route evidence.
 
-Four cases have approved release-scope exceptions tracked under
+Four cases have reviewed preview controls tracked under
 [#41](https://github.com/eddiethedean/skarmory/issues/41). The gate executes
-their original assertions on Skylos and keeps the original candidate outcomes
-visible without awarding ordinary pass credit. The installed SDK lacks the
+their original assertions on Skylos and records the candidate outcomes.
+Passing the controls qualifies the preview. Each original candidate outcome
+blocks publication until it is an ordinary pass. The installed SDK lacks the
 combined Click analyzer options. The legacy FastAPI case requires root
 evidence and a clean error list after its proof is exhausted. The native
 engine controls use the original staged sources from the same release

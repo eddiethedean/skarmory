@@ -233,13 +233,15 @@ reviewed_exception = {{ reason = "combined scan outside Phase 0.3", approval = "
         })
         return receipt
 
-    def test_approved_exception_preserves_original_outcomes_without_pass_credit(self):
+    def test_approved_exception_previews_but_blocks_release(self):
         engine = self.approved_click_receipt()
         run, report = self.run_gate(engine, self.receipt("python-sdk"))
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(report["counts"], {"passed": 2, "blocked": 0})
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["counts"], {"passed": 2, "blocked": 1})
         [exception] = report["reviewed_exceptions"]
-        self.assertEqual(exception["status"], "accepted")
+        self.assertEqual(exception["status"], "blocked")
+        self.assertEqual(exception["preview_status"], "passed")
         self.assertEqual(exception["original_reference_status"], "passed")
         self.assertEqual(exception["original_candidate_status"], "blocked")
         self.assertEqual(exception["original_assertions"], [ASSERTION])
@@ -262,7 +264,7 @@ reviewed_exception = {{ reason = "combined scan outside Phase 0.3", approval = "
                 report = self.assert_blocked(
                     [engine, self.receipt("python-sdk")], "approved exception control"
                 )
-                self.assertEqual(report["reviewed_exceptions"][0]["status"], "blocked")
+                self.assertEqual(report["reviewed_exceptions"][0]["preview_status"], "blocked")
 
     def test_mounted_django_exception_requires_the_exact_original_failure_and_sdk_control(self):
         source = "test/test_django_function_view_roots.py"
@@ -316,9 +318,11 @@ reviewed_exception = {{ reason = "original expects dormant provider", approval =
         sdk["results"].append(result)
         engine = self.receipt("python-engine")
         run, report = self.run_gate(engine, sdk)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(report["counts"], {"passed": 2, "blocked": 0})
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["counts"], {"passed": 2, "blocked": 1})
         [exception] = report["reviewed_exceptions"]
+        self.assertEqual(exception["preview_status"], "passed")
         self.assertEqual(exception["original_candidate_status"], "failed")
         self.assertEqual(exception["original_candidate_failed_assertion"], original[1])
         self.assertEqual(exception["native_control"], control)
@@ -331,7 +335,7 @@ reviewed_exception = {{ reason = "original expects dormant provider", approval =
             with self.subTest(changes=changes):
                 sdk["results"][-1] = {**result, **changes}
                 broken = self.assert_blocked([engine, sdk], "approved exception control")
-                self.assertEqual(broken["reviewed_exceptions"][0]["status"], "blocked")
+                self.assertEqual(broken["reviewed_exceptions"][0]["preview_status"], "blocked")
 
     def reviewed_receipt(self, checks=None):
         if checks is None:

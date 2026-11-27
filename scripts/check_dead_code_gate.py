@@ -660,12 +660,14 @@ def evaluate(
             preview_status = "blocked" if reasons else "passed"
             candidate_status = result.get("status")
             if "reviewed_exception" in case:
+                if reasons:
+                    errors.append(f"{case_id}: approved exception control is missing or invalid")
                 report["reviewed_exceptions"].append({
                     "case_id": case_id,
                     "variant": variant_id,
-                    "status": "blocked" if reasons else "accepted",
+                    "status": "blocked",
                     "preview_status": preview_status,
-                    "reasons": reasons,
+                    "reasons": reasons or [f"Skarmory outcome {candidate_status!r} is not an ordinary pass"],
                     "review": case["reviewed_exception"],
                     "original_assertions": case["assertions"],
                     "original_reference_status": result.get("reference_status"),
@@ -673,8 +675,6 @@ def evaluate(
                     "original_candidate_failed_assertion": result.get("candidate_failed_assertion"),
                     "native_control": result.get("native_test", result.get("reviewed_runtime")),
                 })
-                if reasons:
-                    errors.append(f"{case_id}: approved exception control is missing or invalid")
                 continue
             if preview_status == "passed" and candidate_status != "passed":
                 reasons.append(f"Skarmory outcome {candidate_status!r} is not an ordinary pass")
@@ -691,7 +691,7 @@ def evaluate(
                 decision["original_candidate_failed_assertion"] = result.get("candidate_failed_assertion")
             report["cases"].append(decision)
 
-    counts = Counter(case["status"] for case in report["cases"])
+    counts = Counter(case["status"] for case in report["cases"] + report["reviewed_exceptions"])
     report["counts"] = {status: counts[status] for status in ("passed", "blocked")}
     report["reviewed_runtime_preview_passes"] = sum(
         "runtime_review" in case and case["preview_status"] == "passed" for case in report["cases"]
