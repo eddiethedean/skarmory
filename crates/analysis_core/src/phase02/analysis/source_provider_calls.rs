@@ -3,6 +3,7 @@
 use super::*;
 
 const MAX_PROVIDER_CALLS: usize = 32;
+const MAX_PROVIDER_ASSIGNMENTS: usize = 32;
 
 #[derive(Clone, Copy)]
 enum ProviderReceiver<'a> {
@@ -21,6 +22,12 @@ pub(super) struct SourceProviderCall<'a> {
     receiver: ProviderReceiver<'a>,
     member: &'a str,
     supplied: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FreshProviderArgument {
+    class: SymbolId,
+    assignment: Option<(Location, Location)>,
 }
 
 impl<'a> Graph<'a> {
@@ -117,7 +124,7 @@ impl<'a> Graph<'a> {
         wrapper: &Definition,
         call: CallArguments<'_>,
         values: &BTreeMap<String, Value>,
-    ) -> Option<SymbolId> {
+    ) -> Option<FreshProviderArgument> {
         let (_, returned, None) = wrapper_return(wrapper)? else {
             return None;
         };
@@ -132,24 +139,135 @@ impl<'a> Graph<'a> {
                 .find(|(name, _)| name == receiver)
                 .map(|(_, value)| value)
         })?;
+        let Some(Value::Instance(class)) = values.get(receiver) else {
+            return None;
+        };
+        if let ExpressionKind::Name(name) = &argument.kind {
+            let scope = call.scope;
+            let row = &self.scopes[scope];
+            // A standalone, single-argument module call has no other
+            // operands that could execute after loading the named instance.
+            if row.owner.is_some() || call.positional.len() + call.keywords.len() != 1 {
+                return None;
+            }
+            let call_statement = row.body.get(
+                row.body
+                    .partition_point(|statement| position(statement.at) < position(call.before)),
+            )?;
+            if !matches!(&call_statement.kind,
+                StatementKind::Evaluate(Expression { at, kind: ExpressionKind::Call { function, .. }, .. })
+                if position(call_statement.at) == position(call.before)
+                    && position(*at) == position(call.at)
+                    && matches!(function.kind, ExpressionKind::Name(_)))
+            {
+                return None;
+            }
+            let binding = self.local(scope, name, call.before)?;
+            let Binding::Variable(Some(initializer), assigned) = self.symbols[binding].binding
+            else {
+                return None;
+            };
+            let statement =
+                row.body
+                    .get(row.body.partition_point(|statement| {
+                        position(statement.at) < position(assigned)
+                    }))?;
+            if position(statement.at) != position(assigned)
+                || !matches!(fresh_assignment(statement), Some((target, value))
+                    if target.text == *name && std::ptr::eq(value, initializer))
+                || self.local(scope, name, assigned).is_some()
+                || self.plain_provider_constructor(scope, initializer, assigned)? != *class
+            {
+                return None;
+            }
+            return Some(FreshProviderArgument {
+                class: *class,
+                assignment: Some((assigned, call.before)),
+            });
+        }
+        (self.provider_constructor((call.scope, call.before), argument)? == *class).then_some(
+            FreshProviderArgument {
+                class: *class,
+                assignment: None,
+            },
+        )
+    }
+
+    fn provider_constructor(
+        &mut self,
+        (scope, before): (ScopeId, Location),
+        expression: &Expression,
+    ) -> Option<SymbolId> {
         let ExpressionKind::Call {
             function,
             arguments,
             keywords,
-        } = &argument.kind
+        } = &expression.kind
         else {
             return None;
         };
         if !arguments.is_empty() || !keywords.is_empty() {
             return None;
         }
-        let (Some(Value::Instance(class)), Value::Callable(constructor)) = (
-            values.get(receiver),
-            self.probe_identity(call.scope, function, call.before),
-        ) else {
+        let Value::Callable(constructor) = self.probe_identity(scope, function, before) else {
             return None;
         };
-        (!constructor.verified && constructor.target == *class).then_some(*class)
+        (!constructor.verified).then_some(constructor.target)
+    }
+
+    fn plain_provider_constructor(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> Option<SymbolId> {
+        if !matches!(&expression.kind, ExpressionKind::Call { function, .. }
+            if matches!(function.kind, ExpressionKind::Name(_)))
+        {
+            return None;
+        }
+        let class = self.provider_constructor((scope, before), expression)?;
+        (self.is_class(class) && self.source_provider_definition_precedes(class, (scope, before)))
+            .then_some(class)
+    }
+
+    fn named_provider_stays_fresh(
+        &mut self,
+        scope: ScopeId,
+        assigned: Location,
+        called: Location,
+        invalidated: &BTreeSet<SymbolId>,
+    ) -> bool {
+        let body = self.scopes[scope].body;
+        let start = body.partition_point(|statement| position(statement.at) <= position(assigned));
+        let end = body.partition_point(|statement| position(statement.at) < position(called));
+        // Each intervening assignment has a new destination and an inert
+        // initializer. This rules out escapes, reflection and releasing a
+        // previous object whose finalizer could mutate the receiver.
+        end.saturating_sub(start) <= MAX_PROVIDER_ASSIGNMENTS
+            && body.get(start..end).is_some_and(|statements| {
+                statements.iter().all(|statement| {
+                    let Some((target, value)) = fresh_assignment(statement) else {
+                        return false;
+                    };
+                    self.local(scope, &target.text, statement.at).is_none()
+                        && (matches!(
+                            value.kind,
+                            ExpressionKind::Text(_)
+                                | ExpressionKind::Scalar(_)
+                                | ExpressionKind::Bool(_)
+                                | ExpressionKind::None
+                        ) || self
+                            .plain_provider_constructor(scope, value, statement.at)
+                            .is_some_and(|class| {
+                                self.plain_default_provider(
+                                    class,
+                                    (scope, statement.at),
+                                    invalidated,
+                                )
+                            }))
+                })
+            })
     }
 
     pub(super) fn record_opaque_source_provider_arguments(&mut self, call: CallArguments<'_>) {
@@ -282,7 +400,14 @@ impl<'a> Graph<'a> {
         invalidated: &BTreeSet<SymbolId>,
     ) -> Option<(SymbolId, SymbolId)> {
         let class = match (site.receiver, input) {
-            (ProviderReceiver::Argument, ProviderInput::Class(class)) => class,
+            (ProviderReceiver::Argument, ProviderInput::Class(argument)) => {
+                if let Some((assigned, called)) = argument.assignment
+                    && !self.named_provider_stays_fresh(access.0, assigned, called, invalidated)
+                {
+                    return None;
+                }
+                argument.class
+            }
             (
                 ProviderReceiver::Factory {
                     expression,
@@ -383,8 +508,23 @@ fn collect_opaque_provider_arguments(value: &Value, targets: &mut BTreeSet<Symbo
 }
 
 enum ProviderInput {
-    Class(SymbolId),
+    Class(FreshProviderArgument),
     Text(String),
+}
+
+fn fresh_assignment(statement: &Statement) -> Option<(&Name, &Expression)> {
+    let StatementKind::Assign {
+        names,
+        value: Some(value),
+        annotation: None,
+    } = &statement.kind
+    else {
+        return None;
+    };
+    let [target] = names.as_slice() else {
+        return None;
+    };
+    Some((target, value))
 }
 
 fn wrapper_return(definition: &Definition) -> Option<(Location, &Expression, Option<&Statement>)> {

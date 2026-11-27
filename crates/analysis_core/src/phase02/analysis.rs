@@ -439,7 +439,7 @@ struct DirectArguments {
     implicit_receiver: bool,
     values: BTreeMap<String, Value>,
     forwarded: BTreeMap<String, SymbolId>,
-    fresh_provider: Option<SymbolId>,
+    fresh_provider: Option<source_provider_calls::FreshProviderArgument>,
     verified: bool,
     conditional: bool,
     arguments_bound: bool,

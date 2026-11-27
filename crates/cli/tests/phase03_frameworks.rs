@@ -13411,6 +13411,44 @@ fn assert_provider_cache_equivalence(root: &Path, cache: &Path, report: &Value, 
 }
 
 #[test]
+fn source_provider_dispatch_follows_a_fresh_instance_assigned_to_a_name() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("main.py");
+    let declarations = r#"class Provider:
+    def execute(self): return 1
+
+class Spare:
+    def execute(self): return 2
+
+def run(provider):
+    return provider.execute()
+
+provider = Provider()
+spare = Spare()
+"#;
+    fs::write(root.join("helper.py"), "def unused(): pass\n").unwrap();
+    for call in ["run(provider)", "run(provider=provider)"] {
+        fs::write(&source, format!("{declarations}{call}\n")).unwrap();
+        let report = scan(root);
+        assert_provider_call(&report, "main.Provider.execute", "certain");
+        assert!(unreachable_functions(&report).contains(&"main.Spare.execute"));
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    fs::write(
+        &source,
+        format!("{declarations}provider.execute = spare.execute\nrun(provider)\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "main.py", 8);
+    assert!(!provider_call(&report, "main.Provider.execute", "certain"));
+    assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+}
+
+#[test]
 fn source_provider_dispatch_does_not_invoke_a_factory_class_before_definition() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
