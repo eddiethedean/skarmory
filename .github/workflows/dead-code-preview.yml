@@ -1,0 +1,41 @@
+name: Dead-code compatibility preview
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/dead-code*.yml'
+      - '.github/workflows/release-wheel.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/**'
+      - 'pyproject.toml'
+      - 'python/**'
+      - 'rust-toolchain.toml'
+      - 'scripts/check_dead_code_gate.py'
+      - 'scripts/phase03_*.py'
+      - 'tests/conformance/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dead-code-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-gate-wheel:
+    name: Build Linux SDK
+    uses: ./.github/workflows/release-wheel.yml
+    with:
+      wheel-name: manylinux-x86_64
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      manylinux: '2_17'
+      args: --zig
+
+  verify-dead-code:
+    name: Preview pinned dead-code compatibility
+    needs: [build-gate-wheel]
+    uses: ./.github/workflows/dead-code.yml
+    with:
+      strict: false

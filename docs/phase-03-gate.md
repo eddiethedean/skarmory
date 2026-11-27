@@ -542,9 +542,12 @@ runs real pytest and Skarmory analysis, and requires exactly the named
 Rust test to pass. The receipt identifies the test executable and the
 fixture bytes.
 
-For versions below 0.3, matching pull requests and manual workflow runs check
-each mapped SDK, CLI, and engine case's `preview_status` and upload the full
-gate decision. The main SDK reference worker can run for up to five minutes.
+Pull requests that change the analyzer, SDK, or conformance inputs run the
+[compatibility preview](../.github/workflows/dead-code-preview.yml). It builds
+the manylinux x86-64 SDK wheel, checks each mapped SDK, CLI, and engine case's
+`preview_status`, and uploads the full gate decision. The release workflow
+uses the same wheel build and gate for manual runs and qualifying tags. The
+main SDK reference worker can run for up to five minutes.
 Candidate workers and reference workers for the smaller shards have a
 three-minute limit. A worker timeout records a failed receipt and blocks
 qualification. Publication of 0.3 and later requires the full decision to pass,

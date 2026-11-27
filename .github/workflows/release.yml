@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/release-wheel.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'crates/*/Cargo.toml'
@@ -15,15 +16,6 @@ on:
       - 'licenses/**'
       - 'scripts/publish_crates.py'
       - 'scripts/update_third_party_notices.py'
-      - 'scripts/check_dead_code_gate.py'
-      - 'scripts/phase03_reference.py'
-      - 'scripts/phase03_review_assertions.py'
-      - 'tests/conformance/baselines/skylos-5.7.0.toml'
-      - 'tests/conformance/baselines/skylos-5.7.0-phase03-fixtures.patch'
-      - 'tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt'
-      - 'tests/conformance/phase03-inventory.toml'
-      - 'tests/conformance/phase03_*.py'
-      - 'tests/conformance/run_phase03_seed.py'
   workflow_dispatch:
 
 permissions:
@@ -115,20 +107,24 @@ jobs:
           path: target/package/*.crate
           if-no-files-found: error
 
+  build-gate-wheel:
+    name: Python wheel (manylinux-x86_64)
+    needs: [release-metadata]
+    uses: ./.github/workflows/release-wheel.yml
+    with:
+      wheel-name: manylinux-x86_64
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      manylinux: '2_17'
+      args: --zig
+
   build-wheels:
     name: Python wheel (${{ matrix.name }})
     needs: [release-metadata]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: manylinux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            manylinux: '2_17'
-            args: --zig
           - name: manylinux-aarch64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
@@ -164,69 +160,13 @@ jobs:
             target: aarch64-pc-windows-msvc
             manylinux: 'off'
             args: ''
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: ${{ matrix.name == 'windows-arm64' && '3.14' || '3.11' }}
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
-        with:
-          toolchain: '1.98.1'
-          targets: ${{ matrix.target }}
-      - name: Install wheel build tools
-        shell: bash
-        run: |
-          python -m pip install "maturin==$MATURIN_VERSION"
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            python -m pip install 'ziglang==0.15.2' 'patchelf==0.17.2.4'
-          fi
-      - name: Build the stable-ABI wheel
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          MANYLINUX: ${{ matrix.manylinux }}
-          EXTRA_ARGS: ${{ matrix.args }}
-        run: |
-          read -r -a args <<< "$EXTRA_ARGS"
-          if [[ "$MANYLINUX" != auto && "$MANYLINUX" != off ]]; then
-            args+=(--compatibility "manylinux_$MANYLINUX")
-          fi
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            args+=(--interpreter python)
-          fi
-          maturin build --release --locked --features pyo3/abi3-py311 \
-            --target "$TARGET" --out dist "${args[@]}"
-      - name: Test the installed wheel
-        if: ${{ !startsWith(matrix.name, 'musllinux-') }}
-        shell: bash
-        env:
-          SKARMORY_REQUIRE_NATIVE: '1'
-          TARGET: ${{ matrix.target }}
-        run: |
-          interpreter=(python)
-          if [[ "$TARGET" == x86_64-apple-darwin ]]; then
-            interpreter=(arch -x86_64 "$(command -v python)")
-          fi
-          "${interpreter[@]}" -m pip install --no-deps dist/*.whl
-          "${interpreter[@]}" -m unittest discover -s tests/python -v
-      - name: Test the installed wheel on musl
-        if: ${{ startsWith(matrix.name, 'musllinux-') }}
-        shell: bash
-        run: |
-          docker run --rm -e SKARMORY_REQUIRE_NATIVE=1 \
-            --mount "type=bind,source=$PWD,target=/project,readonly" -w /project \
-            python:3.11-alpine3.22 sh -ec '
-              apk add --no-cache git
-              python -m pip install --no-deps dist/*.whl
-              python -m unittest discover -s tests/python -v
-            '
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-python-${{ matrix.name }}
-          path: dist/*.whl
-          if-no-files-found: error
+    uses: ./.github/workflows/release-wheel.yml
+    with:
+      wheel-name: ${{ matrix.name }}
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      manylinux: ${{ matrix.manylinux }}
+      args: ${{ matrix.args }}
 
   build-sdist:
     name: Python source distribution
@@ -259,7 +199,7 @@ jobs:
 
   verify-python:
     name: Verify Python distributions
-    needs: [build-wheels, build-sdist]
+    needs: [build-gate-wheel, build-wheels, build-sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -286,329 +226,26 @@ jobs:
 
   verify-dead-code:
     name: Verify pinned dead-code compatibility
-    needs: [release-metadata, build-wheels]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      DEAD_CODE_GATE_REQUIRED: ${{ needs.release-metadata.outputs.dead-code-gate-required }}
-      DEAD_CODE_GATE_ENABLED: >-
-        ${{ needs.release-metadata.outputs.dead-code-gate-required == 'true'
-          || github.event_name == 'pull_request'
-          || github.event_name == 'workflow_dispatch' }}
-      DEAD_CODE_SDK_VARIANT: linux-x86_64-cp311-python-sdk
-      DEAD_CODE_SDK_FASTAPI_VARIANT: linux-x86_64-cp311-python-sdk-fastapi-0.141.1
-      DEAD_CODE_CLI_VARIANT: linux-x86_64-cp311-python-cli
-      DEAD_CODE_ENGINE_VARIANT: linux-x86_64-cp311-python-engine
-    steps:
-      - name: Verify the release gate policy
-        run: |
-          case "$DEAD_CODE_GATE_REQUIRED" in
-            true) echo 'This release requires pinned dead-code results.' ;;
-            false)
-              if [[ "$DEAD_CODE_GATE_ENABLED" == true ]]; then
-                echo 'Verify mapped SDK, CLI, and engine cases and record the full gate decision separately.'
-              else
-                echo 'The pinned dead-code gate starts with version 0.3.'
-              fi
-              ;;
-            *) echo 'Missing dead-code release gate policy.' >&2; exit 1 ;;
-          esac
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        with:
-          python-version: '3.11'
-      - name: Read the pinned Skylos revision
-        id: skylos
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: |
-          python - <<'PY'
-          import os
-          import tomllib
+    needs: [release-metadata, build-gate-wheel]
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && needs.release-metadata.outputs.dead-code-gate-required != 'false')
+    uses: ./.github/workflows/dead-code.yml
+    with:
+      strict: ${{ needs.release-metadata.outputs.dead-code-gate-required != 'false' }}
 
-          with open("tests/conformance/baselines/skylos-5.7.0.toml", "rb") as manifest:
-              revision = tomllib.load(manifest)["reference"]["git_revision"]
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as outputs:
-              print(f"revision={revision}", file=outputs)
-          PY
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        with:
-          repository: duriantaco/skylos
-          ref: ${{ steps.skylos.outputs.revision }}
-          path: phase03-skylos
-          persist-credentials: false
-      - name: Materialize the reviewed Phase 0.3 fixture baseline
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: |
-          git -C phase03-skylos worktree add --detach "$GITHUB_WORKSPACE/phase03-skylos-frozen" HEAD
-          python scripts/phase03_reference.py phase03-skylos
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        with:
-          name: release-python-manylinux-x86_64
-          path: phase03-wheel
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        with:
-          toolchain: '1.98.1'
-      - name: Build the native CLI conformance artifact
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: cargo build --locked --release -p skarmory_cli --bin skarmory
-      - name: Run the installed SDK conformance shard
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        shell: bash
-        run: |
-          shopt -s nullglob
-          wheels=(phase03-wheel/*.whl)
-          test "${#wheels[@]}" -eq 1
-          python -m venv "$RUNNER_TEMP/phase03-sdk"
-          sdk_python="$RUNNER_TEMP/phase03-sdk/bin/python"
-          "$sdk_python" -m pip install --no-deps "${wheels[0]}"
-          python -m pip install 'uv==0.11.3'
-          uv sync --directory phase03-skylos --python "$(command -v python)" \
-            --frozen --extra test --no-install-project
-          mkdir -p phase03-evidence
-          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
-            --upstream phase03-skylos \
-            --inventory tests/conformance/phase03-inventory.toml \
-            --variant "$DEAD_CODE_SDK_VARIANT" \
-            --sdk-python "$sdk_python" \
-            --native-cli target/release/skarmory \
-            --artifact "${wheels[0]}" \
-            --candidate-revision "$(git rev-parse HEAD)" \
-            --output phase03-evidence/sdk.receipt.json
-          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
-            --upstream phase03-skylos \
-            --inventory tests/conformance/phase03-inventory.toml \
-            --variant "$DEAD_CODE_SDK_VARIANT" \
-            --sdk-python "$sdk_python" \
-            --artifact "${wheels[0]}" \
-            --candidate-revision "$(git rev-parse HEAD)" \
-            --diagnostics --output phase03-evidence/sdk-diagnostics.json
-      - name: Record frozen Python reachability reference results
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        working-directory: phase03-skylos-frozen
-        env:
-          PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-          PYTHONHASHSEED: '0'
-        run: |
-          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
-            test/test_closure_reachability.py \
-            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/closure-frozen-reference.xml"
-          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
-            test/test_closure_reachability_safety.py \
-            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/closure-safety-frozen-reference.xml"
-          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
-            test/test_method_reachability.py test/test_method_reachability_safety.py \
-            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/methods-frozen-reference.xml"
-          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
-            test/test_dead_code_local_bindings.py test/test_dead_code_import_evidence.py \
-            test/test_provider_method_precision.py \
-            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/bindings-and-providers-frozen-reference.xml"
-          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
-            test/test_dead_code_proof_regressions.py \
-            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/proof-regressions-frozen-reference.xml"
-          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
-            test/test_reachability_integration_qa.py \
-            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/reachability-integration-frozen-reference.xml"
-          analyzer_cases="$(PYTHONPATH="$GITHUB_WORKSPACE/scripts" "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" - <<'PY'
-          import os
-          from pathlib import Path
-          from check_dead_code_gate import read_inventory
-
-          inventory = Path(os.environ["GITHUB_WORKSPACE"]) / "tests/conformance/phase03-inventory.toml"
-          _, _, _, required = read_inventory(inventory)
-          layers = (required[os.environ[f"DEAD_CODE_{layer}_VARIANT"]] for layer in ("SDK", "CLI", "ENGINE"))
-          print("\n".join(sorted(case_id for cases in layers for case_id, case in cases.items()
-                                  if case["source"] == "test/test_analyzer.py")))
-          PY
-          )"
-          test -n "$analyzer_cases"
-          mapfile -t analyzer_case_ids <<< "$analyzer_cases"
-          "$GITHUB_WORKSPACE/phase03-skylos/.venv/bin/python" -m pytest -q -p no:cacheprovider \
-            --junitxml="$GITHUB_WORKSPACE/phase03-evidence/analyzer-frozen-reference.xml" \
-            "${analyzer_case_ids[@]}"
-      - name: Verify the frozen Python reachability inventories
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: |
-          PYTHONPATH=scripts python - <<'PY'
-          import os
-          from pathlib import Path
-          from xml.etree import ElementTree
-
-          from check_dead_code_gate import passed_pytest_ids, read_inventory
-
-          _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
-          sdk = required[os.environ["DEAD_CODE_SDK_VARIANT"]]
-          cli = required[os.environ["DEAD_CODE_CLI_VARIANT"]]
-          engine = required[os.environ["DEAD_CODE_ENGINE_VARIANT"]]
-          evidence = Path("phase03-evidence")
-          for suite, source in (
-              ("methods", "test/test_method_reachability.py"),
-              ("methods", "test/test_method_reachability_safety.py"),
-              ("bindings-and-providers", "test/test_dead_code_local_bindings.py"),
-              ("bindings-and-providers", "test/test_dead_code_import_evidence.py"),
-              ("bindings-and-providers", "test/test_provider_method_precision.py"),
-              ("proof-regressions", "test/test_dead_code_proof_regressions.py"),
-              ("reachability-integration", "test/test_reachability_integration_qa.py"),
-              ("analyzer", "test/test_analyzer.py"),
-          ):
-              frozen = ElementTree.parse(evidence / f"{suite}-frozen-reference.xml")
-              frozen_ids = passed_pytest_ids(frozen, source)
-              layers = [{case_id for case_id, case in layer.items() if case["source"] == source}
-                        for layer in (sdk, cli, engine)]
-              if not frozen_ids or set.union(*layers) != frozen_ids or sum(map(len, layers)) != len(frozen_ids):
-                  raise SystemExit(f"Required cases must match the frozen suite: {source}")
-              print(f"{source}: {len(frozen_ids)} audited cases")
-          PY
-      - name: Verify coverage of the frozen closure safety suite
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          from xml.etree import ElementTree
-
-          evidence = Path("phase03-evidence")
-          source = "test/test_closure_reachability_safety.py"
-          frozen = ElementTree.parse(evidence / "closure-safety-frozen-reference.xml")
-          frozen_ids = {f"{source}::{case.attrib['name']}" for case in frozen.iter("testcase")}
-          sdk = json.loads((evidence / "sdk.receipt.json").read_text())
-          results = [row for row in sdk["results"] if row["case_id"].startswith(f"{source}::")]
-          if not frozen_ids or {row["case_id"] for row in results} != frozen_ids:
-              raise SystemExit("Required SDK cases must match the frozen closure safety suite")
-          if any(row["reference_status"] != "passed" or row["status"] != "passed" for row in results):
-              raise SystemExit("Every closure safety case must pass on the reference and installed SDK")
-          print(f"Closure safety cases in release reconciliation: {len(results)}")
-          PY
-      - name: Check reviewed framework runtime controls
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: |
-          phase03-skylos/.venv/bin/python tests/conformance/phase03_framework_corpus.py \
-            phase03-skylos-frozen --runtime-controls --sdk-python "$RUNNER_TEMP/phase03-sdk/bin/python" \
-            > phase03-evidence/runtime-controls.json
-      - name: Run the pinned FastAPI router variant
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        shell: bash
-        run: |
-          wheels=(phase03-wheel/*.whl)
-          test "${#wheels[@]}" -eq 1
-          python -m pip download --only-binary=:all: --no-deps --require-hashes \
-            --requirement tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt \
-            --dest phase03-fastapi-runtime
-          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
-            --upstream phase03-skylos \
-            --inventory tests/conformance/phase03-inventory.toml \
-            --variant "$DEAD_CODE_SDK_FASTAPI_VARIANT" \
-            --sdk-python "$RUNNER_TEMP/phase03-sdk/bin/python" \
-            --fastapi-wheels phase03-fastapi-runtime \
-            --artifact "${wheels[0]}" \
-            --candidate-revision "$(git rev-parse HEAD)" \
-            --output phase03-evidence/sdk-fastapi.receipt.json
-      - name: Run the native CLI conformance shard
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: |
-          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
-            --upstream phase03-skylos \
-            --inventory tests/conformance/phase03-inventory.toml \
-            --variant "$DEAD_CODE_CLI_VARIANT" \
-            --artifact target/release/skarmory \
-            --candidate-revision "$(git rev-parse HEAD)" \
-            --output phase03-evidence/cli.receipt.json
-      - name: Run the native engine conformance shard
-        if: env.DEAD_CODE_GATE_ENABLED == 'true'
-        run: |
-          cargo test --locked --release -p skarmory_core --lib --no-run --message-format=json \
-            > phase03-evidence/engine.build.json
-          engine=$(python tests/conformance/phase03_engine.py phase03-evidence/engine.build.json)
-          printf '%s\n' "$engine" > phase03-evidence/engine.path
-          phase03-skylos/.venv/bin/python tests/conformance/run_phase03_seed.py \
-            --upstream phase03-skylos \
-            --inventory tests/conformance/phase03-inventory.toml \
-            --variant "$DEAD_CODE_ENGINE_VARIANT" \
-            --artifact "$engine" \
-            --candidate-revision "$(git rev-parse HEAD)" \
-            --output phase03-evidence/engine.receipt.json
-      - name: Reconcile required case results
-        if: ${{ !cancelled() && env.DEAD_CODE_GATE_ENABLED == 'true' }}
-        shell: bash
-        run: |
-          shopt -s nullglob
-          mkdir -p phase03-evidence
-          wheels=(phase03-wheel/*.whl)
-          evidence=()
-          if ((${#wheels[@]} == 1)); then
-            evidence+=(--artifact "sdk=${wheels[0]}")
-          fi
-          if [[ -f target/release/skarmory ]]; then
-            evidence+=(--artifact "cli=target/release/skarmory")
-          fi
-          if [[ -s phase03-evidence/engine.path ]]; then
-            engine=$(<phase03-evidence/engine.path)
-            evidence+=(--artifact "python-engine-tests=$engine")
-          fi
-          for receipt in phase03-evidence/*.receipt.json; do
-            evidence+=(--ledger "$receipt")
-          done
-          gate_status=0
-          python scripts/check_dead_code_gate.py \
-            --inventory tests/conformance/phase03-inventory.toml \
-            --candidate-revision "$(git rev-parse HEAD)" \
-            --fixture-root phase03-skylos \
-            --report phase03-evidence/gate.json "${evidence[@]}" || gate_status=$?
-          if [[ "$DEAD_CODE_GATE_REQUIRED" == true ]] || ((gate_status > 1)); then
-            exit "$gate_status"
-          fi
-
-          # Preview the mapped shard without changing the recorded release verdict.
-          PYTHONPATH=scripts python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          from check_dead_code_gate import read_inventory
-
-          _, _, _, required = read_inventory(Path("tests/conformance/phase03-inventory.toml"))
-          report = json.loads(Path("phase03-evidence/gate.json").read_text())
-          for layer in ("SDK", "SDK_FASTAPI", "CLI", "ENGINE"):
-              variant = os.environ[f"DEAD_CODE_{layer}_VARIANT"]
-              expected = {
-                  case_id
-                  for case_id, case in required.get(variant, {}).items()
-                  if case["port"] == "tests/conformance/run_phase03_seed.py"
-              }
-              passed = {
-                  case["case_id"]
-                  for case in report["cases"] + report["reviewed_exceptions"]
-                  if case["variant"] == variant and case["preview_status"] == "passed"
-              }
-              if not expected:
-                  raise SystemExit(f"No mapped {layer} cases to verify")
-              if missing := sorted(expected - passed):
-                  raise SystemExit(f"Mapped {layer} preview cases did not pass:\n" + "\n".join(missing))
-              print(f"Mapped {layer} preview cases passed: {len(expected)}. Full release gate: {report['status']}.")
-          PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: ${{ !cancelled() && env.DEAD_CODE_GATE_ENABLED == 'true' }}
-        with:
-          name: release-dead-code-gate
-          path: |
-            tests/conformance/phase03-inventory.toml
-            phase03-skylos/uv.lock
-            tests/conformance/baselines/skylos-5.7.0.toml
-            tests/conformance/baselines/skylos-5.7.0-phase03-fixtures.patch
-            tests/conformance/baselines/skylos-5.7.0-fastapi-runtime.txt
-            phase03-evidence/
-          if-no-files-found: error
-
-  publish:
-    name: Publish to crates.io and PyPI
-    needs: [checks, verify-crates, verify-python, verify-dead-code]
-    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+  publish-crates:
+    name: Publish to crates.io
+    needs: [release-metadata, checks, verify-crates, verify-python, verify-dead-code]
+    if: >-
+      !cancelled() && github.event_name == 'push' && github.ref_type == 'tag'
+      && needs.release-metadata.result == 'success'
+      && needs.checks.result == 'success'
+      && needs.verify-crates.result == 'success'
+      && needs.verify-python.result == 'success'
+      && (needs.verify-dead-code.result == 'success'
+          || (needs.release-metadata.outputs.dead-code-gate-required == 'false'
+              && needs.verify-dead-code.result == 'skipped'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
