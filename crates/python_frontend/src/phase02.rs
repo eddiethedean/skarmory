@@ -468,7 +468,19 @@ pub fn quoted_annotation(source: &str, at: Location) -> Option<Expression> {
                 ExpressionKind::Operands(vec![next(&node.left)?, next(&node.right)?])
             }
             Expr::Tuple(node) => {
-                ExpressionKind::Operands(node.elts.iter().map(next).collect::<Option<_>>()?)
+                // Keep the positions of opaque operands so the analyzer can
+                // skip metadata without dropping a recognized type argument.
+                ExpressionKind::Operands(
+                    node.elts
+                        .iter()
+                        .map(|item| {
+                            next(item).unwrap_or_else(|| Expression {
+                                at,
+                                kind: ExpressionKind::Operands(Vec::new()),
+                            })
+                        })
+                        .collect(),
+                )
             }
             Expr::List(node) => {
                 ExpressionKind::Operands(node.elts.iter().map(next).collect::<Option<_>>()?)

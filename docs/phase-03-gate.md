@@ -284,8 +284,9 @@ The frozen reference checks all 101 cases in `test_dead_code_local_bindings.py`,
 The inventory preserves the original assertions, fixture setup and grep modes.
 The installed-wheel replay qualifies 3 local-binding cases, 6 import-evidence
 cases, and 12 provider-method cases. Imports read in bounded quoted type
-annotations count as uses. The analyzer leaves quoted calls unevaluated and
-does not treat `Literal` values or `Annotated` metadata as type references.
+annotations count as uses, including imports on each feasible conditional
+path. The analyzer skips `Literal` values and `Annotated` metadata when
+resolving type references. Quoted calls remain unevaluated.
 Diagnostics retain incomplete coverage, failed assertions, and cases where
 the native report cannot establish the evidence required by the assertion.
 The remaining 80 cases carry no release credit.

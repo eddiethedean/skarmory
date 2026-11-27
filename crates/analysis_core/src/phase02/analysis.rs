@@ -426,6 +426,11 @@ enum LexicalBinding {
     Missing,
 }
 
+struct ConditionalBindings {
+    selected: BTreeSet<SymbolId>,
+    has_unbound_path: bool,
+}
+
 struct Symbol<'a> {
     scope: ScopeId,
     name: &'a Name,
@@ -2401,6 +2406,27 @@ impl<'a> Graph<'a> {
         before: Location,
         depth: usize,
     ) -> Option<Value> {
+        let bindings = self.finite_conditional_bindings(id, before)?;
+        if bindings.has_unbound_path {
+            return None;
+        }
+        let mut values = Vec::new();
+        for candidate in bindings.selected {
+            self.read.insert(candidate);
+            let value = self.binding_value(candidate, depth + 1);
+            if value.contains_unknown() {
+                return None;
+            }
+            values.push(value);
+        }
+        Some(Value::alternatives(values))
+    }
+
+    fn finite_conditional_bindings(
+        &self,
+        id: SymbolId,
+        before: Location,
+    ) -> Option<ConditionalBindings> {
         let symbol = &self.symbols[id];
         if self.scopes[symbol.scope]
             .owner
@@ -2451,6 +2477,7 @@ impl<'a> Graph<'a> {
             return None;
         }
         let mut selected = BTreeSet::new();
+        let mut has_unbound_path = false;
         for state in 0..states {
             let candidate = eligible.iter().rev().copied().find(|candidate| {
                 self.conditional_groups
@@ -2461,19 +2488,17 @@ impl<'a> Graph<'a> {
                             ((state >> bit) & 1 == 1) == *branch
                         })
                     })
-            })?;
-            selected.insert(candidate);
-        }
-        let mut values = Vec::new();
-        for candidate in selected {
-            self.read.insert(candidate);
-            let value = self.binding_value(candidate, depth + 1);
-            if value.contains_unknown() {
-                return None;
+            });
+            if let Some(candidate) = candidate {
+                selected.insert(candidate);
+            } else {
+                has_unbound_path = true;
             }
-            values.push(value);
         }
-        Some(Value::alternatives(values))
+        Some(ConditionalBindings {
+            selected,
+            has_unbound_path,
+        })
     }
 
     fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
@@ -7975,12 +8000,7 @@ impl<'a> Graph<'a> {
                 }
             }
             ExpressionKind::Name(name) if quoted => {
-                if let Some(binding) = self.lexical(scope, name, before)
-                    && matches!(self.symbols[binding].binding, Binding::Import(_))
-                {
-                    // A type reference consumes an import without executing it.
-                    self.read.insert(binding);
-                }
+                self.read_quoted_annotation_imports(scope, name, before, expr.at);
             }
             ExpressionKind::Member(base, _) if quoted => {
                 self.quoted_annotation_reads(scope, base, before, true, next);
@@ -8025,6 +8045,47 @@ impl<'a> Graph<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn read_quoted_annotation_imports(
+        &mut self,
+        scope: ScopeId,
+        name: &str,
+        before: Location,
+        at: Location,
+    ) {
+        let Some(binding) = self.lexical(scope, name, before) else {
+            return;
+        };
+        let owner = self.symbols[binding].scope;
+        let binding_before = if owner == scope || self.immediately_encloses_class_body(scope, owner)
+        {
+            before
+        } else {
+            END
+        };
+        if self.binding_depends_on_branch(binding, binding_before) {
+            if let Some(bindings) = self.finite_conditional_bindings(binding, binding_before) {
+                // Type-only imports can be absent at runtime. Retain every
+                // import on a path where the quoted name has a binding.
+                self.read.extend(
+                    bindings
+                        .selected
+                        .into_iter()
+                        .filter(|&id| matches!(self.symbols[id].binding, Binding::Import(_))),
+                );
+            } else {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "ambiguous_binding",
+                    "a quoted annotation depends on an unresolved branch binding",
+                );
+            }
+        } else if matches!(self.symbols[binding].binding, Binding::Import(_)) {
+            // Read the binding without evaluating the quoted expression.
+            self.read.insert(binding);
         }
     }
 
@@ -13291,13 +13352,14 @@ mod tests {
         let source = r#"from typing import Annotated as Meta, Literal as Choice, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from types_local import Context, Parameter
-from types_local import Metadata, Option, create
+from types_local import Metadata, Option, Numeric, Tagged, create
 
 def use(nested: "Optional['Parameter']", direct: Meta["Context", "Metadata"],
-        choice: Choice["Option"], unevaluated: "create()"):
-    return nested, direct, choice, unevaluated
+        choice: Choice["Option"], unevaluated: "create()",
+        numeric: "Meta[Numeric, 1]", tagged: "Meta[Tagged, create(Metadata)]"):
+    return nested, direct, choice, unevaluated, numeric, tagged
 
-use(None, None, None, None)
+use(None, None, None, None, None, None)
 "#;
         for future in ["", "from __future__ import annotations\n"] {
             let code = format!("{future}{source}");
@@ -13309,7 +13371,7 @@ use(None, None, None, None)
                     module(
                         "types_local.py",
                         "types_local",
-                        "class Context: pass\nclass Parameter: pass\nclass Metadata: pass\nclass Option: pass\ndef create(): return 3\n",
+                        "class Context: pass\nclass Parameter: pass\nclass Metadata: pass\nclass Option: pass\nclass Numeric: pass\nclass Tagged: pass\ndef create(value): return 3\n",
                     ),
                 ],
                 &[],
@@ -13321,6 +13383,42 @@ use(None, None, None, None)
             );
             assert!(names(&result, Category::Function).contains(&"create"));
         }
+    }
+
+    #[test]
+    fn quoted_annotations_keep_each_feasible_import_binding() {
+        let source = r#"import os
+from models import Unreachable as Payload
+if os.getenv('FIRST'):
+    from models import First as Payload
+else:
+    from models import Second as Payload
+if os.getenv('REPLACE'):
+    from models import Kept as Item
+else:
+    Item = int
+
+def endpoint(value: 'Payload', optional: 'Item'):
+    return value, optional
+"#;
+        let files = [
+            module("app.py", "app", source),
+            module(
+                "models.py",
+                "models",
+                "class Unreachable: pass\nclass First: pass\nclass Second: pass\nclass Kept: pass\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let unused: Vec<_> = result
+            .findings
+            .iter()
+            .filter_map(|finding| {
+                (finding.category == Category::Import).then_some(finding.full_name.as_str())
+            })
+            .collect();
+        assert_eq!(unused, ["models.Unreachable"]);
     }
 
     #[test]
