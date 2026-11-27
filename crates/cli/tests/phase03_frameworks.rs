@@ -312,6 +312,60 @@ Child().run()
 }
 
 #[test]
+fn reused_property_leaves_descriptor_access_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for defaults in [
+        r#"class Defaults:
+    @property
+    def settings(self): return Settings()
+"#,
+        r#"enabled = True
+class Defaults:
+    if enabled:
+        @property
+        def settings(self): return Settings()
+    else:
+        settings = None
+"#,
+    ] {
+        fs::write(
+            root.join("main.py"),
+            format!(
+                r#"class Settings: pass
+{defaults}
+class Service:
+    settings = Defaults.settings
+
+print(Service().settings)
+"#
+            ),
+        )
+        .unwrap();
+
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_descriptor"),
+            "{report}"
+        );
+        assert!(!findings(&report, "unused_classes").contains(&"main.Settings"));
+        assert!(!findings(&report, "unused_functions").contains(&"main.Defaults.settings"));
+
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
 fn exported_factory_retains_only_the_public_methods_of_returned_instances() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

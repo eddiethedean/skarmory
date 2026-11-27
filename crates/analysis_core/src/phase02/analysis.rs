@@ -3308,15 +3308,20 @@ impl<'a> Graph<'a> {
                     }
                     return Value::Unknown;
                 }
-                if matches!(member, Value::SourceProperty(_)) {
-                    if matches!(base, Value::Instance(_)) {
-                        self.scope_issue(
-                            access.0,
-                            access.1,
-                            "unresolved_descriptor",
-                            "property access requires a bounded fresh receiver and immediate call",
-                        );
-                    }
+                let may_be_property = match &member {
+                    Value::Alternatives(values) => values
+                        .iter()
+                        .any(|value| matches!(value, Value::SourceProperty(_))),
+                    value => matches!(value, Value::SourceProperty(_)),
+                };
+                if may_be_property {
+                    // Access through a class can transfer the descriptor to another class.
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "unresolved_descriptor",
+                        "property access requires a bounded fresh receiver and immediate call",
+                    );
                     return Value::Unknown;
                 }
                 if let Value::Callable(invocation) = member
