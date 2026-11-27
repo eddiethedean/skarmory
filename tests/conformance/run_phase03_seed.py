@@ -55,9 +55,25 @@ BENCHMARK_CASE = f"{BENCHMARK_SOURCE}::{BENCHMARK_ID}"
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
 SOURCE_EDIT_CACHE = "installed-sdk-source-edit-cache-reuse"
+REACHABILITY_QA_SOURCE = "test/test_reachability_integration_qa.py"
 METHOD_CACHE_CASE = f"{METHOD_SOURCE}::test_cache_tracks_adding_and_removing_method_roots"
 METHOD_CACHE = "installed-sdk-method-root-cache-equivalence"
-CHANGED_FILE_CASE = f"{METHOD_SOURCE}::test_partial_scan_does_not_prove_method_cycles_dead[changed-file]"
+FUNCTION_CACHE_CASE = f"{REACHABILITY_QA_SOURCE}::test_grep_cache_observes_adding_and_removing_a_real_caller"
+FUNCTION_CACHE = "installed-sdk-function-root-cache-equivalence"
+CONFIG_CACHE_CASE = f"{REACHABILITY_QA_SOURCE}::test_external_configuration_rescue_revives_callees_in_the_same_scan"
+CONFIG_CACHE = "installed-sdk-config-root-cache-equivalence"
+# Number of selected Python files and observed hit counts; None denotes an uncached scan.
+FACT_CACHE_CASES = {
+    METHOD_CACHE_CASE: (METHOD_CACHE, 1, (None, 0, 1, None, 0, 1, None, 1, 1)),
+    FUNCTION_CACHE_CASE: (FUNCTION_CACHE, 2, (None, 0, 2, None, 1, 2, None, 2, 2)),
+    CONFIG_CACHE_CASE: (CONFIG_CACHE, 2, (None, 0, 2)),
+}
+FACT_CACHE_PROOFS = {prerequisite for prerequisite, _, _ in FACT_CACHE_CASES.values()}
+CHANGED_FILE_CASES = {
+    f"{METHOD_SOURCE}::test_partial_scan_does_not_prove_method_cycles_dead[changed-file]",
+    *(f"{REACHABILITY_QA_SOURCE}::test_partial_scope_does_not_invent_an_unreachable_group[changed-file-{grep}]"
+      for grep in (False, True)),
+}
 CHANGED_FILE_SCOPE = "installed-sdk-changed-file-scope"
 PROJECT_VENV_CASE = (
     "test/test_framework_class_attr_liveness.py::test_project_venv_site_packages_are_external_search_dirs"
@@ -203,9 +219,16 @@ def port_cases(args):
         raise ValueError("missing native CLI adapter for a mapped case")
     if layer == "sdk" and args.sdk_python is None:
         raise ValueError("--sdk-python is required for the SDK variant")
-    if any(CHANGED_FILE_SCOPE in case["prerequisites"] and (layer != "sdk" or key != CHANGED_FILE_CASE)
-           for key, case in cases.items()):
+    if any(
+        CHANGED_FILE_SCOPE in case["prerequisites"] and (layer != "sdk" or key not in CHANGED_FILE_CASES)
+        for key, case in cases.items()
+    ):
         raise ValueError("missing native SDK adapter for a mapped changed-file case")
+    for key, case in cases.items():
+        proofs = FACT_CACHE_PROOFS & set(case["prerequisites"])
+        expected_proof = {FACT_CACHE_CASES[key][0]} if key in FACT_CACHE_CASES else set()
+        if proofs != expected_proof or (proofs and layer != "sdk"):
+            raise ValueError("missing native SDK adapter for a mapped fact-cache case")
     if any(
         UNUSED_DEPENDENCY_PREREQUISITE in case["prerequisites"]
         and (layer != "sdk" or case["source"] not in UNUSED_DEPENDENCY_SOURCES)
@@ -251,45 +274,44 @@ class AssertionTrace:
         return self
 
 
-class MethodRootCacheReplay:
-    """Use the native fact cache for the pinned method-root edit sequence."""
+class FactCacheReplay:
+    """Compare each pinned source state with the corresponding uncached report."""
 
-    # Each source state gets an uncached run and two cache-enabled runs.
-    # The third state restores the first state's bytes and can reuse its facts.
-    EXPECTED_HITS = (None, 0, 1, None, 0, 1, None, 1, 1)
-
-    def __init__(self, cache_path):
+    def __init__(self, cache_path, file_count, expected_hits):
         self.cache_path = cache_path
+        self.file_count = file_count
+        self.expected_hits = expected_hits
         self.observed = 0
         self.uncached_report = None
 
     def options(self, options):
-        if self.observed >= len(self.EXPECTED_HITS):
-            raise ValueError("method-root case made extra scans")
-        cache_enabled = self.EXPECTED_HITS[self.observed] is not None
+        if self.observed >= len(self.expected_hits):
+            raise ValueError("the pinned fact-cache case made extra scans")
+        cache_enabled = self.expected_hits[self.observed] is not None
         if options.get("grep_cache") is not cache_enabled:
-            raise ValueError("the pinned method-root cache sequence changed")
+            raise ValueError("the pinned fact-cache sequence changed")
         if cache_enabled:
             return {**options, "cache_dir": self.cache_path, "workers": 2}
         return options
 
     def observe(self, report):
-        hits = self.EXPECTED_HITS[self.observed]
+        hits = self.expected_hits[self.observed]
         cache = report.get("cache")
         normalized = {key: value for key, value in report.items() if key != "cache"}
         if hits is None:
             if cache is not None:
-                raise ValueError("the uncached method-root scan returned cache statistics")
+                raise ValueError("the uncached control returned cache statistics")
             self.uncached_report = normalized
         else:
-            expected = {"hits": hits, "misses": 1 - hits, "writes": 1 - hits, "write_failures": 0}
+            misses = self.file_count - hits
+            expected = {"hits": hits, "misses": misses, "writes": misses, "write_failures": 0}
             if cache != expected or normalized != self.uncached_report:
-                raise ValueError("method-root cache state or report differs from the uncached control")
+                raise ValueError("cached state or report differs from the uncached control")
         self.observed += 1
 
     @property
     def proved(self):
-        return self.observed == len(self.EXPECTED_HITS)
+        return self.observed == len(self.expected_hits)
 
 
 def case_assertion_sources(upstream, cases):
@@ -541,7 +563,7 @@ def pytest_worker(args):
             self.framework_evidence = set()
             self.live_router_receipts = set()
             self.source_edit_cache = set()
-            self.method_root_cache = set()
+            self.fact_cache_replays = set()
             self.changed_file_scopes = set()
             self.import_scope_prerequisites = {}
             self.runtime_results = {}
@@ -555,11 +577,15 @@ def pytest_worker(args):
             old_trace = sys.gettrace()
             cache_path = None
             scans_with_cache = []
-            method_cache = None
+            fact_cache = None
 
             def analyze(path, **options):
-                if method_cache is not None:
-                    options = method_cache.options(options)
+                if fact_cache is not None:
+                    if key == CONFIG_CACHE_CASE and not fact_cache.observed:
+                        # The original stable-input case only requests cache-enabled scans.
+                        uncached = scan_candidate(args.sdk_python, path, {**options, "grep_cache": False})
+                        fact_cache.observe(json.loads(uncached))
+                    options = fact_cache.options(options)
                 if router_policy is not None:
                     if options.get("config_file") is not None:
                         pytest.fail("the original case already supplies a configuration")
@@ -607,8 +633,8 @@ def pytest_worker(args):
                         pytest.fail("changed-file report did not preserve whole-project analysis")
                     self.changed_file_scopes.add(key)
                 self.scans.add(key)
-                if method_cache is not None:
-                    method_cache.observe(report)
+                if fact_cache is not None:
+                    fact_cache.observe(report)
                 if cache_path is not None:
                     cache = report.get("cache")
                     if not cache or cache["write_failures"] or cache["writes"] != cache["misses"]:
@@ -668,10 +694,10 @@ def pytest_worker(args):
             with ExitStack() as stack:
                 patch = stack.enter_context(pytest.MonkeyPatch.context())
                 if args.mode == "candidate":
-                    if key == METHOD_CACHE_CASE:
-                        method_cache = MethodRootCacheReplay(stack.enter_context(TemporaryDirectory(
-                            prefix="skarmory-pinned-method-root-cache-",
-                        )))
+                    if key in FACT_CACHE_CASES:
+                        _, file_count, expected_hits = FACT_CACHE_CASES[key]
+                        directory = stack.enter_context(TemporaryDirectory(prefix="skarmory-pinned-fact-cache-"))
+                        fact_cache = FactCacheReplay(directory, file_count, expected_hits)
                     if SOURCE_EDIT_CACHE in case["prerequisites"]:
                         cache_path = stack.enter_context(TemporaryDirectory(
                             prefix="skarmory-pinned-source-edit-cache-",
@@ -753,8 +779,8 @@ def pytest_worker(args):
                         self.scans.add(key)
                     if len(scans_with_cache) == 2:
                         self.source_edit_cache.add(key)
-                    if method_cache is not None and method_cache.proved:
-                        self.method_root_cache.add(key)
+                    if fact_cache is not None and fact_cache.proved:
+                        self.fact_cache_replays.add(key)
                     self.lines[key] = trace.completed
 
         def pytest_runtest_makereport(self, item, call):
@@ -833,8 +859,8 @@ def pytest_worker(args):
                 proven = key in capture.trace_disables
             elif required == SOURCE_EDIT_CACHE:
                 proven = key in capture.source_edit_cache
-            elif required == METHOD_CACHE:
-                proven = key in capture.method_root_cache
+            elif required in FACT_CACHE_PROOFS:
+                proven = key in capture.fact_cache_replays
             elif required == CHANGED_FILE_SCOPE:
                 proven = key in capture.changed_file_scopes
             elif required == "runtime-trace-rejected":

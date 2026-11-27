@@ -102,6 +102,86 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn explicit_truth_tests_follow_the_selected_receiver_hook() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"def available(): return True
+def count(): return 1
+def unused_count(): return 1
+
+class Inventory:
+    def __bool__(self): return available()
+    def __len__(self): return unused_count()
+
+class Sized:
+    def __len__(self): return count()
+"#;
+    for operation in [
+        "ready = bool(Inventory())\nprint(ready, bool(Sized()))",
+        "assert Inventory()\nassert Sized()",
+    ] {
+        fs::write(root.join("main.py"), format!("{source}{operation}\n")).unwrap();
+        let serial = scan(root);
+        let unused = findings(&serial, "unused_functions");
+        assert!(unused.contains(&"main.unused_count"), "{serial}");
+        assert!(!unused.contains(&"main.available"), "{serial}");
+        assert!(!unused.contains(&"main.count"), "{serial}");
+        for method in ["main.Inventory.__bool__", "main.Sized.__len__"] {
+            assert_eq!(
+                evidence_certainties(&serial, method, "truth_test"),
+                ["certain"],
+                "{serial}"
+            );
+        }
+        assert!(
+            evidence_certainties(&serial, "main.Inventory.__len__", "truth_test").is_empty(),
+            "{serial}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, serial);
+    }
+}
+
+#[test]
+fn literal_format_expansion_reads_the_named_local_binding() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("main.py");
+    let source = r#"def render():
+    shown = 5
+    hidden = 1
+    return "{shown}".format(**locals())
+print(render())
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_variables"),
+        ["main.render.hidden"]
+    );
+
+    fs::write(
+        &path,
+        format!(
+            "class Formatter:\n    def __format__(self, spec): return 'custom'\n{}",
+            source.replace("shown = 5", "shown = Formatter()")
+        ),
+    )
+    .unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unsupported_construct"),
+        "{opaque}"
+    );
+}
+
+#[test]
 fn partial_source_selection_abstains_from_unrooted_method_groups() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

@@ -467,7 +467,10 @@ impl<'a> Graph<'a> {
         let Some(receiver) = self.mutation_receiver(&receiver) else {
             return;
         };
-        if !self.modeled_mutation_member(&receiver, member) {
+        let changes_lazy_provider = matches!(&receiver, ReceiverKey::Module(module)
+            if matches!((module.as_str(), member),
+                ("typing", "TYPE_CHECKING") | ("importlib", "import_module") | ("builtins", "getattr")));
+        if !changes_lazy_provider && !self.modeled_mutation_member(&receiver, member) {
             if let ReceiverKey::Class(class) = receiver {
                 self.mutations.unmodeled_class_writes.insert(class);
             }
@@ -498,9 +501,12 @@ impl<'a> Graph<'a> {
             }
             _ => None,
         };
+        // Explicit lazy-provider writes invalidate the proof without modeling
+        // the effects of changing a process-wide provider.
         let value = if let Some(replacement) = login_replacement {
             MemberWriteValue::Replacement(replacement)
-        } else if conditional
+        } else if changes_lazy_provider
+            || conditional
             || deletes_inherited_method
             || matches!(
                 receiver,
@@ -1812,6 +1818,7 @@ impl<'a> Graph<'a> {
             }
             Value::Provider(module)
                 if provider_module(module)
+                    || matches!(module.as_str(), "typing" | "importlib" | "builtins")
                     || is_django_signal(module)
                     || module == "celery.signals.setup_logging" =>
             {

@@ -46,6 +46,7 @@ mod flask;
 mod frameworks;
 mod gin;
 mod gunicorn;
+mod lazy_type_imports;
 mod literal_text;
 mod logging_config;
 mod mcp_tools;
@@ -522,6 +523,7 @@ struct PytestFixtureRequests<'a> {
 struct LazyBranch<'a> {
     scope: ScopeId,
     imports: &'a [Statement],
+    temporary: Option<&'a Name>,
     value: &'a Expression,
     at: Location,
     argument: Option<(SymbolId, &'a str)>,
@@ -533,6 +535,7 @@ enum ValueEvaluation<'a> {
     Lazy {
         execution_scope: Option<ScopeId>,
         argument: Option<(SymbolId, &'a str)>,
+        temporary: Option<&'a Name>,
     },
 }
 
@@ -687,6 +690,7 @@ pub(super) fn analyze_with_verification(
         scopes: Vec::new(),
         symbols: Vec::new(),
         direct_submodule_imports: BTreeMap::new(),
+        exposed_export_lists: BTreeSet::new(),
         by_location: BTreeMap::new(),
         read: BTreeSet::new(),
         namespace_exports: BTreeMap::new(),
@@ -720,6 +724,7 @@ pub(super) fn analyze_with_verification(
         probing_identity: false,
         check_dormant_declarations: false,
         nested_lazy_imports: Vec::new(),
+        lazy_type_imports: BTreeSet::new(),
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
@@ -847,6 +852,7 @@ pub(super) fn analyze_with_verification(
     if phase03 {
         graph.index_metaclasses();
         graph.index_framework_mutations();
+        graph.index_lazy_type_imports();
     }
     graph.index_base_classes();
     if phase03 {
@@ -947,6 +953,7 @@ struct Graph<'a> {
     scopes: Vec<Scope<'a>>,
     symbols: Vec<Symbol<'a>>,
     direct_submodule_imports: BTreeMap<usize, Vec<SymbolId>>,
+    exposed_export_lists: BTreeSet<ScopeId>,
     by_location: BTreeMap<(ScopeId, usize, usize), SymbolId>,
     read: BTreeSet<SymbolId>,
     namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
@@ -980,6 +987,7 @@ struct Graph<'a> {
     probing_identity: bool,
     check_dormant_declarations: bool,
     nested_lazy_imports: Vec<(ScopeId, &'a [Statement])>,
+    lazy_type_imports: BTreeSet<SymbolId>,
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
@@ -1802,6 +1810,19 @@ impl<'a> Graph<'a> {
                     });
             let loaded_child = fallback
                 .filter(|_| module_file.is_some_and(|package| self.files[package].is_package));
+            if self.phase03 {
+                let exposed_module = match import.member.as_deref() {
+                    None | Some("__all__") => module_file,
+                    _ => loaded_child,
+                };
+                // Loading the module object or its export list gives another
+                // module access to storage the literal-guard proof cannot track.
+                if let Some(file) = exposed_module.filter(|&file| {
+                    file != source && self.scopes[file].names.contains_key("__all__")
+                }) {
+                    self.exposed_export_lists.insert(file);
+                }
+            }
             let loads_module = unconditional
                 && module_file.is_some_and(|file| {
                     loaded_child.is_some()
@@ -1824,6 +1845,15 @@ impl<'a> Graph<'a> {
                         .entry(target)
                         .or_default()
                         .push(id);
+                }
+                // An unaliased dotted import exposes each attached parent
+                // namespace as well as the explicitly requested module.
+                if self.phase03
+                    && import.exposes_top_level
+                    && target != source
+                    && self.scopes[target].names.contains_key("__all__")
+                {
+                    self.exposed_export_lists.insert(target);
                 }
                 // A successful dotted import also runs its parent packages.
                 // The source and its own ancestors may still be initializing.
@@ -1899,7 +1929,9 @@ impl<'a> Graph<'a> {
         let mut possible_attachment = false;
         let mut possible_earlier_attachment = false;
         for &id in candidates.into_iter().flatten() {
-            if initialization_imports.is_some_and(|imports| !imports.contains(&id)) {
+            if self.lazy_type_imports.contains(&id)
+                || initialization_imports.is_some_and(|imports| !imports.contains(&id))
+            {
                 continue;
             }
             let symbol = &self.symbols[id];
@@ -2009,6 +2041,9 @@ impl<'a> Graph<'a> {
             .get(&(source_scope, import.local.at.line, import.local.at.column))
             .copied();
         if let Some(id) = binding {
+            if self.lazy_type_imports.contains(&id) {
+                return None;
+            }
             // A selected lazy branch evaluates its imports in the caller's
             // execution, even though their bindings belong to the hook.
             self.scopes[scope].evaluated_imports.push(id);
@@ -2667,7 +2702,9 @@ impl<'a> Graph<'a> {
     ) -> ModuleMember<'a> {
         let submodule = format!("{}.{member}", self.files[file].module);
         let child = self.modules.get(submodule.as_str()).copied();
-        if let Some(binding) = self.local(file, member, before) {
+        if let Some(binding) = self.local(file, member, before)
+            && !self.lazy_type_imports.contains(&binding)
+        {
             if let Some(child) = child {
                 return match self.submodule_attachment(file, child, Some(binding), access, mode) {
                     SubmoduleAttachment::Attached(import) => {
@@ -2860,6 +2897,7 @@ impl<'a> Graph<'a> {
         let evaluation = ValueEvaluation::Lazy {
             execution_scope,
             argument: branch.argument,
+            temporary: branch.temporary,
         };
         let value = self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation);
         if value.contains_unknown() && self.scope_issues.len() == first_issue {
@@ -2904,11 +2942,16 @@ impl<'a> Graph<'a> {
             this.expression_value(scope, expression, before, depth + 1, evaluation)
         };
         let plain_hook = self.scopes[scope].owner.is_some_and(|id| {
-            matches!(self.symbols[id].binding, Binding::Definition(definition, _) if definition.decorators.is_empty())
+            matches!(self.symbols[id].binding, Binding::Definition(definition, _) if definition.decorators.is_empty() && !definition.is_generator)
         });
         if plain_hook && keywords.is_empty() {
             match (recurse(self, function), arguments.as_slice()) {
-                (Value::Provider(provider), [base, name]) if provider == "builtins.getattr" => {
+                (Value::Provider(provider), [base, name])
+                    if provider == "builtins.getattr"
+                        && self
+                            .module_member_write("builtins", "getattr", (scope, before))
+                            .is_none() =>
+                {
                     if let (base @ Value::Module(_), Value::Text(name)) =
                         (recurse(self, base), recurse(self, name))
                     {
@@ -3012,7 +3055,7 @@ impl<'a> Graph<'a> {
 
     fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
         self.lazy_dispatch(id, before, |name, scope, body, argument| {
-            (name == member).then(|| Self::lazy_branch(scope, body, argument))
+            (name == member).then(|| self.lazy_branch(scope, body, argument))
         })
     }
 
@@ -3095,6 +3138,31 @@ impl<'a> Graph<'a> {
             if !otherwise.is_empty() {
                 break;
             }
+            if self.phase03
+                && let ExpressionKind::Membership {
+                    element,
+                    container,
+                    contains: true,
+                } = &test.kind
+                && matches!(&element.kind, ExpressionKind::Name(name) if name == &parameter.text)
+                && matches!(&container.kind, ExpressionKind::Name(name) if name == "__all__")
+                && let Some(names) = self.lazy_all_guard_names(scope, statement.at, definition)
+            {
+                for name in names {
+                    let ExpressionKind::Text(name) = &name.kind else {
+                        return LazyMember::Unknown;
+                    };
+                    if let Some(result) = visit(
+                        name,
+                        scope,
+                        body,
+                        parameter_id.map(|id| (id, name.as_str())),
+                    ) {
+                        return result;
+                    }
+                }
+                continue;
+            }
             if let ExpressionKind::Membership {
                 element,
                 container,
@@ -3156,31 +3224,126 @@ impl<'a> Graph<'a> {
         LazyMember::Unknown
     }
 
+    fn lazy_all_guard_names(
+        &self,
+        scope: ScopeId,
+        before: Location,
+        hook: &Definition,
+    ) -> Option<&'a [Expression]> {
+        let file = self.scopes[scope].file;
+        let [guard, fallback] = hook.body.as_slice() else {
+            return None;
+        };
+        let [all] = self.scopes[file].names.get("__all__")?.as_slice() else {
+            return None;
+        };
+        let Binding::Variable(
+            Some(Expression {
+                kind: ExpressionKind::Sequence { items, .. },
+                ..
+            }),
+            at,
+        ) = self.symbols[*all].binding
+        else {
+            return None;
+        };
+        let module = &self.files[file].module;
+        if !hook.decorators.is_empty()
+            || position(guard.at) != position(before)
+            || !matches!(fallback.kind, StatementKind::Raise(_))
+            || position(at) >= position(hook.name.at)
+            || self.exposed_export_lists.contains(&file)
+            || self.lexical(scope, "__all__", before) != Some(*all)
+            || self.binding_depends_on_branch(*all, END)
+            || self
+                .module_member_write(module, "__all__", (file, END))
+                .is_some()
+            || !items
+                .iter()
+                .all(|item| matches!(item.kind, ExpressionKind::Text(_)))
+        {
+            return None;
+        }
+
+        // This guard must read the original list. A second module-level use
+        // could alias it, mutate it, or hand it to code that mutates it.
+        let stable = self.scopes[file]
+            .body
+            .iter()
+            .all(|statement| match &statement.kind {
+                StatementKind::Import(_) => true,
+                StatementKind::Assign { names, .. } => {
+                    position(statement.at) == position(at) && names.len() == 1
+                }
+                StatementKind::Define(definition) => std::ptr::eq(definition, hook),
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } if otherwise.is_empty()
+                    && !self.modules.contains_key("typing")
+                    && self
+                        .imported_module_write("typing", (file, test.at))
+                        .is_none()
+                    && self
+                        .module_member_write("typing", "TYPE_CHECKING", (file, test.at))
+                        .is_none()
+                    && body
+                        .iter()
+                        .all(|statement| matches!(statement.kind, StatementKind::Import(_))) =>
+                {
+                    matches!(&test.kind, ExpressionKind::Name(name)
+                    if self.local(file, name, test.at).is_some_and(|binding| {
+                        matches!(self.symbols[binding].binding, Binding::Import(import)
+                            if import.level == 0 && import.module == "typing"
+                                && import.member.as_deref() == Some("TYPE_CHECKING"))
+                    }))
+                }
+                StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }) => true,
+                _ => false,
+            });
+        stable.then_some(items)
+    }
+
     fn lazy_branch(
+        &self,
         scope: ScopeId,
         body: &'a [Statement],
         argument: Option<(SymbolId, &'a str)>,
     ) -> LazyMember<'a> {
-        if let Some((
+        let Some((
             Statement {
                 kind: StatementKind::Return(Some(value)),
                 at,
             },
-            imports,
+            prefix,
         )) = body.split_last()
-            && imports
-                .iter()
-                .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
+        else {
+            return LazyMember::Unknown;
+        };
+        let (imports, temporary) = if prefix
+            .iter()
+            .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
         {
-            return LazyMember::Branch(LazyBranch {
-                scope,
-                imports,
-                value,
-                at: *at,
-                argument,
-            });
-        }
-        LazyMember::Unknown
+            (prefix, None)
+        } else if self.phase03
+            && let Some(temporary) = lazy_type_imports::literal_import_temporary(prefix, value)
+        {
+            (&[][..], Some(temporary))
+        } else {
+            return LazyMember::Unknown;
+        };
+        LazyMember::Branch(LazyBranch {
+            scope,
+            imports,
+            temporary,
+            value,
+            at: *at,
+            argument,
+        })
     }
 
     fn member(
@@ -4157,6 +4320,17 @@ impl<'a> Graph<'a> {
                         self.read.insert(id);
                         return Value::Text(text.to_owned());
                     }
+                    if let ValueEvaluation::Lazy {
+                        temporary: Some(temporary),
+                        ..
+                    } = evaluation
+                        && self.symbols[id].scope == scope
+                        && position(self.symbols[id].name.at) == position(temporary.at)
+                        && let Binding::Variable(Some(value), at) = self.symbols[id].binding
+                    {
+                        self.read.insert(id);
+                        return self.expression_value(scope, value, at, depth + 1, evaluation);
+                    }
                     let binding_scope = self.symbols[id].scope;
                     if !lazy && let Some(write) = self.closure_cell_read(scope, expression) {
                         self.read.insert(id);
@@ -4537,28 +4711,11 @@ impl<'a> Graph<'a> {
                     // The call walker handles __len__ dispatch independently of its integer result.
                     Value::Scalar
                 }
-                Value::Provider(name) if name == "builtins.bool" && keywords.is_empty() => {
-                    match arguments.as_slice() {
-                        [] => Value::Scalar,
-                        [argument] => {
-                            let value = recurse(self, argument);
-                            // A scalar result alone cannot account for a custom truth test.
-                            if value.is_builtin_scalar_or_iterable()
-                                || matches!(
-                                    value,
-                                    Value::Sequence(_)
-                                        | Value::Mapping(_)
-                                        | Value::LocalNamespace(..)
-                                        | Value::NamespaceCopy(_)
-                                )
-                            {
-                                Value::Scalar
-                            } else {
-                                Value::Unknown
-                            }
-                        }
-                        _ => Value::Unknown,
-                    }
+                Value::Provider(name)
+                    if name == "builtins.bool" && arguments.len() <= 1 && keywords.is_empty() =>
+                {
+                    // The call walker accounts for truth hooks before a bool is returned.
+                    Value::Scalar
                 }
                 Value::Provider(name) if name == "builtins.dict" => {
                     let named: BTreeMap<_, _> = keywords
@@ -5663,9 +5820,10 @@ impl<'a> Graph<'a> {
             }
             Value::Instance(class) => {
                 // Fall back to length only after proving that __bool__ is absent.
+                let access = Some((scope, test.at));
                 let Some(hook) = self
-                    .class_member(*class, "__bool__", 0)
-                    .or_else(|| self.class_member(*class, "__len__", 0))
+                    .class_member_at(*class, "__bool__", 0, access)
+                    .or_else(|| self.class_member_at(*class, "__len__", 0, access))
                 else {
                     return;
                 };
@@ -6009,6 +6167,12 @@ impl<'a> Graph<'a> {
                 arguments,
                 mapping,
             } => {
+                if self.phase03
+                    && arguments.is_empty()
+                    && self.walk_literal_local_format(scope, function, mapping, before)
+                {
+                    return;
+                }
                 self.walk_expression(scope, function, before, true);
                 for argument in arguments {
                     self.walk(scope, argument, before);
@@ -6326,6 +6490,14 @@ impl<'a> Graph<'a> {
                         {
                             let value = self.identity(scope, argument, before, 0);
                             self.record_formatting(scope, value, expr.at, false);
+                        }
+                    }
+                    Value::Provider(name)
+                        if name == "builtins.bool" && arguments.len() <= 1 && keywords.is_empty() =>
+                    {
+                        if let [argument] = arguments.as_slice() {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.record_truth_test(scope, argument, &value);
                         }
                     }
                     Value::Provider(name) if name == "builtins.len" => {
@@ -8593,8 +8765,7 @@ impl<'a> Graph<'a> {
                     return true;
                 }
                 StatementKind::Assert(test) => {
-                    self.walk(scope, test, at);
-                    if matches!(self.identity(scope, test, at, 0), Value::Bool(false)) {
+                    if self.walk_if_test(scope, test, at) == Some(false) {
                         return true;
                     }
                 }
@@ -10792,7 +10963,7 @@ impl<'a> Graph<'a> {
                 if !name.starts_with('_') && self.local(file, name, END).is_none() {
                     lazy_members
                         .entry(name)
-                        .or_insert_with(|| Self::lazy_branch(scope, body, argument));
+                        .or_insert_with(|| self.lazy_branch(scope, body, argument));
                 }
                 None
             });
@@ -13233,6 +13404,120 @@ mod tests {
         }
     }
 
+    const LAZY_EXPORT_CONSUMER: &str = "from app import Thing\nThing()\n";
+
+    fn lazy_guard_report(
+        source: &str,
+        shadow: Option<&str>,
+        consumer: &str,
+    ) -> (BTreeMap<&'static str, String>, Analysis) {
+        let mut files = vec![
+            module("app.py", "app", source),
+            module("pkg/__init__.py", "pkg", ""),
+            module("pkg/mod.py", "pkg.mod", "def Thing(): return 1\n"),
+            module("consumer.py", "consumer", consumer),
+        ];
+        if let Some(shadow) = shadow {
+            files.push(module("importlib.py", "importlib", shadow));
+        }
+        let report = analyze_phase03(&files, &[]);
+        let resolved = report
+            .evidence
+            .iter()
+            .filter(|evidence| evidence.kind == "direct_call" && evidence.certainty == "certain")
+            .map(|evidence| evidence.full_name.as_str())
+            .collect::<BTreeSet<_>>();
+        let exports = match resolved.into_iter().collect::<Vec<_>>().as_slice() {
+            [] => BTreeMap::new(),
+            [target] => BTreeMap::from([("Thing", (*target).to_owned())]),
+            targets => panic!("the single lazy lookup retained multiple callees: {targets:?}"),
+        };
+        (exports, report)
+    }
+
+    #[test]
+    #[ignore = "requires the original Skylos lazy export proof fixture"]
+    fn pinned_lazy_export_guard() {
+        let fixture =
+            PathBuf::from(std::env::var_os("SKARMORY_PHASE03_LAZY_EXPORT_FIXTURE").unwrap());
+        let output = std::env::var_os("SKARMORY_PHASE03_LAZY_EXPORT_REPORT").unwrap();
+        let source = std::fs::read_to_string(&fixture).unwrap();
+        let shadow = match std::fs::read_to_string(fixture.with_file_name("importlib.py")) {
+            Ok(source) => Some(source),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("unable to read the pinned local importlib provider: {error}"),
+        };
+        let (control, positive) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER);
+        assert!(positive.issues.is_empty(), "{:?}", positive.issues);
+        assert_eq!(control, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
+        let (exports, report) = if let Some(shadow) = shadow {
+            lazy_guard_report(&source, Some(&shadow), LAZY_EXPORT_CONSUMER)
+        } else {
+            (control, positive)
+        };
+        let result = serde_json::json!({
+            "exports": exports,
+            "complete": report.issues.is_empty(),
+            "unresolved": report.issues.iter().any(|issue| issue.kind == "unresolved_lazy_export"),
+        });
+        std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn lazy_export_all_guard_requires_an_unaliased_literal_sequence() {
+        let prefix = "import importlib\n__all__ = ['Thing']\n";
+        let hook = "def __getattr__(name):\n    if name in __all__:\n        return getattr(importlib.import_module('pkg.mod'), name)\n    raise AttributeError(name)\n";
+        let source = format!("{prefix}{hook}");
+        let (exports, report) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(exports, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
+
+        for intervening in [
+            "__all__.clear()\n",
+            "other = __all__\nother.clear()\n",
+            "__all__ = []\n",
+        ] {
+            let (exports, report) = lazy_guard_report(
+                &format!("{prefix}{intervening}{hook}"),
+                None,
+                LAZY_EXPORT_CONSUMER,
+            );
+            assert!(exports.is_empty(), "{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{:?}",
+                report.issues
+            );
+        }
+
+        for exposure in [
+            "import app\napp.__all__.clear()\n",
+            "from app import __all__ as names\nnames.clear()\n",
+            "import app\napp.__all__ = []\n",
+        ] {
+            let consumer = format!("{exposure}{LAZY_EXPORT_CONSUMER}");
+            let (exports, report) = lazy_guard_report(&source, None, &consumer);
+            assert!(exports.is_empty(), "{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{:?}",
+                report.issues
+            );
+            assert!(
+                !report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "public_export" && row.full_name == "pkg.mod.Thing")
+            );
+        }
+    }
+
     #[test]
     #[ignore = "requires the original mixed Click analysis fixture"]
     fn pinned_click_dead_code_control() {
@@ -13460,6 +13745,97 @@ print(choose(True))
         );
         assert!(report.issues.is_empty(), "{:?}", report.issues);
         assert_eq!(names(&report, Category::Import), ["floor"]);
+    }
+
+    #[test]
+    fn matching_lazy_lookup_preserves_only_its_type_import() {
+        let package = |contents: &str| module("pkg/__init__.py", "pkg", contents);
+        let provider = || {
+            module(
+                "pkg/models.py",
+                "pkg.models",
+                "class Entry: pass\nclass Unlisted: pass\n",
+            )
+        };
+        let source = r#"import importlib
+from typing import TYPE_CHECKING as CHECK_TYPES
+if CHECK_TYPES:
+    from pkg.models import Entry, Unlisted
+__all__ = ["Entry"]
+
+def __getattr__(name):
+    if name == "Entry":
+        return getattr(importlib.import_module("pkg.models"), name)
+    raise AttributeError(name)
+"#;
+
+        for contents in [
+            source.to_owned(),
+            source.replace(
+                r#"        return getattr(importlib.import_module("pkg.models"), name)"#,
+                "        loaded = importlib.import_module(\"pkg.models\")\n        return getattr(loaded, name)",
+            ),
+        ] {
+            let report = analyze_phase03(&[package(&contents), provider()], &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert_eq!(names(&report, Category::Import), ["Unlisted"]);
+            assert!(report.evidence.iter().any(|edge| {
+                edge.full_name == "pkg.models.Entry" && edge.kind == "public_export"
+            }));
+        }
+
+        let unlisted = source.replace(r#"["Entry"]"#, "[]");
+        let report = analyze_phase03(&[package(&unlisted), provider()], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Import), ["Unlisted"]);
+        assert!(
+            !report.evidence.iter().any(|edge| {
+                edge.full_name == "pkg.models.Entry" && edge.kind == "public_export"
+            })
+        );
+
+        for contents in [
+            unlisted.replace(r#"("pkg.models"), name)"#, r#"("pkg.other"), name)"#),
+            unlisted.replace(
+                "from typing import",
+                "importlib.import_module = print\nfrom typing import",
+            ),
+            unlisted.replace("if CHECK_TYPES:", "CHECK_TYPES = True\nif CHECK_TYPES:"),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    package(&contents),
+                    provider(),
+                    module("pkg/other.py", "pkg.other", "class Entry: pass\n"),
+                ],
+                &[],
+            );
+            assert!(
+                names(&report, Category::Import).contains(&"Entry"),
+                "{:?}",
+                report.findings
+            );
+        }
+    }
+
+    #[test]
+    fn lazy_provider_replacement_remains_an_unmodeled_write() {
+        let report = analyze_phase03(
+            &[module(
+                "main.py",
+                "main",
+                "import importlib\ndef substitute(name): return None\nimportlib.import_module = substitute\n",
+            )],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_attribute_write"),
+            "{:?}",
+            report.issues
+        );
     }
 
     #[test]

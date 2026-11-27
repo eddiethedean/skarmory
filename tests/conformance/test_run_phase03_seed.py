@@ -12,10 +12,16 @@ from xml.etree import ElementTree
 
 from phase03_fastapi import import_scope_report, verify_wheels
 from run_phase03_seed import (
+    CHANGED_FILE_SCOPE,
     CORPUS_SOURCE,
+    FACT_CACHE_CASES,
+    FUNCTION_CACHE,
+    FUNCTION_CACHE_CASE,
+    METHOD_CACHE_CASE,
+    PORT,
     ROOT,
     AssertionTrace,
-    MethodRootCacheReplay,
+    FactCacheReplay,
     benchmark_assertions,
     case_assertion_sources,
     check_candidate_wheel,
@@ -64,14 +70,41 @@ class DiagnosticPortTests(unittest.TestCase):
         self.assertIn(f"{method}[excluded-directory]", release)
         self.assertIn(f"{method}[changed-file]", release)
         self.assertIn(f"{binding}::test_unused_local_is_reported_when_other_functions_use_the_same_name", release)
-        self.assertIn(f"{binding}::test_local_read_through_locals_is_kept", diagnostics)
+        self.assertIn(f"{binding}::test_local_read_through_locals_is_kept", release)
+        self.assertIn(f"{binding}::test_local_read_by_another_frame_through_f_locals_is_kept", diagnostics)
         self.assertFalse(release.keys() & diagnostics.keys())
 
 
-class MethodRootCacheReplayTests(unittest.TestCase):
+    def test_candidate_proof_requires_a_registered_case_and_matching_prerequisite(self):
+        variant = "test-sdk"
+        args = SimpleNamespace(
+            inventory=ROOT / "tests/conformance/phase03-inventory.toml",
+            sdk_python=Path(sys.executable), variant=variant, diagnostics=False,
+        )
+        metadata = {variant: {"layer": "sdk", "backend": "python"}}
+        for key, prerequisites, proof in (
+            ("unregistered", [CHANGED_FILE_SCOPE], "changed-file"),
+            ("unregistered", [FUNCTION_CACHE], "fact-cache"),
+            (FUNCTION_CACHE_CASE, [], "fact-cache"),
+        ):
+            with self.subTest(key=key, prerequisites=prerequisites):
+                cases = {variant: {key: {"port": PORT, "prerequisites": prerequisites}}}
+                with (
+                    patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]),
+                    patch("check_dead_code_gate.read_inventory", return_value=({}, "", metadata, cases)),
+                    self.assertRaisesRegex(ValueError, f"missing native SDK adapter for a mapped {proof} case"),
+                ):
+                    port_cases(args)
+
+
+class FactCacheReplayTests(unittest.TestCase):
+    def replay(self, case=METHOD_CACHE_CASE):
+        _, file_count, expected_hits = FACT_CACHE_CASES[case]
+        return FactCacheReplay(Path("candidate-cache"), file_count, expected_hits)
+
     def test_fact_cache_replay_requires_every_original_scan(self):
         cache_dir = Path("candidate-cache")
-        replay = MethodRootCacheReplay(cache_dir)
+        replay = self.replay()
         for root_present, hits in (
             (False, None), (False, 0), (False, 1),
             (True, None), (True, 0), (True, 1),
@@ -93,13 +126,30 @@ class MethodRootCacheReplayTests(unittest.TestCase):
         self.assertTrue(replay.proved)
 
     def test_fact_cache_replay_rejects_different_coverage(self):
-        replay = MethodRootCacheReplay(Path("candidate-cache"))
+        replay = self.replay()
         replay.observe({"coverage": {"status": "complete"}})
         with self.assertRaisesRegex(ValueError, "differs from the uncached control"):
             replay.observe({
                 "coverage": {"status": "incomplete"},
                 "cache": {"hits": 0, "misses": 1, "writes": 1, "write_failures": 0},
             })
+        self.assertFalse(replay.proved)
+
+    def test_function_root_replay_rejects_skipping_a_file_or_caching_a_control(self):
+        replay = self.replay(FUNCTION_CACHE_CASE)
+        with self.assertRaisesRegex(ValueError, "cache sequence changed"):
+            replay.options({"grep_cache": True})
+        control = {"selected_paths": ["caller.py", "worker.py"]}
+        replay.observe(control)
+        with self.assertRaisesRegex(ValueError, "differs from the uncached control"):
+            replay.observe({
+                **control,
+                "cache": {"hits": 0, "misses": 1, "writes": 1, "write_failures": 0},
+            })
+        replay.observe({
+            **control,
+            "cache": {"hits": 0, "misses": 2, "writes": 2, "write_failures": 0},
+        })
         self.assertFalse(replay.proved)
 
 

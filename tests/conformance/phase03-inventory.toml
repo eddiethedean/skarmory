@@ -20246,10 +20246,8 @@ assertions = ["test/test_dead_code_local_bindings.py:87", "test/test_dead_code_l
 prerequisites = ["test/test_dead_code_local_bindings.py:17", "installed-sdk", "grep-verification"]
 provenance = "Pinned inline Python local-binding fixtures written by the original _write helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unsupported_construct) in a.py."
 
 [[cases]]
 id = "test/test_dead_code_local_bindings.py::test_local_read_by_another_frame_through_f_locals_is_kept"
@@ -22256,10 +22254,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:478"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports incomplete coverage (ambiguous_binding, unresolved_export) at pkg/__init__.py:4, pkg/__init__.py:5."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_returned_lazy_lookup_with_matching_guard_keeps_import[name in __all__]"
@@ -22270,10 +22266,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:478"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports incomplete coverage (ambiguous_binding, unresolved_export) at pkg/__init__.py:4, pkg/__init__.py:5."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_lazy_table_target_must_match_import_provider"
@@ -22296,9 +22290,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:511"]
 prerequisites = ["native-lazy-export-proof"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 503–513."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original lazy-export proof map assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_lazy_guard_proof_returns_the_actual_target[name in __all__]"
@@ -22309,9 +22302,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:511"]
 prerequisites = ["native-lazy-export-proof"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 503–513."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original lazy-export proof map assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_mutated_or_escaped_lazy_table_is_not_proof[_LAZY[\"Thing\"] = (\"pkg.other\", \"Other\")]"
@@ -22374,9 +22366,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:556"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:544", "native-lazy-export-proof"]
 provenance = "Pinned inline Python parser or file fixture in the original test at lines 543–556."
 variants = ["linux-x86_64-cp311-python-engine"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The native engine has no port for the original lazy-export proof map assertion."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_source_owned_lazy_lookup_can_use_temporary_or_keyerror_guard[def __getattr__(name):\\n    if name == \"Thing\":\\n        module = importlib.import_module(\"pkg.mod\")\\n        return getattr(module, name)\\n    raise AttributeError(name)\\n]"
@@ -22387,10 +22378,8 @@ assertions = ["test/test_dead_code_proof_regressions.py:585"]
 prerequisites = ["test/test_dead_code_proof_regressions.py:20", "test/test_dead_code_proof_regressions.py:22", "installed-sdk", "grep-verification-disabled"]
 provenance = "Pinned inline Python project written by the original _scan helper at lines 18–23."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports the type-only import as unused even though the guarded lookup returns the exact target through a local module binding."
 
 [[cases]]
 id = "test/test_dead_code_proof_regressions.py::test_source_owned_lazy_lookup_can_use_temporary_or_keyerror_guard[def __getattr__(name):\\n    try:\\n        module, attr = _LAZY[name]\\n    except KeyError:\\n        raise AttributeError(name) from None\\n    return getattr(importlib.import_module(module), attr)\\n]"
@@ -22417,3 +22406,552 @@ provenance = "Pinned inline Python project written by the original _scan helper 
 variants = ["linux-x86_64-cp311-python-sdk"]
 port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
+
+# Remaining cases from the pinned Python reachability integration suite.
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_recursive_group_requires_a_reachable_caller[False-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:64"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 54–64 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_recursive_group_requires_a_reachable_caller[False-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:64"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 54–64 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_recursive_group_requires_a_reachable_caller[True-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:64"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 54–64 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_recursive_group_requires_a_reachable_caller[True-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:64"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 54–64 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[False-inline-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[False-inline-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[False-multiline-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[False-multiline-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[False-parenthesized-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[False-parenthesized-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[True-inline-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[True-inline-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[True-multiline-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[True-multiline-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[True-parenthesized-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_dead_chain_is_independent_of_call_whitespace[True-parenthesized-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:96"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 70–96 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_resolved_import_does_not_rescue_other_module_same_name[False-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:113", "test/test_reachability_integration_qa.py:114"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 101–114 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_resolved_import_does_not_rescue_other_module_same_name[False-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:113", "test/test_reachability_integration_qa.py:114"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 101–114 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_resolved_import_does_not_rescue_other_module_same_name[True-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:113", "test/test_reachability_integration_qa.py:114"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 101–114 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_resolved_import_does_not_rescue_other_module_same_name[True-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:113", "test/test_reachability_integration_qa.py:114"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 101–114 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[default-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[default-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[class-body-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[class-body-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[annotation-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[annotation-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[decorator-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_definition_time_expression_is_live_even_when_body_is_dead[decorator-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:176"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 168–176 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[file-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:203"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a file scan, although the original caller is outside its selected scope."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[file-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:203"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a file scan, although the original caller is outside its selected scope."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[changed-file-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:203"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "installed-sdk-changed-file-scope", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[changed-file-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:203"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "installed-sdk-changed-file-scope", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[excluded-directory-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:203"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a directory with exclusions scan, although the original caller is outside its selected scope."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_partial_scope_does_not_invent_an_unreachable_group[excluded-directory-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:203"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 181–203 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports the worker's mutually recursive functions as unused in a directory with exclusions scan, although the original caller is outside its selected scope."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_grep_cache_observes_adding_and_removing_a_real_caller"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:224"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "installed-sdk-function-root-cache-equivalence", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 206–224 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_external_configuration_rescue_revives_callees_in_the_same_scan"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:276", "test/test_reachability_integration_qa.py:277", "test/test_reachability_integration_qa.py:284", "test/test_reachability_integration_qa.py:285", "test/test_reachability_integration_qa.py:286"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "installed-sdk-config-root-cache-equivalence", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 259–286 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_group_evidence_distinguishes_unreachable_calls_from_no_references"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:299", "test/test_reachability_integration_qa.py:300", "test/test_reachability_integration_qa.py:302", "test/test_reachability_integration_qa.py:303", "test/test_reachability_integration_qa.py:304"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 289–304 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK's raw per-symbol evidence lacks the original report's decision reason tags for the unrooted recursive group and independently unused entry."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_qualified_calls_distinguish_duplicate_module_basenames[False-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:330", "test/test_reachability_integration_qa.py:331", "test/test_reachability_integration_qa.py:338", "test/test_reachability_integration_qa.py:339"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 318–339 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK distinguishes the two packages in its findings, but its raw per-symbol evidence does not expose the original no_refs and no_reachable_callers decision tags."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_qualified_calls_distinguish_duplicate_module_basenames[False-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:330", "test/test_reachability_integration_qa.py:331", "test/test_reachability_integration_qa.py:338", "test/test_reachability_integration_qa.py:339"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 318–339 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK distinguishes the two packages in its findings, but its raw per-symbol evidence does not expose the original no_refs and no_reachable_callers decision tags."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_qualified_calls_distinguish_duplicate_module_basenames[True-False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:330", "test/test_reachability_integration_qa.py:331"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 318–339 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_qualified_calls_distinguish_duplicate_module_basenames[True-True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:330", "test/test_reachability_integration_qa.py:331"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 318–339 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = "tests/conformance/run_phase03_seed.py"
+omitted_assertions = []
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_unresolved_receiver_preserves_same_named_function_candidates[False]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:366"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification-disabled"]
+provenance = "Pinned inline project generated by the original test at lines 343–366 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage for the unresolved receiver in gateway.py; the empty findings cannot prove the pinned uncertain-receiver assertion."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_unresolved_receiver_preserves_same_named_function_candidates[True]"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:366"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification"]
+provenance = "Pinned inline project generated by the original test at lines 343–366 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+diagnostic_port = "tests/conformance/run_phase03_seed.py"
+blocker = "The installed SDK reports incomplete coverage for the unresolved receiver in gateway.py; the empty findings cannot prove the pinned uncertain-receiver assertion."
+
+[[cases]]
+id = "test/test_reachability_integration_qa.py::test_unused_import_does_not_share_its_function_grep_verdict"
+milestone = "0.3"
+languages = ["python"]
+source = "test/test_reachability_integration_qa.py"
+assertions = ["test/test_reachability_integration_qa.py:397", "test/test_reachability_integration_qa.py:403", "test/test_reachability_integration_qa.py:404"]
+prerequisites = ["test/test_reachability_integration_qa.py:22", "installed-sdk", "runtime-trace-disabled", "grep-verification", "installed-sdk-native-cli-parity"]
+provenance = "Pinned inline project generated by the original test at lines 369–408 using the unchanged file writer at lines 20–22."
+variants = ["linux-x86_64-cp311-python-sdk"]
+port = ""
+omitted_assertions = []
+blocker = "The original test compares one installed SDK report with one real native CLI report. The current runner cannot bind both artifacts to the same original case."

@@ -4,7 +4,7 @@ The [release workflow](../.github/workflows/release.yml) requires the
 dead-code gate for versions 0.3.0 and later. The [initial inventory](../tests/conformance/phase03-inventory.toml)
 is a reviewed subset of the pinned Skylos 5.7.0 suite. The complete case audit,
 reference runs, and Skarmory ports remain release requirements. The reviewed
-inventory assigns 1,738 cases to Phase 0.3 and defers 42 to later language
+inventory assigns 1,782 cases to Phase 0.3 and defers 42 to later language
 milestones. The reported release decision requires receipts from the same
 candidate and a complete inventory.
 [Phase 0.3 acceptance criteria](phase-03.md#required-upstream-test-gate) ·
@@ -284,12 +284,17 @@ the source selection and coverage against a full SDK scan. The changed-file
 report uses the same method-group abstention as the other partial reports.
 The remaining 21 method cases have diagnostic receipts and block publication.
 
+Explicit `bool()` calls and `assert` reuse the native truth-test model.
+The analyzer follows `__bool__` when present and falls back to `__len__`
+when it can prove `__bool__` is absent. A truth hook outside the bounded
+model leaves coverage incomplete.
+
 ### Local bindings, import evidence, and provider methods
 
 The frozen reference checks all 101 cases in `test_dead_code_local_bindings.py`,
 `test_dead_code_import_evidence.py`, and `test_provider_method_precision.py`.
 The inventory preserves the original assertions, fixture setup and grep modes.
-The installed-wheel replay qualifies 6 local-binding cases, 6 import-evidence
+The installed-wheel replay qualifies 7 local-binding cases, 6 import-evidence
 cases, and 12 provider-method cases. Imports read in bounded quoted type
 annotations count as uses, including imports on each feasible conditional
 path. The analyzer skips `Literal` values and `Annotated` metadata when
@@ -298,19 +303,43 @@ Calls to the standard `Path` and `PurePath` constructors with one literal
 string preserve the import reads without resolving path protocol calls on
 arbitrary objects. A terminal call to a local closure can read imports from
 bounded branches that complete before the closure is defined.
+A literal `str.format(**locals())` call with one simple named field reads
+the corresponding local binding when its value is a builtin scalar.
+Formatting that may invoke a user-defined hook remains incomplete.
 
 Diagnostics retain incomplete coverage, failed assertions, and cases where
 the native report cannot establish the evidence required by the assertion.
-The remaining 77 cases carry no release credit.
+The remaining 76 cases carry no release credit.
 
 ### Dead-code proof regressions
 
 All 63 frozen cases in `test_dead_code_proof_regressions.py` pass on Skylos.
-The installed Skarmory SDK qualifies 25 of the public analysis cases with the
-original assertions. The diagnostics record the remaining 29 SDK cases.
-Nine internal tests of deprecation facts and lazy-export proofs require
-native engine ports. The workflow checks the complete frozen case list
-against the SDK, CLI, and engine inventory entries.
+The installed Skarmory SDK qualifies 28 public analysis cases with the
+original assertions. Three internal lazy-export cases qualify against the
+native engine. The analyzer can match a type-only import to the exact name
+and provider returned by a bounded lazy getter, including a getter that
+loads the provider into a local temporary. The bounded guards verify a
+literal name or membership in a stable literal `__all__`. Provider mutations
+or an export list exposed to another module can make the proof incomplete.
+
+The diagnostics record the remaining 26 SDK cases. Six internal tests of
+deprecation facts and mutable lazy-table proofs still require native engine
+ports. The workflow checks the complete frozen case list against the SDK,
+CLI, and engine inventory entries.
+
+### Reachability integration
+
+The frozen reference passes all 51 cases in
+`test_reachability_integration_qa.py`. The inventory includes the seven
+previously qualified cases and 44 new entries. Of the new entries, 34
+qualify through the installed SDK, nine have diagnostic receipts, and the
+case that compares the SDK and native CLI needs a port that uses both
+artifacts in the original comparison.
+
+The changed-file cases compare whole-project source selection and coverage
+before checking the projected findings. Two cache cases compare findings,
+evidence, and coverage with uncached runs and check native fact-cache hits
+and misses after source edits or repeated scans of external configuration.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

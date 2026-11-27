@@ -252,6 +252,64 @@ impl<'a> Graph<'a> {
         }
     }
 
+    pub(super) fn walk_literal_local_format(
+        &mut self,
+        scope: ScopeId,
+        function: &Expression,
+        mapping: &Expression,
+        before: Location,
+    ) -> bool {
+        let ExpressionKind::Member(receiver, method) = &function.kind else {
+            return false;
+        };
+        let ExpressionKind::Text(template) = &receiver.kind else {
+            return false;
+        };
+        let Some(field) = template
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function: locals,
+            arguments,
+            keywords,
+        } = &mapping.kind
+        else {
+            return false;
+        };
+        if method != "format"
+            || !skarmory_python::simple_name(field)
+            || !self.in_function(scope)
+            || !arguments.is_empty()
+            || !keywords.is_empty()
+            || !matches!(self.probe_identity(scope, locals, before),
+                Value::Provider(provider) if provider == "builtins.locals")
+        {
+            return false;
+        }
+
+        // One simple field reads one keyword. Restrict the selected value to
+        // built-in scalars so formatting cannot invoke a user-defined hook.
+        let bindings: Vec<_> = self
+            .local_namespace_bindings(scope, before)
+            .into_iter()
+            .filter(|&id| self.lexical_binding_key(scope, &self.symbols[id].name.text) == field)
+            .collect();
+        if bindings.is_empty()
+            || !bindings.iter().all(|&id| {
+                self.symbols[id].scope == scope && self.binding(id, before, 0).is_builtin_scalar()
+            })
+        {
+            return false;
+        }
+        self.walk_expression(scope, function, before, true);
+        self.walk_expression(scope, locals, before, true);
+        self.read.extend(bindings);
+        true
+    }
+
     pub(super) fn walk_literal_text_call(
         &mut self,
         function: &Expression,
