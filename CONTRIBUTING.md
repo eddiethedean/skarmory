@@ -68,8 +68,12 @@ Windows on x86-64 and ARM64. The PyPI package contains the SDK. The native CLI
 is distributed as the `skarmory_cli` crate.
 
 Configure the repository secrets `CARGO_REGISTRY_TOKEN` for crates.io and
-`PYPI_API_TOKEN` for PyPI. The workflow uses both secrets on matching tag
-pushes and publishes the Cargo workspace in dependency order.
+`PYPI_API_TOKEN` for PyPI. On matching tag pushes, the workflow verifies that
+both secrets exist, publishes the Cargo workspace in dependency order, and then
+publishes to PyPI. Use **Re-run failed jobs** to retry a failed upload. On a
+crates.io retry, the workflow compares the registry checksum with the verified
+archive before skipping an existing version. A yanked version or checksum
+mismatch stops the retry for review.
 
 ## Reporting results
 
