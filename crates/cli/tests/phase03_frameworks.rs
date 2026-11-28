@@ -102,6 +102,74 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn subclass_discovery_follows_reached_imports_at_the_actual_call() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("base.py"), "class Base: pass\n").unwrap();
+    fs::create_dir(root.join("plugins")).unwrap();
+    fs::write(
+        root.join("plugins/selected.py"),
+        "from base import Base\nclass Selected(Base): pass\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plugins/unrelated.py"),
+        "from base import Base\nclass Unrelated(Base): pass\n",
+    )
+    .unwrap();
+
+    for (package, local_before, selected_live) in [
+        ("import plugins.selected\n", false, true),
+        ("if False:\n    import plugins.selected\n", true, false),
+    ] {
+        fs::write(root.join("plugins/__init__.py"), package).unwrap();
+        let prefix =
+            "from base import Base\nimport plugins\ndef discover(): return Base.__subclasses__()\n";
+        let local = "class Local(Base): pass\n";
+        let call = "print(discover())\n";
+        let tail = if local_before {
+            format!("{local}{call}")
+        } else {
+            format!("{call}{local}")
+        };
+        fs::write(root.join("app.py"), format!("{prefix}{tail}")).unwrap();
+        let report = scan(root);
+        let unused = findings(&report, "unused_classes");
+        assert_eq!(unused.contains(&"app.Local"), !local_before, "{report}");
+        assert_eq!(
+            unused.contains(&"plugins.selected.Selected"),
+            !selected_live,
+            "{report}"
+        );
+        assert!(unused.contains(&"plugins.unrelated.Unrelated"), "{report}");
+        assert_eq!(
+            evidence_certainties(&report, "plugins.selected.Selected", "subclass_discovery"),
+            if selected_live {
+                vec!["possible"]
+            } else {
+                Vec::new()
+            },
+            "{report}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    fs::write(
+        root.join("app.py"),
+        "from base import Base\ndef load(): import plugins.unrelated\nprint(load(), Base.__subclasses__())\n",
+    ).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call" && issue["path"] == "app.py")
+    );
+}
+
+#[test]
 fn default_logging_reads_the_selected_binding_across_modules() {
     let project = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();

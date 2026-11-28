@@ -1013,9 +1013,19 @@ impl<'a> Graph<'a> {
             }
             _ => None,
         };
+        let warning_replacement = match (&receiver, value) {
+            (ReceiverKey::Module(module), Some(value))
+                if module == "warnings" && member == "warn" && !conditional =>
+            {
+                let replacement = self.probe_identity(file, value, at);
+                matches!(&replacement, Value::Provider(name) if name == "builtins.print")
+                    .then_some(replacement)
+            }
+            _ => None,
+        };
         // A write to a provider or hook invalidates the corresponding proof.
-        // Dispatch through the replacement stays outside the bounded model.
-        let value = if let Some(replacement) = login_replacement {
+        // Unless the replacement is modeled, later dispatch stays unresolved.
+        let value = if let Some(replacement) = login_replacement.or(warning_replacement) {
             MemberWriteValue::Replacement(replacement)
         } else if changes_lazy_lookup
             || changes_truth_hook

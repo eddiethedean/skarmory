@@ -64,6 +64,7 @@ mod sanic;
 mod source_properties;
 mod source_provider_calls;
 mod starlette;
+mod subclass_discovery;
 mod terminal;
 mod traitlets;
 mod wagtail;
@@ -720,6 +721,7 @@ pub(super) fn analyze_with_verification(
         dormant_classes: BTreeSet::new(),
         transparent_guarded_definitions: BTreeSet::new(),
         subclassed: BTreeSet::new(),
+        subclass_lookups: Vec::new(),
         instance_receivers: BTreeMap::new(),
         class_invocations: Vec::new(),
         atexit_receivers: BTreeMap::new(),
@@ -995,6 +997,7 @@ struct Graph<'a> {
     dormant_classes: BTreeSet<SymbolId>,
     transparent_guarded_definitions: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
+    subclass_lookups: Vec<subclass_discovery::Lookup>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
     class_invocations: Vec<ClassInvocation>,
     atexit_receivers: BTreeMap<ScopeId, Vec<(Edge, SymbolId)>>,
@@ -6484,6 +6487,19 @@ impl<'a> Graph<'a> {
                 if let Some(invocation) = rebound_converter {
                     self.direct.insert(invocation.target);
                     self.invoke(scope, invocation, "direct_call", "certain", expr.at);
+                    return;
+                }
+                if self.record_subclass_lookup(
+                    function,
+                    CallArguments {
+                        scope,
+                        before,
+                        at: expr.at,
+                        positional: arguments,
+                        keywords,
+                    },
+                ) || self.phase03 && self.deprecation_warning(scope, expr, before)
+                {
                     return;
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
@@ -12547,6 +12563,7 @@ impl<'a> Graph<'a> {
             self.report_log_record_calls(&reach);
             self.report_stdlib_logging_calls(&reach);
             self.retain_source_class_fields(&mut reach);
+            self.retain_discovered_subclasses(&mut reach);
             self.report_django_widget_data_gets(&reach);
             self.report_flask_parameter_hooks(&reach);
         }

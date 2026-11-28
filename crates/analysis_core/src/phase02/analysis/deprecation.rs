@@ -89,7 +89,12 @@ impl Graph<'_> {
                 && self.deprecation_provider(scope, function, at, "typing_extensions", "deprecated"))
     }
 
-    fn deprecation_warning(&self, scope: ScopeId, expression: &Expression, at: Location) -> bool {
+    pub(super) fn deprecation_warning(
+        &self,
+        scope: ScopeId,
+        expression: &Expression,
+        at: Location,
+    ) -> bool {
         let ExpressionKind::Call {
             function,
             arguments,
