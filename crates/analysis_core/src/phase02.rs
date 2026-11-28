@@ -985,7 +985,7 @@ fn scan_selected(
         &roots,
         FileEntry::None,
         Some(&config.selection),
-        options.experimental_javascript,
+        options.experimental_javascript && cleanup_inputs.is_none(),
     );
     let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
         BTreeMap::new()

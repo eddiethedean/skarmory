@@ -1675,6 +1675,24 @@ impl Lowering<'_> {
                             environment: expression(&target.value)?,
                             value: expression(&node.value)?,
                         }
+                    } else if let [target] = node.targets.as_slice()
+                        && let Some(targets) = match target {
+                            Expr::Tuple(tuple) => Some(&tuple.elts),
+                            Expr::List(list) => Some(&list.elts),
+                            _ => None,
+                        }
+                    {
+                        StatementKind::AssignUnpack {
+                            names: targets
+                                .iter()
+                                .map(|target| self.target(target))
+                                .collect::<Result<_, _>>()?,
+                            value: expression(&node.value)?,
+                        }
+                    } else if let [target] = node.targets.as_slice()
+                        && matches!(target, Expr::Attribute(_) | Expr::Subscript(_))
+                    {
+                        self.write_target(target, Some(expression(&node.value)?), next)?
                     } else {
                         StatementKind::Assign {
                             names: node

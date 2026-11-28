@@ -265,7 +265,50 @@ impl<'a> Python<'a> {
                         ));
                     }
                 }
-                Stmt::Assert(value) | Stmt::Evaluate(value) => self.expression(value, &bindings),
+                Stmt::EditDjangoBackendList { receiver, edit } => {
+                    self.expression(receiver, &bindings);
+                    if let Some(value) = edit.value() {
+                        self.expression(value, &bindings);
+                    }
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "Django backend list mutation can change selected dependencies",
+                    ));
+                }
+                Stmt::WriteAttribute {
+                    receiver, value, ..
+                }
+                | Stmt::WriteModuleEntry {
+                    mapping: receiver,
+                    value,
+                    ..
+                }
+                | Stmt::WriteCeleryConfigEntry {
+                    mapping: receiver,
+                    value,
+                    ..
+                } => {
+                    self.expression(receiver, &bindings);
+                    if let Stmt::WriteCeleryConfigEntry { key, .. } = &statement.kind {
+                        self.expression(key, &bindings);
+                    }
+                    if let Some(value) = value {
+                        self.expression(value, &bindings);
+                    }
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "mutable Python attributes may change dependency resolution",
+                    ));
+                }
+                Stmt::Assert(value)
+                | Stmt::Evaluate(value)
+                | Stmt::DiscardedComprehension(value) => {
+                    self.expression(value, &bindings);
+                }
             }
         }
         for statement in body {

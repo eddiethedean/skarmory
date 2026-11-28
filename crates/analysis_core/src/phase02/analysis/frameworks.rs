@@ -2394,25 +2394,7 @@ impl Graph<'_> {
                     && matches!(self.symbols[application].binding,
                         Binding::Variable(Some(value), _) if position(value.at) == position(startup.at))
                 {
-                    self.edge(scope, debug, "django_setting", "certain");
-                }
-                self.collect_django_apps(scope, settings, &startup.commands);
-                let binding = self.local(settings, "ROOT_URLCONF", END);
-                let root = binding.and_then(|binding| match self.binding(binding, END, 0) {
-                    Value::Text(module) => self.modules.get(module.as_str()).copied(),
-                    _ => None,
-                });
-                if let Some(file) = root {
-                    let object = framework_module(file);
-                    self.scopes[scope].activated_apps.push(object);
-                    self.django_roots.insert(object);
-                } else if startup.requires_urlconf || binding.is_some() {
-                    self.scope_issue(
-                        scope,
-                        startup.at,
-                        "unresolved_registration",
-                        "Django ROOT_URLCONF could not be resolved",
-                    );
+                    self.edge(scope, application, "django_application", "certain");
                 }
             }
         }
