@@ -305,8 +305,8 @@ model leaves coverage incomplete.
 The frozen reference checks all 101 cases in `test_dead_code_local_bindings.py`,
 `test_dead_code_import_evidence.py`, and `test_provider_method_precision.py`.
 The inventory preserves the original assertions, fixture setup and grep modes.
-The installed-wheel replay qualifies 11 local-binding cases, 13 import-evidence
-cases, and 27 provider-method cases. Imports read in bounded quoted type
+The installed-wheel replay qualifies 11 local-binding cases, 18 import-evidence
+cases, and 34 provider-method cases. Imports read in bounded quoted type
 annotations count as uses, including imports on each feasible conditional
 path. The analyzer skips `Literal` values and `Annotated` metadata when
 resolving type references. Quoted calls remain unevaluated.
@@ -344,23 +344,29 @@ submodule even when the enclosing function is dormant. When a package binding
 may survive an import from the module cache, coverage remains incomplete for
 an unresolved lookup inside a function. The analyzer only
 coalesces alternative imports when it can prove that the initialization arms
-cover the choice and the read occurs after initialization.
+cover the choice and the read occurs after initialization. A guarded from-import
+can select the success or caught-raise suite when the project definitively
+supplies an inert initializer and the declared member. Later self-copies and
+overwrites resolve against the bindings installed by that suite.
 
 The provider cases compare original assertions with paired installed-wheel
 controls. An executed call on a fresh, unmodified source factory result records
 the selected method. Short-circuited calls and consumers constructed without
-execution supply no execution evidence. Cases that require retaining an
-unchosen provider remain blocked while the native analysis can prove the
+execution supply no execution evidence. Lambda defaults execute when the lambda
+is created. An unconditional break or continue prevents subsequent calls in a
+literal loop body. The dormant proxy cases pair the original report with an
+active unresolved call and a direct call to a known provider. Cases that require
+retaining an unchosen provider remain blocked while the native analysis can prove the
 actual target from a literal.
 
 Diagnostics retain incomplete coverage, failed assertions, and cases where
 the native report cannot establish the evidence required by the assertion.
-The remaining 50 cases carry no release credit.
+The remaining 38 cases carry no release credit.
 
 ### Dead-code proof regressions
 
 All 63 frozen cases in `test_dead_code_proof_regressions.py` pass on Skylos.
-The installed Skarmory SDK qualifies 37 public analysis cases with the
+The installed Skarmory SDK qualifies 46 public analysis cases with the
 original assertions. Seven internal lazy-export cases qualify against the
 native engine. The analyzer can match a type-only import to the exact name
 and provider returned by a bounded lazy getter, including a getter that
@@ -378,11 +384,16 @@ the facade or builtin loader target could run an unresolved `__path__` probe.
 Bounded deprecation evidence caps the finding confidence at 40 and records
 `deprecated_api`. The SDK cases cover recognized docstrings and leading
 warnings from the genuine provider, including warnings after passive module
-metadata. Two native engine cases check the aliased `typing_extensions`
+metadata. A reached warning call can be resolved without classifying its caller
+as deprecated. Replacing the warning provider with builtin `print` invalidates
+deprecation evidence. Two native engine cases check the aliased `typing_extensions`
 decorator and verify that adding a local `warnings.py` invalidates the proof
 when the application source is served from the fact cache.
 
-The diagnostics record the remaining 17 SDK cases. The workflow checks the
+A bounded call to builtin `__subclasses__` retains directly derived classes
+from modules loaded before that call. Dormant callers, conditional imports that
+do not execute, and declarations reached only after the call supply no
+discovery evidence. The diagnostics record the remaining eight SDK cases. The workflow checks the
 complete frozen case list against the SDK, CLI, and engine inventory entries.
 
 ### Reachability integration
@@ -404,15 +415,17 @@ and misses after source edits or repeated scans of external configuration.
 
 The frozen workflow runs 38 reviewed cases from `test/test_analyzer.py` by
 their class-qualified pytest IDs. They cover package surfaces, source
-selection, suppressions, and reachability. Twenty-four qualify through the
+selection, suppressions, and reachability. Twenty-eight qualify through the
 installed SDK, including four cases for `# noqa: F401`. The native
 frontend associates that directive with the Python import aliases it covers,
-and the Rust report retains each suppression as evidence. Thirteen cases
-have diagnostic receipts and one still requires a candidate port. The
+and the Rust report retains each suppression as evidence. Nine cases have
+diagnostic receipts and one still requires a candidate port. The
 malformed-configuration replay verifies that the installed SDK warns about
 unusable legacy fields in a discovered `pyproject.toml` and still reports
 the unused function. Its independent danger-rule assertion stays outside
-Phase 0.3.
+Phase 0.3. Selected package directories preserve their package-qualified module
+names. Bounded sibling calls supply reference evidence when the package is
+scanned directly or under a conventional Python source root.
 
 The frontend folds consecutive literal additions to a fresh `__all__` list
 into the declared export list. This covers list `+=` with a literal list or

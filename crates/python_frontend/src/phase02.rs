@@ -1986,6 +1986,7 @@ impl Lowering<'_> {
                 }
                 Stmt::Try(node)
                     if self.4
+                        && depth == 0
                         && self.1 == SyntaxScope::Module
                         && let Some((import, raises_import_error, fallback)) =
                             guarded_project_import(node) =>
