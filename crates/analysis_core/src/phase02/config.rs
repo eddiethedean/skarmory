@@ -1125,7 +1125,7 @@ fn parse_layer(
             }
         }
         if config.get("ignore").is_some_and(|value| !value.is_array()) {
-            config.remove("ignore");
+            config.insert("ignore".into(), toml::Value::Array(Vec::new()));
             warnings.push(format!(
                 "{}: ignored malformed tool.skylos.ignore, expected an array of rule IDs",
                 file.display()
@@ -1168,7 +1168,7 @@ mod tests {
         };
 
         let recovered = load(&package, &options).unwrap();
-        assert!(recovered.ignores_rule("SKY-U002"));
+        assert!(!recovered.ignores_rule("SKY-U002"));
         assert!(!recovered.ignores_rule("SKY-U001"));
         assert_eq!(recovered.gate.max_dead_code, Some(0));
         assert_eq!(

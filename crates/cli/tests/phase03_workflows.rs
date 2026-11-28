@@ -504,6 +504,30 @@ fn python_baseline_round_trips_in_a_mixed_repository() {
 }
 
 #[test]
+fn malformed_discovered_ignore_replaces_parent_rules_in_strict_gate() {
+    let root = project(&[
+        (
+            ".skylos.toml",
+            "root = true\nignore = ['SKY-U001']\n[gate]\nmax_dead_code = 0\n",
+        ),
+        ("package/pyproject.toml", "[tool.skylos]\nignore = 1\n"),
+        ("package/app.py", "def abandoned():\n    return 1\n"),
+    ]);
+    let package = root.path().join("package");
+    let args = ["--gate", "--strict"];
+
+    let recovered = scan(&package, &args, 1);
+    assert_eq!(recovered["gate"]["verdict"], "failed");
+    assert_eq!(recovered["coverage"]["status"], "complete");
+    assert_eq!(names(&recovered, "unused_functions"), ["abandoned"]);
+
+    fs::write(package.join("pyproject.toml"), "[tool.skylos]\n").unwrap();
+    let inherited = scan(&package, &args, 0);
+    assert_eq!(inherited["gate"]["verdict"], "passed");
+    assert!(items(&inherited, "unused_functions").is_empty());
+}
+
+#[test]
 fn gate_coverage_is_independent_of_the_verdict_and_display_filters() {
     let root = project(&[
         ("a.py", "print(1)\n"),

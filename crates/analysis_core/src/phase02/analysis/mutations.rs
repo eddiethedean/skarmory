@@ -35,6 +35,19 @@ struct FlaskLoginEffectCall {
     forwarded: Option<Invocation>,
 }
 
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+enum ProofMember {
+    Known(String),
+    Parameter(String),
+    Unknown,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ParameterProofWrite {
+    receiver: String,
+    member: ProofMember,
+}
+
 #[derive(Default)]
 pub(super) struct Mutations {
     members: BTreeMap<ReceiverKey, BTreeMap<String, Vec<Write>>>,
@@ -50,6 +63,7 @@ pub(super) struct Mutations {
     form_table_fields: BTreeMap<SymbolId, BTreeMap<String, Vec<Write>>>,
     unmodeled_class_writes: BTreeSet<SymbolId>,
     deferred_member_writes: BTreeMap<ReceiverKey, BTreeSet<String>>,
+    parameter_proof_writes: BTreeMap<SymbolId, Vec<ParameterProofWrite>>,
     framework_escapes: BTreeMap<ReceiverKey, Vec<Write>>,
     modeled: BTreeSet<(ScopeId, [usize; 2])>,
 }
@@ -67,21 +81,40 @@ pub(super) const JSON_ENCODER_GLOBALS: &[&str] = &[
     "_make_iterencode",
 ];
 
-fn stdlib_mutation_providers(member: &str) -> &'static [&'static str] {
-    match member {
-        "cast" => &["typing"],
-        "open" => &["builtins"],
-        "dump" | "dumps" | "_default_encoder" => &["json"],
-        "JSONEncoder" => &["json", "json.encoder"],
-        member if JSON_ENCODER_MEMBERS.contains(&member) => JSON_ENCODER_PROVIDERS,
-        member if JSON_ENCODER_GLOBALS.contains(&member) => &["json.encoder"],
-        _ => &[],
-    }
+fn proof_provider_members() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
+    const MODULE_MEMBERS: &[(&str, &[&str])] = &[
+        ("typing", &["cast"]),
+        ("builtins", &["open"]),
+        ("builtins", deprecation::WARNING_CATEGORIES),
+        ("warnings", &["warn", "showwarning"]),
+        ("typing_extensions", &["deprecated"]),
+        (
+            "json",
+            &["dump", "dumps", "_default_encoder", "JSONEncoder"],
+        ),
+        ("json.encoder", &["JSONEncoder"]),
+        ("json.encoder", JSON_ENCODER_GLOBALS),
+    ];
+    MODULE_MEMBERS.iter().copied().chain(
+        JSON_ENCODER_PROVIDERS
+            .iter()
+            .map(|&module| (module, JSON_ENCODER_MEMBERS)),
+    )
+}
+
+fn proof_mutation_providers(member: &str) -> impl Iterator<Item = &'static str> + '_ {
+    proof_provider_members()
+        .filter_map(move |(module, members)| members.contains(&member).then_some(module))
+}
+
+fn protected_provider_members(provider: &str) -> impl Iterator<Item = &'static str> + '_ {
+    proof_provider_members()
+        .filter(move |(module, _)| *module == provider)
+        .flat_map(|(_, members)| members.iter().copied())
 }
 
 fn tracked_provider_member(module: &str, member: &str) -> bool {
-    deprecation::provider_member(module, member)
-        || stdlib_mutation_providers(member).contains(&module)
+    proof_mutation_providers(member).any(|provider| provider == module)
         || matches!(
             (module, member),
             ("typing", "TYPE_CHECKING")
@@ -94,8 +127,7 @@ fn tracked_provider_member(module: &str, member: &str) -> bool {
 }
 
 fn tracked_deferred_member(member: &str) -> bool {
-    deprecation::deferred_member(member)
-        || !stdlib_mutation_providers(member).is_empty()
+    proof_mutation_providers(member).next().is_some()
         || matches!(
             member,
             "__getattr__"
@@ -128,41 +160,28 @@ impl<'a> Graph<'a> {
         for scope in self.files.len()..self.scopes.len() {
             self.index_deferred_proof_writes(scope, self.scopes[scope].body);
         }
+        self.index_parameter_proof_writes();
         self.read = reads;
     }
 
     fn index_deferred_proof_writes(&mut self, scope: ScopeId, body: &[Statement]) {
         for statement in body {
-            let (receiver, member) = match &statement.kind {
+            match &statement.kind {
                 StatementKind::WriteAttribute {
                     receiver, member, ..
-                } if is_truth_hook(member) || tracked_deferred_member(member) => (receiver, member),
-                StatementKind::Evaluate(Expression {
-                    kind:
-                        ExpressionKind::Call {
-                            function,
-                            arguments,
-                            keywords,
-                        },
-                    ..
-                }) if keywords.is_empty()
-                    && let [
-                        receiver,
-                        Expression {
-                            kind: ExpressionKind::Text(member),
-                            ..
-                        },
-                        rest @ ..,
-                    ] = arguments.as_slice()
-                    && (is_truth_hook(member) || tracked_deferred_member(member))
-                    && let Value::Provider(provider) =
-                        self.probe_identity(scope, function, statement.at)
-                    && matches!(
-                        (provider.as_str(), rest.len()),
-                        ("builtins.setattr", 1) | ("builtins.delattr", 0)
-                    ) =>
-                {
-                    (receiver, member)
+                } => self.index_deferred_proof_write(
+                    scope,
+                    statement.at,
+                    receiver,
+                    Some(member),
+                    None,
+                ),
+                StatementKind::Evaluate(expression) => {
+                    self.index_deferred_attribute_call(scope, statement.at, expression, false);
+                }
+                StatementKind::Return(Some(expression)) => {
+                    self.index_deferred_attribute_call(scope, statement.at, expression, true);
+                    break;
                 }
                 StatementKind::If {
                     test,
@@ -176,49 +195,360 @@ impl<'a> Graph<'a> {
                     if known != Some(true) {
                         self.index_deferred_proof_writes(scope, otherwise);
                     }
-                    continue;
                 }
                 StatementKind::With { body, .. } => {
                     self.index_deferred_proof_writes(scope, body);
-                    continue;
                 }
                 StatementKind::Return(_) | StatementKind::Raise(_) => break,
-                _ => continue,
+                _ => {}
+            }
+        }
+    }
+
+    fn index_deferred_attribute_call(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        expression: &Expression,
+        proof_only: bool,
+    ) {
+        let Some((receiver, name, _)) = self.attribute_mutation(scope, at, expression) else {
+            return;
+        };
+        // A literal stored in an unconditional local assignment is available
+        // at the setter, even when the receiver comes from a parameter.
+        let member = match &name.kind {
+            ExpressionKind::Text(member) => Some(member.as_str()),
+            ExpressionKind::Name(name)
+                if let LexicalBinding::Found(id) = self.lexical_binding(scope, name, at, true)
+                    && self.symbols[id].scope == scope
+                    && self.scopes[scope]
+                        .names
+                        .get(name.as_str())
+                        .is_some_and(|ids| ids.len() == 1)
+                    && !self.conditional.contains_key(&id)
+                    && let Binding::Variable(Some(value), _) = self.symbols[id].binding
+                    && let ExpressionKind::Text(member) = &value.kind =>
+            {
+                Some(member.as_str())
+            }
+            _ => None,
+        };
+        if let Some(member) = member {
+            if !proof_only || proof_mutation_providers(member).next().is_some() {
+                self.index_deferred_proof_write(scope, at, receiver, Some(member), None);
+            }
+        } else {
+            self.index_deferred_proof_write(scope, at, receiver, None, Some(name));
+        }
+    }
+
+    fn index_deferred_proof_write(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        receiver: &Expression,
+        member: Option<&str>,
+        dynamic_name: Option<&Expression>,
+    ) {
+        if member.is_some_and(|name| !is_truth_hook(name) && !tracked_deferred_member(name)) {
+            return;
+        }
+        if member.is_none_or(|name| proof_mutation_providers(name).next().is_some())
+            && let Some(parameter) = self.parameter_binding(scope, receiver, at)
+            && self.symbols[parameter].scope == scope
+            && let Some(owner) = self.scopes[scope].owner
+        {
+            let receiver = self.symbols[parameter].name.text.clone();
+            let member = if let Some(name) = member {
+                ProofMember::Known(name.into())
+            } else if let Some(parameter) = dynamic_name
+                .and_then(|name| self.parameter_binding(scope, name, at))
+                .filter(|&parameter| self.symbols[parameter].scope == scope)
+            {
+                ProofMember::Parameter(self.symbols[parameter].name.text.clone())
+            } else {
+                ProofMember::Unknown
             };
-            let receiver = match self.probe_identity(scope, receiver, statement.at) {
-                Value::Callable(invocation)
-                    if is_truth_hook(member) && self.is_class(invocation.target) =>
+            self.mutations
+                .parameter_proof_writes
+                .entry(owner)
+                .or_default()
+                .push(ParameterProofWrite { receiver, member });
+        }
+        let Some(member) = member else {
+            if let Value::Provider(module) = self.probe_identity(scope, receiver, at) {
+                // An opaque name can modify any protected slot of this provider.
+                for member in protected_provider_members(&module) {
+                    self.mutations
+                        .deferred_member_writes
+                        .entry(ReceiverKey::Module(module.clone()))
+                        .or_default()
+                        .insert(member.into());
+                }
+            }
+            return;
+        };
+        let receiver = match self.probe_identity(scope, receiver, at) {
+            Value::Callable(invocation)
+                if is_truth_hook(member) && self.is_class(invocation.target) =>
+            {
+                ReceiverKey::Class(invocation.target)
+            }
+            Value::Module(file) if matches!(member, "__getattr__" | "_LAZY") => {
+                ReceiverKey::Module(self.files[file].module.clone())
+            }
+            Value::Provider(module) if tracked_provider_member(&module, member) => {
+                ReceiverKey::Module(module)
+            }
+            Value::Unknown | Value::ReceiverParameter(_) => {
+                // Preserve the existing fallback for the standard-library guards.
+                // Deprecation providers passed to helpers are resolved at the call.
+                for module in proof_mutation_providers(member).filter(|module| {
+                    !matches!(*module, "warnings" | "typing_extensions")
+                        && !deprecation::WARNING_CATEGORIES.contains(&member)
+                }) {
+                    self.mutations
+                        .deferred_member_writes
+                        .entry(ReceiverKey::Module(module.into()))
+                        .or_default()
+                        .insert(member.into());
+                }
+                return;
+            }
+            _ => return,
+        };
+        self.mutations
+            .deferred_member_writes
+            .entry(receiver)
+            .or_default()
+            .insert(member.into());
+    }
+
+    fn index_parameter_proof_writes(&mut self) {
+        let mut pending: Vec<_> = std::mem::take(&mut self.mutations.parameter_proof_writes)
+            .into_iter()
+            .flat_map(|(callee, writes)| writes.into_iter().map(move |write| (callee, write)))
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        let mut calls = BTreeMap::new();
+        for scope in 0..self.scopes.len() {
+            self.collect_proof_writer_calls(scope, self.scopes[scope].body, &mut calls);
+        }
+        let mut visited = BTreeSet::new();
+        while let Some((callee, write)) = pending.pop() {
+            // Cyclic wrappers cannot repeat an already propagated write.
+            if !visited.insert((callee, write.clone())) {
+                continue;
+            }
+            for &call in calls.get(&callee).into_iter().flatten() {
+                let Some(values) = self.call_argument_values(
+                    call.scope,
+                    callee,
+                    call.before,
+                    call.positional,
+                    call.keywords,
+                ) else {
+                    continue;
+                };
+                let forwarded = |parameter| self.forwarded_proof_argument(callee, call, parameter);
+                let member = match &write.member {
+                    ProofMember::Parameter(parameter) => match values.get(parameter) {
+                        Some(Value::Text(name)) => ProofMember::Known(name.clone()),
+                        _ => forwarded(parameter)
+                            .map_or(ProofMember::Unknown, ProofMember::Parameter),
+                    },
+                    other => other.clone(),
+                };
+                if let Some(receiver) = forwarded(&write.receiver)
+                    && let Some(owner) = self.scopes[call.scope].owner
                 {
-                    ReceiverKey::Class(invocation.target)
+                    pending.push((owner, ParameterProofWrite { receiver, member }));
+                } else if let Some(value) = values.get(&write.receiver) {
+                    self.index_proof_receiver_value(call, value, &member);
                 }
-                Value::Module(file) if matches!(member.as_str(), "__getattr__" | "_LAZY") => {
-                    ReceiverKey::Module(self.files[file].module.clone())
+            }
+        }
+    }
+
+    fn forwarded_proof_argument(
+        &self,
+        callee: SymbolId,
+        call: CallArguments<'_>,
+        parameter: &str,
+    ) -> Option<String> {
+        let Binding::Definition(definition, _) = self.symbols[callee].binding else {
+            return None;
+        };
+        let actual = call
+            .keywords
+            .iter()
+            .find_map(|(key, value)| (key == parameter).then_some(value))
+            .or_else(|| {
+                let index = definition
+                    .parameters
+                    .iter()
+                    .position(|name| name.text == parameter)?;
+                call.positional.get(index)
+            })?;
+        let id = self.parameter_binding(call.scope, actual, call.before)?;
+        (self.symbols[id].scope == call.scope).then(|| self.symbols[id].name.text.clone())
+    }
+
+    fn collect_proof_writer_calls(
+        &mut self,
+        scope: ScopeId,
+        body: &'a [Statement],
+        calls: &mut BTreeMap<SymbolId, Vec<CallArguments<'a>>>,
+    ) {
+        for statement in body {
+            let at = statement.at;
+            match &statement.kind {
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } => {
+                    let known = self.indexed_bool(scope, test, at, 0);
+                    if known != Some(false) {
+                        self.collect_proof_writer_calls(scope, body, calls);
+                    }
+                    if known != Some(true) {
+                        self.collect_proof_writer_calls(scope, otherwise, calls);
+                    }
                 }
-                Value::Provider(module) if tracked_provider_member(&module, member) => {
-                    ReceiverKey::Module(module)
+                StatementKind::With { body, .. } => {
+                    self.collect_proof_writer_calls(scope, body, calls)
                 }
-                Value::Unknown | Value::ReceiverParameter(_) => {
-                    // A source wrapper may receive the provider through its
-                    // parameters. Keep the proof bounded when those writes
-                    // cannot be ordered against a later call.
-                    for module in stdlib_mutation_providers(member) {
+                StatementKind::Evaluate(expression)
+                | StatementKind::Return(Some(expression))
+                | StatementKind::Assign {
+                    value: Some(expression),
+                    ..
+                } => {
+                    if let ExpressionKind::Call {
+                        function,
+                        arguments,
+                        keywords,
+                    } = &expression.kind
+                        && let Value::Callable(invocation) =
+                            self.probe_identity(scope, function, at)
+                        && matches!(self.symbols[invocation.target].binding, Binding::Definition(definition, _)
+                            if definition.simple_positional_parameters && !definition.is_generator
+                                && definition.kind == DefinitionKind::Function)
+                    {
+                        calls
+                            .entry(invocation.target)
+                            .or_default()
+                            .push(CallArguments {
+                                scope,
+                                before: at,
+                                at,
+                                positional: arguments,
+                                keywords,
+                            });
+                    }
+                    if matches!(statement.kind, StatementKind::Return(_)) {
+                        break;
+                    }
+                }
+                StatementKind::Return(None) | StatementKind::Raise(_) => break,
+                _ => {}
+            }
+        }
+    }
+
+    fn index_proof_receiver_value(
+        &mut self,
+        call: CallArguments<'_>,
+        value: &Value,
+        member: &ProofMember,
+    ) {
+        let name = match member {
+            ProofMember::Known(name) => Some(name.as_str()),
+            _ => None,
+        };
+        match value {
+            Value::Provider(module) => {
+                for member in protected_provider_members(module)
+                    .filter(|member| name.is_none_or(|name| name == *member))
+                {
+                    let receiver = ReceiverKey::Module(module.clone());
+                    if call.scope == self.scopes[call.scope].file {
+                        self.mutations
+                            .members
+                            .entry(receiver)
+                            .or_default()
+                            .entry(member.into())
+                            .or_default()
+                            .push(Write {
+                                file: call.scope,
+                                at: call.at,
+                                value: MemberWriteValue::Ambiguous,
+                            });
+                    } else {
                         self.mutations
                             .deferred_member_writes
-                            .entry(ReceiverKey::Module((*module).into()))
+                            .entry(receiver)
                             .or_default()
-                            .insert(member.clone());
+                            .insert(member.into());
                     }
-                    continue;
                 }
-                _ => continue,
-            };
-            // The module index cannot order a deferred write against the lookup.
-            self.mutations
-                .deferred_member_writes
-                .entry(receiver)
-                .or_default()
-                .insert(member.clone());
+            }
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.index_proof_receiver_value(call, value, member);
+                }
+            }
+            Value::Unknown | Value::ReceiverParameter(_) => {
+                if let Some(name) = name {
+                    for provider in proof_mutation_providers(name) {
+                        self.mutations
+                            .deferred_member_writes
+                            .entry(ReceiverKey::Module(provider.into()))
+                            .or_default()
+                            .insert(name.into());
+                    }
+                }
+            }
+            _ => {}
         }
+    }
+
+    fn attribute_mutation<'expr>(
+        &mut self,
+        scope: ScopeId,
+        at: Location,
+        expression: &'expr Expression,
+    ) -> Option<(
+        &'expr Expression,
+        &'expr Expression,
+        Option<&'expr Expression>,
+    )> {
+        let ExpressionKind::Call {
+            function,
+            arguments,
+            keywords,
+        } = &expression.kind
+        else {
+            return None;
+        };
+        let [receiver, name, rest @ ..] = arguments.as_slice() else {
+            return None;
+        };
+        if !keywords.is_empty() || rest.len() > 1 {
+            return None;
+        }
+        let Value::Provider(provider) = self.probe_identity(scope, function, at) else {
+            return None;
+        };
+        matches!(
+            (provider.as_str(), rest.len()),
+            ("builtins.setattr", 1) | ("builtins.delattr", 0)
+        )
+        .then_some((receiver, name, rest.first()))
     }
 
     fn index_command_namespaces(&mut self) {
@@ -427,23 +757,10 @@ impl<'a> Graph<'a> {
                     {
                         continue;
                     }
-                    if keywords.is_empty()
-                        && let [receiver, name, rest @ ..] = arguments.as_slice()
-                        && let ExpressionKind::Text(member) = &name.kind
-                        && let Value::Provider(provider) = self.probe_identity(file, function, at)
-                        && matches!(
-                            (provider.as_str(), rest.len()),
-                            ("builtins.setattr", 1) | ("builtins.delattr", 0)
-                        )
+                    if let Some((receiver, name, value)) =
+                        self.attribute_mutation(file, at, expression)
                     {
-                        self.index_member_write(
-                            file,
-                            at,
-                            receiver,
-                            member,
-                            rest.first(),
-                            conditional,
-                        );
+                        self.index_attribute_call(file, at, receiver, name, value, conditional);
                     } else if track_framework_escapes {
                         match self.probe_identity(file, function, at) {
                             Value::Unknown => {
@@ -480,6 +797,37 @@ impl<'a> Graph<'a> {
                 },
                 StatementKind::Return(_) | StatementKind::Raise(_) => break,
                 _ => {}
+            }
+        }
+    }
+
+    fn index_attribute_call(
+        &mut self,
+        file: ScopeId,
+        at: Location,
+        receiver: &Expression,
+        name: &Expression,
+        value: Option<&Expression>,
+        conditional: bool,
+    ) {
+        if let ExpressionKind::Text(member) = &name.kind {
+            self.index_member_write(file, at, receiver, member, value, conditional);
+            return;
+        }
+        let Value::Provider(module) = self.probe_identity(file, receiver, at) else {
+            return;
+        };
+        let mut protected = protected_provider_members(&module).peekable();
+        if protected.peek().is_none() {
+            return;
+        }
+        if let Value::Text(member) = self.probe_identity(file, name, at) {
+            if protected.any(|candidate| candidate == member) {
+                self.index_member_write(file, at, receiver, &member, value, conditional);
+            }
+        } else {
+            for member in protected {
+                self.index_member_write(file, at, receiver, member, value, conditional);
             }
         }
     }
@@ -1996,11 +2344,8 @@ impl<'a> Graph<'a> {
             }
             Value::Provider(module)
                 if provider_module(module)
-                    || matches!(
-                        module.as_str(),
-                        "typing" | "importlib" | "json" | "json.encoder" | "builtins"
-                    )
-                    || JSON_ENCODER_PROVIDERS.contains(&module.as_str())
+                    || module == "importlib"
+                    || protected_provider_members(module).next().is_some()
                     || is_django_signal(module)
                     || module == "celery.signals.setup_logging" =>
             {

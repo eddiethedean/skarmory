@@ -1,21 +1,10 @@
 use super::*;
 
-const WARNING_CATEGORIES: &[&str] = &[
+pub(super) const WARNING_CATEGORIES: &[&str] = &[
     "DeprecationWarning",
     "PendingDeprecationWarning",
     "FutureWarning",
 ];
-
-pub(super) fn provider_member(module: &str, member: &str) -> bool {
-    matches!(
-        (module, member),
-        ("warnings", "warn" | "showwarning") | ("typing_extensions", "deprecated")
-    ) || module == "builtins" && WARNING_CATEGORIES.contains(&member)
-}
-
-pub(super) fn deferred_member(member: &str) -> bool {
-    matches!(member, "warn" | "showwarning" | "deprecated") || WARNING_CATEGORIES.contains(&member)
-}
 
 impl Graph<'_> {
     fn deprecation_import(&self, scope: ScopeId, name: &str, at: Location) -> Option<&Import> {

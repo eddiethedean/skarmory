@@ -215,6 +215,52 @@ fn stdlib_json_literals_do_not_exercise_a_same_named_method() {
 }
 
 #[test]
+fn stdlib_provider_mutations_invalidate_static_call_proofs() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (source, control, patch, unused) in [
+        (
+            concat!(
+                "import typing\n",
+                "def normal(): return 'normal'\n",
+                "def observed(): return 'replacement'\n",
+                "def replacement(_kind, _value): return observed\n",
+                "# configure\n",
+                "print(typing.cast('object', normal)())\n",
+            ),
+            "",
+            "def patch_cast():\n    return setattr(typing, 'cast', replacement)\npatch_cast()",
+            vec!["app.observed", "app.replacement"],
+        ),
+        (
+            concat!(
+                "import json\n",
+                "def replacement(self, data): return 'replacement'\n",
+                "# configure\n",
+                "print(json.dumps({'value': 2}))\n",
+            ),
+            "method = 'unrelated'\nsetattr(json.JSONEncoder, method, replacement)",
+            "method = 'encode'\nsetattr(json.JSONEncoder, method, replacement)",
+            vec!["app.replacement"],
+        ),
+    ] {
+        let app = root.join("app.py");
+        fs::write(&app, source.replace("# configure", control)).unwrap();
+        let original = scan(root);
+        assert_eq!(
+            findings(&original, "unused_functions"),
+            unused,
+            "{original}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+
+        fs::write(&app, source.replace("# configure", patch)).unwrap();
+        assert_unresolved_provider_mutation(root, cache.path(), &unused, "unresolved_call");
+    }
+}
+
+#[test]
 fn deprecation_decorator_requires_a_plain_function() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -254,6 +300,202 @@ fn deprecation_decorator_requires_a_plain_function() {
             "{report}"
         );
     }
+}
+
+#[test]
+fn deprecation_provider_mutations_require_coverage_diagnostics() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let settings = root.join("settings.py");
+    let warning_source = concat!(
+        "def old_api():\n",
+        "    warnings.warn('old', FutureWarning)\n",
+        "old_api()\n",
+        "def unused_neighbor(): return 0\n",
+    );
+    let warning_setup = concat!(
+        "def configure(provider):\n",
+        "    def log_warning(message, category, filename, lineno, file=None, line=None):\n",
+        "        print('warning hook')\n",
+        "    setattr(provider, 'showwarning', log_warning)\n",
+    );
+    let computed_warning_setup = warning_setup.replace(
+        "    setattr(provider, 'showwarning',",
+        "    member = 'showwarning'\n    setattr(provider, member,",
+    );
+    for (module, source, setup, unused, called, diagnostic) in [
+        (
+            "warnings",
+            warning_source,
+            warning_setup,
+            vec!["app.unused_neighbor"],
+            "settings.configure.log_warning",
+            "unresolved_call",
+        ),
+        (
+            "warnings",
+            warning_source,
+            computed_warning_setup.as_str(),
+            vec!["app.unused_neighbor"],
+            "settings.configure.log_warning",
+            "unresolved_call",
+        ),
+        (
+            "typing_extensions",
+            concat!(
+                "def used(): print('decorated callback')\n",
+                "@typing_extensions.deprecated('old')\n",
+                "def old_api(): used()\n",
+            ),
+            concat!(
+                "def configure(provider):\n",
+                "    def run_immediately(message):\n",
+                "        def decorate(function):\n",
+                "            function()\n",
+                "            return function\n",
+                "        return decorate\n",
+                "    setattr(provider, 'deprecated', run_immediately)\n",
+            ),
+            vec!["app.old_api", "app.used"],
+            "app.used",
+            "unresolved_decorator",
+        ),
+    ] {
+        fs::write(&app, format!("import {module}\n{source}")).unwrap();
+        let original = scan(root);
+        assert_eq!(
+            findings(&original, "unused_functions"),
+            unused,
+            "{original}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+
+        fs::write(&settings, setup).unwrap();
+        fs::write(
+            &app,
+            format!(
+                "import {module}\nfrom settings import configure\nconfigure({module})\n{source}"
+            ),
+        )
+        .unwrap();
+        assert_unresolved_provider_mutation(root, cache.path(), &[called], diagnostic);
+        fs::remove_file(&settings).unwrap();
+    }
+
+    let unrelated = computed_warning_setup
+        .replace("'showwarning'", "'unrelated'")
+        .replace("setattr(provider,", "setattr(warnings,");
+    fs::write(&settings, format!("import warnings\n{unrelated}")).unwrap();
+    fs::write(
+        &app,
+        format!(
+            "import warnings\nfrom settings import configure\nconfigure(warnings)\n{warning_source}"
+        ),
+    )
+    .unwrap();
+    let original = scan(root);
+    assert_eq!(
+        findings(&original, "unused_functions"),
+        ["app.unused_neighbor", "settings.configure.log_warning"],
+        "{original}"
+    );
+    assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+    fs::remove_file(&settings).unwrap();
+
+    let parameter_warning_setup = warning_setup
+        .replace("configure(provider)", "configure(provider, member)")
+        .replace("'showwarning'", "member");
+    fs::write(
+        &settings,
+        format!("{parameter_warning_setup}def bootstrap(provider, member):\n    configure(provider, member)\n"),
+    )
+    .unwrap();
+    let warning_imports = "import warnings\nfrom settings import bootstrap, configure\n";
+    for (setup, mutates_warnings) in [
+        (
+            "class Reporter: pass\nconfigure(Reporter(), 'showwarning')",
+            false,
+        ),
+        ("configure(warnings, 'showwarning')", true),
+        (
+            "class Reporter: pass\nbootstrap(Reporter(), 'showwarning')",
+            false,
+        ),
+        ("bootstrap(warnings, 'showwarning')", true),
+        (
+            concat!(
+                "import os\n",
+                "class Reporter: pass\n",
+                "receiver = warnings if os.getenv('SETUP_WARNINGS') else Reporter()\n",
+                "configure(receiver, 'showwarning')",
+            ),
+            true,
+        ),
+    ] {
+        fs::write(&app, format!("{warning_imports}{setup}\n{warning_source}")).unwrap();
+        if mutates_warnings {
+            assert_unresolved_provider_mutation(
+                root,
+                cache.path(),
+                &["settings.configure.log_warning"],
+                "unresolved_call",
+            );
+        } else {
+            let original = scan(root);
+            assert!(
+                findings(&original, "unused_functions").contains(&"app.unused_neighbor"),
+                "{original}"
+            );
+            assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+        }
+    }
+    fs::remove_file(&settings).unwrap();
+
+    fs::write(
+        &app,
+        format!(
+            concat!(
+                "import warnings\n",
+                "def log_warning(message, category, filename, lineno, file=None, line=None):\n",
+                "    print('warning hook')\n",
+                "setattr(warnings, 'showwarning', log_warning)\n",
+                "{}",
+            ),
+            warning_source
+        ),
+    )
+    .unwrap();
+    assert_unresolved_provider_mutation(
+        root,
+        cache.path(),
+        &["app.log_warning"],
+        "unresolved_call",
+    );
+}
+
+fn assert_unresolved_provider_mutation(
+    root: &Path,
+    cache: &Path,
+    called: &[&str],
+    diagnostic: &str,
+) {
+    let patched = scan_with_exit(root, None, None, 2);
+    assert_eq!(patched["coverage"]["status"], "incomplete", "{patched}");
+    let patched_findings = findings(&patched, "unused_functions");
+    for name in called {
+        assert!(!patched_findings.contains(name), "{patched}");
+    }
+    assert!(
+        patched["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == diagnostic && issue["path"] == "app.py"),
+        "{patched}"
+    );
+    assert_provider_cache_equivalence(root, cache, &patched, 2);
 }
 
 #[test]
