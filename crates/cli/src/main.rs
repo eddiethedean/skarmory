@@ -41,7 +41,7 @@ enum Policy {
     after_help = "JSON goes to stdout by default. Incomplete analysis exits with 2.\nUse 'skarmory cleanup --help' to review Python cleanup tasks."
 )]
 struct Cli {
-    /// Source file or project directory. JavaScript and TypeScript file reachability requires a package directory.
+    /// Python source file or project directory.
     #[arg(value_name = "PATH")]
     path: PathBuf,
 
@@ -153,6 +153,10 @@ struct SkylosArgs {
     /// Enable the Phase 0.3 Python unused-dependency quality rule.
     #[arg(long)]
     quality: bool,
+
+    /// Opt into experimental JavaScript and TypeScript analysis of a package directory.
+    #[arg(long)]
+    experimental_javascript: bool,
 
     /// Select Phase 0.3 rule IDs. Repeat or separate multiple IDs with commas.
     #[arg(long, value_delimiter = ',', value_name = "RULE")]
@@ -413,6 +417,7 @@ fn write_skylos_report(
     }
     let options = phase02::Options {
         profile,
+        experimental_javascript: args.experimental_javascript,
         config_file: args.config_file,
         dependency_search_paths: args.dependency_search_paths,
         excludes: args.excludes,
@@ -488,6 +493,7 @@ fn write_skylos_report(
             .map(workflow::BaselineInput::File)
             .or_else(|| args.baseline_ref.map(workflow::BaselineInput::Revision));
         let settings = workflow::Settings {
+            changed_files: None,
             diff: args.diff.or(args.diff_base),
             diff_mode,
             baseline,

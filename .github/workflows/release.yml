@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/release-wheel.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'crates/*/Cargo.toml'
@@ -33,6 +34,8 @@ jobs:
   release-metadata:
     name: Check release version
     runs-on: ubuntu-24.04
+    outputs:
+      dead-code-gate-required: ${{ steps.version.outputs.dead-code-gate-required }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -56,6 +59,7 @@ jobs:
           PY
       - run: python scripts/check_structure.py
       - name: Match the tag to the package version
+        id: version
         run: |
           python - <<'PY'
           import os
@@ -66,14 +70,44 @@ jobs:
           expected_tag = f"v{version}"
           if os.environ["GITHUB_REF_TYPE"] == "tag" and os.environ["GITHUB_REF_NAME"] != expected_tag:
               raise SystemExit(f"Expected release tag {expected_tag}")
+          major, minor, _ = version.split(".", 2)
+          gate_required = (int(major), int(minor)) >= (0, 3)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as outputs:
+              print(f"dead-code-gate-required={str(gate_required).lower()}", file=outputs)
           print(f"Release version {version}")
           PY
 
-  checks:
+  regular-ci:
     needs: [release-metadata]
     # The regular CI workflow already runs separately for pull requests.
     if: ${{ github.event_name != 'pull_request' }}
     uses: ./.github/workflows/ci.yml
+
+  checks:
+    name: Require release checks
+    needs: [release-metadata, regular-ci, verify-dead-code]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require regular CI and applicable compatibility results
+        env:
+          CI_RESULT: ${{ needs.regular-ci.result }}
+          GATE_REQUIRED: ${{ needs.release-metadata.outputs.dead-code-gate-required }}
+          GATE_RESULT: ${{ needs.verify-dead-code.result }}
+        run: |
+          if [[ "$CI_RESULT" != success ]]; then
+            echo "Regular CI: $CI_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$GATE_RESULT" == success ]]; then
+            exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GATE_REQUIRED" == false && "$GATE_RESULT" == skipped ]]; then
+            exit 0
+          fi
+          echo "Dead-code gate required=$GATE_REQUIRED result=$GATE_RESULT" >&2
+          exit 1
 
   verify-crates:
     name: Verify crate packages
@@ -102,17 +136,10 @@ jobs:
   build-wheels:
     name: Python wheel (${{ matrix.name }})
     needs: [release-metadata]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: manylinux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            manylinux: '2_17'
-            args: --zig
           - name: manylinux-aarch64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
@@ -148,69 +175,34 @@ jobs:
             target: aarch64-pc-windows-msvc
             manylinux: 'off'
             args: ''
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: ${{ matrix.name == 'windows-arm64' && '3.14' || '3.11' }}
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
-        with:
-          toolchain: '1.98.1'
-          targets: ${{ matrix.target }}
-      - name: Install wheel build tools
-        shell: bash
-        run: |
-          python -m pip install "maturin==$MATURIN_VERSION"
-          if [[ "$RUNNER_OS" == Linux ]]; then
-            python -m pip install 'ziglang==0.15.2' 'patchelf==0.17.2.4'
-          fi
-      - name: Build the stable-ABI wheel
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          MANYLINUX: ${{ matrix.manylinux }}
-          EXTRA_ARGS: ${{ matrix.args }}
-        run: |
-          read -r -a args <<< "$EXTRA_ARGS"
-          if [[ "$MANYLINUX" != auto && "$MANYLINUX" != off ]]; then
-            args+=(--compatibility "manylinux_$MANYLINUX")
-          fi
-          if [[ "$RUNNER_OS" == Windows ]]; then
-            args+=(--interpreter python)
-          fi
-          maturin build --release --locked --features pyo3/abi3-py311 \
-            --target "$TARGET" --out dist "${args[@]}"
-      - name: Test the installed wheel
-        if: ${{ !startsWith(matrix.name, 'musllinux-') }}
-        shell: bash
-        env:
-          SKARMORY_REQUIRE_NATIVE: '1'
-          TARGET: ${{ matrix.target }}
-        run: |
-          interpreter=(python)
-          if [[ "$TARGET" == x86_64-apple-darwin ]]; then
-            interpreter=(arch -x86_64 "$(command -v python)")
-          fi
-          "${interpreter[@]}" -m pip install --no-deps dist/*.whl
-          "${interpreter[@]}" -m unittest discover -s tests/python -v
-      - name: Test the installed wheel on musl
-        if: ${{ startsWith(matrix.name, 'musllinux-') }}
-        shell: bash
-        run: |
-          docker run --rm -e SKARMORY_REQUIRE_NATIVE=1 \
-            --mount "type=bind,source=$PWD,target=/project,readonly" -w /project \
-            python:3.11-alpine3.22 sh -ec '
-              apk add --no-cache git
-              python -m pip install --no-deps dist/*.whl
-              python -m unittest discover -s tests/python -v
-            '
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: release-python-${{ matrix.name }}
-          path: dist/*.whl
-          if-no-files-found: error
+    uses: ./.github/workflows/release-wheel.yml
+    with:
+      wheel-name: ${{ matrix.name }}
+      runner: ${{ matrix.runner }}
+      target: ${{ matrix.target }}
+      manylinux: ${{ matrix.manylinux }}
+      args: ${{ matrix.args }}
+
+  build-gate-wheel:
+    name: Python wheel (manylinux-x86_64)
+    needs: [release-metadata]
+    uses: ./.github/workflows/release-wheel.yml
+    with:
+      wheel-name: manylinux-x86_64
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      manylinux: '2_17'
+      args: --zig
+
+  verify-dead-code:
+    name: Verify pinned dead-code compatibility
+    needs: [release-metadata, build-gate-wheel]
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && needs.release-metadata.outputs.dead-code-gate-required != 'false')
+    uses: ./.github/workflows/dead-code.yml
+    with:
+      strict: ${{ needs.release-metadata.outputs.dead-code-gate-required != 'false' }}
 
   build-sdist:
     name: Python source distribution
@@ -243,7 +235,7 @@ jobs:
 
   verify-python:
     name: Verify Python distributions
-    needs: [build-wheels, build-sdist]
+    needs: [build-gate-wheel, build-wheels, build-sdist]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0

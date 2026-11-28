@@ -1,6 +1,6 @@
 """The declared offline dead-code profiles for Skylos 5.7.0."""
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from os import fspath
 import sys
 from typing import Literal
@@ -19,6 +19,7 @@ def analyze(
     generated_keep_paths: Sequence[str] | None = None,
     all_advice: bool = True,
     enable_quality: bool = False,
+    experimental_javascript: bool = False,
     grep_verify: bool | None = None,
     grep_cache: bool = False,
     trace_file: SourcePath | Literal[False] | None = None,
@@ -26,6 +27,7 @@ def analyze(
     enable_dependency_hallucinations: bool = False,
     workers: int = 1,
     cache_dir: SourcePath | None = None,
+    changed_files: Iterable[SourcePath] | None = None,
     diff: str | None = None,
     diff_mode: Literal["lines", "files", "impact"] = "lines",
     baseline: SourcePath | Literal[True] | None = None,
@@ -50,16 +52,21 @@ def analyze(
     default. Pass a path relative to the project root or False to disable
     the corresponding input. The report keeps runtime provenance and
     rejected evidence separate from static coverage.
-    Phase 0.3 development builds also include experimental unused-file checks
-    for JavaScript and TypeScript packages with a package.json main entry.
+    Phase 0.3 scans Python by default. Pass `experimental_javascript=True`
+    to also check unused JavaScript and TypeScript files in a bounded package
+    graph rooted at the package.json main entry.
     Pass `enable_quality=True` in Phase 0.3 to check unused Python dependencies.
     Phase 0.3 also supports Git comparisons, baselines, and gates. The JSON
     gate record includes its exit code and coverage. Use `output_format="json-ci"`
     to omit the whole-symbol evidence ledger while retaining per-finding evidence.
+    `changed_files` selects which files can appear in the findings after
+    full-scope analysis. Relative paths are resolved from the scan root.
     """
     if profile not in ("skylos", "skylos-0.3"):
         raise ValueError("profile must be skylos or skylos-0.3")
     phase03 = profile == "skylos-0.3"
+    if not phase03 and experimental_javascript:
+        raise TypeError("experimental JavaScript analysis requires profile='skylos-0.3'")
     if not phase03 and enable_quality:
         raise TypeError("quality scanning requires profile='skylos-0.3'")
     if not phase03 and (grep_verify or grep_cache):
@@ -73,7 +80,8 @@ def analyze(
     if output_format not in ("json", "json-ci"):
         raise ValueError("output_format must be json or json-ci")
     if not phase03 and (
-        diff is not None
+        changed_files is not None
+        or diff is not None
         or diff_mode != "lines"
         or baseline is not None
         or baseline_ref is not None
@@ -98,12 +106,15 @@ def analyze(
     ):
         if isinstance(values, (str, bytes)):
             raise TypeError(f"{name} must be a sequence, such as [{values!r}]")
+    if isinstance(changed_files, (str, bytes)):
+        raise TypeError("changed_files must be an iterable of paths")
 
     native = _load_native()
     return native.scan_skylos(
         fspath(path),
         {
             "phase03": phase03,
+            "experimental_javascript": experimental_javascript,
             "enable_quality": enable_quality,
             "dependency_search_paths": tuple(
                 entry for entry in sys.path if isinstance(entry, str) and entry
@@ -126,6 +137,10 @@ def analyze(
             ),
             "coverage_disabled": coverage_file is False,
             "workflow": {
+                "changed_files": (
+                    tuple(fspath(file) for file in changed_files)
+                    if changed_files is not None else None
+                ),
                 "diff": diff,
                 "diff_mode": diff_mode,
                 "baseline": (

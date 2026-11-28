@@ -11,12 +11,13 @@ use std::path::{Path, PathBuf};
 use skarmory_python::Location;
 use skarmory_python::phase02::{
     ComprehensionForm, ComprehensionIterator, Definition, DefinitionKind, DjangoBackendListEdit,
-    Expression, ExpressionKind, Import, Name, Statement, StatementKind,
+    Expression, ExpressionKind, Import, Name, Statement, StatementKind, is_private_name,
 };
 
 use super::config::{Entrypoint, FastapiRouterMode};
 use super::{
-    Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding, WEAK_HELPER_FUNCTION,
+    Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding, SOURCE_FACTORY_METHOD,
+    WEAK_HELPER_FUNCTION,
 };
 use super::{external_classes, package_entrypoints, runtime_evidence};
 use crate::Issue;
@@ -25,8 +26,11 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 mod aiohttp;
 mod celery;
 mod celery_routes;
+mod class_fields;
 mod class_parameter_calls;
+mod closures;
 mod comprehension;
+mod deprecation;
 mod django_checks;
 mod django_choices;
 mod django_forms;
@@ -45,15 +49,22 @@ mod flask;
 mod frameworks;
 mod gin;
 mod gunicorn;
+mod lazy_tables;
+mod lazy_type_imports;
 mod literal_text;
+mod logging_calls;
 mod logging_config;
 mod mcp_tools;
 mod metaclasses;
+mod module_import_timing;
 mod mutations;
+mod provider_factory;
 mod pydantic;
 mod sanic;
+mod source_properties;
 mod source_provider_calls;
 mod starlette;
+mod subclass_discovery;
 mod terminal;
 mod traitlets;
 mod wagtail;
@@ -77,6 +88,7 @@ type Object = (usize, usize, usize);
 #[derive(Clone)]
 enum Value {
     Callable(Invocation),
+    SourceProperty(Invocation),
     Instance(SymbolId),
     Alternatives(Vec<Value>),
     ReceiverParameter(SymbolId),
@@ -89,6 +101,8 @@ enum Value {
     CommandNamespaceGet(ScopeId),
     FrameworkCode(SymbolId),
     Provider(String),
+    StdlibLogger,
+    StdlibLoggerInfo,
     Object(Object, ObjectKind),
     Method(Object, ObjectKind, String),
     DjangoInclude(Object),
@@ -116,6 +130,7 @@ enum Value {
     CeleryLogging(Object),
     CeleryBackend(Object),
     DeferredComprehension,
+    CallbackGenerator(Vec<Invocation>),
     ComprehensionResult,
     DeferredLambda,
     Executor,
@@ -142,6 +157,7 @@ enum Value {
     ConstantFunction,
     NullaryConstantFunction,
     IdentityFunction,
+    IdentityDefaultFunction(Box<Value>),
     IdentityDecoratorFactory,
     EmptyFlaskContextEntry,
     FlaskConfig,
@@ -190,6 +206,17 @@ impl Value {
                 values.iter().any(Self::may_contain_namespace)
             }
             Self::Alternatives(values) => values.iter().any(Self::may_contain_namespace),
+            Self::IdentityDefaultFunction(default) => default.may_contain_namespace(),
+            _ => false,
+        }
+    }
+
+    fn contains_callback_generator(&self) -> bool {
+        match self {
+            Self::CallbackGenerator(_) => true,
+            Self::Sequence(values) | Self::Mapping(values) | Self::Alternatives(values) => {
+                values.iter().any(Self::contains_callback_generator)
+            }
             _ => false,
         }
     }
@@ -203,6 +230,29 @@ impl Value {
 
     fn is_builtin_scalar_or_iterable(&self) -> bool {
         self.is_builtin_scalar() || matches!(self, Self::Range | Self::BuiltinIterable)
+    }
+}
+
+#[derive(Default)]
+struct FactoryReturns {
+    classes: BTreeSet<SymbolId>,
+    unresolved_alternative: bool,
+}
+
+impl FactoryReturns {
+    fn record(&mut self, value: &Value) {
+        match value {
+            Value::Instance(class) => {
+                self.classes.insert(*class);
+            }
+            Value::Alternatives(values) => {
+                for value in values {
+                    self.record(value);
+                }
+            }
+            value if value.contains_unknown() => self.unresolved_alternative = true,
+            _ => {}
+        }
     }
 }
 
@@ -389,6 +439,11 @@ enum LexicalBinding {
     Missing,
 }
 
+struct ConditionalBindings {
+    selected: BTreeSet<SymbolId>,
+    has_unbound_path: bool,
+}
+
 struct Symbol<'a> {
     scope: ScopeId,
     name: &'a Name,
@@ -425,7 +480,7 @@ struct DirectArguments {
     implicit_receiver: bool,
     values: BTreeMap<String, Value>,
     forwarded: BTreeMap<String, SymbolId>,
-    fresh_provider: Option<SymbolId>,
+    fresh_provider: Option<source_provider_calls::FreshProviderArgument>,
     verified: bool,
     conditional: bool,
     arguments_bound: bool,
@@ -478,9 +533,11 @@ struct PytestFixtureRequests<'a> {
 struct LazyBranch<'a> {
     scope: ScopeId,
     imports: &'a [Statement],
+    temporary: Option<&'a Name>,
     value: &'a Expression,
     at: Location,
     argument: Option<(SymbolId, &'a str)>,
+    table_target: Option<lazy_tables::LazyTableTarget<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -489,6 +546,7 @@ enum ValueEvaluation<'a> {
     Lazy {
         execution_scope: Option<ScopeId>,
         argument: Option<(SymbolId, &'a str)>,
+        temporary: Option<&'a Name>,
     },
 }
 
@@ -612,6 +670,8 @@ pub(super) struct FrameworkInputs<'a> {
     pub(super) templates: Option<&'a TemplateProject<'a>>,
     pub(super) gin: Option<&'a GinProject<'a>>,
     pub(super) discovery: Option<&'a crate::preview_source::Project>,
+    pub(super) partial_sources: bool,
+    pub(super) changed_file_report: bool,
     pub(super) external_classes: Option<&'a external_classes::ExternalClassIndex>,
     pub(super) unresolved_project_wildcards: bool,
     pub(super) wildcard_guards: Option<&'a super::wildcards::Guards>,
@@ -642,9 +702,16 @@ pub(super) fn analyze_with_verification(
         scopes: Vec::new(),
         symbols: Vec::new(),
         direct_submodule_imports: BTreeMap::new(),
+        exposed_export_lists: BTreeSet::new(),
+        exposed_lazy_tables: BTreeSet::new(),
+        explicit_lazy_table_access: phase03
+            && files
+                .iter()
+                .any(|file| file.facts.explicit_lazy_table_access),
         by_location: BTreeMap::new(),
         read: BTreeSet::new(),
         namespace_exports: BTreeMap::new(),
+        factory_returns: BTreeMap::new(),
         direct: BTreeSet::new(),
         conditional: BTreeMap::new(),
         conditional_groups: BTreeMap::new(),
@@ -652,7 +719,9 @@ pub(super) fn analyze_with_verification(
         evaluated_module_booleans: BTreeMap::new(),
         branch_depth: 0,
         dormant_classes: BTreeSet::new(),
+        transparent_guarded_definitions: BTreeSet::new(),
         subclassed: BTreeSet::new(),
+        subclass_lookups: Vec::new(),
         instance_receivers: BTreeMap::new(),
         class_invocations: Vec::new(),
         atexit_receivers: BTreeMap::new(),
@@ -660,8 +729,11 @@ pub(super) fn analyze_with_verification(
         receiver_calls: Vec::new(),
         fresh_field_calls: BTreeMap::new(),
         fresh_field_invocations: Vec::new(),
+        source_property_invocations: Vec::new(),
         constructor_hook_stores: Vec::new(),
         source_provider_calls: BTreeMap::new(),
+        source_factory_method_calls: Vec::new(),
+        unpacked_source_provider_calls: BTreeSet::new(),
         source_provider_invalidated: None,
         source_provider_opaque_arguments: BTreeSet::new(),
         resolved_receiver_calls: BTreeSet::new(),
@@ -671,6 +743,7 @@ pub(super) fn analyze_with_verification(
         probing_identity: false,
         check_dormant_declarations: false,
         nested_lazy_imports: Vec::new(),
+        lazy_type_imports: BTreeSet::new(),
         uncertainties: Vec::new(),
         fixtures: BTreeMap::new(),
         direct_arguments: BTreeMap::new(),
@@ -679,6 +752,7 @@ pub(super) fn analyze_with_verification(
         static_parameter_calls: Vec::new(),
         closed_class_replacements: None,
         class_argument_consumers: BTreeMap::new(),
+        class_field_uses: class_fields::Uses::default(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
         has_hash_hooks: false,
@@ -689,7 +763,11 @@ pub(super) fn analyze_with_verification(
         iteration_locals: Vec::new(),
         grep_verify: verification.is_some(),
         dynamic_references: BTreeSet::new(),
+        grep_import_declarations: BTreeMap::new(),
         phase03,
+        bounded_deprecation: phase03 && !framework.partial_sources,
+        logging_calls: logging_calls::Calls::default(),
+        guarded_import_members: BTreeMap::new(),
         terminal_proofs: entrypoints.is_empty()
             && package_entrypoints.is_none_or(|snapshot| snapshot.entries.is_empty())
             && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
@@ -722,6 +800,7 @@ pub(super) fn analyze_with_verification(
         django_view_arguments: BTreeMap::new(),
         django_failed_view_initializers: BTreeMap::new(),
         django_globals: django_globals::Globals::default(),
+        closure_registries: BTreeMap::new(),
         rejected_django_callbacks: BTreeSet::new(),
         django_converter: frameworks::DjangoConverter::default(),
         django_autoreload_wrappers: Vec::new(),
@@ -775,6 +854,7 @@ pub(super) fn analyze_with_verification(
     }
     if phase03 {
         graph.index_logging_os_initializers();
+        graph.index_logging_calls();
     }
     for symbol in &graph.symbols {
         if graph.scopes[symbol.scope]
@@ -797,6 +877,7 @@ pub(super) fn analyze_with_verification(
     if phase03 {
         graph.index_metaclasses();
         graph.index_framework_mutations();
+        graph.index_lazy_type_imports();
     }
     graph.index_base_classes();
     if phase03 {
@@ -811,6 +892,7 @@ pub(super) fn analyze_with_verification(
     }
     if phase03 {
         graph.resolve_fresh_field_invocations();
+        graph.resolve_source_property_invocations();
         graph.collect_logging_configs();
         graph.collect_django_converter_wrappers();
         graph.index_fastapi_parameter_routes();
@@ -877,7 +959,14 @@ pub(super) fn analyze_with_verification(
             graph.runtime_roots(snapshot, &mut roots, &mut possible_roots)
         });
     graph.report_failed_terminal_module_consumers();
-    let mut analysis = graph.finish(roots, possible_roots, verification, framework.templates);
+    let mut analysis = graph.finish(
+        roots,
+        possible_roots,
+        verification,
+        framework.templates,
+        framework.partial_sources,
+        framework.changed_file_report,
+    );
     analysis.runtime_evidence = observed;
     analysis.runtime_evidence_issues = rejected;
     analysis
@@ -893,9 +982,13 @@ struct Graph<'a> {
     scopes: Vec<Scope<'a>>,
     symbols: Vec<Symbol<'a>>,
     direct_submodule_imports: BTreeMap<usize, Vec<SymbolId>>,
+    exposed_export_lists: BTreeSet<ScopeId>,
+    exposed_lazy_tables: BTreeSet<ScopeId>,
+    explicit_lazy_table_access: bool,
     by_location: BTreeMap<(ScopeId, usize, usize), SymbolId>,
     read: BTreeSet<SymbolId>,
     namespace_exports: BTreeMap<ScopeId, Vec<Export>>,
+    factory_returns: BTreeMap<SymbolId, FactoryReturns>,
     direct: BTreeSet<SymbolId>,
     conditional: BTreeMap<SymbolId, Vec<RangeInclusive<[usize; 2]>>>,
     conditional_groups: BTreeMap<SymbolId, Vec<(usize, bool)>>,
@@ -903,7 +996,9 @@ struct Graph<'a> {
     evaluated_module_booleans: BTreeMap<SymbolId, bool>,
     branch_depth: usize,
     dormant_classes: BTreeSet<SymbolId>,
+    transparent_guarded_definitions: BTreeSet<SymbolId>,
     subclassed: BTreeSet<SymbolId>,
+    subclass_lookups: Vec<subclass_discovery::Lookup>,
     instance_receivers: BTreeMap<SymbolId, SymbolId>,
     class_invocations: Vec<ClassInvocation>,
     atexit_receivers: BTreeMap<ScopeId, Vec<(Edge, SymbolId)>>,
@@ -911,8 +1006,11 @@ struct Graph<'a> {
     receiver_calls: Vec<ReceiverCall>,
     fresh_field_calls: BTreeMap<SymbolId, Location>,
     fresh_field_invocations: Vec<field_dispatch::FreshFieldInvocation>,
+    source_property_invocations: Vec<source_properties::SourcePropertyInvocation>,
     constructor_hook_stores: Vec<field_dispatch::ConstructorHookStore>,
     source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
+    source_factory_method_calls: Vec<provider_factory::FactoryMethodCall>,
+    unpacked_source_provider_calls: BTreeSet<(ScopeId, [usize; 2])>,
     source_provider_invalidated: Option<BTreeSet<SymbolId>>,
     source_provider_opaque_arguments: BTreeSet<SymbolId>,
     resolved_receiver_calls: BTreeSet<(usize, SymbolId)>,
@@ -922,6 +1020,7 @@ struct Graph<'a> {
     probing_identity: bool,
     check_dormant_declarations: bool,
     nested_lazy_imports: Vec<(ScopeId, &'a [Statement])>,
+    lazy_type_imports: BTreeSet<SymbolId>,
     uncertainties: Vec<Issue>,
     fixtures: BTreeMap<SymbolId, PytestFixture>,
     direct_arguments: BTreeMap<SymbolId, Vec<DirectArguments>>,
@@ -930,6 +1029,7 @@ struct Graph<'a> {
     static_parameter_calls: Vec<class_parameter_calls::StaticParameterCall>,
     closed_class_replacements: Option<BTreeSet<SymbolId>>,
     class_argument_consumers: BTreeMap<SymbolId, BTreeSet<(ScopeId, SymbolId)>>,
+    class_field_uses: class_fields::Uses,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
     has_hash_hooks: bool,
@@ -940,7 +1040,11 @@ struct Graph<'a> {
     iteration_locals: Vec<([usize; 2], Value)>,
     grep_verify: bool,
     dynamic_references: BTreeSet<(ScopeId, SymbolId, usize, usize)>,
+    grep_import_declarations: BTreeMap<SymbolId, SymbolId>,
     phase03: bool,
+    bounded_deprecation: bool,
+    logging_calls: logging_calls::Calls,
+    guarded_import_members: BTreeMap<String, BTreeSet<String>>,
     terminal_proofs: bool,
     failed_terminal_modules: BTreeSet<ScopeId>,
     failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
@@ -971,6 +1075,7 @@ struct Graph<'a> {
     django_view_arguments: django_views::ViewRouteArguments,
     django_failed_view_initializers: BTreeMap<ScopeId, Location>,
     django_globals: django_globals::Globals,
+    closure_registries: BTreeMap<SymbolId, closures::RegistryUse>,
     rejected_django_callbacks: BTreeSet<SymbolId>,
     django_converter: frameworks::DjangoConverter,
     django_autoreload_wrappers: Vec<frameworks::DjangoParameterRegistration>,
@@ -1056,6 +1161,11 @@ impl<'a> Graph<'a> {
             match &statement.kind {
                 StatementKind::Define(definition) => {
                     let file = self.scopes[scope].file;
+                    if let (Some(name), [value]) =
+                        (&definition.default_binding, definition.defaults.as_slice())
+                    {
+                        self.bind(scope, name, Binding::Variable(Some(value), statement.at));
+                    }
                     let id = self.symbols.len();
                     let child = self.push_scope(file, Some(scope), Some(id), &definition.body);
                     self.bind(
@@ -1081,6 +1191,29 @@ impl<'a> Graph<'a> {
                 {
                     self.index(scope, fallback);
                 }
+                StatementKind::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } if self.proven_guarded_project_import(
+                    scope,
+                    statement.at,
+                    import,
+                    *raises_import_error,
+                ) =>
+                {
+                    self.register_guarded_project_import(scope, import, *raises_import_error);
+                    self.index(scope, std::slice::from_ref(import));
+                    self.index(
+                        scope,
+                        if *raises_import_error {
+                            fallback
+                        } else {
+                            otherwise
+                        },
+                    );
+                }
                 StatementKind::ProviderWildcardImport(imports)
                     if self.supported_provider_wildcard(scope, statement.at, imports) =>
                 {
@@ -1096,6 +1229,11 @@ impl<'a> Graph<'a> {
                 StatementKind::Assign { names, value, .. } => {
                     for name in names {
                         self.bind(scope, name, Binding::Variable(value.as_ref(), statement.at));
+                    }
+                }
+                StatementKind::GuardedLazyUnpack { names, .. } => {
+                    for name in names {
+                        self.bind(scope, name, Binding::Variable(None, statement.at));
                     }
                 }
                 StatementKind::AssignUnpack { names, value } => {
@@ -1341,6 +1479,22 @@ impl<'a> Graph<'a> {
     }
 
     fn local(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
+        let key = self.lexical_binding_key(scope, name);
+        self.local_by_key(scope, &key, before)
+    }
+
+    fn local_by_key(&self, scope: ScopeId, key: &str, before: Location) -> Option<SymbolId> {
+        let primary = self.local_raw(scope, key, before);
+        let alias = self
+            .private_binding_spelling(scope, key)
+            .and_then(|name| self.local_raw(scope, name, before));
+        primary
+            .into_iter()
+            .chain(alias)
+            .max_by_key(|&id| position(self.symbols[id].name.at))
+    }
+
+    fn local_raw(&self, scope: ScopeId, name: &str, before: Location) -> Option<SymbolId> {
         self.scopes[scope]
             .names
             .get(name)?
@@ -1351,6 +1505,42 @@ impl<'a> Graph<'a> {
                 let at = self.symbols[id].name.at;
                 (at.line, at.column) < (before.line, before.column)
             })
+    }
+
+    fn lexical_private_class(&self, mut scope: ScopeId) -> Option<&str> {
+        if !self.phase03 {
+            return None;
+        }
+        loop {
+            if let Some(owner) = self.scopes[scope].owner
+                && self.is_class(owner)
+            {
+                let name = self.symbols[owner].name.text.trim_start_matches('_');
+                return (!name.is_empty()).then_some(name);
+            }
+            scope = self.scopes[scope].parent?;
+        }
+    }
+
+    fn lexical_binding_key<'name>(&self, scope: ScopeId, name: &'name str) -> Cow<'name, str> {
+        if is_private_name(name)
+            && let Some(class) = self.lexical_private_class(scope)
+        {
+            Cow::Owned(format!("_{class}{name}"))
+        } else {
+            Cow::Borrowed(name)
+        }
+    }
+
+    fn private_binding_spelling<'name>(
+        &self,
+        scope: ScopeId,
+        key: &'name str,
+    ) -> Option<&'name str> {
+        if !key.starts_with('_') {
+            return None;
+        }
+        private_source_spelling(self.lexical_private_class(scope)?, key)
     }
 
     fn supported_provider_wildcard(
@@ -1401,20 +1591,49 @@ impl<'a> Graph<'a> {
     ) -> LexicalBinding {
         let mut scope = origin;
         let mut before = before;
+        // Compile-time mangling belongs to the lookup's lexical class,
+        // including when lookup proceeds to a function outside that class.
+        let key = self.lexical_binding_key(origin, name);
+        if let Some(owner) = self.scopes[origin].owner
+            && let Binding::Definition(definition, _) = self.symbols[owner].binding
+            && definition
+                .global_reads
+                .iter()
+                .any(|global| self.lexical_binding_key(origin, global) == key)
+        {
+            scope = self.scopes[origin].file;
+            before = END;
+        }
         loop {
             let row = &self.scopes[scope];
             let class = row.owner.is_some_and(|id| self.is_class(id));
             // A class body sees its own namespace, but nested scopes do not
             // capture a class namespace as an enclosing lexical scope.
             if scope == origin || !class {
-                if let Some(id) = self.local(scope, name, before) {
+                if let Some(id) = self.local_by_key(scope, &key, before) {
                     return LexicalBinding::Found(id);
+                }
+                let private = self.private_binding_spelling(scope, &key);
+                if class
+                    && let Some(private) = private
+                    && (suite_binds_name(row.body, &key) || suite_binds_name(row.body, private))
+                {
+                    // A declared class-local private name falls back to the
+                    // module before its assignment. It does not capture an
+                    // enclosing function's binding of the mangled name.
+                    if !self.immediately_encloses_class_body(scope, row.file) {
+                        before = END;
+                    }
+                    scope = row.file;
+                    continue;
                 }
                 if row.owner.is_some()
                     && !class
-                    && (row.names.contains_key(name)
+                    && (row.names.contains_key(key.as_ref())
+                        || private.is_some_and(|name| row.names.contains_key(name))
                         || (check_dormant_declarations || self.is_namespace_builtin(name))
-                            && suite_binds_name(row.body, name))
+                            && (suite_binds_name(row.body, &key)
+                                || private.is_some_and(|name| suite_binds_name(row.body, name))))
                 {
                     // A lexical declaration can shadow an outer binding even
                     // in a branch omitted from the runtime binding index.
@@ -1657,6 +1876,28 @@ impl<'a> Graph<'a> {
                     });
             let loaded_child = fallback
                 .filter(|_| module_file.is_some_and(|package| self.files[package].is_package));
+            if self.phase03 {
+                let exposed_module = match import.member.as_deref() {
+                    None | Some("__all__") => module_file,
+                    _ => loaded_child,
+                };
+                // Loading the module object or its export list gives another
+                // module access to storage the literal-guard proof cannot track.
+                if let Some(file) = exposed_module.filter(|&file| {
+                    file != source && self.scopes[file].names.contains_key("__all__")
+                }) {
+                    self.exposed_export_lists.insert(file);
+                }
+                let exposed_table = match import.member.as_deref() {
+                    None | Some("_LAZY") => module_file,
+                    _ => loaded_child,
+                };
+                if let Some(file) = exposed_table
+                    .filter(|&file| file != source && self.scopes[file].names.contains_key("_LAZY"))
+                {
+                    self.exposed_lazy_tables.insert(file);
+                }
+            }
             let loads_module = unconditional
                 && module_file.is_some_and(|file| {
                     loaded_child.is_some()
@@ -1679,6 +1920,22 @@ impl<'a> Graph<'a> {
                         .entry(target)
                         .or_default()
                         .push(id);
+                }
+                // An unaliased dotted import exposes each attached parent
+                // namespace as well as the explicitly requested module.
+                if self.phase03
+                    && import.exposes_top_level
+                    && target != source
+                    && self.scopes[target].names.contains_key("__all__")
+                {
+                    self.exposed_export_lists.insert(target);
+                }
+                if self.phase03
+                    && import.exposes_top_level
+                    && target != source
+                    && self.scopes[target].names.contains_key("_LAZY")
+                {
+                    self.exposed_lazy_tables.insert(target);
                 }
                 // A successful dotted import also runs its parent packages.
                 // The source and its own ancestors may still be initializing.
@@ -1750,11 +2007,22 @@ impl<'a> Graph<'a> {
             _ => None,
         };
         let (scope, before) = access;
+        let caller = self.scopes[scope].file;
+        let enclosing_definition = (self.phase03 && scope != caller)
+            .then(|| {
+                std::iter::successors(Some(scope), |&scope| self.scopes[scope].parent)
+                    .find(|&scope| self.scopes[scope].parent == Some(caller))
+                    .and_then(|scope| self.scopes[scope].owner)
+                    .map(|owner| position(self.symbols[owner].name.at))
+            })
+            .flatten();
         let mut attached: Option<SymbolId> = None;
         let mut possible_attachment = false;
         let mut possible_earlier_attachment = false;
         for &id in candidates.into_iter().flatten() {
-            if initialization_imports.is_some_and(|imports| !imports.contains(&id)) {
+            if self.lazy_type_imports.contains(&id)
+                || initialization_imports.is_some_and(|imports| !imports.contains(&id))
+            {
                 continue;
             }
             let symbol = &self.symbols[id];
@@ -1765,9 +2033,16 @@ impl<'a> Graph<'a> {
                     .get(&id)
                     .is_none_or(|guards| guards.iter().all(|span| span.contains(&position(before))))
             } else {
-                symbol.scope == package
-                    && self.scopes[scope].file != package
-                    && !self.conditional.contains_key(&id)
+                !self.conditional.contains_key(&id)
+                    && (symbol.scope == package && caller != package
+                        // The definition follows the import, but a cached
+                        // child need not replace an existing package binding.
+                        || binding.is_none()
+                            && symbol.scope == caller
+                            && matches!(symbol.binding, Binding::Import(import) if import.member.is_none())
+                            && enclosing_definition.is_some_and(|definition| {
+                                position(symbol.name.at) < definition
+                            }))
             };
             // Other scopes may already have executed. A later statement in
             // this module's own initializer has not yet attached the child.
@@ -1864,6 +2139,9 @@ impl<'a> Graph<'a> {
             .get(&(source_scope, import.local.at.line, import.local.at.column))
             .copied();
         if let Some(id) = binding {
+            if self.lazy_type_imports.contains(&id) {
+                return None;
+            }
             // A selected lazy branch evaluates its imports in the caller's
             // execution, even though their bindings belong to the hook.
             self.scopes[scope].evaluated_imports.push(id);
@@ -1967,6 +2245,23 @@ impl<'a> Graph<'a> {
             }
             if let ModuleMember::Binding(id, _) = &lookup {
                 self.record_django_global_read(scope, *id, import.local.at);
+                let target_scope = self.symbols[*id].scope;
+                if self.phase03
+                    && self.grep_verify
+                    && scope == source_scope
+                    && scope == source
+                    && target_scope != source
+                    && before.is_none()
+                    && let Some(alias) = binding
+                    && !self.conditional.contains_key(&alias)
+                    && !self.binding_depends_on_branch(*id, END)
+                    && !self.has_module_binding_write(target_scope, member)
+                    && !member.starts_with('_')
+                    && matches!(self.symbols[*id].binding, Binding::Definition(definition, _)
+                        if definition.kind == DefinitionKind::Function && definition.decorators.is_empty())
+                {
+                    self.grep_import_declarations.insert(alias, *id);
+                }
             }
             match lookup {
                 ModuleMember::Lazy(_, branch) => return Some(branch),
@@ -2266,7 +2561,42 @@ impl<'a> Graph<'a> {
         before: Location,
         depth: usize,
     ) -> Option<Value> {
+        let bindings = self.finite_conditional_bindings(id, before)?;
+        if bindings.has_unbound_path {
+            return None;
+        }
+        let mut values = Vec::new();
+        for candidate in bindings.selected {
+            self.read.insert(candidate);
+            let value = self.binding_value(candidate, depth + 1);
+            if value.contains_unknown() {
+                return None;
+            }
+            values.push(value);
+        }
+        Some(Value::alternatives(values))
+    }
+
+    fn finite_conditional_bindings(
+        &self,
+        id: SymbolId,
+        before: Location,
+    ) -> Option<ConditionalBindings> {
         let symbol = &self.symbols[id];
+        if self.scopes[symbol.scope]
+            .owner
+            .is_some_and(|owner| self.is_class(owner))
+        {
+            let key = self.lexical_binding_key(symbol.scope, &symbol.name.text);
+            if let Some(private) = self.private_binding_spelling(symbol.scope, &key)
+                && self.local_raw(symbol.scope, &key, before).is_some()
+                && self.local_raw(symbol.scope, private, before).is_some()
+            {
+                // This model tracks branches for one source spelling. A class
+                // read that can reach both spellings needs a shared branch set.
+                return None;
+            }
+        }
         let candidates = self.scopes[symbol.scope]
             .names
             .get(symbol.name.text.as_str())?;
@@ -2302,6 +2632,7 @@ impl<'a> Graph<'a> {
             return None;
         }
         let mut selected = BTreeSet::new();
+        let mut has_unbound_path = false;
         for state in 0..states {
             let candidate = eligible.iter().rev().copied().find(|candidate| {
                 self.conditional_groups
@@ -2312,19 +2643,17 @@ impl<'a> Graph<'a> {
                             ((state >> bit) & 1 == 1) == *branch
                         })
                     })
-            })?;
-            selected.insert(candidate);
-        }
-        let mut values = Vec::new();
-        for candidate in selected {
-            self.read.insert(candidate);
-            let value = self.binding_value(candidate, depth + 1);
-            if value.contains_unknown() {
-                return None;
+            });
+            if let Some(candidate) = candidate {
+                selected.insert(candidate);
+            } else {
+                has_unbound_path = true;
             }
-            values.push(value);
         }
-        Some(Value::alternatives(values))
+        Some(ConditionalBindings {
+            selected,
+            has_unbound_path,
+        })
     }
 
     fn binding_value(&mut self, id: SymbolId, depth: usize) -> Value {
@@ -2426,6 +2755,21 @@ impl<'a> Graph<'a> {
                         Value::Instance(class)
                     };
                 }
+                if let Some(outer) = self.scopes[scope].parent
+                    && let Some(call) = self.final_direct_closure_call(scope, outer)
+                    && let Some(owner) = self.scopes[scope].owner
+                    && let Binding::Definition(closure, _) = self.symbols[owner].binding
+                    && let Some(index) = closure.parameters.iter().position(|parameter| {
+                        position(parameter.at) == position(self.symbols[id].name.at)
+                    })
+                    && let Some(argument) = call.arguments.get(index)
+                    && let Value::Instance(class) =
+                        self.identity(outer, argument, call.at, depth + 1)
+                    // A reference to the closure can re-enter it with a different argument.
+                    && !self.closure_reads_own_binding(scope, closure)
+                {
+                    return Value::Instance(class);
+                }
                 Value::Unknown
             }
             Binding::Import(import) => {
@@ -2473,7 +2817,9 @@ impl<'a> Graph<'a> {
     ) -> ModuleMember<'a> {
         let submodule = format!("{}.{member}", self.files[file].module);
         let child = self.modules.get(submodule.as_str()).copied();
-        if let Some(binding) = self.local(file, member, before) {
+        if let Some(binding) = self.local(file, member, before)
+            && !self.lazy_type_imports.contains(&binding)
+        {
             if let Some(child) = child {
                 return match self.submodule_attachment(file, child, Some(binding), access, mode) {
                     SubmoduleAttachment::Attached(import) => {
@@ -2491,10 +2837,30 @@ impl<'a> Graph<'a> {
         if has_implicit_module_member(member, self.files[file].is_package) {
             return ModuleMember::Unknown;
         }
+        if self
+            .module_member_write(&self.files[file].module, "__getattr__", access)
+            .is_some()
+        {
+            return ModuleMember::OpaqueHook;
+        }
         let hook = self.local(file, "__getattr__", before);
         let lazy = hook.map_or(LazyMember::Missing, |hook| {
             self.lazy_lookup(hook, member, before)
         });
+        if matches!(mode, ModuleMemberAccess::FromImport)
+            && let (Some(hook), LazyMember::Branch(branch)) = (hook, &lazy)
+            && branch.table_target.is_some()
+            && (self.has_module_binding_write(file, "__path__")
+                || (!self.files[file].is_package
+                    && !matches!(
+                        self.lazy_lookup(hook, "__path__", before),
+                        LazyMember::Missing
+                    )))
+        {
+            // From-import probes __path__ before asking a module hook for
+            // the named export. An unguarded table can raise KeyError here.
+            return ModuleMember::OpaqueHook;
+        }
         if let Some(child) = child {
             match self.submodule_attachment(file, child, None, access, mode) {
                 SubmoduleAttachment::Attached(import) => {
@@ -2666,8 +3032,26 @@ impl<'a> Graph<'a> {
         let evaluation = ValueEvaluation::Lazy {
             execution_scope,
             argument: branch.argument,
+            temporary: branch.temporary,
         };
-        let value = self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation);
+        let value = if depth >= MAX_BINDING_CHAIN {
+            Value::Unknown
+        } else if let Some(target) = branch.table_target {
+            self.read.insert(target.table);
+            self.read.extend(target.provider);
+            self.lazy_loaded_module(branch.scope, target.module, execution_scope)
+                .map_or(Value::Unknown, |file| {
+                    self.lazy_attribute(
+                        Value::Module(file),
+                        target.attribute,
+                        (branch.scope, branch.at),
+                        depth + 1,
+                        execution_scope,
+                    )
+                })
+        } else {
+            self.expression_value(branch.scope, branch.value, branch.at, depth, evaluation)
+        };
         if value.contains_unknown() && self.scope_issues.len() == first_issue {
             self.scope_issue(
                 branch.scope,
@@ -2710,11 +3094,16 @@ impl<'a> Graph<'a> {
             this.expression_value(scope, expression, before, depth + 1, evaluation)
         };
         let plain_hook = self.scopes[scope].owner.is_some_and(|id| {
-            matches!(self.symbols[id].binding, Binding::Definition(definition, _) if definition.decorators.is_empty())
+            matches!(self.symbols[id].binding, Binding::Definition(definition, _) if definition.decorators.is_empty() && !definition.is_generator)
         });
         if plain_hook && keywords.is_empty() {
             match (recurse(self, function), arguments.as_slice()) {
-                (Value::Provider(provider), [base, name]) if provider == "builtins.getattr" => {
+                (Value::Provider(provider), [base, name])
+                    if provider == "builtins.getattr"
+                        && self
+                            .module_member_write("builtins", "getattr", (scope, before))
+                            .is_none() =>
+                {
                     if let (base @ Value::Module(_), Value::Text(name)) =
                         (recurse(self, base), recurse(self, name))
                     {
@@ -2729,27 +3118,9 @@ impl<'a> Graph<'a> {
                 }
                 (Value::Provider(provider), [name]) if provider == "importlib.import_module" => {
                     if let Value::Text(name) = recurse(self, name)
-                        && let Some(&target) = self.modules.get(name.as_str())
-                        && !within_package(&self.files[self.scopes[scope].file].module, &name)
+                        && let Some(target) = self.lazy_loaded_module(scope, &name, execution_scope)
                     {
-                        // An omitted initializer can change the imported module or
-                        // prevent it from loading. This path requires selected packages.
-                        let parents: Option<Vec<_>> = name
-                            .match_indices('.')
-                            .map(|(end, _)| self.lazy_import_parent(&name, end))
-                            .collect();
-                        if let Some(parents) = parents {
-                            if let Some(caller) = execution_scope {
-                                let caller_module = &self.files[self.scopes[caller].file].module;
-                                self.scopes[caller]
-                                    .imports
-                                    .extend(parents.into_iter().filter(|&file| {
-                                        !within_package(caller_module, &self.files[file].module)
-                                    }));
-                                self.scopes[caller].imports.push(target);
-                            }
-                            return Value::Module(target);
-                        }
+                        return Value::Module(target);
                     }
                 }
                 _ => {}
@@ -2762,6 +3133,35 @@ impl<'a> Graph<'a> {
             "effects of the lazy return expression are outside the bounded model",
         );
         Value::Unknown
+    }
+
+    fn lazy_loaded_module(
+        &mut self,
+        scope: ScopeId,
+        name: &str,
+        execution_scope: Option<ScopeId>,
+    ) -> Option<ScopeId> {
+        let &target = self.modules.get(name)?;
+        if within_package(&self.files[self.scopes[scope].file].module, name) {
+            return None;
+        }
+        // An omitted initializer can change the imported module or prevent it
+        // from loading. This path requires selected parent packages.
+        let parents: Option<Vec<_>> = name
+            .match_indices('.')
+            .map(|(end, _)| self.lazy_import_parent(name, end))
+            .collect();
+        let parents = parents?;
+        if let Some(caller) = execution_scope {
+            let caller_module = &self.files[self.scopes[caller].file].module;
+            self.scopes[caller].imports.extend(
+                parents
+                    .into_iter()
+                    .filter(|&file| !within_package(caller_module, &self.files[file].module)),
+            );
+            self.scopes[caller].imports.push(target);
+        }
+        Some(target)
     }
 
     fn lazy_import_parent(&self, name: &str, end: usize) -> Option<usize> {
@@ -2817,8 +3217,8 @@ impl<'a> Graph<'a> {
     }
 
     fn lazy_lookup(&self, id: SymbolId, member: &str, before: Location) -> LazyMember<'a> {
-        self.lazy_dispatch(id, before, |name, scope, body, argument| {
-            (name == member).then(|| Self::lazy_branch(scope, body, argument))
+        self.lazy_dispatch(id, before, |name, branch| {
+            (name == member).then_some(branch)
         })
     }
 
@@ -2826,12 +3226,7 @@ impl<'a> Graph<'a> {
         &self,
         id: SymbolId,
         before: Location,
-        mut visit: impl FnMut(
-            &'a str,
-            ScopeId,
-            &'a [Statement],
-            Option<(SymbolId, &'a str)>,
-        ) -> Option<LazyMember<'a>>,
+        mut visit: impl FnMut(&'a str, LazyMember<'a>) -> Option<LazyMember<'a>>,
     ) -> LazyMember<'a> {
         if self.binding_depends_on_branch(id, before) {
             return LazyMember::Conditional;
@@ -2853,6 +3248,16 @@ impl<'a> Graph<'a> {
             .by_location
             .get(&(scope, parameter.at.line, parameter.at.column))
             .copied();
+        if self.phase03
+            && let Some(table) = self.proven_lazy_table(scope, definition, parameter)
+        {
+            for (name, branch) in table.branches {
+                if let Some(result) = visit(name, LazyMember::Branch(branch)) {
+                    return result;
+                }
+            }
+            return table.fallback;
+        }
         // Prove literal dispatch only, after ordinary module lookup failed.
         for statement in &definition.body {
             if let StatementKind::Raise(Some(exception)) = &statement.kind {
@@ -2901,6 +3306,29 @@ impl<'a> Graph<'a> {
             if !otherwise.is_empty() {
                 break;
             }
+            if self.phase03
+                && let ExpressionKind::Membership {
+                    element,
+                    container,
+                    contains: true,
+                } = &test.kind
+                && matches!(&element.kind, ExpressionKind::Name(name) if name == &parameter.text)
+                && matches!(&container.kind, ExpressionKind::Name(name) if name == "__all__")
+                && let Some(names) = self.lazy_all_guard_names(scope, statement.at, definition)
+            {
+                for name in names {
+                    let ExpressionKind::Text(name) = &name.kind else {
+                        return LazyMember::Unknown;
+                    };
+                    if let Some(result) = visit(
+                        name,
+                        self.lazy_branch(scope, body, parameter_id.map(|id| (id, name.as_str()))),
+                    ) {
+                        return result;
+                    }
+                }
+                continue;
+            }
             if let ExpressionKind::Membership {
                 element,
                 container,
@@ -2924,9 +3352,7 @@ impl<'a> Graph<'a> {
                     };
                     if let Some(result) = visit(
                         text,
-                        scope,
-                        body,
-                        parameter_id.map(|id| (id, text.as_str())),
+                        self.lazy_branch(scope, body, parameter_id.map(|id| (id, text.as_str()))),
                     ) {
                         return result;
                     }
@@ -2952,9 +3378,7 @@ impl<'a> Graph<'a> {
             }
             if let Some(result) = visit(
                 text,
-                scope,
-                body,
-                parameter_id.map(|id| (id, text.as_str())),
+                self.lazy_branch(scope, body, parameter_id.map(|id| (id, text.as_str()))),
             ) {
                 return result;
             }
@@ -2962,31 +3386,127 @@ impl<'a> Graph<'a> {
         LazyMember::Unknown
     }
 
+    fn lazy_all_guard_names(
+        &self,
+        scope: ScopeId,
+        before: Location,
+        hook: &Definition,
+    ) -> Option<&'a [Expression]> {
+        let file = self.scopes[scope].file;
+        let [guard, fallback] = hook.body.as_slice() else {
+            return None;
+        };
+        let [all] = self.scopes[file].names.get("__all__")?.as_slice() else {
+            return None;
+        };
+        let Binding::Variable(
+            Some(Expression {
+                kind: ExpressionKind::Sequence { items, .. },
+                ..
+            }),
+            at,
+        ) = self.symbols[*all].binding
+        else {
+            return None;
+        };
+        let module = &self.files[file].module;
+        if !hook.decorators.is_empty()
+            || position(guard.at) != position(before)
+            || !matches!(fallback.kind, StatementKind::Raise(_))
+            || position(at) >= position(hook.name.at)
+            || self.exposed_export_lists.contains(&file)
+            || self.lexical(scope, "__all__", before) != Some(*all)
+            || self.binding_depends_on_branch(*all, END)
+            || self
+                .module_member_write(module, "__all__", (file, END))
+                .is_some()
+            || !items
+                .iter()
+                .all(|item| matches!(item.kind, ExpressionKind::Text(_)))
+        {
+            return None;
+        }
+
+        // This guard must read the original list. A second module-level use
+        // could alias it, mutate it, or hand it to code that mutates it.
+        let stable = self.scopes[file]
+            .body
+            .iter()
+            .all(|statement| match &statement.kind {
+                StatementKind::Import(_) => true,
+                StatementKind::Assign { names, .. } => {
+                    position(statement.at) == position(at) && names.len() == 1
+                }
+                StatementKind::Define(definition) => std::ptr::eq(definition, hook),
+                StatementKind::If {
+                    test,
+                    body,
+                    otherwise,
+                } if otherwise.is_empty()
+                    && !self.modules.contains_key("typing")
+                    && self
+                        .imported_module_write("typing", (file, test.at))
+                        .is_none()
+                    && self
+                        .module_member_write("typing", "TYPE_CHECKING", (file, test.at))
+                        .is_none()
+                    && body
+                        .iter()
+                        .all(|statement| matches!(statement.kind, StatementKind::Import(_))) =>
+                {
+                    matches!(&test.kind, ExpressionKind::Name(name)
+                    if self.local(file, name, test.at).is_some_and(|binding| {
+                        matches!(self.symbols[binding].binding, Binding::Import(import)
+                            if import.level == 0 && import.module == "typing"
+                                && import.member.as_deref() == Some("TYPE_CHECKING"))
+                    }))
+                }
+                StatementKind::Evaluate(Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }) => true,
+                _ => false,
+            });
+        stable.then_some(items)
+    }
+
     fn lazy_branch(
+        &self,
         scope: ScopeId,
         body: &'a [Statement],
         argument: Option<(SymbolId, &'a str)>,
     ) -> LazyMember<'a> {
-        if let Some((
+        let Some((
             Statement {
                 kind: StatementKind::Return(Some(value)),
                 at,
             },
-            imports,
+            prefix,
         )) = body.split_last()
-            && imports
-                .iter()
-                .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
+        else {
+            return LazyMember::Unknown;
+        };
+        let (imports, temporary) = if prefix
+            .iter()
+            .all(|stmt| matches!(stmt.kind, StatementKind::Import(_)))
         {
-            return LazyMember::Branch(LazyBranch {
-                scope,
-                imports,
-                value,
-                at: *at,
-                argument,
-            });
-        }
-        LazyMember::Unknown
+            (prefix, None)
+        } else if self.phase03
+            && let Some(temporary) = lazy_type_imports::literal_import_temporary(prefix, value)
+        {
+            (&[][..], Some(temporary))
+        } else {
+            return LazyMember::Unknown;
+        };
+        LazyMember::Branch(LazyBranch {
+            scope,
+            imports,
+            temporary,
+            value,
+            at: *at,
+            argument,
+            table_target: None,
+        })
     }
 
     fn member(
@@ -3052,6 +3572,7 @@ impl<'a> Graph<'a> {
                 ModuleMemberAccess::Attribute,
                 depth,
             ),
+            Value::StdlibLogger if name == "info" => Value::StdlibLoggerInfo,
             Value::ProjectPath(path) => self.project_path_member(path, name, access),
             Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
                 if self.is_class(class) =>
@@ -3112,6 +3633,22 @@ impl<'a> Graph<'a> {
                             "explicit property access is outside the unittest model",
                         );
                     }
+                    return Value::Unknown;
+                }
+                let may_be_property = match &member {
+                    Value::Alternatives(values) => values
+                        .iter()
+                        .any(|value| matches!(value, Value::SourceProperty(_))),
+                    value => matches!(value, Value::SourceProperty(_)),
+                };
+                if may_be_property {
+                    // Access through a class can transfer the descriptor to another class.
+                    self.scope_issue(
+                        access.0,
+                        access.1,
+                        "unresolved_descriptor",
+                        "property access requires a bounded fresh receiver and immediate call",
+                    );
                     return Value::Unknown;
                 }
                 if let Value::Callable(invocation) = member
@@ -3424,7 +3961,64 @@ impl<'a> Graph<'a> {
         self.class_member_at(id, name, depth, None)
     }
 
+    fn declared_class_member(
+        &mut self,
+        class: SymbolId,
+        class_scope: ScopeId,
+        name: &str,
+        depth: usize,
+        access: Option<(ScopeId, Location)>,
+    ) -> Option<Value> {
+        let class_name = self.symbols[class].name.text.trim_start_matches('_');
+        if !self.phase03 || class_name.is_empty() {
+            let attribute = self.local(class_scope, name, END)?;
+            return Some(self.binding(attribute, END, depth + 1));
+        }
+        // The class stores private declarations under their mangled keys.
+        // Keep each declaration's source spelling and location for reports.
+        if is_private_name(name) {
+            return None;
+        }
+        let explicit = self.local_raw(class_scope, name, END);
+        let private = private_source_spelling(class_name, name)
+            .and_then(|spelling| self.local_raw(class_scope, spelling, END));
+        let attribute = explicit
+            .into_iter()
+            .chain(private)
+            .max_by_key(|&id| position(self.symbols[id].name.at))?;
+        if explicit.is_some() && private.is_some() && self.binding_depends_on_branch(attribute, END)
+        {
+            // The conditional binding model follows one source spelling.
+            // It cannot establish the active declaration across both spellings.
+            if let Some((scope, at)) = access {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "ambiguous_binding",
+                    "a private attribute has conditional declarations under different spellings",
+                );
+            }
+            return Some(Value::Unknown);
+        }
+        Some(self.binding(attribute, END, depth + 1))
+    }
+
     fn class_member_at(
+        &mut self,
+        id: SymbolId,
+        name: &str,
+        depth: usize,
+        access: Option<(ScopeId, Location)>,
+    ) -> Option<Value> {
+        let value = self.class_member_lookup(id, name, depth, access)?;
+        Some(if self.phase03 {
+            self.source_property_value(value)
+        } else {
+            value
+        })
+    }
+
+    fn class_member_lookup(
         &mut self,
         id: SymbolId,
         name: &str,
@@ -3435,7 +4029,7 @@ impl<'a> Graph<'a> {
             return Some(Value::Unknown);
         }
         let symbol = &self.symbols[id];
-        let class_declaration_scope = symbol.scope;
+        let decl_scope = symbol.scope;
         let Binding::Definition(definition, class_scope) = symbol.binding else {
             unreachable!()
         };
@@ -3460,17 +4054,19 @@ impl<'a> Graph<'a> {
             }
             Some(mutations::MemberWriteValue::Deleted) => {}
             None => {
-                if let Some(attribute) = self
-                    .metaclass_member(id, name)
-                    .or_else(|| self.local(class_scope, name, END))
-                {
+                if let Some(attribute) = self.metaclass_member(id, name) {
                     return Some(self.binding(attribute, END, depth + 1));
+                }
+                if let Some(value) =
+                    self.declared_class_member(id, class_scope, name, depth, access)
+                {
+                    return Some(value);
                 }
             }
         }
         let inherited = match definition.bases.as_slice() {
             [] => None,
-            [base] => match self.class_base(symbol.scope, base, definition.name.at, depth + 1) {
+            [base] => match self.class_base(decl_scope, base, definition.name.at, depth + 1) {
                 Value::Callable(Invocation { target: parent, .. }) if self.is_class(parent) => {
                     self.class_member_at(parent, name, depth + 1, access)
                 }
@@ -3564,10 +4160,7 @@ impl<'a> Graph<'a> {
                                     .module_member_write(
                                         &provider,
                                         name,
-                                        access.unwrap_or((
-                                            class_declaration_scope,
-                                            definition.name.at,
-                                        )),
+                                        access.unwrap_or((decl_scope, definition.name.at)),
                                     )
                                     .is_none()
                         }) =>
@@ -3801,6 +4394,7 @@ impl<'a> Graph<'a> {
                 expression.kind,
                 ExpressionKind::Await(_)
                     | ExpressionKind::FormattedString(_)
+                    | ExpressionKind::SingleArgumentExpansion { .. }
                     | ExpressionKind::KeywordMappingCall { .. }
                     | ExpressionKind::RepeatedKeywordCall { .. }
                     | ExpressionKind::Comprehension { .. }
@@ -3845,6 +4439,16 @@ impl<'a> Graph<'a> {
                 form: ComprehensionForm::Generator,
                 ..
             } => Value::DeferredComprehension,
+            ExpressionKind::Comprehension {
+                form: ComprehensionForm::List,
+                ..
+            } if self.phase03
+                && self
+                    .scalar_callback_comprehension(scope, expression, before, depth)
+                    .is_some() =>
+            {
+                Value::BuiltinIterable
+            }
             ExpressionKind::Comprehension { .. } => Value::ComprehensionResult,
             ExpressionKind::FormattedString(_) => Value::Scalar,
             ExpressionKind::Name(name) => {
@@ -3870,6 +4474,7 @@ impl<'a> Graph<'a> {
                 }
                 if let LexicalBinding::Found(id) = binding {
                     self.record_django_global_read(scope, id, expression.at);
+                    self.record_closure_registry_read(scope, id, expression.at);
                     if let ValueEvaluation::Lazy {
                         argument: Some((parameter, text)),
                         ..
@@ -3879,7 +4484,33 @@ impl<'a> Graph<'a> {
                         self.read.insert(id);
                         return Value::Text(text.to_owned());
                     }
+                    if let ValueEvaluation::Lazy {
+                        temporary: Some(temporary),
+                        ..
+                    } = evaluation
+                        && self.symbols[id].scope == scope
+                        && position(self.symbols[id].name.at) == position(temporary.at)
+                        && let Binding::Variable(Some(value), at) = self.symbols[id].binding
+                    {
+                        self.read.insert(id);
+                        return self.expression_value(scope, value, at, depth + 1, evaluation);
+                    }
                     let binding_scope = self.symbols[id].scope;
+                    if !lazy && let Some(write) = self.closure_cell_read(scope, expression) {
+                        self.read.insert(id);
+                        let replacement = self.identity(
+                            write.value_scope,
+                            write.value,
+                            write.value_before,
+                            depth + 1,
+                        );
+                        return if write.possible {
+                            let initial = self.binding(id, END, depth + 1);
+                            Value::alternatives(vec![initial, replacement])
+                        } else {
+                            replacement
+                        };
+                    }
                     let binding_before = if binding_scope == scope
                         || self.immediately_encloses_class_body(scope, binding_scope)
                     {
@@ -3887,8 +4518,27 @@ impl<'a> Graph<'a> {
                         // deferred function body, it can select the binding
                         // currently installed by each enclosing suite.
                         before
+                    } else if let Some(call) = self.final_direct_closure_call(scope, binding_scope)
+                    {
+                        call.at
                     } else {
-                        if self.scopes[binding_scope].names[name.as_str()].len() > 1 {
+                        let names = &self.scopes[binding_scope].names;
+                        let key = self.lexical_binding_key(scope, name);
+                        let primary = names.get(key.as_ref()).map_or(0, Vec::len);
+                        let private = self
+                            .private_binding_spelling(binding_scope, &key)
+                            .and_then(|name| names.get(name))
+                            .map_or(0, Vec::len);
+                        if primary + private > 1 {
+                            if self.phase03
+                                && !lazy
+                                && private == 0
+                                && binding_scope == self.scopes[scope].file
+                                && let Some(value) = self
+                                    .settled_module_import_read(scope, expression, name, id, depth)
+                            {
+                                return value;
+                            }
                             self.scope_issue(scope, expression.at, "ambiguous_binding",
                                 "an enclosing name has multiple bindings and the active version is unresolved");
                             return Value::Unknown;
@@ -4129,6 +4779,25 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::Callable(invocation) if self.phase03 => {
+                    if arguments.is_empty() && keywords.is_empty() {
+                        if let Some(callback) = self.returned_local_callable(invocation) {
+                            return callback;
+                        }
+                        if !invocation.verified
+                            && !invocation.implicit_descriptor_receiver
+                            && matches!(invocation.receiver, Receiver::Ordinary)
+                            && let Some(class) =
+                                self.returned_literal_class(invocation.target, scope)
+                        {
+                            return Value::Callable(Invocation::ordinary(class));
+                        }
+                    }
+                    if arguments.is_empty()
+                        && keywords.is_empty()
+                        && let Some(calls) = self.callback_generator_return(invocation, depth)
+                    {
+                        return Value::CallbackGenerator(calls);
+                    }
                     if let Some(app) = self.fastapi_subclass_app(
                         invocation,
                         CallArguments {
@@ -4157,6 +4826,31 @@ impl<'a> Graph<'a> {
                 }
                 Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {
                     recurse(self, &arguments[0])
+                }
+                Value::Provider(name) if self.phase03 && name == "typing.cast" => {
+                    if let [_, value] = arguments.as_slice()
+                        && keywords.is_empty()
+                        && self
+                            .module_member_write("typing", "cast", (scope, before))
+                            .is_none()
+                    {
+                        recurse(self, value)
+                    } else {
+                        Value::Unknown
+                    }
+                }
+                Value::Provider(name)
+                    if name == "logging.getLogger"
+                        && self.bounded_logger_name(scope, before, arguments, keywords) =>
+                {
+                    Value::StdlibLogger
+                }
+                Value::IdentityDefaultFunction(default) if keywords.is_empty() => {
+                    match arguments.as_slice() {
+                        [] => *default,
+                        [argument] => recurse(self, argument),
+                        _ => Value::Unknown,
+                    }
                 }
                 Value::Provider(name) if self.grep_verify && name == "builtins.getattr" => self
                     .verification_member(scope, arguments, keywords, before, depth)
@@ -4215,28 +4909,11 @@ impl<'a> Graph<'a> {
                     // The call walker handles __len__ dispatch independently of its integer result.
                     Value::Scalar
                 }
-                Value::Provider(name) if name == "builtins.bool" && keywords.is_empty() => {
-                    match arguments.as_slice() {
-                        [] => Value::Scalar,
-                        [argument] => {
-                            let value = recurse(self, argument);
-                            // A scalar result alone cannot account for a custom truth test.
-                            if value.is_builtin_scalar_or_iterable()
-                                || matches!(
-                                    value,
-                                    Value::Sequence(_)
-                                        | Value::Mapping(_)
-                                        | Value::LocalNamespace(..)
-                                        | Value::NamespaceCopy(_)
-                                )
-                            {
-                                Value::Scalar
-                            } else {
-                                Value::Unknown
-                            }
-                        }
-                        _ => Value::Unknown,
-                    }
+                Value::Provider(name)
+                    if name == "builtins.bool" && arguments.len() <= 1 && keywords.is_empty() =>
+                {
+                    // The call walker accounts for truth hooks before a bool is returned.
+                    Value::Scalar
                 }
                 Value::Provider(name) if name == "builtins.dict" => {
                     let named: BTreeMap<_, _> = keywords
@@ -4300,7 +4977,9 @@ impl<'a> Graph<'a> {
                         [] => Value::Sequence(Vec::new()),
                         [argument] => match recurse(self, argument) {
                             value @ (Value::Sequence(_) | Value::BuiltinIterable) => value,
-                            Value::Range | Value::Text(_) => Value::BuiltinIterable,
+                            Value::Range | Value::Text(_) | Value::CallbackGenerator(_) => {
+                                Value::BuiltinIterable
+                            }
                             _ => Value::Unknown,
                         },
                         _ => Value::Unknown,
@@ -4596,10 +5275,13 @@ impl<'a> Graph<'a> {
             ExpressionKind::ConstantLambda => Value::ConstantFunction,
             ExpressionKind::NullaryConstantLambda => Value::NullaryConstantFunction,
             ExpressionKind::IdentityLambda => Value::Unknown,
+            ExpressionKind::IdentityDefaultLambda(default) => Value::IdentityDefaultFunction(
+                Box::new(self.identity(scope, default, default.at, depth + 1)),
+            ),
             ExpressionKind::IdentityDecoratorLambda => Value::IdentityDecoratorFactory,
-            ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda => {
-                Value::DeferredLambda
-            }
+            ExpressionKind::DeferredLambda(_)
+            | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda => Value::DeferredLambda,
             ExpressionKind::EmptyListComprehension => Value::Sequence(Vec::new()),
             ExpressionKind::Divide(operands) if self.phase03 => {
                 let [left, right] = operands.as_slice() else {
@@ -4779,6 +5461,7 @@ impl<'a> Graph<'a> {
                 Value::DjangoInvalidRegistration
             }
             ExpressionKind::Await(_)
+            | ExpressionKind::SingleArgumentExpansion { .. }
             | ExpressionKind::KeywordMappingCall { .. }
             | ExpressionKind::RepeatedKeywordCall { .. }
             | ExpressionKind::ForwardingCall { .. } => Value::Unknown,
@@ -4977,7 +5660,7 @@ impl<'a> Graph<'a> {
         }
     }
 
-    fn report_unbound_receiver_calls(&mut self, reach: &Reachability) {
+    fn report_unbound_receiver_calls(&mut self, reach: &Reachability) -> bool {
         let resolved: BTreeSet<_> = self
             .resolved_receiver_calls
             .iter()
@@ -4985,8 +5668,13 @@ impl<'a> Graph<'a> {
             .map(|&(index, _)| index)
             .chain(reach.resolved_django_reloader_parameters.iter().copied())
             .collect();
+        let mut unresolved = false;
         for (index, call) in self.receiver_calls.iter().enumerate() {
-            if reach.scopes.contains(&call.scope) && !resolved.contains(&index) {
+            if resolved.contains(&index) {
+                continue;
+            }
+            unresolved = true;
+            if reach.scopes.contains(&call.scope) {
                 self.issues.push(
                     Issue::new(
                         "unresolved_call",
@@ -4997,11 +5685,83 @@ impl<'a> Graph<'a> {
                 );
             }
         }
+        unresolved
+    }
+
+    fn record_factory_return(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        result: &Value,
+    ) {
+        let Some(factory) = self.scopes[scope].owner else {
+            return;
+        };
+        let symbol = &self.symbols[factory];
+        if self.scopes[symbol.scope].parent.is_some()
+            || !matches!(symbol.binding, Binding::Definition(definition, _)
+                if definition.kind == DefinitionKind::Function && !definition.is_generator)
+        {
+            return;
+        }
+        let mut returns = FactoryReturns::default();
+        if matches!(result, Value::Unknown)
+            && matches!(expression.kind, ExpressionKind::Conditional { .. })
+        {
+            // The ordinary identity merge deliberately drops partial
+            // alternatives. An exported result can still expose a class from
+            // a branch whose identity is known.
+            self.collect_factory_return_arms(scope, expression, before, 0, &mut returns);
+        } else {
+            returns.record(result);
+        }
+        if !returns.classes.is_empty() {
+            let recorded = self.factory_returns.entry(factory).or_default();
+            recorded.classes.extend(returns.classes);
+            recorded.unresolved_alternative |= returns.unresolved_alternative;
+        }
+    }
+
+    fn collect_factory_return_arms(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+        depth: usize,
+        returns: &mut FactoryReturns,
+    ) {
+        if depth >= MAX_BINDING_CHAIN {
+            returns.unresolved_alternative = true;
+            return;
+        }
+        let ExpressionKind::Conditional {
+            test,
+            body,
+            otherwise,
+        } = &expression.kind
+        else {
+            returns.record(&self.probe_identity(scope, expression, before));
+            return;
+        };
+        let condition = self.probe_identity(scope, test, before);
+        if !matches!(condition, Value::Bool(false)) {
+            self.collect_factory_return_arms(scope, body, before, depth + 1, returns);
+        }
+        if !matches!(condition, Value::Bool(true)) {
+            self.collect_factory_return_arms(scope, otherwise, before, depth + 1, returns);
+        }
     }
 
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
-            Value::Callable(invocation) | Value::Coroutine(invocation) => invocation,
+            Value::Callable(invocation) => {
+                if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
+                    self.report_unmodeled_deferred_value(scope, at, &Value::DeferredComprehension);
+                }
+                invocation
+            }
+            Value::Coroutine(invocation) => invocation,
             Value::Provider(provider)
                 if self.phase03 && is_bounded_declaration_provider(&provider) =>
             {
@@ -5019,6 +5779,10 @@ impl<'a> Graph<'a> {
                 }
                 return;
             }
+            Value::IdentityDefaultFunction(default) => {
+                self.expose(scope, *default, kind, at);
+                return;
+            }
             Value::OpaqueNamespace => {
                 self.scope_issue(
                     scope,
@@ -5028,7 +5792,10 @@ impl<'a> Graph<'a> {
                 );
                 return;
             }
-            Value::DeferredComprehension | Value::ComprehensionResult | Value::DeferredLambda => {
+            Value::DeferredComprehension
+            | Value::CallbackGenerator(_)
+            | Value::ComprehensionResult
+            | Value::DeferredLambda => {
                 self.report_unmodeled_deferred_value(scope, at, &value);
                 return;
             }
@@ -5257,9 +6024,10 @@ impl<'a> Graph<'a> {
             }
             Value::Instance(class) => {
                 // Fall back to length only after proving that __bool__ is absent.
+                let access = Some((scope, test.at));
                 let Some(hook) = self
-                    .class_member(*class, "__bool__", 0)
-                    .or_else(|| self.class_member(*class, "__len__", 0))
+                    .class_member_at(*class, "__bool__", 0, access)
+                    .or_else(|| self.class_member_at(*class, "__len__", 0, access))
                 else {
                     return;
                 };
@@ -5514,6 +6282,51 @@ impl<'a> Graph<'a> {
         as_callee: bool,
     ) {
         match &expr.kind {
+            ExpressionKind::SingleArgumentExpansion {
+                function,
+                arguments,
+                keywords,
+            } => {
+                self.walk_expression(scope, function, before, true);
+                for value in arguments
+                    .iter()
+                    .chain(keywords.iter().map(|(_, value)| value))
+                {
+                    self.walk(scope, value, before);
+                }
+                let callee = self.call_target_identity(scope, function, before, 0);
+                if self.phase03
+                    && let [(key, value)] = keywords.as_slice()
+                    && let Value::Method(object, ObjectKind::CeleryApp, method) = &callee
+                    && method == "conf.update"
+                {
+                    let value = self.identity(scope, value, before, 0);
+                    self.record_celery_config_value(
+                        *object,
+                        scope,
+                        expr.at,
+                        Value::Mapping(vec![Value::Text(key.clone()), value]),
+                    );
+                } else if !self.phase03
+                    || !self.invoke_unpacked_source_provider(
+                        callee,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
+                {
+                    self.scope_issue(
+                        scope,
+                        expr.at,
+                        "unsupported_construct",
+                        "argument expansion is outside the bounded source receiver model",
+                    );
+                }
+            }
             ExpressionKind::ForwardingCall {
                 function,
                 positional,
@@ -5558,6 +6371,12 @@ impl<'a> Graph<'a> {
                 arguments,
                 mapping,
             } => {
+                if self.phase03
+                    && arguments.is_empty()
+                    && self.walk_literal_local_format(scope, function, mapping, before)
+                {
+                    return;
+                }
                 self.walk_expression(scope, function, before, true);
                 for argument in arguments {
                     self.walk(scope, argument, before);
@@ -5585,6 +6404,13 @@ impl<'a> Graph<'a> {
                 keywords,
             } => {
                 if self.phase03
+                    && arguments.is_empty()
+                    && keywords.is_empty()
+                    && self.walk_source_property_call(scope, function, before, expr.at)
+                {
+                    return;
+                }
+                if self.phase03
                     && self.walk_literal_text_call(
                         function,
                         CallArguments {
@@ -5603,6 +6429,20 @@ impl<'a> Graph<'a> {
                     && keywords.is_empty()
                     && let ExpressionKind::DeferredLambda(body) = &function.kind
                     && self.fastapi_immediate_route_lambda(scope, body, before)
+                {
+                    return;
+                }
+                if self.phase03
+                    && self.walk_direct_lambda_call(
+                        function,
+                        CallArguments {
+                            scope,
+                            before,
+                            at: expr.at,
+                            positional: arguments,
+                            keywords,
+                        },
+                    )
                 {
                     return;
                 }
@@ -5626,10 +6466,19 @@ impl<'a> Graph<'a> {
                         } else {
                             Value::ComprehensionResult
                         };
-                        self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                        if !self.phase03
+                            || !matches!(
+                                self.identity(scope, expr, before, 0),
+                                Value::BuiltinIterable
+                            )
+                        {
+                            self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                        }
                     } else if matches!(
                         expr.kind,
-                        ExpressionKind::DeferredLambda(_) | ExpressionKind::DeferredBoolLambda
+                        ExpressionKind::DeferredLambda(_)
+                            | ExpressionKind::DeferredBoolLambda
+                            | ExpressionKind::DeferredCallbackLambda
                     ) {
                         self.report_unmodeled_deferred_value(
                             scope,
@@ -5643,7 +6492,32 @@ impl<'a> Graph<'a> {
                     self.invoke(scope, invocation, "direct_call", "certain", expr.at);
                     return;
                 }
+                if self.record_subclass_lookup(
+                    function,
+                    CallArguments {
+                        scope,
+                        before,
+                        at: expr.at,
+                        positional: arguments,
+                        keywords,
+                    },
+                ) || self.phase03 && self.deprecation_warning(scope, expr, before)
+                {
+                    return;
+                }
                 let callee = self.call_target_identity(scope, function, before, 0);
+                if self.record_logging_call(
+                    &callee,
+                    CallArguments {
+                        scope,
+                        before,
+                        at: expr.at,
+                        positional: arguments,
+                        keywords,
+                    },
+                ) {
+                    return;
+                }
                 if self.phase03
                     && arguments.is_empty()
                     && keywords.is_empty()
@@ -5661,6 +6535,8 @@ impl<'a> Graph<'a> {
                         self.report_unmodeled_deferred_value(scope, expr.at, &callee)
                     }
                     Value::IdentityFunction if arguments.len() == 1 && keywords.is_empty() => {}
+                    Value::IdentityDefaultFunction(_)
+                        if arguments.len() <= 1 && keywords.is_empty() => {}
                     Value::DjangoFormValidation(Some(class)) => self.record_django_form_validation(
                         class,
                         function,
@@ -5845,6 +6721,14 @@ impl<'a> Graph<'a> {
                             self.record_formatting(scope, value, expr.at, false);
                         }
                     }
+                    Value::Provider(name)
+                        if name == "builtins.bool" && arguments.len() <= 1 && keywords.is_empty() =>
+                    {
+                        if let [argument] = arguments.as_slice() {
+                            let value = self.identity(scope, argument, before, 0);
+                            self.record_truth_test(scope, argument, &value);
+                        }
+                    }
                     Value::Provider(name) if name == "builtins.len" => {
                         if let [argument] = arguments.as_slice()
                             && keywords.is_empty()
@@ -5861,6 +6745,24 @@ impl<'a> Graph<'a> {
                             "scheduled_coroutine",
                             expr.at,
                         );
+                    }
+                    Value::Provider(name)
+                        if self.phase03 && scope == self.scopes[scope].file && name == "asyncio.run" =>
+                    {
+                        if let [awaitable] = arguments.as_slice()
+                            && keywords.is_empty()
+                            && let target @ Value::Coroutine(_) =
+                                self.identity(scope, awaitable, before, 0)
+                        {
+                            self.activate_callback(scope, target, "asyncio_run", expr.at);
+                        } else {
+                            self.scope_issue(
+                                scope,
+                                expr.at,
+                                "unresolved_call",
+                                "asyncio.run requires a resolved coroutine and no runner options",
+                            );
+                        }
                     }
                     Value::Provider(name)
                         if self.phase03
@@ -6414,6 +7316,15 @@ impl<'a> Graph<'a> {
                             ),
                         }
                     }
+                    Value::Provider(name)
+                        if self.phase03
+                            && name == "math.sqrt"
+                            && keywords.is_empty()
+                            && matches!(arguments.as_slice(), [argument]
+                                if self.identity(scope, argument, before, 0).is_builtin_scalar()) =>
+                    {
+                        // Exact built-in scalars cannot call user-defined numeric conversions.
+                    }
                     Value::Provider(name) if self.phase03 && gin::is_config_loader(&name) => {
                         self.gin_config_call(CallArguments { scope, at: expr.at, before, positional: arguments, keywords });
                     }
@@ -6440,6 +7351,15 @@ impl<'a> Graph<'a> {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "Starlette constructor arguments are outside the bounded model");
                         }
                     }
+                    Value::Provider(name)
+                        if self.phase03 && name == "starlette.responses.PlainTextResponse"
+                            && registration_arguments(arguments, keywords, ["content"])
+                                .is_some_and(|[content]| content.is_none_or(|content|
+                                    matches!(self.identity(scope, content, before, 0), Value::None | Value::Text(_))
+                                )) =>
+                    {
+                        // With the default options, only the built-in text encoder can run.
+                    }
                     Value::Provider(name) if self.phase03 && aiohttp::is_route_table(&name) => {
                         if !arguments.is_empty() || !keywords.is_empty() {
                             self.scope_issue(scope, expr.at, "unresolved_constructor", "aiohttp route table requires a zero-argument constructor");
@@ -6461,9 +7381,23 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name)
-                        if self.phase03 && name == "pathlib.Path"
-                            && self.source_project_path(scope, before, arguments, keywords).is_some() => {}
+                        if self.phase03
+                            && (self.literal_pathlib_constructor(&name, (scope, before), arguments, keywords)
+                                || name == "pathlib.Path"
+                                    && self.source_project_path(scope, before, arguments, keywords).is_some()) => {}
                     Value::ResolveProjectPath(_) if arguments.is_empty() && keywords.is_empty() => {}
+                    Value::Provider(name) if self.phase03 && name == "typing.cast"
+                        && let [target, _] = arguments.as_slice() && keywords.is_empty()
+                        && self.module_member_write("typing", "cast", (scope, before)).is_none() =>
+                    {
+                        if matches!(target.kind, ExpressionKind::Text(_)) {
+                            self.quoted_annotation_reads(scope, target, before, false, 0);
+                        }
+                    }
+                    Value::Provider(name) if self.phase03 && name == "json.dumps"
+                        && let [value] = arguments.as_slice() && keywords.is_empty()
+                        && literal_json_value(value, 0)
+                        && self.unmodified_json_encoder((scope, before)) => {}
                     Value::Provider(name) if self.phase03 && name == "json.dumps"
                         && arguments.len() == 1 && keywords.is_empty()
                         && self.defer_log_record_json(scope, &arguments[0], before, expr.at) => {}
@@ -6484,6 +7418,31 @@ impl<'a> Graph<'a> {
                         }
                     }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
+                        if self.phase03 {
+                            for (index, arg) in arguments.iter().chain(keywords.iter().map(|(_, expr)| expr)).enumerate() {
+                                let value = self.probe_identity(scope, arg, before);
+                                match value {
+                                    Value::Callable(invocation)
+                                        if name == "builtins.print" && index < arguments.len()
+                                            && matches!(arg.kind, ExpressionKind::Call { .. }) =>
+                                    {
+                                        self.record_printed_returned_class(scope, invocation);
+                                    }
+                                    Value::CallbackGenerator(calls)
+                                        if matches!(name.as_str(), "builtins.list" | "builtins.tuple")
+                                            && arguments.len() == 1 && keywords.is_empty() =>
+                                    {
+                                        for invocation in calls {
+                                            self.invoke(scope, invocation, "direct_call", "possible", expr.at);
+                                        }
+                                    }
+                                    value if value.contains_callback_generator() => {
+                                        self.report_unmodeled_deferred_value(scope, arg.at, &Value::DeferredComprehension);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                         if self.phase03 && matches!(name.as_str(), "builtins.setattr" | "builtins.delattr")
                             && let Some(receiver) = arguments.first()
                         {
@@ -6532,6 +7491,16 @@ impl<'a> Graph<'a> {
                         }
                     }
                     _ => {
+                        if let ExpressionKind::Member(receiver, name) = &function.kind
+                            && name == "append"
+                            && let [argument] = arguments.as_slice()
+                            && keywords.is_empty()
+                            && self.retain_registry_callback(
+                                scope, receiver, argument, before, expr.at, closures::RegistryKind::List,
+                            )
+                        {
+                            return;
+                        }
                         if self.phase03
                             && !self.probing_identity
                             && self.branch_depth == 0
@@ -6575,6 +7544,9 @@ impl<'a> Graph<'a> {
                         }
                         if self.phase03
                             && (self.defer_fresh_field_call(scope, expr)
+                                || self.defer_factory_method_call(function, CallArguments {
+                                    scope, before, at: expr.at, positional: arguments, keywords,
+                                })
                                 || self.defer_source_provider_call(scope, expr))
                         {
                             return;
@@ -6797,15 +7769,19 @@ impl<'a> Graph<'a> {
             }
             ExpressionKind::Name(_) | ExpressionKind::IterationVariable(_) => {
                 let value = self.identity(scope, expr, before, 0);
-                self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                if !matches!(value, Value::CallbackGenerator(_)) {
+                    self.report_unmodeled_deferred_value(scope, expr.at, &value);
+                }
                 self.record_class_reference(scope, &value);
             }
+            ExpressionKind::IdentityDefaultLambda(default) => self.walk(scope, default, default.at),
             ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::IdentityDecoratorLambda
             | ExpressionKind::DeferredLambda(_)
             | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda
                 if !self.phase03 =>
             {
                 self.scope_issue(
@@ -6823,6 +7799,90 @@ impl<'a> Graph<'a> {
             ),
             _ => {}
         }
+    }
+
+    fn walk_literal_json_file_write(
+        &mut self,
+        scope: ScopeId,
+        items: &[(Expression, Option<Name>)],
+        body: &[Statement],
+        before: Location,
+    ) -> bool {
+        let [(stream, Some(output))] = items else {
+            return false;
+        };
+        let [
+            Statement {
+                kind: StatementKind::Evaluate(write),
+                at,
+            },
+        ] = body
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function: open,
+            arguments: open_arguments,
+            keywords: open_keywords,
+        } = &stream.kind
+        else {
+            return false;
+        };
+        let ExpressionKind::Call {
+            function: dump,
+            arguments,
+            keywords,
+        } = &write.kind
+        else {
+            return false;
+        };
+        let [payload, target] = arguments.as_slice() else {
+            return false;
+        };
+        if !keywords.is_empty()
+            || !open_keywords.is_empty()
+            || !matches!(open_arguments.as_slice(), [path, mode]
+                if matches!(path.kind, ExpressionKind::Text(_))
+                    && matches!(&mode.kind, ExpressionKind::Text(mode) if mode == "w"))
+            || !matches!(&target.kind, ExpressionKind::Name(name) if name == &output.text)
+            || !literal_json_value(payload, 0)
+            || !self.unmodified_json_encoder((scope, *at))
+            || !matches!(self.probe_identity(scope, open, before),
+                Value::Provider(name) if name == "builtins.open")
+            || self
+                .module_member_write("builtins", "open", (scope, before))
+                .is_some()
+            || !matches!(self.probe_identity(scope, dump, *at),
+                Value::Provider(name) if name == "json.dump")
+        {
+            return false;
+        }
+        // The only consumer receives the original builtin text stream and
+        // a literal value. Record the reads without invoking file I/O.
+        self.walk(scope, stream, before);
+        self.walk(scope, dump, *at);
+        self.walk(scope, payload, *at);
+        self.walk(scope, target, *at);
+        true
+    }
+
+    fn unmodified_json_encoder(&self, access: (ScopeId, Location)) -> bool {
+        [
+            ("json", "JSONEncoder"),
+            ("json", "_default_encoder"),
+            ("json.encoder", "JSONEncoder"),
+        ]
+        .into_iter()
+        .all(|(module, name)| self.module_member_write(module, name, access).is_none())
+            && mutations::JSON_ENCODER_PROVIDERS.iter().all(|module| {
+                mutations::JSON_ENCODER_MEMBERS
+                    .iter()
+                    .all(|name| self.module_member_write(module, name, access).is_none())
+            })
+            && mutations::JSON_ENCODER_GLOBALS.iter().all(|name| {
+                self.module_member_write("json.encoder", name, access)
+                    .is_none()
+            })
     }
 
     fn call_invocation(
@@ -6957,6 +8017,9 @@ impl<'a> Graph<'a> {
                     .iter()
                     .all(|(name, _)| parameters.iter().any(|parameter| parameter.text == *name));
             if self.phase03 && arguments_bound {
+                if !invocation.verified && !invocation.implicit_descriptor_receiver {
+                    self.record_fresh_class_field_read(callee, definition, call);
+                }
                 for (parameter, argument) in definition
                     .parameters
                     .iter()
@@ -7115,6 +8178,24 @@ impl<'a> Graph<'a> {
         arguments: &[Expression],
         keywords: &[(String, Expression)],
     ) {
+        if self.phase03 {
+            for argument in arguments
+                .iter()
+                .skip(1)
+                .chain(keywords.iter().map(|(_, value)| value))
+            {
+                if self
+                    .probe_identity(scope, argument, before)
+                    .contains_callback_generator()
+                {
+                    self.report_unmodeled_deferred_value(
+                        scope,
+                        argument.at,
+                        &Value::DeferredComprehension,
+                    );
+                }
+            }
+        }
         let target = arguments.first().map_or(Value::Unknown, |argument| {
             self.identity(scope, argument, before, 0)
         });
@@ -7309,10 +8390,15 @@ impl<'a> Graph<'a> {
         before: Location,
         annotation: &Expression,
     ) -> Value {
-        // The frontend lowers subscription and tuple annotations into nested
-        // operand groups. Resolve the generic's binding before using metadata.
-        if let ExpressionKind::Operands(parts) = &annotation.kind
-            && let [generic, arguments] = parts.as_slice()
+        let subscription = match &annotation.kind {
+            ExpressionKind::Subscript { value, index } => Some((value.as_ref(), index.as_ref())),
+            ExpressionKind::Operands(parts) => match parts.as_slice() {
+                [generic, arguments] => Some((generic, arguments)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((generic, arguments)) = subscription
             && is_typing_annotated(&self.probe_identity(scope, generic, before))
             && let ExpressionKind::Operands(arguments) = &arguments.kind
             && let Some((annotation, metadata)) = arguments.split_first()
@@ -7443,20 +8529,146 @@ impl<'a> Graph<'a> {
     }
 
     fn annotation(&mut self, scope: ScopeId, expr: &Expression, before: Location, evaluated: bool) {
+        if self.phase03 {
+            self.quoted_annotation_reads(scope, expr, before, false, 0);
+        }
+        self.walk_annotation(scope, expr, before, evaluated);
+    }
+
+    fn quoted_annotation_reads(
+        &mut self,
+        scope: ScopeId,
+        expr: &Expression,
+        before: Location,
+        quoted: bool,
+        depth: usize,
+    ) {
+        if depth >= MAX_BINDING_CHAIN {
+            return;
+        }
+        let next = depth + 1;
+        match &expr.kind {
+            ExpressionKind::Text(text) => {
+                if let Some(parsed) = skarmory_python::phase02::quoted_annotation(text, expr.at) {
+                    self.quoted_annotation_reads(scope, &parsed, before, true, next);
+                }
+            }
+            ExpressionKind::Name(name) if quoted => {
+                self.read_quoted_annotation_imports(scope, name, before, expr.at);
+            }
+            ExpressionKind::Member(base, _) if quoted => {
+                self.quoted_annotation_reads(scope, base, before, true, next);
+            }
+            ExpressionKind::Subscript { value, index } => {
+                self.quoted_annotation_reads(scope, value, before, quoted, next);
+                let Value::Provider(name) = self.probe_identity(scope, value, before) else {
+                    return;
+                };
+                if matches!(
+                    name.as_str(),
+                    "typing.Annotated" | "typing_extensions.Annotated"
+                ) {
+                    if let ExpressionKind::Operands(arguments) = &index.kind
+                        && let Some(first) = arguments.first()
+                    {
+                        self.quoted_annotation_reads(scope, first, before, quoted, next);
+                    }
+                } else if matches!(
+                    name.as_str(),
+                    "typing.Callable"
+                        | "typing.Dict"
+                        | "typing.List"
+                        | "typing.Optional"
+                        | "typing.Sequence"
+                        | "typing.Set"
+                        | "typing.Tuple"
+                        | "typing.Union"
+                        | "builtins.dict"
+                        | "builtins.frozenset"
+                        | "builtins.list"
+                        | "builtins.set"
+                        | "builtins.tuple"
+                        | "collections.abc.Callable"
+                ) {
+                    self.quoted_annotation_reads(scope, index, before, quoted, next);
+                }
+            }
+            ExpressionKind::Operands(values) => {
+                for value in values {
+                    self.quoted_annotation_reads(scope, value, before, quoted, next);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn read_quoted_annotation_imports(
+        &mut self,
+        scope: ScopeId,
+        name: &str,
+        before: Location,
+        at: Location,
+    ) {
+        let Some(binding) = self.lexical(scope, name, before) else {
+            return;
+        };
+        let owner = self.symbols[binding].scope;
+        let binding_before = if owner == scope || self.immediately_encloses_class_body(scope, owner)
+        {
+            before
+        } else {
+            END
+        };
+        if self.binding_depends_on_branch(binding, binding_before) {
+            if let Some(bindings) = self.finite_conditional_bindings(binding, binding_before) {
+                // Type-only imports can be absent at runtime. Retain every
+                // import on a path where the quoted name has a binding.
+                self.read.extend(
+                    bindings
+                        .selected
+                        .into_iter()
+                        .filter(|&id| matches!(self.symbols[id].binding, Binding::Import(_))),
+                );
+            } else {
+                self.scope_issue(
+                    scope,
+                    at,
+                    "ambiguous_binding",
+                    "a quoted annotation depends on an unresolved branch binding",
+                );
+            }
+        } else if matches!(self.symbols[binding].binding, Binding::Import(_)) {
+            // Read the binding without evaluating the quoted expression.
+            self.read.insert(binding);
+        }
+    }
+
+    fn walk_annotation(
+        &mut self,
+        scope: ScopeId,
+        expr: &Expression,
+        before: Location,
+        evaluated: bool,
+    ) {
         let evaluated = evaluated
             && !self.files[self.scopes[scope].file]
                 .facts
                 .postponed_annotations;
         match &expr.kind {
+            ExpressionKind::Subscript { value, index } if self.phase03 => {
+                self.walk_annotation(scope, value, before, evaluated);
+                self.walk_annotation(scope, index, before, evaluated);
+            }
             ExpressionKind::Addition(values)
             | ExpressionKind::Divide(values)
             | ExpressionKind::Operands(values)
             | ExpressionKind::Sequence { items: values, .. } => {
                 for reference in values {
-                    self.annotation(scope, reference, before, evaluated);
+                    self.walk_annotation(scope, reference, before, evaluated);
                 }
             }
             ExpressionKind::Call { .. }
+            | ExpressionKind::SingleArgumentExpansion { .. }
             | ExpressionKind::KeywordMappingCall { .. }
             | ExpressionKind::RepeatedKeywordCall { .. }
                 if evaluated =>
@@ -7515,6 +8727,9 @@ impl<'a> Graph<'a> {
     }
 
     fn suite(&mut self, scope: ScopeId, body: &[Statement]) -> bool {
+        let warning = (self.phase03 && std::ptr::eq(body, self.scopes[scope].body))
+            .then(|| self.leading_deprecation_warning(scope))
+            .flatten();
         for statement in body {
             let at = statement.at;
             if self.phase03 && self.prove_terminal_module_failure(scope, statement) {
@@ -7683,6 +8898,15 @@ impl<'a> Graph<'a> {
                         self.annotation(scope, annotation, at, evaluated);
                     }
                 }
+                StatementKind::GuardedLazyUnpack { value, .. } => {
+                    self.walk(scope, value, at);
+                    self.scope_issue(
+                        scope,
+                        at,
+                        "unresolved_lazy_export",
+                        "guarded table lookup outside a proven module export",
+                    );
+                }
                 StatementKind::AssignUnpack { names, value } => {
                     if !self.phase03 {
                         self.issue(
@@ -7736,7 +8960,23 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::SetGlobalName { value, .. } => {
-                    self.record_django_global_write(scope, value, at);
+                    if self.proved_closure_cell_write(scope).is_some() {
+                        self.walk(scope, value, at);
+                    } else {
+                        self.record_django_global_write(scope, value, at);
+                    }
+                }
+                StatementKind::SetNonlocalName { .. } => {
+                    if let Some(write) = self.proved_closure_cell_write(scope) {
+                        self.walk(write.value_scope, write.value, write.value_before);
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unsupported_construct",
+                            "nonlocal assignment has no bounded closure call",
+                        );
+                    }
                 }
                 StatementKind::DjangoSettingsGlobalCall(call) => {
                     if self.phase03 {
@@ -7811,11 +9051,17 @@ impl<'a> Graph<'a> {
                         self.phase03 && self.modeled_django_instance_field_write(scope, statement);
                     let command_write =
                         self.phase03 && self.modeled_django_command_instance_write(scope, at);
+                    let registry_write = matches!(&statement.kind,
+                    StatementKind::WriteModuleEntry { mapping, value: Some(callback), .. }
+                    if self.retain_registry_callback(
+                        scope, mapping, callback, at, at, closures::RegistryKind::Dictionary,
+                    ));
                     if !flask_write
                         && !celery_write
                         && !fresh_field_write
                         && !form_field_write
                         && !command_write
+                        && !registry_write
                         && !self.modeled_framework_write(scope, at)
                     {
                         if self.phase03
@@ -7882,7 +9128,18 @@ impl<'a> Graph<'a> {
                     if let Some(value) = value {
                         self.walk(scope, value, at);
                         let result = self.identity(scope, value, at, 0);
-                        self.expose(scope, result, "returned_callable", value.at);
+                        if self.phase03 {
+                            self.record_factory_return(scope, value, at, &result);
+                        }
+                        if !matches!(result, Value::DeferredComprehension)
+                            || !self.phase03
+                            || !self.scopes[scope].owner.is_some_and(|owner| {
+                                self.callback_generator_return(Invocation::ordinary(owner), 0)
+                                    .is_some()
+                            })
+                        {
+                            self.expose(scope, result, "returned_callable", value.at);
+                        }
                     }
                     return true;
                 }
@@ -7893,12 +9150,27 @@ impl<'a> Graph<'a> {
                     return true;
                 }
                 StatementKind::Assert(test) => {
-                    self.walk(scope, test, at);
-                    if matches!(self.identity(scope, test, at, 0), Value::Bool(false)) {
+                    if self.walk_if_test(scope, test, at) == Some(false) {
                         return true;
                     }
                 }
                 StatementKind::Evaluate(value) => {
+                    if warning.is_some_and(|warning| position(warning) == position(at))
+                        && let ExpressionKind::Call {
+                            function,
+                            arguments,
+                            keywords,
+                        } = &value.kind
+                    {
+                        self.walk(scope, function, at);
+                        for argument in arguments
+                            .iter()
+                            .chain(keywords.iter().map(|(_, value)| value))
+                        {
+                            self.walk(scope, argument, at);
+                        }
+                        continue;
+                    }
                     if !self.phase03
                         || !(self.discarded_generator_call(scope, value, at)
                             || self.walk_flask_globals_update(scope, value, at)
@@ -7986,6 +9258,9 @@ impl<'a> Graph<'a> {
                     }
                 }
                 StatementKind::With { items, body } => {
+                    if self.phase03 && self.walk_literal_json_file_write(scope, items, body, at) {
+                        continue;
+                    }
                     for (expression, _) in items {
                         self.walk(scope, expression, at);
                         if !matches!(self.identity(scope, expression, at, 0), Value::Executor) {
@@ -8035,6 +9310,33 @@ impl<'a> Graph<'a> {
                         "unsupported_construct",
                         "star imports cannot resolve finite bindings at this location",
                     );
+                }
+                StatementKind::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } => {
+                    if self.proven_guarded_project_import(scope, at, import, *raises_import_error) {
+                        self.suite(scope, std::slice::from_ref(import));
+                        if self.suite(
+                            scope,
+                            if *raises_import_error {
+                                fallback
+                            } else {
+                                otherwise
+                            },
+                        ) {
+                            return true;
+                        }
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_optional_import",
+                            "cannot prove that this guarded import initializes the selected source and member",
+                        );
+                    }
                 }
                 StatementKind::OptionalProjectClassFallback {
                     package,
@@ -8118,6 +9420,46 @@ impl<'a> Graph<'a> {
         target: SymbolId,
         before: Location,
     ) -> bool {
+        if self.phase03
+            && let ExpressionKind::Boolean { and: true, values } = &decorator.kind
+            && let [guard, function] = values.as_slice()
+            && matches!(guard.kind, ExpressionKind::Name(_))
+            && matches!(function.kind, ExpressionKind::Name(_))
+        {
+            self.walk(scope, guard, guard.at);
+            let known_true = match self.identity(scope, guard, guard.at, 0) {
+                Value::Bool(value) => value,
+                Value::Instance(class)
+                    if ["__bool__", "__len__"].into_iter().all(|name| {
+                        self.class_member_at(class, name, 0, Some((scope, guard.at)))
+                            .is_none()
+                    }) =>
+                {
+                    true
+                }
+                value => {
+                    self.record_truth_test(scope, guard, &value);
+                    false
+                }
+            };
+            if known_true {
+                self.walk(scope, function, function.at);
+                if let Value::Callable(invocation) = self.identity(scope, function, function.at, 0)
+                    && self.local_identity_decorator(Value::Callable(invocation), function)
+                {
+                    self.invoke(scope, invocation, "decorator", "certain", decorator.at);
+                    self.transparent_guarded_definitions.insert(target);
+                    return true;
+                }
+            }
+            self.scope_issue(
+                scope,
+                decorator.at,
+                "unresolved_decorator",
+                "guarded decorator requires a proven true guard and a resolved identity decorator",
+            );
+            return false;
+        }
         if let ExpressionKind::KeywordMappingCall {
             function,
             arguments,
@@ -8148,6 +9490,12 @@ impl<'a> Graph<'a> {
         self.walk(scope, function, before);
         for value in args.iter().chain(keywords.iter().map(|(_, value)| value)) {
             self.walk(scope, value, before);
+        }
+        if self.phase03
+            && let Binding::Definition(definition, _) = self.symbols[target].binding
+            && self.deprecation_decorator(scope, definition, decorator, before)
+        {
+            return true;
         }
         if self.phase03 && self.record_fastapi_parameter_route(scope, decorator, target, before) {
             return false;
@@ -8570,6 +9918,10 @@ impl<'a> Graph<'a> {
                     name.as_str(),
                     "builtins.staticmethod" | "builtins.classmethod"
                 ) => {}
+            Value::Provider(name)
+                if self.phase03
+                    && name == "builtins.property"
+                    && self.source_property_getter(target).is_some() => {}
             Value::Provider(name)
                 if self.phase03
                     && name == "builtins.property"
@@ -9726,6 +11078,7 @@ impl<'a> Graph<'a> {
             .collect();
         let mut modules = BTreeSet::new();
         let mut exported_constructors = BTreeSet::new();
+        let mut exported_factories = BTreeSet::new();
         let mut visited_instances = BTreeSet::new();
         let mut visited_namespaces = BTreeSet::new();
         let mut visited_namespace_copies = BTreeSet::new();
@@ -9742,6 +11095,13 @@ impl<'a> Graph<'a> {
             let visit_scope = (kind == "local_namespace").then_some(scope);
             let members = match value {
                 Value::Callable(invocation) => {
+                    if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
+                        self.report_unmodeled_deferred_value(
+                            scope,
+                            at,
+                            &Value::DeferredComprehension,
+                        );
+                    }
                     self.invoke(scope, invocation, kind, certainty, at);
                     if kind == "local_namespace" {
                         self.uncertain(
@@ -9750,10 +11110,32 @@ impl<'a> Graph<'a> {
                             "a callable may escape through a function namespace",
                         );
                     }
-                    let class = invocation.target;
-                    if self.is_class(class) && exported_constructors.insert((visit_scope, class)) {
-                        self.constructor(scope, class, "constructor", "possible", at);
-                        vec![Value::Instance(class)]
+                    let target = invocation.target;
+                    if self.is_class(target) && exported_constructors.insert((visit_scope, target))
+                    {
+                        self.constructor(scope, target, "constructor", "possible", at);
+                        vec![Value::Instance(target)]
+                    } else if matches!(kind, "public_export" | "explicit_re_export")
+                        && let Some(returns) = self.factory_returns.get(&target)
+                        && exported_factories.insert(target)
+                    {
+                        // An external caller may consume the return value. Keep
+                        // that use separate from calls that discard the result.
+                        let members = returns
+                            .classes
+                            .iter()
+                            .copied()
+                            .map(Value::Instance)
+                            .collect();
+                        if returns.unresolved_alternative {
+                            self.scope_issue(
+                                scope,
+                                at,
+                                "unresolved_export",
+                                "an exported factory can return an unresolved value",
+                            );
+                        }
+                        members
                     } else {
                         Vec::new()
                     }
@@ -9762,7 +11144,7 @@ impl<'a> Graph<'a> {
                     self.expose(scope, value, kind, at);
                     Vec::new()
                 }
-                Value::DeferredLambda => {
+                Value::DeferredLambda | Value::CallbackGenerator(_) => {
                     self.report_unmodeled_deferred_value(scope, at, &value);
                     Vec::new()
                 }
@@ -9837,6 +11219,7 @@ impl<'a> Graph<'a> {
                 Value::Sequence(items) | Value::Mapping(items) | Value::Alternatives(items) => {
                     items
                 }
+                Value::IdentityDefaultFunction(default) => vec![*default],
                 Value::Unknown | Value::OpaqueNamespace => {
                     self.scope_issue(
                         scope,
@@ -9863,6 +11246,11 @@ impl<'a> Graph<'a> {
                     "possible",
                 )
             }));
+        }
+        if !exported_factories.is_empty() {
+            // Inherited methods of returned instances introduce new receivers
+            // after the initial receiver pass.
+            self.resolve_receiver_calls();
         }
     }
 
@@ -10008,14 +11396,19 @@ impl<'a> Graph<'a> {
         let hook = self.local(file, "__getattr__", END);
         let mut lazy_members = BTreeMap::new();
         if let Some(hook) = hook {
-            let fallback = self.lazy_dispatch(hook, END, |name, scope, body, argument| {
-                if !name.starts_with('_') && self.local(file, name, END).is_none() {
-                    lazy_members
-                        .entry(name)
-                        .or_insert_with(|| Self::lazy_branch(scope, body, argument));
-                }
-                None
-            });
+            let fallback = if self
+                .module_member_write(&self.files[file].module, "__getattr__", (file, END))
+                .is_some()
+            {
+                LazyMember::Unknown
+            } else {
+                self.lazy_dispatch(hook, END, |name, branch| {
+                    if !name.starts_with('_') && self.local(file, name, END).is_none() {
+                        lazy_members.entry(name).or_insert(branch);
+                    }
+                    None
+                })
+            };
             if !matches!(fallback, LazyMember::Missing) {
                 self.scope_issue(
                     file,
@@ -10321,16 +11714,33 @@ impl<'a> Graph<'a> {
             let scope = symbol.scope;
             let file = &self.files[self.scopes[scope].file];
             let full_name = self.full_name(id);
+            let parent = self.scopes[scope].owner;
+            let method = self.phase03
+                && !self.is_class(id)
+                && parent.is_some_and(|parent| self.is_class(parent));
             let mut qualifiers = vec![(
                 "type".into(),
                 if self.is_class(id) {
                     "class"
+                } else if method {
+                    "method"
                 } else {
                     "function"
                 }
                 .into(),
             )];
-            if let Some(parent) = self.scopes[scope].owner {
+            if let Some(parent) = parent
+                && (!self.phase03 || self.is_class(parent))
+            {
+                if method {
+                    qualifiers.push((
+                        "method_display_name".into(),
+                        format!(
+                            "{}.{}",
+                            self.symbols[parent].name.text, definition.name.text
+                        ),
+                    ));
+                }
                 qualifiers.push(("parent_name".into(), self.symbols[parent].name.text.clone()));
                 qualifiers.push(("parent_full_name".into(), self.full_name(parent)));
                 qualifiers.push(("parent_module".into(), file.module.clone()));
@@ -10378,6 +11788,7 @@ impl<'a> Graph<'a> {
                     &definition.name.text,
                     &full_name,
                     &qualifiers,
+                    self.phase03,
                 )
             }) {
                 roots.push(Edge {
@@ -10980,12 +12391,101 @@ impl<'a> Graph<'a> {
         (reach, static_reach, verification, converged)
     }
 
+    fn unrooted_method_callables(
+        &self,
+        reachable_symbols: &BTreeSet<SymbolId>,
+    ) -> BTreeSet<SymbolId> {
+        // Start with methods referenced by static calls and follow their
+        // callees. Skip symbols that already have a path from a root.
+        let mut pending: Vec<_> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| &scope.edges)
+            .filter_map(|edge| {
+                let target = &self.symbols[edge.target];
+                (edge.kind == "direct_call"
+                    && self.scopes[target.scope]
+                        .owner
+                        .is_some_and(|owner| self.is_class(owner)))
+                .then_some(edge.target)
+            })
+            .collect();
+        let mut referenced = BTreeSet::new();
+        while let Some(target) = pending.pop() {
+            if reachable_symbols.contains(&target) || !referenced.insert(target) {
+                continue;
+            }
+            if let Binding::Definition(_, body) = self.symbols[target].binding {
+                pending.extend(
+                    self.scopes[body]
+                        .edges
+                        .iter()
+                        .filter_map(|edge| (edge.kind == "direct_call").then_some(edge.target)),
+                );
+            }
+        }
+        referenced
+    }
+
+    fn package_call_declarations(&self, reach: &Reachability) -> BTreeSet<SymbolId> {
+        let Some(discovery) = self.discovery.filter(|_| self.phase03) else {
+            return BTreeSet::new();
+        };
+        let mut retained = BTreeSet::new();
+        for (scope, row) in self.scopes.iter().enumerate() {
+            if reach.scopes.contains(&scope) || row.parent != Some(row.file) {
+                continue;
+            }
+            let file = &self.files[row.file];
+            let Some((package, _)) = file.module.split_once('.') else {
+                continue;
+            };
+            if !discovery.package_reference_boundary(&file.path)
+                || !self
+                    .modules
+                    .get(package)
+                    .is_some_and(|&root| self.files[root].is_package)
+            {
+                continue;
+            }
+            if !row.owner.is_some_and(|id| {
+                matches!(self.symbols[id].binding, Binding::Definition(def, _)
+                    if def.kind == DefinitionKind::Function && def.decorators.is_empty())
+            }) {
+                continue;
+            }
+            retained.extend(row.edges.iter().filter_map(|edge| {
+                if edge.kind != "direct_call"
+                    || edge.certainty != "certain"
+                    || reach.symbols.contains(&edge.target)
+                {
+                    return None;
+                }
+                let target = &self.symbols[edge.target];
+                let destination = &self.files[self.scopes[target.scope].file];
+                (target.scope < self.files.len()
+                    && target.scope != row.file
+                    && destination
+                        .module
+                        .split_once('.')
+                        .is_some_and(|(root, _)| root == package)
+                    && discovery.package_reference_boundary(&destination.path)
+                    && matches!(target.binding, Binding::Definition(def, _)
+                        if def.kind == DefinitionKind::Function && def.decorators.is_empty()))
+                .then_some(edge.target)
+            }));
+        }
+        retained
+    }
+
     fn finish(
         mut self,
         roots: Vec<Edge>,
         mut possible_roots: Vec<Edge>,
         snapshot: Option<&grep_verification::Snapshot>,
         templates: Option<&TemplateProject<'_>>,
+        partial_sources: bool,
+        changed_file_report: bool,
     ) -> Analysis {
         // Declaration hints retain only the definition in the compatibility
         // report. Leave them out of the execution graph and parameter analysis.
@@ -11035,10 +12535,12 @@ impl<'a> Graph<'a> {
         if !converged {
             self.issues.push(framework_limit());
         }
-        self.report_unbound_receiver_calls(&reach);
+        let unresolved_receiver_calls = self.report_unbound_receiver_calls(&reach);
+        self.report_unmodeled_registry_reads(&reach);
         self.report_fresh_field_calls(&reach);
         self.report_constructor_hook_stores(&reach);
         self.report_source_provider_calls(&reach);
+        self.report_unresolved_factory_method_calls(&reach);
         self.report_escaped_flask_login_mutators(&reach);
         self.issues
             .extend(
@@ -11062,6 +12564,9 @@ impl<'a> Graph<'a> {
             self.remove_proven_django_command_option_diagnostics(&reach);
             self.report_django_middleware_calls(&reach);
             self.report_log_record_calls(&reach);
+            self.report_stdlib_logging_calls(&reach);
+            self.retain_source_class_fields(&mut reach);
+            self.retain_discovered_subclasses(&mut reach);
             self.report_django_widget_data_gets(&reach);
             self.report_flask_parameter_hooks(&reach);
         }
@@ -11076,12 +12581,76 @@ impl<'a> Graph<'a> {
         self.report_fastapi_websocket_query_failures(&reach);
         #[cfg(test)]
         let fastapi_initializer_evidence = self.fastapi_initializer_evidence(&reach);
+        let mut imported_declarations = BTreeSet::new();
+        for (&alias, &target) in &self.grep_import_declarations {
+            let symbol = &self.symbols[alias];
+            if self.read.contains(&alias)
+                || reach.symbols.contains(&target)
+                || !reach.scopes.contains(&symbol.scope)
+            {
+                continue;
+            }
+            if verification.evidence.len() >= grep_verification::MAX_EVIDENCE {
+                self.issues.push(grep_verification::evidence_limit());
+                break;
+            }
+            imported_declarations.insert(target);
+            verification.evidence.push(self.verification_evidence(
+                target,
+                &self.files[self.scopes[symbol.scope].file].path,
+                symbol.name.at,
+                "imported_symbol",
+            ));
+        }
+        verification.rescued_count += imported_declarations.len();
+        let package_call_declarations = self.package_call_declarations(&reach);
         let Reachability {
             scopes: reachable_scopes,
             symbols: reachable_symbols,
             evidence,
             ..
         } = reach;
+        // Coverage can omit diagnostics in dormant code. A claim about all
+        // static references still needs the bindings in those scopes.
+        let can_rule_out_references = self.phase03
+            && !partial_sources
+            && !unresolved_receiver_calls
+            && self.issues.is_empty()
+            && self.scope_issues.is_empty();
+        let mut unrooted_references = BTreeMap::<_, bool>::new();
+        if self.phase03 {
+            for edge in self.scopes.iter().flat_map(|scope| &scope.edges) {
+                if !reachable_symbols.contains(&edge.target) {
+                    // Record whether any static reference is a direct call.
+                    *unrooted_references.entry(edge.target).or_default() |=
+                        edge.kind == "direct_call";
+                }
+            }
+            // A from-import references the source binding even if its local
+            // alias is unread. Unknown rebinding order rules out a no-refs
+            // decision for each definition of the imported name.
+            for symbol in &self.symbols {
+                if let Binding::Import(import) = symbol.binding
+                    && let Some(member) = &import.member
+                    && let Some(module) = self.import_module(self.scopes[symbol.scope].file, import)
+                    && let Some(&file) = self.modules.get(module.as_str())
+                    && let Some(bindings) = self.scopes[file].names.get(member.as_str())
+                {
+                    for &id in bindings {
+                        if !reachable_symbols.contains(&id)
+                            && matches!(self.symbols[id].binding, Binding::Definition(..))
+                        {
+                            unrooted_references.entry(id).or_default();
+                        }
+                    }
+                }
+            }
+        }
+        let unrooted_method_callables = if self.phase03 {
+            self.unrooted_method_callables(&reachable_symbols)
+        } else {
+            BTreeSet::new()
+        };
         let django_class_declarations: BTreeSet<_> = evidence
             .iter()
             .filter_map(|&(target, kind, _)| {
@@ -11172,6 +12741,11 @@ impl<'a> Graph<'a> {
             .into_iter()
             .chain(transitive)
             .chain(declaration_evidence)
+            .chain(
+                package_call_declarations
+                    .iter()
+                    .map(|&target| (target, "package_call_reference", "possible")),
+            )
         {
             if is_verification_edge(kind) {
                 continue;
@@ -11217,6 +12791,14 @@ impl<'a> Graph<'a> {
             });
         }
         let mut definitions = BTreeMap::new();
+        let mut unreachable_function_evidence = Vec::new();
+        let deprecated_modules: BTreeSet<_> = if self.phase03 && !partial_sources {
+            (0..self.files.len())
+                .filter(|&file| self.leading_deprecation_warning(file).is_some())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         for (id, symbol) in self.symbols.iter().enumerate() {
             if matches!(symbol.binding, Binding::Deleted) {
                 continue;
@@ -11246,25 +12828,50 @@ impl<'a> Graph<'a> {
                 Binding::Definition(def, _)
                     if !reachable_symbols.contains(&id)
                         && !coverage_declarations.contains(&id)
+                        && !imported_declarations.contains(&id)
+                        && !package_call_declarations.contains(&id)
                         && def.kind != DefinitionKind::Class =>
                 {
+                    let is_method = scope.owner.is_some_and(|id| self.is_class(id));
+                    let reason = if self.phase03
+                        && scope.owner.is_none()
+                        && !self.direct.contains(&id)
+                        && (name.starts_with("format_") || name.ends_with("_name"))
+                    {
+                        WEAK_HELPER_FUNCTION
+                    } else if (is_method && unrooted_method_callables.contains(&id))
+                        || (!is_method && unrooted_references.get(&id) == Some(&true))
+                    {
+                        super::NO_REACHABLE_CALLERS
+                    } else if can_rule_out_references
+                        && scope.owner.is_none()
+                        && !unrooted_references.contains_key(&id)
+                        && !self.read.contains(&id)
+                    {
+                        super::NO_STATIC_REFERENCES
+                    } else {
+                        "no_call_path_from_root"
+                    };
+                    if !is_method
+                        && !partial_sources
+                        && matches!(
+                            reason,
+                            super::NO_REACHABLE_CALLERS | super::NO_STATIC_REFERENCES
+                        )
+                    {
+                        unreachable_function_evidence.push(Evidence {
+                            file: self.files[scope.file].path.clone(),
+                            line: symbol.name.at.line,
+                            full_name: self.full_name(id),
+                            kind: reason,
+                            certainty: "certain",
+                        });
+                    }
                     (
                         Category::Function,
                         "SKY-U001",
-                        if public && scope.owner.is_some_and(|id| self.is_class(id)) {
-                            80
-                        } else {
-                            90
-                        },
-                        if self.phase03
-                            && scope.owner.is_none()
-                            && !self.direct.contains(&id)
-                            && (name.starts_with("format_") || name.ends_with("_name"))
-                        {
-                            WEAK_HELPER_FUNCTION
-                        } else {
-                            "no_call_path_from_root"
-                        },
+                        if public && is_method { 80 } else { 90 },
+                        reason,
                     )
                 }
                 Binding::Import(_) if !self.read.contains(&id) => {
@@ -11340,6 +12947,42 @@ impl<'a> Graph<'a> {
             } else {
                 full_name.clone()
             };
+            if (partial_sources || changed_file_report) && category == Category::Function {
+                let abstention = if unrooted_method_callables.contains(&id) {
+                    Some((
+                        "partial_scope_method_reachability",
+                        "this reporting scope cannot establish that a statically referenced method group has no callers",
+                    ))
+                } else if unrooted_references.get(&id) == Some(&true)
+                    && scope.owner.is_none_or(|owner| !self.is_class(owner))
+                {
+                    Some((
+                        "partial_scope_function_reachability",
+                        "this reporting scope cannot establish that a statically referenced function has no callers",
+                    ))
+                } else {
+                    None
+                };
+                if let Some((kind, message)) = abstention {
+                    self.uncertainties.push(
+                        Issue::new(kind, &self.files[scope.file].path, message)
+                            .at(symbol.name.at)
+                            .with_symbol(name, full_name),
+                    );
+                    continue;
+                }
+            }
+            let method_owner = scope
+                .owner
+                .filter(|&owner| category == Category::Function && self.is_class(owner))
+                .map(|owner| position(self.symbols[owner].name.at));
+            let deprecated_api = self.phase03
+                && !partial_sources
+                && (matches!(symbol.binding, Binding::Definition(definition, body)
+                    if self.deprecated_definition(symbol.scope, body, definition))
+                    || category != Category::Parameter
+                        && method_owner.is_none()
+                        && deprecated_modules.contains(&scope.file));
             findings.push(Finding {
                 category,
                 name,
@@ -11348,12 +12991,14 @@ impl<'a> Graph<'a> {
                 file: self.files[scope.file].path.clone(),
                 line: symbol.name.at.line,
                 column: symbol.name.at.column,
-                method_owner: scope
-                    .owner
-                    .filter(|&owner| category == Category::Function && self.is_class(owner))
-                    .map(|owner| position(self.symbols[owner].name.at)),
+                method_owner,
                 declaration_whitelist: self.framework_class_whitelists.get(&id).copied(),
-                confidence,
+                confidence: if deprecated_api {
+                    confidence.min(40)
+                } else {
+                    confidence
+                },
+                deprecated_api,
                 rule_id,
                 reason,
             });
@@ -11377,6 +13022,7 @@ impl<'a> Graph<'a> {
                     method_owner: None,
                     declaration_whitelist: None,
                     confidence: 100,
+                    deprecated_api: false,
                     rule_id: "SKY-E002",
                     reason: "empty_or_docstring_only",
                 });
@@ -11409,6 +13055,7 @@ impl<'a> Graph<'a> {
             findings,
             definitions,
             evidence: retained,
+            unreachable_function_evidence,
             fastapi_route_declarations,
             #[cfg(test)]
             fastapi_initializer_evidence,
@@ -11433,6 +13080,7 @@ struct Reachability {
     resolved_django_reloader_parameters: BTreeSet<usize>,
     resolved_static_parameter_calls: BTreeSet<usize>,
     resolved_source_provider_calls: BTreeSet<SymbolId>,
+    resolved_factory_method_calls: BTreeSet<usize>,
     closed_class_call_sites: BTreeSet<(ScopeId, [usize; 2], &'static str)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_websocket_query_bindings: BTreeMap<SymbolId, bool>,
@@ -11505,6 +13153,9 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
         match &statement.kind {
             StatementKind::Define(child) => {
                 assigned.insert(child.name.text.as_str());
+                if let Some(target) = &child.default_binding {
+                    assigned.insert(target.text.as_str());
+                }
                 nested_reads.extend(namespace_free_names(child, postponed));
                 expressions.extend(&child.decorators);
                 expressions.extend(&child.bases);
@@ -11521,7 +13172,8 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
             }
             StatementKind::ProjectWildcardImport { .. }
-            | StatementKind::OptionalProjectClassFallback { .. } => {}
+            | StatementKind::OptionalProjectClassFallback { .. }
+            | StatementKind::GuardedProjectImport { .. } => {}
             StatementKind::Assign {
                 names,
                 value,
@@ -11533,7 +13185,8 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                     expressions.extend(annotation);
                 }
             }
-            StatementKind::AssignUnpack { names, value } => {
+            StatementKind::AssignUnpack { names, value }
+            | StatementKind::GuardedLazyUnpack { names, value, .. } => {
                 assigned.extend(names.iter().map(|name| name.text.as_str()));
                 expressions.push(value);
             }
@@ -11597,6 +13250,10 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             StatementKind::DeleteName(name) => {
                 assigned.insert(name.text.as_str());
             }
+            StatementKind::SetNonlocalName { name, value } => {
+                nested_reads.insert(name.text.as_str());
+                expressions.push(value);
+            }
             StatementKind::Assert(value)
             | StatementKind::Evaluate(value)
             | StatementKind::DjangoSettingsGlobalCall(value)
@@ -11612,9 +13269,15 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             }
             ExpressionKind::Member(value, _)
             | ExpressionKind::Not(value)
+            | ExpressionKind::IdentityDefaultLambda(value)
             | ExpressionKind::DeferredLambda(value)
             | ExpressionKind::Await(value) => expressions.push(value),
             ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            }
+            | ExpressionKind::SingleArgumentExpansion {
                 function,
                 arguments,
                 keywords,
@@ -11686,12 +13349,15 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
             | ExpressionKind::ConstantLambda
             | ExpressionKind::NullaryConstantLambda
             | ExpressionKind::DeferredBoolLambda
+            | ExpressionKind::DeferredCallbackLambda
             | ExpressionKind::IdentityLambda
             | ExpressionKind::EmptyListComprehension
             | ExpressionKind::IdentityDecoratorLambda => {}
         }
     }
-    reads.retain(|name| !assigned.contains(name));
+    reads.retain(|name| {
+        !assigned.contains(name) && !definition.global_reads.iter().any(|global| global == name)
+    });
     // Class-local names cannot supply cells to nested functions.
     if !class {
         nested_reads.retain(|name| !assigned.contains(name));
@@ -11704,12 +13370,20 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
 // branches that the runtime index can prove are never executed.
 fn suite_binds_name(body: &[Statement], name: &str) -> bool {
     body.iter().any(|statement| match &statement.kind {
-        StatementKind::Define(definition) => definition.name.text == name,
+        StatementKind::Define(definition) => {
+            definition.name.text == name
+                || definition
+                    .default_binding
+                    .as_ref()
+                    .is_some_and(|target| target.text == name)
+        }
         StatementKind::Import(import) => import.local.text == name,
         StatementKind::ProviderWildcardImport(imports) => {
             imports.iter().any(|import| import.local.text == name)
         }
-        StatementKind::Assign { names, .. } | StatementKind::AssignUnpack { names, .. } => {
+        StatementKind::Assign { names, .. }
+        | StatementKind::AssignUnpack { names, .. }
+        | StatementKind::GuardedLazyUnpack { names, .. } => {
             names.iter().any(|target| target.text == name)
         }
         StatementKind::LiteralRouteLoop { path, .. } => path.text == name,
@@ -11812,6 +13486,12 @@ fn is_identity_decorator(definition: &Definition) -> bool {
         return false;
     };
     returns_parameter(definition, parameter)
+}
+
+fn private_source_spelling<'name>(class: &str, key: &'name str) -> Option<&'name str> {
+    key.strip_prefix('_')?
+        .strip_prefix(class)
+        .filter(|name| is_private_name(name))
 }
 
 fn returns_parameter(definition: &Definition, parameter: &Name) -> bool {
@@ -11983,6 +13663,30 @@ fn is_fastapi_field_marker(name: &str) -> bool {
 
 fn is_typer_constructor(name: &str) -> bool {
     matches!(name, "typer.Typer" | "typer.main.Typer")
+}
+
+fn literal_json_value(expression: &Expression, depth: usize) -> bool {
+    if depth >= MAX_BINDING_CHAIN {
+        return false;
+    }
+    match &expression.kind {
+        ExpressionKind::None
+        | ExpressionKind::Bool(_)
+        | ExpressionKind::Scalar(Some(_))
+        | ExpressionKind::Text(_) => true,
+        ExpressionKind::Sequence { items, .. } => {
+            items.iter().all(|item| literal_json_value(item, depth + 1))
+        }
+        ExpressionKind::Dictionary(items) => {
+            let (pairs, rest) = items.as_chunks::<2>();
+            rest.is_empty()
+                && pairs.iter().all(|[key, value]| {
+                    matches!(key.kind, ExpressionKind::Text(_))
+                        && literal_json_value(value, depth + 1)
+                })
+        }
+        _ => false,
+    }
 }
 
 fn is_known_call(name: &str, phase03: bool) -> bool {
@@ -12389,6 +14093,237 @@ mod tests {
         }
     }
 
+    const LAZY_EXPORT_CONSUMER: &str = "from app import Thing\nThing()\n";
+
+    fn lazy_guard_report(
+        source: &str,
+        shadow: Option<&str>,
+        consumer: &str,
+        app_path: &str,
+    ) -> (BTreeMap<&'static str, String>, Analysis) {
+        let phase03_module = |path: &str, module: &str, source: &str| AnalyzedFile {
+            path: path.into(),
+            module: module.into(),
+            is_package: path.ends_with("__init__.py"),
+            fastapi_router_mode: FastapiRouterMode::Auto,
+            facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+        };
+        let mut files = vec![
+            phase03_module(app_path, "app", source),
+            phase03_module("pkg/__init__.py", "pkg", ""),
+            phase03_module("pkg/mod.py", "pkg.mod", "def Thing(): return 1\n"),
+            phase03_module("consumer.py", "consumer", consumer),
+        ];
+        if let Some(shadow) = shadow {
+            files.push(phase03_module("importlib.py", "importlib", shadow));
+        }
+        let report = analyze_phase03(&files, &[]);
+        let resolved = report
+            .evidence
+            .iter()
+            .filter(|evidence| {
+                // Ignore fixture setup calls in the consumer itself.
+                evidence.file != "consumer.py"
+                    && evidence.kind == "direct_call"
+                    && evidence.certainty == "certain"
+            })
+            .map(|evidence| evidence.full_name.as_str())
+            .collect::<BTreeSet<_>>();
+        let exports = match resolved.into_iter().collect::<Vec<_>>().as_slice() {
+            [] => BTreeMap::new(),
+            [target] => BTreeMap::from([("Thing", (*target).to_owned())]),
+            targets => panic!("the single lazy lookup retained multiple callees: {targets:?}"),
+        };
+        (exports, report)
+    }
+
+    #[test]
+    #[ignore = "requires the original Skylos lazy export proof fixture"]
+    fn pinned_lazy_export_guard() {
+        let fixture =
+            PathBuf::from(std::env::var_os("SKARMORY_PHASE03_LAZY_EXPORT_FIXTURE").unwrap());
+        let output = std::env::var_os("SKARMORY_PHASE03_LAZY_EXPORT_REPORT").unwrap();
+        let source = std::fs::read_to_string(&fixture).unwrap();
+        let shadow = match std::fs::read_to_string(fixture.with_file_name("importlib.py")) {
+            Ok(source) => Some(source),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("unable to read the pinned local importlib provider: {error}"),
+        };
+        let table_control =
+            match std::fs::read_to_string(fixture.with_file_name("lazy-table-control.py")) {
+                Ok(source) => Some(source),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => panic!("unable to read the native lazy table control: {error}"),
+            };
+        // These original table hooks let unknown names raise KeyError. Use
+        // a package for both replays so from-import has a real __path__.
+        let app_path = if table_control.is_some() {
+            "app/__init__.py"
+        } else {
+            "app.py"
+        };
+        let (control, positive) = lazy_guard_report(
+            table_control.as_deref().unwrap_or(&source),
+            None,
+            LAZY_EXPORT_CONSUMER,
+            app_path,
+        );
+        assert!(positive.issues.is_empty(), "{:?}", positive.issues);
+        assert_eq!(control, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
+        let (exports, report) = if shadow.is_some() || table_control.is_some() {
+            lazy_guard_report(&source, shadow.as_deref(), LAZY_EXPORT_CONSUMER, app_path)
+        } else {
+            (control, positive)
+        };
+        let result = serde_json::json!({
+            "exports": exports,
+            "complete": report.issues.is_empty(),
+            "unresolved": report.issues.iter().any(|issue| issue.kind == "unresolved_lazy_export"),
+        });
+        std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn lazy_export_table_requires_stable_rows_and_a_proven_loader() {
+        let table = "_LAZY = {'Thing': ('pkg.mod', 'Thing')}\n";
+        let builtin_hook = "def __getattr__(name):\n    module, attr = _LAZY[name]\n    return getattr(__import__(module, fromlist=[attr]), attr)\n";
+        let guarded_hook = "def __getattr__(name):\n    try:\n        module, attr = _LAZY[name]\n    except KeyError:\n        raise AttributeError(name) from None\n    return getattr(importlib.import_module(module), attr)\n";
+        let builtin = format!("{table}{builtin_hook}");
+        let guarded = format!("import importlib\n{table}{guarded_hook}");
+        for source in [&builtin, &guarded] {
+            let (exports, report) =
+                lazy_guard_report(source, None, LAZY_EXPORT_CONSUMER, "app/__init__.py");
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert_eq!(exports, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
+        }
+
+        for source in [
+            builtin.replace("fromlist=[attr]", "fromlist=[]"),
+            format!("{table}other = _LAZY\n{builtin_hook}"),
+            format!("{table}_LAZY['Thing'] = ('pkg.other', 'Other')\n{builtin_hook}"),
+            format!("{table}rewrite(_LAZY)\n{builtin_hook}"),
+            format!("{table}from other import __import__\n{builtin_hook}"),
+            format!("import importlib\nfrom other import KeyError\n{table}{guarded_hook}"),
+            format!("import importlib\nfrom other import AttributeError\n{table}{guarded_hook}"),
+        ] {
+            let (exports, report) =
+                lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER, "app/__init__.py");
+            assert!(exports.is_empty(), "{source}\n{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{source}\n{:?}",
+                report.issues
+            );
+        }
+        for exposure in [
+            "from app import _LAZY as mapping\nmapping.clear()\n",
+            "import app\napp._LAZY.clear()\n",
+            "from app import __doc__\nimport sys\nsys.modules['app']._LAZY.clear()\n",
+            "getattr(__import__('app'), '_LAZY').clear()\n",
+            "import builtins\nbuiltins.__import__ = None\n",
+            "import builtins\ndef replace():\n    builtins.__import__ = None\nreplace()\n",
+        ] {
+            let consumer = format!("{exposure}{LAZY_EXPORT_CONSUMER}");
+            let (exports, report) = lazy_guard_report(&builtin, None, &consumer, "app/__init__.py");
+            assert!(exports.is_empty(), "{exposure}\n{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{exposure}\n{:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn lazy_export_all_guard_requires_an_unaliased_literal_sequence() {
+        let prefix = "import importlib\n__all__ = ['Thing']\n";
+        let hook = "def __getattr__(name):\n    if name in __all__:\n        return getattr(importlib.import_module('pkg.mod'), name)\n    raise AttributeError(name)\n";
+        let source = format!("{prefix}{hook}");
+        let (exports, report) = lazy_guard_report(&source, None, LAZY_EXPORT_CONSUMER, "app.py");
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(exports, BTreeMap::from([("Thing", "pkg.mod.Thing".into())]));
+
+        for intervening in [
+            "__all__.clear()\n",
+            "other = __all__\nother.clear()\n",
+            "__all__ = []\n",
+        ] {
+            let (exports, report) = lazy_guard_report(
+                &format!("{prefix}{intervening}{hook}"),
+                None,
+                LAZY_EXPORT_CONSUMER,
+                "app.py",
+            );
+            assert!(exports.is_empty(), "{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{:?}",
+                report.issues
+            );
+        }
+
+        for exposure in [
+            "import app\napp.__all__.clear()\n",
+            "from app import __all__ as names\nnames.clear()\n",
+            "import app\napp.__all__ = []\n",
+        ] {
+            let consumer = format!("{exposure}{LAZY_EXPORT_CONSUMER}");
+            let (exports, report) = lazy_guard_report(&source, None, &consumer, "app.py");
+            assert!(exports.is_empty(), "{exports:?}");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_lazy_export"),
+                "{:?}",
+                report.issues
+            );
+            assert!(
+                !report
+                    .evidence
+                    .iter()
+                    .any(|row| row.kind == "public_export" && row.full_name == "pkg.mod.Thing")
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the original mixed Click analysis fixture"]
+    fn pinned_click_dead_code_control() {
+        let fixture = std::env::var_os("SKARMORY_PHASE03_CLICK_CONTROL_FIXTURE").unwrap();
+        let output = std::env::var_os("SKARMORY_PHASE03_CLICK_CONTROL_REPORT").unwrap();
+        let source = std::fs::read_to_string(fixture).unwrap();
+        let report = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+        let declarations: BTreeSet<_> = report
+            .evidence
+            .iter()
+            .filter(|row| row.full_name == "app.entry" && row.kind == "click_command_declaration")
+            .map(|row| row.certainty)
+            .collect();
+        let entry_called = report.evidence.iter().any(|row| {
+            row.full_name == "app.entry" && matches!(row.kind, "direct_call" | "grep_dynamic_call")
+        });
+        let result = serde_json::json!({
+            "complete": report.issues.is_empty(),
+            "unused": report.findings.iter()
+                .filter(|row| row.category == Category::Function)
+                .map(|row| &row.full_name)
+                .collect::<BTreeSet<_>>(),
+            "entry_declarations": declarations,
+            "entry_called": entry_called,
+        });
+        std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
     #[test]
     fn fastapi_initializer_limit_withholds_affected_routes_and_preserves_an_independent_app() {
         let route =
@@ -12477,6 +14412,42 @@ mod tests {
         std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
     }
 
+    #[test]
+    #[ignore = "requires the pinned FastAPI truth-chain fixture"]
+    fn pinned_fastapi_truth_chain() {
+        let fixture = std::env::var_os("SKARMORY_PHASE03_FASTAPI_TRUTH_FIXTURE").unwrap();
+        let output = std::env::var_os("SKARMORY_PHASE03_FASTAPI_TRUTH_REPORT").unwrap();
+        let source = std::fs::read_to_string(fixture).unwrap();
+        let report = analyze_phase03(&[module("app.py", "app", &source)], &[]);
+        assert!(
+            report.definitions.values().any(|row| {
+                row.name == "app.endpoint" && row.kind == "function" && row.line == 3
+            })
+        );
+        let registrations: Vec<_> = report
+            .evidence
+            .iter()
+            .filter(|row| row.kind == "fastapi_registration")
+            .collect();
+        let locations = |certainty| {
+            registrations
+                .iter()
+                .filter(move |row| row.certainty == certainty)
+                .map(|row| (&row.file, row.line))
+                .collect::<BTreeSet<_>>()
+        };
+        let result = serde_json::json!({
+            "complete": report.issues.is_empty(),
+            "issues": report.issues,
+            "candidates": report.fastapi_route_declarations.iter()
+                .map(|row| (&row.file, row.line))
+                .collect::<BTreeSet<_>>(),
+            "roots": locations("certain"),
+            "uncertain": locations("possible"),
+        });
+        std::fs::write(output, serde_json::to_vec(&result).unwrap()).unwrap();
+    }
+
     fn names(result: &Analysis, category: Category) -> Vec<&str> {
         let mut names: Vec<_> = result
             .findings
@@ -12486,6 +14457,381 @@ mod tests {
             .collect();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn literal_pathlib_constructors_resolve_imports_without_invoking_fspath() {
+        let packages = [
+            module("pkg/__init__.py", "pkg", ""),
+            module("pkg/unused.py", "pkg.unused", "from pathlib import Path\n"),
+            module("pkg/tools.py", "pkg.tools", "from pathlib import Path\n"),
+            module(
+                "pkg/app.py",
+                "pkg.app",
+                "from pathlib import PurePath\nfrom pkg.tools import Path\nprint(Path('.'), PurePath('src'))\n",
+            ),
+        ];
+        let report = analyze_phase03(&packages, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        let unused: Vec<_> = report
+            .findings
+            .iter()
+            .filter_map(|finding| {
+                (finding.category == Category::Import).then_some(finding.file.as_str())
+            })
+            .collect();
+        assert_eq!(unused, ["pkg/unused.py"]);
+
+        for source in [
+            "from pathlib import Path\nclass Input:\n    def __fspath__(self): return '.'\nPath(Input())\n",
+            "from pathlib import Path\ndef replace(cls, value): return value\nPath.__new__ = replace\nPath('.')\n",
+        ] {
+            let report = analyze_phase03(&[module("app.py", "app", source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"),
+                "{:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_closure_call_reads_both_prior_import_arms() {
+        let report = analyze_phase03(
+            &[module(
+                "app.py",
+                "app",
+                r#"def choose(flag):
+    from math import floor as reader
+    if flag:
+        from json import loads as reader
+    else:
+        from pickle import loads as reader
+
+    def build():
+        return reader
+
+    return build()
+
+print(choose(True))
+"#,
+            )],
+            &[],
+        );
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Import), ["floor"]);
+    }
+
+    #[test]
+    fn matching_lazy_lookup_preserves_only_its_type_import() {
+        let package = |contents: &str| module("pkg/__init__.py", "pkg", contents);
+        let provider = || {
+            module(
+                "pkg/models.py",
+                "pkg.models",
+                "class Entry: pass\nclass Unlisted: pass\n",
+            )
+        };
+        let source = r#"import importlib
+from typing import TYPE_CHECKING as CHECK_TYPES
+if CHECK_TYPES:
+    from pkg.models import Entry, Unlisted
+__all__ = ["Entry"]
+
+def __getattr__(name):
+    if name == "Entry":
+        return getattr(importlib.import_module("pkg.models"), name)
+    raise AttributeError(name)
+"#;
+
+        for contents in [
+            source.to_owned(),
+            source.replace(
+                r#"        return getattr(importlib.import_module("pkg.models"), name)"#,
+                "        loaded = importlib.import_module(\"pkg.models\")\n        return getattr(loaded, name)",
+            ),
+        ] {
+            let report = analyze_phase03(&[package(&contents), provider()], &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert_eq!(names(&report, Category::Import), ["Unlisted"]);
+            assert!(report.evidence.iter().any(|edge| {
+                edge.full_name == "pkg.models.Entry" && edge.kind == "public_export"
+            }));
+        }
+
+        let unlisted = source.replace(r#"["Entry"]"#, "[]");
+        let report = analyze_phase03(&[package(&unlisted), provider()], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Import), ["Unlisted"]);
+        assert!(
+            !report.evidence.iter().any(|edge| {
+                edge.full_name == "pkg.models.Entry" && edge.kind == "public_export"
+            })
+        );
+
+        for contents in [
+            unlisted.replace(r#"("pkg.models"), name)"#, r#"("pkg.other"), name)"#),
+            unlisted.replace(
+                "from typing import",
+                "importlib.import_module = print\nfrom typing import",
+            ),
+            unlisted.replace("if CHECK_TYPES:", "CHECK_TYPES = True\nif CHECK_TYPES:"),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    package(&contents),
+                    provider(),
+                    module("pkg/other.py", "pkg.other", "class Entry: pass\n"),
+                ],
+                &[],
+            );
+            assert!(
+                names(&report, Category::Import).contains(&"Entry"),
+                "{:?}",
+                report.findings
+            );
+        }
+    }
+
+    #[test]
+    fn annotated_lazy_table_preserves_its_matching_type_import() {
+        let source = r#"from typing import TYPE_CHECKING, Any
+if TYPE_CHECKING:
+    from pkg.models import Entry, Unlisted
+_LAZY = {"Entry": ("pkg.models", "Entry")}
+__all__ = []
+
+def __getattr__(name: str) -> Any:
+    module, attribute = _LAZY[name]
+    return getattr(__import__(module, fromlist=[attribute]), attribute)
+"#;
+        for (contents, used) in [
+            (source.to_owned(), true),
+            (source.replace("name: str", "name: factory()"), false),
+            (
+                source.replace("pkg.models\", \"Entry\"", "pkg.models\", \"Unlisted\""),
+                false,
+            ),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("pkg/__init__.py", "pkg", &contents),
+                    module(
+                        "pkg/models.py",
+                        "pkg.models",
+                        "class Entry: pass\nclass Unlisted: pass\n",
+                    ),
+                ],
+                &[],
+            );
+            let imports = names(&report, Category::Import);
+            assert_eq!(!imports.contains(&"Entry"), used, "{contents}\n{imports:?}");
+            assert!(imports.contains(&"Unlisted"), "{contents}\n{imports:?}");
+            if used {
+                assert!(report.issues.is_empty(), "{:?}", report.issues);
+                assert!(
+                    !report
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.kind == "public_export")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn module_level_dotted_import_can_supply_a_later_definition() {
+        let body = "def run():\n    print('pkg.mod.time is slow here')\n    return pkg.mod.json.dumps({})\n# pkg.mod.os is patched here\n";
+        for (source, attached) in [
+            (format!("import pkg.mod\n{body}"), true),
+            (format!("{body}\nrun()\nimport pkg.mod\n"), false),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("pkg/__init__.py", "pkg", ""),
+                    module(
+                        "pkg/mod.py",
+                        "pkg.mod",
+                        "import json\nimport os\nimport time\n",
+                    ),
+                    module("pkg/other.py", "pkg.other", &source),
+                ],
+                &[],
+            );
+            let imports = names(&report, Category::Import);
+            assert_eq!(
+                !imports.contains(&"json"),
+                attached,
+                "{source}\n{imports:?}"
+            );
+            assert!(
+                imports.contains(&"time") && imports.contains(&"os"),
+                "{imports:?}"
+            );
+            assert_eq!(report.issues.is_empty(), attached, "{:?}", report.issues);
+        }
+    }
+
+    #[test]
+    fn module_reader_sees_an_exhaustive_import_or_definition_after_initialization() {
+        let imported = "from pkg.core import fast";
+        let fallback = "def fast(value): return value";
+        let reader = "def use(): return fast(1)\n";
+        let branch = |yes, no| format!("if sys.platform == 'win32':\n    {yes}\nelse:\n    {no}\n");
+        for (source, complete) in [
+            (
+                format!("import sys\n{reader}{}", branch(imported, fallback)),
+                true,
+            ),
+            (
+                format!("import sys\n{}{reader}", branch(fallback, imported)),
+                true,
+            ),
+            (
+                format!("import sys\n{reader}use()\n{}", branch(imported, fallback)),
+                false,
+            ),
+            (
+                format!("import sys\n{reader}{}", branch(imported, "pass")),
+                false,
+            ),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("pkg/__init__.py", "pkg", ""),
+                    module("pkg/core.py", "pkg.core", "def fast(value): return value\n"),
+                    module("pkg/mod.py", "pkg.mod", &source),
+                    module("main.py", "main", "from pkg.mod import use\nuse()\n"),
+                ],
+                &[],
+            );
+            assert_eq!(
+                report.issues.is_empty(),
+                complete,
+                "{source}\n{:?}",
+                report.issues
+            );
+            if complete {
+                assert!(
+                    names(&report, Category::Import).is_empty(),
+                    "{source}\n{:?}",
+                    report.findings
+                );
+                assert!(
+                    report
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.full_name == "pkg.core.fast"
+                            && edge.kind == "direct_call"
+                            && edge.certainty == "possible")
+                );
+                assert!(
+                    report
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.full_name == "pkg.mod.fast"
+                            && edge.kind == "direct_call"
+                            && edge.certainty == "possible")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lazy_provider_replacement_remains_an_unmodeled_write() {
+        let report = analyze_phase03(
+            &[module(
+                "main.py",
+                "main",
+                "import importlib\ndef substitute(name): return None\nimportlib.import_module = substitute\n",
+            )],
+            &[],
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_attribute_write"),
+            "{:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn quoted_annotations_keep_type_imports_without_reading_metadata_or_executing_calls() {
+        let source = r#"from typing import Annotated as Meta, Literal as Choice, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from types_local import Context, Parameter
+from types_local import Metadata, Option, Numeric, Tagged, create
+
+def use(nested: "Optional['Parameter']", direct: Meta["Context", "Metadata"],
+        choice: Choice["Option"], unevaluated: "create()",
+        numeric: "Meta[Numeric, 1]", tagged: "Meta[Tagged, create(Metadata)]"):
+    return nested, direct, choice, unevaluated, numeric, tagged
+
+use(None, None, None, None, None, None)
+"#;
+        for future in ["", "from __future__ import annotations\n"] {
+            let code = format!("{future}{source}");
+            let mut app = module("app.py", "app", "");
+            app.facts = skarmory_python::phase02::extract_with_project_wildcards(&code).unwrap();
+            let result = analyze_phase03(
+                &[
+                    app,
+                    module(
+                        "types_local.py",
+                        "types_local",
+                        "class Context: pass\nclass Parameter: pass\nclass Metadata: pass\nclass Option: pass\nclass Numeric: pass\nclass Tagged: pass\ndef create(value): return 3\n",
+                    ),
+                ],
+                &[],
+            );
+            assert!(result.issues.is_empty(), "{:?}", result.issues);
+            assert_eq!(
+                names(&result, Category::Import),
+                ["Metadata", "Option", "create"]
+            );
+            assert!(names(&result, Category::Function).contains(&"create"));
+        }
+    }
+
+    #[test]
+    fn quoted_annotations_keep_each_feasible_import_binding() {
+        let source = r#"import os
+from models import Unreachable as Payload
+if os.getenv('FIRST'):
+    from models import First as Payload
+else:
+    from models import Second as Payload
+if os.getenv('REPLACE'):
+    from models import Kept as Item
+else:
+    Item = int
+
+def endpoint(value: 'Payload', optional: 'Item'):
+    return value, optional
+"#;
+        let files = [
+            module("app.py", "app", source),
+            module(
+                "models.py",
+                "models",
+                "class Unreachable: pass\nclass First: pass\nclass Second: pass\nclass Kept: pass\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let unused: Vec<_> = result
+            .findings
+            .iter()
+            .filter_map(|finding| {
+                (finding.category == Category::Import).then_some(finding.full_name.as_str())
+            })
+            .collect();
+        assert_eq!(unused, ["models.Unreachable"]);
     }
 
     #[test]
@@ -14793,6 +17139,40 @@ async def unused():
     }
 
     #[test]
+    fn phase03_math_sqrt_requires_a_bounded_scalar_input() {
+        let scalar = [module(
+            "app.py",
+            "app",
+            "from math import sqrt as root\nRESULT = root(16)\n",
+        )];
+        let report = analyze_phase03(&scalar, &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(names(&report, Category::Variable), ["RESULT"]);
+
+        let custom = [module(
+            "app.py",
+            "app",
+            r#"import math
+
+class Custom:
+    def __float__(self):
+        return 16.0
+
+math.sqrt(Custom())
+"#,
+        )];
+        let report = analyze_phase03(&custom, &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unresolved_call"),
+            "{:?}",
+            report.issues
+        );
+    }
+
+    #[test]
     fn scalar_local_namespace_equality_rules_out_unrelated_hooks() {
         for (expression, expected_issues) in [
             ("collect() == {'enabled': True}", 0),
@@ -15412,6 +17792,440 @@ def explicit(source):
     }
 
     #[test]
+    fn phase03_final_local_closure_call_uses_the_binding_at_invocation() {
+        let source = r#"def early(): return 1
+def late(): return 2
+def outer():
+    target = early
+    def closure():
+        return target()
+    target = late
+    return closure()
+outer()
+"#;
+        let report = analyze_phase03(&[module("main.py", "main", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.late" && edge.kind == "direct_call" })
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.early" && edge.kind == "direct_call" })
+        );
+
+        let earlier_call = source.replace("    target = late", "    closure()\n    target = late");
+        let report = analyze_phase03(&[module("main.py", "main", &earlier_call)], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "ambiguous_binding")
+        );
+    }
+
+    #[test]
+    fn phase03_nonlocal_setter_uses_the_active_alias_at_its_call() {
+        let scan = |source: &str| {
+            let file = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+            };
+            analyze_phase03(&[file], &[])
+        };
+        let reassigned = r#"def old(): return 1
+def selected(): return 2
+def configure():
+    replacement = old
+    active = replacement
+    def install():
+        nonlocal active
+        active = replacement
+    def invoke():
+        return active()
+    replacement = selected
+    install()
+    return invoke()
+configure()
+"#;
+        let private = r#"def old(): return 1
+def selected(): return 2
+class Service:
+    def configure(self):
+        active = old
+        __replacement = selected
+        def install():
+            nonlocal active
+            active = _Service__replacement
+        def invoke():
+            return active()
+        install()
+        return invoke()
+Service().configure()
+"#;
+        let private_unmangled = private.replace("_Service__replacement", "__replacement");
+        for source in [reassigned, private, &private_unmangled] {
+            let report = scan(source);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(
+                report.evidence.iter().any(|edge| {
+                    edge.full_name == "main.selected" && edge.kind == "direct_call"
+                })
+            );
+            assert!(names(&report, Category::Function).contains(&"old"));
+        }
+
+        let later_assignment = reassigned.replace(
+            "    replacement = selected\n    install()",
+            "    install()\n    replacement = selected",
+        );
+        let report = scan(&later_assignment);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == "unsupported_construct"
+                && issue.message == "nonlocal assignment has no bounded closure call"
+        }));
+
+        let finalizing_overwrite = format!(
+            "def release(): pass\nclass Resource:\n    def __del__(self): release()\n{}",
+            reassigned.replace(
+                "    replacement = old\n    active = replacement",
+                "    replacement = Resource()\n    active = old",
+            )
+        );
+        let report = scan(&finalizing_overwrite);
+        assert!(report.issues.iter().any(|issue| {
+            issue.kind == "unsupported_construct"
+                && issue.message == "nonlocal assignment has no bounded closure call"
+        }));
+    }
+
+    #[test]
+    fn phase03_nonlocal_setter_requires_a_terminal_cell_read() {
+        let scan = |source: &str| {
+            let file = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+            };
+            analyze_phase03(&[file], &[])
+        };
+        let source = r#"def initial(): return 1
+def replacement(): return 2
+def final_task(): return 3
+def configure():
+    task = initial
+    def install():
+        nonlocal task
+        task = replacement
+    def invoke():
+        return task()
+    install()
+    return invoke()
+configure()
+"#;
+        let report = scan(source);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.replacement" && edge.kind == "direct_call" })
+        );
+        assert!(names(&report, Category::Function).contains(&"initial"));
+
+        let intermediate_read = source.replace(
+            "    return invoke()",
+            "    saved = task\n    result = saved()\n    task = final_task\n    return invoke()",
+        );
+        let argument_read = source
+            .replace("def invoke():", "def invoke(result):")
+            .replace("    return invoke()", "    return invoke(task())");
+        for source in [intermediate_read, argument_read] {
+            let report = scan(&source);
+            assert!(
+                report.issues.iter().any(|issue| {
+                    issue.kind == "unsupported_construct"
+                        && issue.message == "nonlocal assignment has no bounded closure call"
+                }),
+                "{:?}",
+                report.issues
+            );
+        }
+    }
+
+    #[test]
+    fn phase03_closure_reads_the_rebound_receiver_at_the_terminal_call() {
+        let classes = "\
+class First:
+    def work(self): return 1
+class Second:
+    def work(self): return 2
+";
+        for (source, possible) in [
+            (
+                "
+def run():
+    selected = First()
+    def install():
+        nonlocal selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+def run():
+    selected = First()
+    def install():
+        def write():
+            nonlocal selected
+            selected = Second()
+        write()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+selected = First()
+def run():
+    def install():
+        global selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+run()
+",
+                false,
+            ),
+            (
+                "
+from external import dispatch
+def run():
+    selected = First()
+    def install():
+        nonlocal selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    dispatch(install)
+    return execute()
+run()
+",
+                true,
+            ),
+            (
+                "
+from external import choose
+def run():
+    if choose():
+        selected = First()
+    else:
+        selected = Second()
+    def execute():
+        return selected.work()
+    return execute()
+run()
+",
+                true,
+            ),
+        ] {
+            let source = format!("{classes}{source}");
+            let main = AnalyzedFile {
+                path: "main.py".into(),
+                module: "main".into(),
+                is_package: false,
+                fastapi_router_mode: FastapiRouterMode::Auto,
+                facts: skarmory_python::phase02::extract_with_project_wildcards(&source).unwrap(),
+            };
+            let external = module(
+                "external.py",
+                "external",
+                "def dispatch(callback):\n    if __debug__:\n        callback()\n\ndef choose():\n    return __debug__\n",
+            );
+            let files = if possible {
+                vec![main, external]
+            } else {
+                vec![main]
+            };
+            let result = analyze_phase03(&files, &[]);
+            assert!(result.issues.is_empty(), "{source}\n{:?}", result.issues);
+            let called = |name, certainty| {
+                result.evidence.iter().any(|edge| {
+                    edge.full_name == name
+                        && edge.kind == "direct_call"
+                        && edge.certainty == certainty
+                })
+            };
+            assert!(
+                called(
+                    "main.Second.work",
+                    if possible { "possible" } else { "certain" }
+                ),
+                "{source}"
+            );
+            assert_eq!(called("main.First.work", "possible"), possible, "{source}");
+            assert!(!called("main.First.work", "certain"), "{source}");
+        }
+    }
+
+    #[test]
+    fn phase03_global_cell_replay_requires_the_only_invocation_to_be_last() {
+        let source = r#"
+class First:
+    def work(self): return 1
+    def extra(self): return 3
+class Second:
+    def work(self): return 2
+    def extra(self): return 4
+
+selected = First()
+
+def run():
+    def install():
+        global selected
+        selected = Second()
+    def execute():
+        return selected.work()
+    install()
+    return execute()
+
+run()
+selected.extra()
+run()
+"#;
+        let file = AnalyzedFile {
+            path: "main.py".into(),
+            module: "main".into(),
+            is_package: false,
+            fastapi_router_mode: FastapiRouterMode::Auto,
+            facts: skarmory_python::phase02::extract_with_project_wildcards(source).unwrap(),
+        };
+        let report = analyze_phase03(&[file], &[]);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "unsupported_construct"),
+            "{:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn phase03_recursive_closure_does_not_reuse_its_initial_receiver() {
+        let source = r#"class Primary:
+    def run(self): return 1
+class Fallback:
+    def run(self): return 2
+depth = 1
+def outer():
+    def invoke(worker, budget):
+        return worker.run()
+    return invoke(Primary(), depth)
+outer()
+"#;
+        let report = analyze_phase03(&[module("main.py", "main", source)], &[]);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|edge| { edge.full_name == "main.Primary.run" && edge.kind == "direct_call" })
+        );
+
+        for recursive_branch in [
+            "        if budget:\n            return invoke(Fallback(), 0)\n",
+            "        if budget:\n            again = invoke\n            return again(Fallback(), 0)\n",
+        ] {
+            let source = source.replace(
+                "        return worker.run()",
+                &format!("{recursive_branch}        return worker.run()"),
+            );
+            let report = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_call"),
+                "{:?}",
+                report.issues
+            );
+            assert!(!report.evidence.iter().any(|edge| {
+                edge.full_name == "main.Primary.run" && edge.kind == "direct_call"
+            }));
+        }
+    }
+
+    #[test]
+    fn phase03_returned_closure_requires_the_factory_to_be_reached() {
+        let source = r#"def leaf(): return 1
+def factory():
+    def callback():
+        return leaf()
+    return callback
+"#;
+        let dormant = analyze_phase03(&[module("main.py", "main", source)], &[]);
+        assert!(dormant.issues.is_empty(), "{:?}", dormant.issues);
+        assert!(names(&dormant, Category::Function).contains(&"leaf"));
+
+        let source = format!("{source}handler = factory()\nhandler()\n");
+        let active = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+        assert!(active.issues.is_empty(), "{:?}", active.issues);
+        assert!(active.evidence.iter().any(|edge| {
+            edge.full_name == "main.factory.callback" && edge.kind == "direct_call"
+        }));
+        assert!(!names(&active, Category::Function).contains(&"leaf"));
+    }
+
+    #[test]
+    fn phase03_literal_callback_registry_retains_closures_and_rejects_unmodeled_reads() {
+        for (initializer, write) in [
+            ("[]", "registry.append(callback)"),
+            ("{}", "registry['key'] = callback"),
+        ] {
+            let source = format!(
+                "registry = {initializer}\ndef leaf(): return 1\ndef populate():\n    def callback():\n        return leaf()\n    {write}\npopulate()\n"
+            );
+            let report = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+            assert!(report.issues.is_empty(), "{:?}", report.issues);
+            assert!(report.evidence.iter().any(|edge| {
+                edge.full_name == "main.populate.callback" && edge.kind == "callback_registry"
+            }));
+            assert!(!names(&report, Category::Function).contains(&"leaf"));
+
+            let source = format!("{source}print(registry)\n");
+            let report = analyze_phase03(&[module("main.py", "main", &source)], &[]);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.kind == "unresolved_registry_read")
+            );
+        }
+    }
+
+    #[test]
     fn subclass_hooks_follow_executed_class_definitions() {
         let base = "def helper():\n    pass\nclass Base:\n    def __init_subclass__(cls):\n        helper()\n";
         for (child, active) in [
@@ -16026,6 +18840,31 @@ Contact({'phone': '123', 'private': 'confirmed'}).is_valid()
         assert!(result.evidence.iter().any(|entry| {
             entry.full_name == "child_urls.Child.get" && entry.kind == "framework_lifecycle"
         }));
+    }
+
+    #[test]
+    fn phase03_direct_django_settings_assignment_overrides_the_default() {
+        let files = [
+            module("config.py", "config", "DEBUG = True\nunused_value = 1\n"),
+            module("dormant.py", "dormant", "DEBUG = False\n"),
+            module(
+                "wsgi.py",
+                "wsgi",
+                "import os as environment\nimport django\nenvironment.environ.setdefault('DJANGO_SETTINGS_MODULE', 'dormant')\nenvironment.environ['DJANGO_SETTINGS_MODULE'] = 'config'\ndjango.setup()\n",
+            ),
+        ];
+        let result = analyze_phase03(&files, &[]);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let unused: BTreeSet<_> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.category == Category::Variable)
+            .map(|finding| finding.full_name.as_str())
+            .collect();
+        assert_eq!(
+            unused,
+            BTreeSet::from(["config.unused_value", "dormant.DEBUG"])
+        );
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub(super) struct Exclusion {
     pub(super) reason: &'static str,
 }
 
+const CONVENTIONAL_PYTHON_ROOTS: &[&str] = &["src", "lib", "python"];
+
 pub(super) struct Project {
     pub files: Vec<SourceFile>,
     pub roots: Vec<String>,
@@ -42,6 +44,7 @@ pub(super) struct Project {
     directories: BTreeMap<PathBuf, DirectoryEntries>,
     ambiguous: BTreeSet<usize>,
     include_javascript: bool,
+    selected_package: bool,
 }
 
 pub(super) struct SourceFile {
@@ -133,7 +136,7 @@ pub(super) fn discover_filtered(
     entry: FileEntry<'_>,
     selection: Option<&Selection>,
 ) -> Project {
-    discover_sources(path, roots, entry, selection, false)
+    discover_sources(path, roots, entry, selection, false, false)
 }
 
 pub(super) fn discover_sources(
@@ -142,6 +145,7 @@ pub(super) fn discover_sources(
     entry: FileEntry<'_>,
     selection: Option<&Selection>,
     include_javascript: bool,
+    infer_package: bool,
 ) -> Project {
     let mut project = Project {
         files: Vec::new(),
@@ -156,6 +160,7 @@ pub(super) fn discover_sources(
         directories: BTreeMap::new(),
         ambiguous: BTreeSet::new(),
         include_javascript,
+        selected_package: false,
     };
     let path = normalized(path);
     let (input, metadata) = match checked_path(&path) {
@@ -270,7 +275,30 @@ pub(super) fn discover_sources(
             discovered,
         });
     }
-    project.identify_files(&selected_roots, entry_path.as_deref(), selection.is_some());
+    if infer_package
+        && !input_file
+        && project
+            .files_by_path
+            .contains_key(&project.base.join("__init__.py"))
+        && project
+            .base
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(skarmory_python::simple_name)
+        && let Some(parent) = project.base.parent()
+    {
+        // The enclosing directory supplies the import prefix only. Keep the
+        // scan and all labels relative to the selected package directory.
+        project.search = vec![parent.to_owned()];
+        project.import_roots = vec![project.label(parent)];
+        project.selected_package = true;
+        project.identify_files(&[], None, selection.is_some());
+    } else if infer_package && !input_file {
+        project.infer_python_source_roots();
+        project.identify_files(&[], None, selection.is_some());
+    } else {
+        project.identify_files(&selected_roots, entry_path.as_deref(), selection.is_some());
+    }
     if let Some(path) = entry_path {
         project.script = project.files_by_path.get(&path).copied();
         if project.script.is_none() {
@@ -291,6 +319,54 @@ pub(super) fn discover_sources(
 }
 
 impl Project {
+    fn infer_python_source_roots(&mut self) {
+        // Keep the established src layout. Infer other conventional roots
+        // only when they contain a selected package and do not alias a
+        // module or package that an earlier root already supplies.
+        let mut roots = Vec::new();
+        for name in CONVENTIONAL_PYTHON_ROOTS {
+            let directory = self.base.join(name);
+            let Some(entries) = self.directories.get(&directory) else {
+                continue;
+            };
+            if entries.iter().any(|(name, _)| name == "__init__.py") {
+                continue;
+            }
+            if *name != "src"
+                && (!entries.iter().any(|(name, kind)| {
+                    *kind == SeenEntry::Directory
+                        && self
+                            .files_by_path
+                            .contains_key(&directory.join(name).join("__init__.py"))
+                }) || entries.iter().any(|(entry, kind)| {
+                    let Some(module) = entry_module_name(entry, *kind) else {
+                        return true;
+                    };
+                    skarmory_python::simple_name(module)
+                        && self
+                            .search
+                            .iter()
+                            .chain(&roots)
+                            .any(|root| !self.import_name_absent(root, module))
+                }))
+            {
+                continue;
+            }
+            roots.push(directory);
+        }
+        roots.append(&mut self.search);
+        self.import_roots = roots.iter().map(|root| self.label(root)).collect();
+        self.search = roots;
+    }
+
+    pub(super) fn package_reference_boundary(&self, path: &str) -> bool {
+        self.selected_package
+            || self.import_roots.iter().any(|root| {
+                CONVENTIONAL_PYTHON_ROOTS.contains(&root.as_str())
+                    && Path::new(path).starts_with(root)
+            })
+    }
+
     fn entry_path(&mut self, input: Option<&PathBuf>, entry: FileEntry<'_>) -> Option<PathBuf> {
         let candidate = match entry {
             FileEntry::None => return None,
@@ -705,7 +781,9 @@ impl Project {
             return false;
         };
         package.components().count() == 1
-            && self.search.iter().all(|root| root == &self.base)
+            && package
+                .to_str()
+                .is_some_and(|name| self.no_other_import_root_supplies(name))
             && self.package_submodule_absent(package, module)
     }
 
@@ -727,7 +805,10 @@ impl Project {
         module: &str,
         source: Option<&str>,
     ) -> bool {
-        if self.search.iter().any(|root| root != &self.base)
+        if !package
+            .split('.')
+            .next()
+            .is_some_and(|name| self.no_other_import_root_supplies(name))
             || !skarmory_python::simple_name(module)
         {
             return false;
@@ -771,7 +852,7 @@ impl Project {
         Path::new(source)
             .parent()
             .is_some_and(|parent| parent.as_os_str().is_empty())
-            && self.search.iter().all(|root| root == &self.base)
+            && self.no_other_import_root_supplies(module)
             && self.directories.get(&self.base).is_some_and(|entries| {
                 !entries.iter().any(|(name, kind)| {
                     name != OsStr::new(source) && entry_may_supply_module(name, *kind, module)
@@ -780,12 +861,25 @@ impl Project {
     }
 
     pub(super) fn top_level_module_absent(&self, module: &str) -> bool {
-        std::iter::once(&self.base).chain(&self.search).all(|root| {
-            self.directories.get(root).is_some_and(|entries| {
-                !entries
-                    .iter()
-                    .any(|(name, kind)| entry_may_supply_module(name, *kind, module))
-            })
+        std::iter::once(&self.base)
+            .chain(&self.search)
+            .all(|root| self.import_name_absent(root, module))
+    }
+
+    fn no_other_import_root_supplies(&self, module: &str) -> bool {
+        self.search.contains(&self.base)
+            && self
+                .search
+                .iter()
+                .filter(|root| *root != &self.base)
+                .all(|root| self.import_name_absent(root, module))
+    }
+
+    fn import_name_absent(&self, root: &Path, module: &str) -> bool {
+        self.directories.get(root).is_some_and(|entries| {
+            !entries
+                .iter()
+                .any(|(name, kind)| entry_may_supply_module(name, *kind, module))
         })
     }
 
@@ -883,14 +977,16 @@ pub(super) fn is_javascript_context(name: &OsStr) -> bool {
     })
 }
 
-fn entry_may_supply_module(name: &OsStr, kind: SeenEntry, module: &str) -> bool {
-    name.to_str().is_none_or(|name| {
-        let candidate = match kind {
-            SeenEntry::Directory | SeenEntry::LinkedDirectory => name,
-            _ => name.split('.').next().unwrap_or(name),
-        };
-        candidate.eq_ignore_ascii_case(module)
+fn entry_module_name(name: &OsStr, kind: SeenEntry) -> Option<&str> {
+    let name = name.to_str()?;
+    Some(match kind {
+        SeenEntry::Directory | SeenEntry::LinkedDirectory => name,
+        _ => name.split('.').next().unwrap_or(name),
     })
+}
+
+fn entry_may_supply_module(name: &OsStr, kind: SeenEntry, module: &str) -> bool {
+    entry_module_name(name, kind).is_none_or(|name| name.eq_ignore_ascii_case(module))
 }
 
 /// Record entries that can affect source selection or module resolution.

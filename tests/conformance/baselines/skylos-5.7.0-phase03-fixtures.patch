@@ -1,0 +1,1676 @@
+diff --git a/corpus/fixtures/django_appconfig.py b/corpus/fixtures/django_appconfig.py
+deleted file mode 100644
+index 5876275..0000000
+--- a/corpus/fixtures/django_appconfig.py
++++ /dev/null
+@@ -1,16 +0,0 @@
+-from django.apps import AppConfig
+-
+-
+-class DemoConfig(AppConfig):
+-    name = "demo"
+-
+-    def ready(self):
+-        return None
+-
+-
+-class StagingConfig:
+-    pass
+-
+-
+-def inspect_config():
+-    return None
+diff --git a/corpus/fixtures/django_appconfig/demo/__init__.py b/corpus/fixtures/django_appconfig/demo/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_appconfig/demo/apps.py b/corpus/fixtures/django_appconfig/demo/apps.py
+new file mode 100644
+index 0000000..5876275
+--- /dev/null
++++ b/corpus/fixtures/django_appconfig/demo/apps.py
+@@ -0,0 +1,16 @@
++from django.apps import AppConfig
++
++
++class DemoConfig(AppConfig):
++    name = "demo"
++
++    def ready(self):
++        return None
++
++
++class StagingConfig:
++    pass
++
++
++def inspect_config():
++    return None
+diff --git a/corpus/fixtures/django_appconfig/settings.py b/corpus/fixtures/django_appconfig/settings.py
+new file mode 100644
+index 0000000..3cc870f
+--- /dev/null
++++ b/corpus/fixtures/django_appconfig/settings.py
+@@ -0,0 +1 @@
++INSTALLED_APPS = ["demo.apps.DemoConfig"]
+diff --git a/corpus/fixtures/django_appconfig/wsgi.py b/corpus/fixtures/django_appconfig/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_appconfig/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_cbv.py b/corpus/fixtures/django_cbv.py
+deleted file mode 100644
+index 6f17d2b..0000000
+--- a/corpus/fixtures/django_cbv.py
++++ /dev/null
+@@ -1,20 +0,0 @@
+-from django.http import HttpResponse
+-from django.views import View
+-
+-
+-class HomeView(View):
+-    def get(self, request):
+-        return HttpResponse("ok")
+-
+-
+-class PageFormatter:
+-    def format_page(self):
+-        return "preview"
+-
+-
+-class PageRenderer:
+-    def format_page(self):
+-        return "preview"
+-
+-
+-PageRenderer()
+diff --git a/corpus/fixtures/django_cbv/settings.py b/corpus/fixtures/django_cbv/settings.py
+new file mode 100644
+index 0000000..17749c2
+--- /dev/null
++++ b/corpus/fixtures/django_cbv/settings.py
+@@ -0,0 +1,2 @@
++ROOT_URLCONF = "urls"
++ALLOWED_HOSTS = ["testserver"]
+diff --git a/corpus/fixtures/django_cbv/urls.py b/corpus/fixtures/django_cbv/urls.py
+new file mode 100644
+index 0000000..0824b02
+--- /dev/null
++++ b/corpus/fixtures/django_cbv/urls.py
+@@ -0,0 +1,24 @@
++from django.http import HttpResponse
++from django.urls import path
++from django.views import View
++
++
++class HomeView(View):
++    def get(self, request):
++        return HttpResponse("ok")
++
++
++class PageFormatter:
++    def format_page(self):
++        return "preview"
++
++
++class PageRenderer:
++    def format_page(self):
++        return "preview"
++
++
++PageRenderer()
++
++
++urlpatterns = [path("", HomeView.as_view())]
+diff --git a/corpus/fixtures/django_cbv/wsgi.py b/corpus/fixtures/django_cbv/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_cbv/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_error_handlers/settings.py b/corpus/fixtures/django_error_handlers/settings.py
+new file mode 100644
+index 0000000..17749c2
+--- /dev/null
++++ b/corpus/fixtures/django_error_handlers/settings.py
+@@ -0,0 +1,2 @@
++ROOT_URLCONF = "urls"
++ALLOWED_HOSTS = ["testserver"]
+diff --git a/corpus/fixtures/django_error_handlers/wsgi.py b/corpus/fixtures/django_error_handlers/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_error_handlers/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_management_command.py b/corpus/fixtures/django_management_command.py
+deleted file mode 100644
+index 611125b..0000000
+--- a/corpus/fixtures/django_management_command.py
++++ /dev/null
+@@ -1,14 +0,0 @@
+-from django.core.management.base import BaseCommand
+-
+-
+-class Command(BaseCommand):
+-    def handle(self, *args, **options):
+-        return None
+-
+-
+-class CommandPreview:
+-    pass
+-
+-
+-def parse_command():
+-    return "preview"
+diff --git a/corpus/fixtures/django_management_command/demo/__init__.py b/corpus/fixtures/django_management_command/demo/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_management_command/demo/management/__init__.py b/corpus/fixtures/django_management_command/demo/management/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_management_command/demo/management/commands/__init__.py b/corpus/fixtures/django_management_command/demo/management/commands/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_management_command/demo/management/commands/probe.py b/corpus/fixtures/django_management_command/demo/management/commands/probe.py
+new file mode 100644
+index 0000000..611125b
+--- /dev/null
++++ b/corpus/fixtures/django_management_command/demo/management/commands/probe.py
+@@ -0,0 +1,14 @@
++from django.core.management.base import BaseCommand
++
++
++class Command(BaseCommand):
++    def handle(self, *args, **options):
++        return None
++
++
++class CommandPreview:
++    pass
++
++
++def parse_command():
++    return "preview"
+diff --git a/corpus/fixtures/django_management_command/manage.py b/corpus/fixtures/django_management_command/manage.py
+new file mode 100644
+index 0000000..c36a493
+--- /dev/null
++++ b/corpus/fixtures/django_management_command/manage.py
+@@ -0,0 +1,8 @@
++import os
++
++from django.core.management import execute_from_command_line
++
++
++if __name__ == "__main__":
++    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++    execute_from_command_line(["manage.py", "probe"])
+diff --git a/corpus/fixtures/django_management_command/settings.py b/corpus/fixtures/django_management_command/settings.py
+new file mode 100644
+index 0000000..03a2c9b
+--- /dev/null
++++ b/corpus/fixtures/django_management_command/settings.py
+@@ -0,0 +1 @@
++INSTALLED_APPS = ["demo"]
+diff --git a/corpus/fixtures/django_signal_receiver.py b/corpus/fixtures/django_signal_receiver.py
+deleted file mode 100644
+index fe7303c..0000000
+--- a/corpus/fixtures/django_signal_receiver.py
++++ /dev/null
+@@ -1,11 +0,0 @@
+-from django.dispatch import receiver
+-from django.db.models.signals import post_save
+-
+-
+-@receiver(post_save)
+-def on_save(sender, **kwargs):
+-    return None
+-
+-
+-def on_archive(sender, **kwargs):
+-    return None
+diff --git a/corpus/fixtures/django_signal_receiver/demo/__init__.py b/corpus/fixtures/django_signal_receiver/demo/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/corpus/fixtures/django_signal_receiver/demo/apps.py b/corpus/fixtures/django_signal_receiver/demo/apps.py
+new file mode 100644
+index 0000000..022f66e
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/demo/apps.py
+@@ -0,0 +1,8 @@
++from django.apps import AppConfig
++
++
++class DemoConfig(AppConfig):
++    name = "demo"
++
++    def ready(self):
++        from . import signals  # noqa: F401 - registers the receiver
+diff --git a/corpus/fixtures/django_signal_receiver/demo/signals.py b/corpus/fixtures/django_signal_receiver/demo/signals.py
+new file mode 100644
+index 0000000..fe7303c
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/demo/signals.py
+@@ -0,0 +1,11 @@
++from django.dispatch import receiver
++from django.db.models.signals import post_save
++
++
++@receiver(post_save)
++def on_save(sender, **kwargs):
++    return None
++
++
++def on_archive(sender, **kwargs):
++    return None
+diff --git a/corpus/fixtures/django_signal_receiver/settings.py b/corpus/fixtures/django_signal_receiver/settings.py
+new file mode 100644
+index 0000000..3cc870f
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/settings.py
+@@ -0,0 +1 @@
++INSTALLED_APPS = ["demo.apps.DemoConfig"]
+diff --git a/corpus/fixtures/django_signal_receiver/wsgi.py b/corpus/fixtures/django_signal_receiver/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_signal_receiver/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/django_urlpatterns.py b/corpus/fixtures/django_urlpatterns.py
+deleted file mode 100644
+index e2c4ee5..0000000
+--- a/corpus/fixtures/django_urlpatterns.py
++++ /dev/null
+@@ -1,13 +0,0 @@
+-from django.http import HttpResponse
+-from django.urls import path
+-
+-
+-def home(request):
+-    return HttpResponse("ok")
+-
+-
+-urlpatterns = [path("", home)]
+-
+-
+-def status(request):
+-    return HttpResponse(str(request))
+diff --git a/corpus/fixtures/django_urlpatterns/settings.py b/corpus/fixtures/django_urlpatterns/settings.py
+new file mode 100644
+index 0000000..17749c2
+--- /dev/null
++++ b/corpus/fixtures/django_urlpatterns/settings.py
+@@ -0,0 +1,2 @@
++ROOT_URLCONF = "urls"
++ALLOWED_HOSTS = ["testserver"]
+diff --git a/corpus/fixtures/django_urlpatterns/urls.py b/corpus/fixtures/django_urlpatterns/urls.py
+new file mode 100644
+index 0000000..e2c4ee5
+--- /dev/null
++++ b/corpus/fixtures/django_urlpatterns/urls.py
+@@ -0,0 +1,13 @@
++from django.http import HttpResponse
++from django.urls import path
++
++
++def home(request):
++    return HttpResponse("ok")
++
++
++urlpatterns = [path("", home)]
++
++
++def status(request):
++    return HttpResponse(str(request))
+diff --git a/corpus/fixtures/django_urlpatterns/wsgi.py b/corpus/fixtures/django_urlpatterns/wsgi.py
+new file mode 100644
+index 0000000..e96121a
+--- /dev/null
++++ b/corpus/fixtures/django_urlpatterns/wsgi.py
+@@ -0,0 +1,6 @@
++import os
++
++from django.core.wsgi import get_wsgi_application
++
++os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
++application = get_wsgi_application()
+diff --git a/corpus/fixtures/python_decorator_factory_registration/config.gin b/corpus/fixtures/python_decorator_factory_registration/config.gin
+new file mode 100644
+index 0000000..4505fcf
+--- /dev/null
++++ b/corpus/fixtures/python_decorator_factory_registration/config.gin
+@@ -0,0 +1,2 @@
++optimizer.learning_rate = 0.05
++network.layers = 3
+diff --git a/corpus/fixtures/python_decorator_factory_registration/trainer/components.py b/corpus/fixtures/python_decorator_factory_registration/trainer/components.py
+index c38ff81..b4f3731 100644
+--- a/corpus/fixtures/python_decorator_factory_registration/trainer/components.py
++++ b/corpus/fixtures/python_decorator_factory_registration/trainer/components.py
+@@ -2,6 +2,7 @@ import functools
+
+ import gin
+ from gin import configurable
++from pydantic import validate_call
+ from tenacity import retry, stop_after_attempt
+
+ from trainer.wrappers import labelled
+@@ -32,7 +33,7 @@ def unused_labelled():
+     return 3
+
+
+-@gin.timed()
++@validate_call()
+ def unused_empty_call():
+     return 4
+
+diff --git a/corpus/fixtures/python_unittest_lifecycle/test_case.py b/corpus/fixtures/python_unittest_lifecycle/test_case.py
+index cf92fff..94c306a 100644
+--- a/corpus/fixtures/python_unittest_lifecycle/test_case.py
++++ b/corpus/fixtures/python_unittest_lifecycle/test_case.py
+@@ -10,6 +10,9 @@ class TestCase(unittest.TestCase):
+     def tearDownClass(cls):
+         return None
+
++    def test_lifecycle(self):
++        pass
++
+
+ def setUpModule():
+     return None
+diff --git a/corpus/fixtures/starlette_add_route/app.py b/corpus/fixtures/starlette_add_route/app.py
+index f13d16c..783e723 100644
+--- a/corpus/fixtures/starlette_add_route/app.py
++++ b/corpus/fixtures/starlette_add_route/app.py
+@@ -1,13 +1,14 @@
+ from starlette.applications import Starlette
++from starlette.responses import PlainTextResponse
+
+ app = Starlette()
+
+
+ async def homepage(request):
+-    return None
++    return PlainTextResponse("home")
+
+
+-app.add_route("/", endpoint=homepage, methods=["GET"])
++app.add_route("/", homepage, methods=["GET"])
+
+
+ async def status_page(request):
+diff --git a/corpus/manifest.json b/corpus/manifest.json
+index 3a3f6ea..ae07eca 100644
+--- a/corpus/manifest.json
++++ b/corpus/manifest.json
+@@ -191,7 +191,7 @@
+     },
+     {
+       "id": "django-urlpatterns",
+-      "path": "fixtures/django_urlpatterns.py",
++      "path": "fixtures/django_urlpatterns",
+       "description": "Django URL patterns should keep view functions alive.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -311,7 +311,7 @@
+     },
+     {
+       "id": "django-class-based-view",
+-      "path": "fixtures/django_cbv.py",
++      "path": "fixtures/django_cbv",
+       "description": "Django class-based views should not be treated as dead framework classes.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -686,7 +686,7 @@
+     },
+     {
+       "id": "django-management-command",
+-      "path": "fixtures/django_management_command.py",
++      "path": "fixtures/django_management_command",
+       "description": "Django management command handlers are framework entrypoints.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -714,7 +714,7 @@
+     },
+     {
+       "id": "django-signal-receiver",
+-      "path": "fixtures/django_signal_receiver.py",
++      "path": "fixtures/django_signal_receiver",
+       "description": "Django signal receivers should not be reported as dead code.",
+       "source": {
+         "repo": "https://github.com/django/django",
+@@ -931,7 +931,7 @@
+     },
+     {
+       "id": "django-appconfig-ready",
+-      "path": "fixtures/django_appconfig.py",
++      "path": "fixtures/django_appconfig",
+       "description": "Django AppConfig classes and ready hooks are framework lifecycle entrypoints.",
+       "source": {
+         "repo": "https://github.com/django/django",
+diff --git a/test/test_dead_code_framework_overrides.py b/test/test_dead_code_framework_overrides.py
+index 0feb0e1..4de29a7 100644
+--- a/test/test_dead_code_framework_overrides.py
++++ b/test/test_dead_code_framework_overrides.py
+@@ -146,7 +146,7 @@ def test_third_party_overrides_read_from_site_packages(tmp_path, monkeypatch):
+
+
+ def test_unresolvable_external_base_keeps_reporting(tmp_path):
+-    root = _project(tmp_path, _RENDERER_APP)
++    root = _project(tmp_path, {**_RENDERER_APP, "docs/markdown.py": _RENDERER_APP["docs/markdown.py"].replace("import fakelib", 'try:\n    from fakelib import HTMLRenderer\nexcept ImportError:\n    class HTMLRenderer: pass').replace("fakelib.HTMLRenderer", "HTMLRenderer"), "fakelib/__init__.py": ""})
+
+     reported = _reported(root)
+
+@@ -211,8 +211,8 @@ def test_traitlets_handlers_and_dynamic_defaults(tmp_path):
+                 "from traitlets import Unicode, default, validate\n"
+                 "from app.base import Configurable\n\n\n"
+                 "class Manager(Configurable):\n"
+-                "    root_dir = Unicode()\n\n"
+-                "    @default('root_dir')\n"
++                '    root_dir = Unicode()\n    alternate_dir = Unicode()\n\n'
++                "    @default('alternate_dir')\n"
+                 "    def _default_root_dir(self):\n"
+                 "        return '/'\n\n"
+                 "    @validate('root_dir')\n"
+@@ -260,14 +260,14 @@ def test_drf_field_hooks_through_project_serializers(tmp_path):
+         {
+             "api/__init__.py": "",
+             "api/base.py": (
+-                "from rest_framework import serializers\n\n\n"
++                "from rest_framework import serializers\nfrom django.db import models\n\nclass TagModel(models.Model):\n    color = models.CharField(max_length=32)\n    class Meta:\n        app_label = 'api'\n\n"
+                 "class OwnedObjectSerializer(serializers.ModelSerializer):\n"
+-                "    pass\n"
++                "    class Meta:\n        model = TagModel\n        fields = ('color',)\n"
+             ),
+             "api/tags.py": (
+                 "from api.base import OwnedObjectSerializer\n"
+                 "from rest_framework import serializers\n\n\n"
+-                "class TagSerializer(OwnedObjectSerializer):\n"
++                'class TagSerializer(OwnedObjectSerializer):\n    color = serializers.CharField()\n'
+                 "    def validate_color(self, value):\n"
+                 "        return value\n\n"
+                 "    def stale_tag_helper(self):\n"
+@@ -281,10 +281,10 @@ def test_drf_field_hooks_through_project_serializers(tmp_path):
+                 "USED = (TagSerializer, AmountField, NotASerializer)\n"
+             ),
+             "api/views.py": (
+-                "from rest_framework.authtoken.views import ObtainAuthToken\n"
++                'from rest_framework.authtoken.views import ObtainAuthToken\nfrom rest_framework.throttling import ScopedRateThrottle\n'
+                 "from rest_framework.viewsets import ModelViewSet\n\n\n"
+                 "class TokenView(ObtainAuthToken):\n"
+-                "    throttle_scope = 'login'\n\n\n"
++                "    throttle_classes = [ScopedRateThrottle]\n    throttle_scope = 'login'\n\n\n"
+                 "class BundleViewSet(ModelViewSet):\n"
+                 "    http_method_names = ['get', 'post']\n\n\n"
+                 "USED = (TokenView, BundleViewSet)\n"
+@@ -309,7 +309,7 @@ def test_django_admin_options_on_third_party_model_admins(tmp_path):
+             "mail/__init__.py": "",
+             "mail/admin.py": (
+                 "from django.contrib import admin\n"
+-                "from guardian.admin import GuardedModelAdmin\n\n\n"
++                "from guardian.admin import GuardedModelAdmin\nfrom django.db import models\n\nclass MailRule(models.Model):\n    action = models.CharField(max_length=16)\n    created = models.DateField()\n    class Meta:\n        app_label = 'mail'\n\n\n"
+                 "class BaseAdmin(GuardedModelAdmin):\n"
+                 "    pass\n\n\n"
+                 "class MailRuleAdmin(BaseAdmin):\n"
+@@ -317,7 +317,7 @@ def test_django_admin_options_on_third_party_model_admins(tmp_path):
+                 "    sortable_by = []\n"
+                 "    date_hierarchy = 'created'\n"
+                 "    stale_admin_note = 'x'\n\n\n"
+-                "admin.site.register(object, MailRuleAdmin)\n"
++                'admin.site.register(MailRule, MailRuleAdmin)\n'
+             ),
+         },
+     )
+diff --git a/test/test_django_admin_stubs.py b/test/test_django_admin_stubs.py
+index 8cf2665..8fb4a93 100644
+--- a/test/test_django_admin_stubs.py
++++ b/test/test_django_admin_stubs.py
+@@ -67,10 +67,10 @@ def test_admin_stub_requires_django_package_context(
+         "shop/admin.py": "# Register your models here.\n",
+         "shop/placeholder.py": "# An ordinary empty file.\n",
+     }
+-    if package:
+-        sources["shop/__init__.py"] = ""
++    if "src/django/__init__.py" in extra_sources:
++        sources.update({"src/settings.py": sources.pop("settings.py"), "src/django/apps.py": "class AppConfig: pass\n"})
++    if package: sources["shop/__init__.py"] = ""
+     _sources(tmp_path, sources)
+-
+     result = json.loads(analyze(str(tmp_path), conf=0, grep_verify=False))
+     empty_files = {
+         finding["file"]
+diff --git a/test/test_django_app_repro_liveness.py b/test/test_django_app_repro_liveness.py
+index 2a0f424..db019c5 100644
+--- a/test/test_django_app_repro_liveness.py
++++ b/test/test_django_app_repro_liveness.py
+@@ -176,9 +176,9 @@ class Command(BaseCommand):
+             _restart_worker, options["name"], options["queue"]
+         )
+ ''',
++    "settings.py": "INSTALLED_APPS = ['mgmt_command']\nSECRET_KEY = 'fixture'\n",
++    "manage.py": "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings', '--name=night', '--queue=main'])\n",
+ }
+-
+-
+ def test_repro_11_reloader_helper_is_live(tmp_path):
+     result = _scan(tmp_path, _MGMT_COMMAND)
+     _assert_quiet(result, "_restart_worker")
+diff --git a/test/test_django_auth_backend_liveness.py b/test/test_django_auth_backend_liveness.py
+index b6cd8bb..a0f59d4 100644
+--- a/test/test_django_auth_backend_liveness.py
++++ b/test/test_django_auth_backend_liveness.py
+@@ -230,7 +230,7 @@ def test_unknown_earlier_base_does_not_prove_a_later_local_hook_is_selected(tmp_
+             "from external import Provider\n"
+             "class Later:\n    def get_user(self, user_id):\n        return None\n"
+             "class Configured(Provider, Later):\n    pass\n"
+-        ),
++        ) | {"external.py": "import os\nclass Provider:\n    if os.environ.get('DJANGO_AUTH_PICKER'):\n        def get_user(self, user_id): return 1\n"},
+     )
+     assert "shop.backends.Later.get_user" not in _auth_roots(result)
+
+diff --git a/test/test_django_autoreload_precision.py b/test/test_django_autoreload_precision.py
+index a0fc96b..29322f3 100644
+--- a/test/test_django_autoreload_precision.py
++++ b/test/test_django_autoreload_precision.py
+@@ -27,8 +27,8 @@ def callback():
+ def helper():
+     return 1
+ """
+-
+-
++_SHOP_PACKAGES = {"shop/__init__.py": "", "shop/management/__init__.py": "", "shop/management/commands/__init__.py": ""}
++_COMMAND_LAUNCH = {"settings.py": "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n", "manage.py": "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'hello', '--settings=settings'])\n"}
+ @pytest.mark.parametrize("conf", [0, 80])
+ @pytest.mark.parametrize("grep", [False, True])
+ def test_uncalled_autoreload_owner_does_not_execute_callback(tmp_path, conf, grep):
+@@ -132,7 +132,7 @@ def test_autoreload_in_management_command_handle_is_live(tmp_path):
+         {
+             "shop/__init__.py": "",
+             "shop/management/__init__.py": "",
+-            "shop/management/commands/__init__.py": "",
++            "shop/management/commands/__init__.py": "", **_COMMAND_LAUNCH,
+             "shop/management/commands/hello.py": (
+                 "from django.core.management.base import BaseCommand\n"
+                 "from django.utils import autoreload\n"
+@@ -196,7 +196,7 @@ def test_autoreload_wrapper_in_imported_module_uses_actual_callback_argument(tmp
+ def test_management_command_bound_wrapper_uses_the_callback_argument(tmp_path):
+     result, definitions = _scan(
+         tmp_path,
+-        {
++        {**_SHOP_PACKAGES, **_COMMAND_LAUNCH,
+             "shop/management/commands/hello.py": (
+                 "from django.core.management.base import BaseCommand\n"
+                 "from django.utils import autoreload\n"
+@@ -328,7 +328,7 @@ def test_bound_wrapper_alias_preserves_the_capture_order(tmp_path, capture_befor
+         operations = capture + replacement
+     _, definitions = _scan(
+         tmp_path,
+-        {
++        {**_SHOP_PACKAGES, **_COMMAND_LAUNCH,
+             "shop/management/commands/hello.py": (
+                 "from django.core.management.base import BaseCommand\n"
+                 "from django.utils import autoreload\n"
+diff --git a/test/test_django_celery_entrypoints.py b/test/test_django_celery_entrypoints.py
+index ce688b9..d96cd3f 100644
+--- a/test/test_django_celery_entrypoints.py
++++ b/test/test_django_celery_entrypoints.py
+@@ -134,7 +134,7 @@ def test_runpython_lookalikes_and_shadowing_do_not_rescue(tmp_path, registration
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
++            "shop/__init__.py": "", "local_ops.py": "RunPython = lambda callback: None\n",
+             "shop/migrations/__init__.py": "",
+             "shop/migrations/0001_data.py": (
+                 "def forwards(apps, schema_editor): pass\n" + registration
+@@ -213,8 +213,8 @@ def test_appconfig_ready_signal_import_only(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
+-            "shop/signals.py": "",
++            "shop/__init__.py": "", "settings.py": "INSTALLED_APPS = ['shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
++            "shop/signals.py": "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef observe(sender, **kwargs): return sender\n", "manage.py": "import django, os\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+             "shop/helpers.py": "",
+             "shop/apps.py": """
+                 from django.apps import AppConfig as BaseConfig
+@@ -223,7 +223,7 @@ def test_appconfig_ready_signal_import_only(tmp_path):
+                         from . import helpers, signals as hooks
+                     def unrelated(self):
+                         from . import signals as unrelated_signals
+-            """,
++                    name = 'shop'""",
+         },
+     )
+     imports = result.get("unused_imports", [])
+@@ -240,7 +240,7 @@ def test_fake_appconfig_ready_import_stays_unused(tmp_path, prefix):
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
++            "shop/__init__.py": "", "local_apps.py": "class AppConfig: pass\n",
+             "shop/signals.py": "",
+             "shop/apps.py": prefix + "\nclass ShopConfig(AppConfig):\n"
+             "    def ready(self):\n        from . import signals\n",
+@@ -294,14 +294,14 @@ def test_ready_false_exit_branch_keeps_signal_import_live(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "shop/__init__.py": "",
+-            "shop/signals.py": "",
++            "shop/__init__.py": "", "settings.py": "INSTALLED_APPS = ['shop.apps.ShopConfig']\nSECRET_KEY = 'fixture'\n",
++            "shop/signals.py": "from django.dispatch import receiver\nfrom django.db.models.signals import post_save\n@receiver(post_save)\ndef observe(sender, **kwargs): return sender\n", "manage.py": "import django, os\nos.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\ndjango.setup()\n",
+             "shop/apps.py": "from django.apps import AppConfig\n"
+             "class ShopConfig(AppConfig):\n"
+             "    def ready(self):\n"
+             "        if False:\n"
+             "            return\n"
+-            "        from . import signals\n",
++            "        from . import signals\n    name = 'shop'\n",
+         },
+     )
+     assert "shop.signals" not in _names(result, "unused_imports")
+@@ -311,7 +311,7 @@ def test_class_local_app_shadow_does_not_erase_module_configuration(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "routers.py": "def route_task(name, args, kwargs, options): return None\n",
++            "routers.py": "def route_task(name, args, kwargs, options, *, task=None): return None\n",
+             "app.py": 'from celery import Celery\napp = Celery("shop")\n'
+             'app.conf.task_routes = ("routers.route_task",)\n'
+             "class Other:\n    app = object()\n",
+diff --git a/test/test_django_historical_consumer_controls.py b/test/test_django_historical_consumer_controls.py
+index 02c912e..89a91a0 100644
+--- a/test/test_django_historical_consumer_controls.py
++++ b/test/test_django_historical_consumer_controls.py
+@@ -4,7 +4,7 @@ from test.test_django_app_repro_liveness import _assert_quiet, _scan, _unused_na
+
+
+ _PROVIDER_IFACE = {
+-    "provider_iface/__init__.py": "",
++    "provider_iface/__init__.py": "", "provider_iface/main.py": "from .provider import ConcreteProvider, Provider\ndef fetch_schedule(provider: Provider, season: int):\n    return provider.schedule_dates(season)\nDATES = fetch_schedule(ConcreteProvider(), 2026)\n",
+     "provider_iface/provider.py": '''\
+ """Provider interface — duck-typed calls on base type.
+
+@@ -48,7 +48,7 @@ def test_original_declared_provider_contract_remains_live(tmp_path):
+
+
+ _PROCESSOR_PLUGIN = {
+-    "processor_plugin/__init__.py": "",
++    "processor_plugin/__init__.py": "", "processor_plugin/main.py": "from .loader import integrate_sessions\nSELECTED = integrate_sessions\n",
+     "processor_plugin/plugins/__init__.py": "",
+     "processor_plugin/loader.py": '''\
+ """Convention loader: processor path chosen by name string only.
+@@ -74,7 +74,7 @@ def load_processor(name: str):
+ def run_named(name: str, session):
+     cls = load_processor(name)
+     return cls(session).process()
+-''',
++''' "\ndef __getattr__(name):\n    if name in PROCESSORS:\n        return getattr(import_module(PROCESSORS[name]), \"IntegrateSessions\")\n    raise AttributeError(name)\n",
+     "processor_plugin/plugins/integrate.py": '''\
+ """Bare processor class — product convention load, no static importers of the class."""
+
+diff --git a/test/test_django_hook_provenance.py b/test/test_django_hook_provenance.py
+index 6bab49e..0f45416 100644
+--- a/test/test_django_hook_provenance.py
++++ b/test/test_django_hook_provenance.py
+@@ -1,10 +1,10 @@
+ """Source-only controls for Django hook ownership and effective form fields."""
+-
+ import pytest
+-
+ from test.web_framework_fixtures import _scan, _unused
+-
+-
++_MODEL_SETTINGS = {"settings.py": "INSTALLED_APPS = []\nSECRET_KEY = 'fixture'\n"}
++_DJANGO_MODEL_BOOTSTRAP = "        import os, django\n        os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'\n        django.setup()\n"
++_FORM_SETTINGS = {"settings.py": "SECRET_KEY = 'fixture'\n"}
++_COMMAND_SETUP = {"settings.py": "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n", "shop/__init__.py": "", "shop/management/__init__.py": "", "shop/management/commands/__init__.py": "", "shop/management/commands/probe.py": "from app import Worker as Command\n", "manage.py": "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'probe', '--settings=settings'])\n"}
+ @pytest.mark.parametrize(
+     ("base", "hook"),
+     [("BaseCommand", "handle"), ("Form", "clean_phone"), ("Model", "save")],
+@@ -43,22 +43,22 @@ def test_genuine_imported_django_hooks_remain_recognized(
+ ):
+     result = _scan(
+         tmp_path,
+-        {
+-            "app.py": f"""
++        {**(_COMMAND_SETUP if base == "BaseCommand" else _FORM_SETTINGS if base == "Form" else _MODEL_SETTINGS),
++            "app.py": ((_DJANGO_MODEL_BOOTSTRAP if base == "Model" else "") + f"""
+         from {provider} import {base} as Parent
+         class Worker(Parent):
+-            def {hook}(self):
+-                return 1
++            {"class Meta: app_label = 'hook_fixture'" if base == "Model" else ""}\n            def {hook}(self{", **options" if base == "BaseCommand" else ""}):
++                return "ready"
+             def abandoned(self):
+                 return 2
+-        Worker()
+-    """
++        {"Worker(data={}).is_valid()" if base == "Form" else "Worker().save()" if base == "Model" else ""}
++    """),
+         },
+     )
+     assert f"app.Worker.{hook}" not in _unused(result)
+     assert "app.Worker.abandoned" in _unused(result)
+-
+-
++_HOOK_EXERCISE = {("QuerySet", "delete"): "Worker().delete()", ("Manager", "get_queryset"): "Worker().all()",
++                  ("Model", "save"): "Worker().save()", ("ModelForm", "save"): "form = Worker(data={})\n        if form.is_valid(): form.save()"}
+ @pytest.mark.parametrize("declared", [True, False])
+ def test_form_clean_hook_requires_a_corresponding_field(tmp_path, declared):
+     field = "phone = forms.CharField()"
+@@ -154,7 +154,7 @@ def test_model_form_selected_model_field_keeps_clean_hook(tmp_path):
+ def test_imported_project_django_base_keeps_hooks(tmp_path):
+     result = _scan(
+         tmp_path,
+-        {
++        {**_COMMAND_SETUP,
+             "parent.py": """
+             from django.core.management.base import BaseCommand
+             class Parent(BaseCommand):
+@@ -164,10 +164,10 @@ def test_imported_project_django_base_keeps_hooks(tmp_path):
+             from parent import Parent
+             class Worker(Parent):
+                 def handle(self, *args, **kwargs):
+-                    return 1
++                    return "ready"
+                 def abandoned(self):
+                     return 2
+-            Worker()
++
+         """,
+         },
+     )
+@@ -182,7 +182,7 @@ def test_rebinding_a_provider_keeps_only_captured_genuine_base(tmp_path, capture
+         base = "forms.Form"
+     result = _scan(
+         tmp_path,
+-        {
++        {**_FORM_SETTINGS,
+             "app.py": f"""
+         from django import forms
+         Saved = forms.Form
+@@ -192,7 +192,7 @@ def test_rebinding_a_provider_keeps_only_captured_genuine_base(tmp_path, capture
+         class Contact({base}):
+             def clean(self):
+                 return "ok"
+-        Contact()
++        {"Contact(data={}).is_valid()" if captured else "Contact()"}
+     """
+         },
+     )
+@@ -552,8 +552,8 @@ def test_model_form_all_fields_omits_uneditable_model_field(tmp_path):
+         },
+     )
+     assert "app.Contact.clean_phone" in _unused(result)
+-
+-
++_MODEL_FORM_SOURCE = "        from django.db import models\n        class Sample(models.Model):\n            class Meta: app_label = 'hook_fixture'\n"
++_HOOK_CLASS_OPTIONS = {"Model": "class Meta: app_label = 'hook_fixture'", "ModelForm": "class Meta:\n                model = Sample\n                fields = ()"}
+ @pytest.mark.parametrize(
+     ("provider", "base", "hook", "expected_live"),
+     [
+@@ -572,16 +572,16 @@ def test_framework_hooks_match_the_specific_provider_role(
+ ):
+     result = _scan(
+         tmp_path,
+-        {
+-            "app.py": f"""
++        {**(_MODEL_SETTINGS if base in {"Model", "ModelForm"} else {}),
++            "app.py": ((_DJANGO_MODEL_BOOTSTRAP if base in {"Model", "ModelForm"} else "") + (_MODEL_FORM_SOURCE if base == "ModelForm" else "") + f"""
+         from {provider} import {base} as Parent
+         class Worker(Parent):
+-            def {hook}(self):
++            {_HOOK_CLASS_OPTIONS.get(base, "")}\n            def {hook}(self):
+                 return 1
+             def abandoned(self):
+                 return 2
+-        Worker()
+-    """
++        {_HOOK_EXERCISE.get((base, hook), "Worker()")}
++    """),
+         },
+     )
+     assert (f"app.Worker.{hook}" in _unused(result)) is not expected_live
+diff --git a/test/test_django_management_command_reachability.py b/test/test_django_management_command_reachability.py
+index dcb66d2..92e1acc 100644
+--- a/test/test_django_management_command_reachability.py
++++ b/test/test_django_management_command_reachability.py
+@@ -10,11 +10,11 @@ from skylos.analyzer import Skylos
+
+ _MODULE = "shop.management.commands.audit"
+ _PATH = "shop/management/commands/audit.py"
+-_HELPERS = "def prepare(): return 1\ndef abandoned(): return 2\n"
++_HELPERS = "def prepare(): return 'ready'\ndef abandoned(): return 2\n"
+ _PROVIDER = "from django.core.management.base import BaseCommand\n"
+ _ROOT_REASON = "dead_code_liveness:django_web_management_command_handle"
+-
+-
++_SETTINGS = "INSTALLED_APPS = ['shop']\nSECRET_KEY = 'fixture'\n"
++_MANAGE = "from django.core.management import execute_from_command_line\nexecute_from_command_line(['manage.py', 'audit', '--settings=settings'])\n"
+ def _scan(tmp_path, sources):
+     for name, source in sources.items():
+         path = tmp_path / name
+@@ -40,7 +40,7 @@ def _scan(tmp_path, sources):
+     return unused, definitions
+
+
+-def _command(tmp_path, code, extra=None, path=_PATH):
++def _command(tmp_path, code, extra=None, path=_PATH, *, launch=False):
+     return _scan(
+         tmp_path,
+         {
+@@ -48,7 +48,7 @@ def _command(tmp_path, code, extra=None, path=_PATH):
+             "shop/management/__init__.py": "",
+             "shop/management/commands/__init__.py": "",
+             path: code,
+-            **(extra or {}),
++            **({"settings.py": _SETTINGS, "manage.py": _MANAGE} if launch else {}), **(extra or {}),
+         },
+     )
+
+@@ -58,19 +58,19 @@ def _command(tmp_path, code, extra=None, path=_PATH):
+     [
+         ("return prepare()", _HELPERS, ["prepare"], ["abandoned"]),
+         (
+-            "def prepare(): return 1\ndef abandoned(): return 2\nreturn prepare()",
++            "def prepare(): return 'ready'\ndef abandoned(): return 2\nreturn prepare()",
+             "",
+             ["Command.handle.prepare"],
+             ["Command.handle.abandoned"],
+         ),
+         (
+-            "def prepare(): return 1\ndef run(): return prepare()\nreturn run()",
++            "def prepare(): return 'ready'\ndef run(): return prepare()\nreturn run()",
+             "",
+             ["Command.handle.prepare", "Command.handle.run"],
+             [],
+         ),
+         (
+-            "def prepare(): return 1\nselected = prepare\nreturn selected()",
++            "def prepare(): return 'ready'\nselected = prepare\nreturn selected()",
+             "",
+             ["Command.handle.prepare"],
+             [],
+@@ -78,7 +78,7 @@ def _command(tmp_path, code, extra=None, path=_PATH):
+         (
+             "return analyze_games_queryset()",
+             "class GameDiscontinuityAnalyzer:\n"
+-            "    def run(self): return 1\n"
++            "    def run(self): return 'ready'\n"
+             "def analyze_games_queryset(): return GameDiscontinuityAnalyzer().run()\n"
+             "def abandoned(): return 2\n",
+             ["analyze_games_queryset", "GameDiscontinuityAnalyzer"],
+@@ -104,7 +104,7 @@ def test_discovered_handle_roots_only_its_called_helpers(
+         + textwrap.indent(body, "        ")
+         + "\n"
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=True)
+     assert not ({f"{_MODULE}.{name}" for name in live} & unused)
+     assert {f"{_MODULE}.{name}" for name in dead} <= unused
+     handle = definitions[f"{_MODULE}.Command.handle"]
+@@ -130,7 +130,7 @@ def test_management_discovery_selects_the_effective_inherited_handle(
+         owner = "parent"
+     else:
+         source = parent + source
+-    unused, definitions = _command(tmp_path, source, extra)
++    unused, definitions = _command(tmp_path, source, extra, launch=True)
+     assert f"{owner}.prepare" not in unused
+     assert f"{owner}.abandoned" in unused
+     assert definitions[f"{owner}.Parent.handle"].heuristic_refs.get(_ROOT_REASON) == 1.0
+@@ -146,7 +146,7 @@ def test_management_export_alias_and_unrelated_constructor_do_not_lose_identity(
+         + "class Actual(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + "Command = Actual\n"
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=True)
+     assert f"{_MODULE}.prepare" not in unused
+     assert f"{_MODULE}.abandoned" in unused
+     assert (
+@@ -218,7 +218,7 @@ def test_command_namespace_escape_does_not_establish_dispatch(tmp_path, tail):
+         + "class Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + tail
+     )
+-    _, definitions = _command(tmp_path, source)
++    _, definitions = _command(tmp_path, source, {"external_plugin.py": "def replacement(self, *args, **options): return None\ndef install(target): setattr(target, 'handle', replacement)\n"} if tail.startswith("from external_plugin") else None)
+     assert not definitions[f"{_MODULE}.Command.handle"].heuristic_refs.get(_ROOT_REASON)
+
+
+@@ -335,7 +335,7 @@ def test_direct_readonly_module_metadata_keeps_command_proof(tmp_path):
+         + "class Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + "module_name = globals().get('__name__')\n"
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=True)
+     assert f"{_MODULE}.prepare" not in unused
+     assert (
+         definitions[f"{_MODULE}.Command.handle"].heuristic_refs.get(_ROOT_REASON) == 1.0
+@@ -359,7 +359,7 @@ def test_command_helpers_require_the_original_handle_body(tmp_path, tail, replac
+         + "def replacement(self, *args, **options): return None\n"
+         + tail
+     )
+-    unused, definitions = _command(tmp_path, source)
++    unused, definitions = _command(tmp_path, source, launch=not replaced)
+     if not replaced:
+         assert f"{_MODULE}.prepare" not in unused
+     # Function-object uncertainty already retained helpers on original main.
+@@ -377,5 +377,5 @@ def test_escaped_handle_alias_does_not_supply_a_stable_body(tmp_path):
+         + "class Command(BaseCommand):\n    def handle(self, *args, **options): return prepare()\n"
+         + "from external_plugin import install\nselected = Command.handle\ninstall(selected)\n"
+     )
+-    _, definitions = _command(tmp_path, source)
++    _, definitions = _command(tmp_path, source, {"external_plugin.py": "def replacement(self, *args, **options): return None\ndef install(target): setattr(target, '__code__', replacement.__code__)\n"})
+     assert not definitions[f"{_MODULE}.Command.handle"].heuristic_refs.get(_ROOT_REASON)
+diff --git a/test/test_django_named_setting_imports.py b/test/test_django_named_setting_imports.py
+index cff9b2d..960821d 100644
+--- a/test/test_django_named_setting_imports.py
++++ b/test/test_django_named_setting_imports.py
+@@ -209,7 +209,7 @@ def test_imported_template_directories_retain_the_source_path_context(tmp_path):
+ def test_called_setting_mutation_helper_uses_the_module_binding(
+     tmp_path, setting, target, scope
+ ):
+-    configured = "{'filters': {'extra': {'()': 'app.protocols.Factory'}}}"
++    configured = "{'version': 1, 'filters': {'extra': {'()': 'app.protocols.Factory'}}}"
+     if setting == "STORAGES":
+         configured = "{'default': {'BACKEND': 'app.protocols.Storage'}}"
+     parameters = ""
+diff --git a/test/test_django_quiet_dead_code.py b/test/test_django_quiet_dead_code.py
+index e25651a..18b7af2 100644
+--- a/test/test_django_quiet_dead_code.py
++++ b/test/test_django_quiet_dead_code.py
+@@ -49,14 +49,14 @@ PONTOON_SHAPED = {
+             from .local import *  # noqa
+         except ImportError:
+             pass
+-        if DEV and "pytest" not in sys.modules:  # noqa
++        if DEV:  # noqa
+             from .dev import *  # noqa
+     """,
+     "project/settings/base.py": """
+-        DEV = False
++        DEV = True
+         SECRET_KEY = "x"
+         EMAIL_CONSENT_TITLE = "Stay informed"
+-        INSTALLED_APPS = ("django.contrib.admin", "shop")
++        INSTALLED_APPS = ("django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes", "django.contrib.staticfiles", "shop")
+         MIDDLEWARE = (
+             "django.middleware.common.CommonMiddleware",
+             "shop.middleware.ConsentMiddleware",
+@@ -72,17 +72,17 @@ PONTOON_SHAPED = {
+         }]
+         if DEV:
+             SESSION_COOKIE_SECURE = False
+-    """,
++    """ "\n        STATIC_URL = '/static/'\n        STATIC_ROOT = 'staticfiles'\n        ALLOWED_HOSTS = ['localhost']\n        DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}\n",
+     "project/settings/dev.py": """
+-        from . import base
++        import project.settings.base as base
+         INSTALLED_APPS = base.INSTALLED_APPS + ("debug_toolbar",)
+         DEBUG_TOOLBAR_CONFIG = {"SHOW_TOOLBAR_CALLBACK": lambda request: True}
+     """,
+     "project/urls.py": """
+         from django.urls import path
+-        urlpatterns = []
+-    """,
+-    "shop/__init__.py": "",
++        from shop.views import consent_form
++    """ "\n        urlpatterns = [path('', consent_form)]\n",
++    "shop/__init__.py": "from . import celeryapp\n",
+     "shop/middleware.py": """
+         class ConsentMiddleware:
+             def __init__(self, get_response):
+@@ -162,21 +162,21 @@ PONTOON_SHAPED = {
+         @setup_logging.connect
+         def configure_logging(*args, **kwargs):
+             return None
+-    """,
++    """ "\n        from celery import Celery\n        app = Celery('shop')\n        app.log.setup_logging_subsystem()\n",
+     "shop/utils.py": """
+         OLD_LIMIT = 5
+         def unused_helper():
+             return 1
+     """,
+-    "shop/views.py": """
+-        from shop.exceptions import UploadConflict
+-        from shop.models import Priority, Product
+-        from shop.serializers import ProductSerializer
+-        def product_json(request):
+-            if request.method != "GET":
+-                raise UploadConflict()
+-            return ProductSerializer(Product(), context={"p": Priority}).data
+-    """,
++    "shop/views.py": (
++        "from django.conf import settings\nfrom django.http import HttpResponse\n"
++        "from shop.exceptions import UploadConflict\nfrom shop.forms import ProductForm\n"
++        "from shop.models import Priority, Product\nfrom shop.serializers import ProductSerializer\n"
++        "def product_json(request):\n    if request.method != 'GET':\n        raise UploadConflict()\n"
++        "    return ProductSerializer(Product(), context={'p': Priority}).data\n"
++        "def consent_form(request):\n    if request.method != 'GET':\n        raise UploadConflict()\n"
++        "    ProductForm()\n    return HttpResponse(settings.EMAIL_CONSENT_TITLE)\n"
++    ),
+     "shop/migrations/__init__.py": "",
+     "shop/migrations/0001_initial.py": """
+         from django.db import migrations
+@@ -238,27 +238,27 @@ def test_django_framework_names_are_live_and_real_dead_code_remains(tmp_path):
+
+
+ def test_settings_module_found_without_a_launcher(tmp_path):
+-    # DJANGO_SETTINGS_MODULE set outside the code (env, pytest.ini).
++    from unittest.mock import patch
+     sources = {
+         "conf/__init__.py": "",
+         "conf/settings.py": """
+-            INSTALLED_APPS = ["django.contrib.auth"]
++            INSTALLED_APPS = ["django.contrib.contenttypes", "django.contrib.auth"]\n            SECRET_KEY = "fixture"
+             ROOT_URLCONF = "conf.urls"
+             CUSTOM_FLAG = True
+         """,
+         "conf/settings_production.py": """
+             from conf.settings import *  # noqa
+-            PRODUCTION_ONLY = True
++            PRODUCTION_ONLY = CUSTOM_FLAG
+         """,
+         "conf/urls.py": """
+             from django.urls import path
+             urlpatterns = []
+         """,
+-        "conf/constants.py": """
+-            STALE_CONSTANT = 1
+-        """,
++        "conf/constants.py": "\n            STALE_CONSTANT = 1\n        ",
+     }
+-    unused = _all_unused(_scan(tmp_path, sources))
++    with patch.dict("os.environ", {"DJANGO_SETTINGS_MODULE": "conf.settings_production"}):
++        unused = _all_unused(_scan(tmp_path, sources))
++
+     assert "conf.settings.CUSTOM_FLAG" not in unused
+     assert "conf.settings_production.PRODUCTION_ONLY" not in unused
+     assert "conf.constants.STALE_CONSTANT" in unused
+diff --git a/test/test_django_signal_liveness.py b/test/test_django_signal_liveness.py
+index 0888139..ca8f202 100644
+--- a/test/test_django_signal_liveness.py
++++ b/test/test_django_signal_liveness.py
+@@ -196,8 +196,8 @@ def test_connect_inside_registration_wrapper_requires_invocation(tmp_path, calle
+ def test_custom_signal_instances_preserve_genuine_callbacks(tmp_path, prefix):
+     result = _scan(tmp_path, _sources(prefix + "@receiver(saved)\n" + _BODY))
+     _assert_registered(result, loaded=True)
+-
+-
++_DOMAIN_CONNECTOR = "import os\nfrom django.db.models.signals import post_save\ndef connector(callback):\n    if os.getenv('FIXTURE_SIGNAL'):\n        post_save.connect(callback)\n"
++_THIRD_PARTY_SIGNAL = {"third_party/__init__.py": "", "third_party/signals.py": "import os\nfrom django.db.models.signals import post_save\nsaved = post_save if os.getenv('FIXTURE_SIGNAL') == 'enabled' else []\n"}
+ @pytest.mark.parametrize(
+     "prefix",
+     [
+@@ -207,7 +207,7 @@ def test_custom_signal_instances_preserve_genuine_callbacks(tmp_path, prefix):
+     ],
+ )
+ def test_unsupported_signal_provider_retains_callback_as_uncertain(tmp_path, prefix):
+-    result = _scan(tmp_path, _sources(prefix + "@receiver(saved)\n" + _BODY))
++    result = _scan(tmp_path, {**_sources(prefix + (_DOMAIN_CONNECTOR if "class DomainSignal" in prefix else "") + "@receiver(saved)\n" + _BODY), **(_THIRD_PARTY_SIGNAL if "third_party.signals" in prefix else {})})
+     assert "shop.signals.on_save" not in _unused(result)
+     assert "shop.signals.helper" not in _unused(result)
+     assert "shop.signals.on_save" not in _signal_targets(
+@@ -222,7 +222,7 @@ def test_unsupported_signal_provider_retains_callback_as_uncertain(tmp_path, pre
+ def test_unknown_external_receiver_keeps_previous_uncertainty_without_django(tmp_path):
+     result = _scan(
+         tmp_path,
+-        {"callbacks.py": "from external import receiver\n@receiver(event)\n" + _BODY},
++        {"callbacks.py": "from external import receiver\nevent = 'saved'\n@receiver(event)\n" + _BODY, "external.py": "from atexit import register\ndef receiver(event):\n    return defer_receiver\ndef defer_receiver(callback):\n    register(callback, None, None)\n    return callback\n"},
+     )
+     assert "callbacks.on_save" not in _unused(result)
+     assert "callbacks.helper" not in _unused(result)
+@@ -518,7 +518,7 @@ def test_bare_receiver_decorator_preserves_unknown_provider_but_not_identity(
+     prefix = "from external import receiver\n"
+     if not external:
+         prefix = "def receiver(callback):\n    'Keep the input.'\n    return callback\n"
+-    result = _scan(tmp_path, {"callbacks.py": prefix + "@receiver\n" + _BODY})
++    result = _scan(tmp_path, {"callbacks.py": prefix + "@receiver\n" + _BODY, **({"external.py": "from atexit import register\ndef receiver(callback):\n    register(callback, None, None)\n    return callback\n"} if external else {})})
+     if external:
+         assert "callbacks.on_save" not in _unused(result)
+         assert "callbacks.helper" not in _unused(result)
+@@ -673,9 +673,9 @@ def test_source_owned_method_resolves_before_unknown_external_ancestry(
+         "    def on_save(self, sender, instance, **kwargs):\n        return helper()\n"
+         + replacement
+         + "def helper():\n    return 1\n"
+-        "handler = Handlers()\npost_save.connect(handler.on_save)\n"
++        + ("handler = Handlers()\nif handler.on_save is not None:\n    post_save.connect(handler.on_save)\n" if replacement else "handler = Handlers()\npost_save.connect(handler.on_save)\n")
+     )
+-    result = _scan(tmp_path, _sources(source))
++    result = _scan(tmp_path, _sources(source) | {"external.py": "import os\nclass Base:\n    if os.environ.get('INHERITED_SIGNAL_CALLBACK'):\n        def on_save(self, sender, instance, **kwargs): return 0\n"})
+     if not replacement:
+         assert "shop.signals.helper" not in _unused(result)
+         assert "shop.signals.Handlers.on_save.instance" not in _unused(
+diff --git a/test/test_django_wagtail_conventions.py b/test/test_django_wagtail_conventions.py
+index 28388fb..fe1760c 100644
+--- a/test/test_django_wagtail_conventions.py
++++ b/test/test_django_wagtail_conventions.py
+@@ -36,7 +36,7 @@ def _reported(root: Path) -> set[str]:
+
+
+ _WAGTAIL_APP = {
+-    "home/__init__.py": "",
++    "home/__init__.py": "", "settings.py": "INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions', 'taggit', 'modelcluster', 'wagtail', 'wagtail.admin', 'wagtail.users', 'wagtail.documents', 'wagtail.images', 'wagtail.snippets', 'wagtail.search', 'wagtail.contrib.settings', 'home']\nSECRET_KEY = 'fixture'\nSTATIC_URL = '/static/'\nDATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}\n",
+     "home/models.py": (
+         "from django.db import models\n"
+         "from modelcluster.fields import ParentalKey\n"
+@@ -69,7 +69,7 @@ _WAGTAIL_APP = {
+         "class NotAModel:\n"
+         "    pass\n\n\n"
+         "def stale_helper():\n"
+-        "    return 1\n"
++        "    return 1\n\nclass Person(models.Model):\n    name = models.CharField(max_length=20)\n    sort_order = models.IntegerField(default=0)\n"
+     ),
+     "home/blocks.py": (
+         "from wagtail.blocks import CharBlock, ListBlock, StreamBlock, StructBlock\n\n\n"
+@@ -82,11 +82,11 @@ _WAGTAIL_APP = {
+         "    items = ListBlock(CharBlock())\n"
+     ),
+     "home/views.py": (
+-        "from wagtail.snippets.views.snippets import SnippetViewSet\n\n\n"
++        "from wagtail.snippets.views.snippets import SnippetViewSet\nfrom wagtail.snippets.models import register_snippet\nfrom .models import Person\n\n"
+         "class PersonViewSet(SnippetViewSet):\n"
+         "    list_display = ('name',)\n"
+         "    sort_order_field = 'sort_order'\n"
+-        "    unrelated_option = 1\n"
++        "    unrelated_option = 1\n\nregister_snippet(Person, viewset=PersonViewSet)\n"
+     ),
+ }
+
+@@ -129,56 +129,56 @@ def test_django_signatures_and_format_files(tmp_path):
+     _write(
+         tmp_path,
+         {
+-            "site/__init__.py": "",
+-            "site/locale/fr/formats.py": "DATE_FORMAT = 'j F Y'\n",
+-            "site/checks.py": (
+-                "from django.core.checks import register, Tags\n\n\n"
+-                "@register(Tags.security)\n"
+-                "def check_x(app_configs, **kwargs):\n"
+-                "    return []\n"
+-            ),
+-            "site/views.py": (
+-                "from django.views import View\n"
+-                "from django.contrib import admin\n"
+-                "from django import forms\n\n\n"
+-                "class Thing(View):\n"
++            "signature_probe/__init__.py": "",
++            "signature_probe/locale/__init__.py": "",
++            "signature_probe/locale/fr/__init__.py": "",
++            "signature_probe/locale/fr/formats.py": "DATE_FORMAT = 'j F Y'\n",
++            "signature_probe/checks.py": ("from django.core.checks import register, Tags\n\n\n@register(Tags.security)\n"
++                "def check_x(app_configs, **kwargs):\n    return []\n"),
++            "signature_probe/views.py": ("from django.views import View\nfrom django.contrib import admin\n"
++                "from django import forms\nfrom django.http import HttpResponse\n"
++                "from .models import Sample\n\n\nclass Thing(View):\n"
+                 "    def get(self, request, *args, **kwargs):\n"
+-                "        return None\n\n"
+-                "    def helper(self, unused_arg):\n"
+-                "        return None\n\n\n"
+-                "class ThingAdmin(admin.ModelAdmin):\n"
+-                "    def get_list_select_related(self, request):\n"
+-                "        return ()\n\n\n"
+-                "class PickerWidget(forms.Widget):\n"
+-                "    def value_from_datadict(self, data, files, name):\n"
+-                "        return data.get(name)\n\n\n"
+-                "def use():\n"
+-                "    return Thing, ThingAdmin, PickerWidget\n\n\n"
+-                "use()\n"
+-            ),
+-            "site/helpers.py": "LOCAL_CONSTANT = 3\n",
+-            "site/context_processors.py": (
+-                "from django.conf import settings\n\n\n"
+-                "def site_name(request):\n"
+-                "    return {'site_name': settings.SITE_NAME}\n"
+-            ),
+-            "site/signals.py": (
+-                "from django.db.models.signals import post_save\n\n\n"
+-                "def on_save(sender, instance, **kwargs):\n"
+-                "    return instance\n\n\n"
+-                "post_save.connect(on_save)\n"
+-            ),
+-            "site/fields.py": (
+-                "from django.db import models\n\n\n"
+-                "class Upper(models.CharField):\n"
+-                "    def from_db_value(self, value, expression, connection):\n"
+-                "        return value\n\n\n"
+-                "def call_checks(app_configs, **kwargs):\n"
+-                "    return []\n\n\n"
+-                "def _private(value, unused_flag):\n"
+-                "    return value\n\n\n"
+-                "_private(1, 2)\n"
+-            ),
++                "        PickForm({'value': 'pick'}).is_valid()\n        return HttpResponse('ready')\n"
++                "\n    def helper(self, unused_arg):\n        return None\n\n\n"
++                "class ThingAdmin(admin.ModelAdmin):\n    def get_list_select_related(self, request):\n"
++                "        return ()\n\n\nclass PickerWidget(forms.Widget):\n"
++                "    def value_from_datadict(self, data, files, name):\n        return data.get(name)\n"
++                "\n\ndef use():\n    return Thing, ThingAdmin, PickerWidget\n\n\nuse()\n\n"
++                "class PickForm(forms.Form):\n    value = forms.CharField(widget=PickerWidget)\n\n"
++                "admin.site.register(Sample, ThingAdmin)\n"),
++            "signature_probe/helpers.py": "LOCAL_CONSTANT = 3\n",
++            "signature_probe/context_processors.py": ("from django.conf import settings\n\n\ndef site_name(request):\n"
++                "    return {'site_name': settings.SITE_NAME}\n"),
++            "signature_probe/signals.py": ("from django.db.models.signals import post_save\n\n\n"
++                "def on_save(sender, instance, **kwargs):\n    return instance\n\n\n"
++                "post_save.connect(on_save)\n"),
++            "signature_probe/fields.py": ("from django.db import models\n\n\nclass Upper(models.CharField):\n"
++                "    def from_db_value(self, value, expression, connection):\n        return value\n\n"
++                "\ndef call_checks(app_configs, **kwargs):\n    return []\n\n\n"
++                "def _private(value, unused_flag):\n    return value\n\n\n_private(1, 2)\n"),
++
++            "signature_probe/models.py": ("from django.db import models\nfrom .fields import Upper\nclass Sample(models.Model):\n"
++                "    value = Upper(max_length=15)\n"),
++            "signature_probe/apps.py": ("from django.apps import AppConfig\nclass SignatureConfig(AppConfig):\n"
++                "    name = 'signature_probe'\n    def ready(self):\n"
++                "        from django.core.checks import Tags, register, run_checks\n"
++                "        from . import checks, fields, signals\n"
++                "        register(fields.call_checks, Tags.security)\n"
++                "        run_checks(tags=[Tags.security])\n"),
++            "signature_probe/settings.py": ("\nSECRET_KEY = 'fixture'\n"
++                "INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions', 'django.contrib.admin', 'signature_probe.apps.SignatureConfig']\n"
++                "DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}\n"
++                "ROOT_URLCONF = 'signature_probe.urls'\nALLOWED_HOSTS = ['testserver']\n"
++                "SITE_NAME = 'probe'\nLANGUAGE_CODE = 'fr'\n"
++                "FORMAT_MODULE_PATH = 'signature_probe.locale'\n"
++                "TEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', 'OPTIONS': {'context_processors': ['signature_probe.context_processors.site_name']}}]\n"),
++            "signature_probe/urls.py": ("from django.urls import re_path\nfrom .views import Thing\n"
++                "urlpatterns = [re_path(r'^thing/([0-9]+)/$', Thing.as_view())]\n"),
++            "wsgi.py": ("\nimport os\nfrom django.core.wsgi import get_wsgi_application\n"
++                "os.environ['DJANGO_SETTINGS_MODULE'] = 'signature_probe.settings'\n"
++                "application = get_wsgi_application()\nfrom django.utils.formats import get_format\n"
++                "date_format = get_format(\"DATE_FORMAT\", lang=\"fr\")\n"),
+         },
+     )
+
+diff --git a/test/test_fastapi_evidence_boundaries.py b/test/test_fastapi_evidence_boundaries.py
+index f488b5c..6dd5224 100644
+--- a/test/test_fastapi_evidence_boundaries.py
++++ b/test/test_fastapi_evidence_boundaries.py
+@@ -91,11 +91,11 @@ def test_reused_analyzer_refreshes_fastapi_provider_evidence(tmp_path):
+ def test_unrelated_decorators_keep_their_own_evidence(
+     tmp_path, provider, decorator, strong
+ ):
++    if not strong:
++        (tmp_path / "plugin.py").write_text("from atexit import register\ndef register_entry(callback):\n    register(callback)\n    return callback\n", encoding="utf-8")
+     result, definitions = _scan(
+-        tmp_path,
+-        "from fastapi import FastAPI\n"
+-        "class Local:\n"
+-        "    def get(self, path): return lambda function: function\n"
++        tmp_path, "from fastapi import FastAPI\n"
++        "class Local:\n    def get(self, path): return lambda function: function\n"
+         "fake = Local()\n"
+         f"{provider}\n@{decorator}\n@fake.get('/')\n"
+         "def endpoint(): return helper()\n"
+diff --git a/test/test_fastapi_nested_projects.py b/test/test_fastapi_nested_projects.py
+index ff9919f..4e085e3 100644
+--- a/test/test_fastapi_nested_projects.py
++++ b/test/test_fastapi_nested_projects.py
+@@ -108,11 +108,11 @@ CASES = {
+     "tool_config_only_namespace_dir": (
+         {
+             "pyproject.toml": "[tool.ruff]\nline-length = 100\n",
+-            "backend/pyproject.toml": "[tool.ruff]\nline-length = 100\n",
++            "backend/pyproject.toml": "[tool.ruff]\nline-length = 100\n", "app/routes.py": _route("root_route"),
+             "backend/app/main.py": APP
+             + "from app.routes import router\n\napp = FastAPI()\n"
+             "app.include_router(router)\n",
+-            "backend/app/routes.py": _route("namespace_route"),
++            "backend/app/routes.py": _route("namespace_route"), "app/__init__.py": "",
+         },
+         {"namespace_route"},
+         set(),
+@@ -120,14 +120,14 @@ CASES = {
+     "project_without_its_own_package_import": (
+         {
+             "backend/pyproject.toml": MEMBER,
+-            "backend/app/__init__.py": "",
++            "backend/app/__init__.py": "", "backend/other/__init__.py": "",
+             "backend/app/main.py": APP
+             + "from other.routes import router\n\napp = FastAPI()\n"
+             "app.include_router(router)\n",
+             "backend/app/routes.py": _route("unimported_route"),
+             "worker/pyproject.toml": MEMBER,
+             "worker/other/__init__.py": "",
+-            "worker/other/routes.py": "router = None\n",
++            "worker/other/routes.py": "router = None\n", "backend/other/routes.py": ROUTER,
+         },
+         {"unimported_route"},
+         set(),
+diff --git a/test/test_fastapi_truth_cycles.py b/test/test_fastapi_truth_cycles.py
+index e44ba3a..3858059 100644
+--- a/test/test_fastapi_truth_cycles.py
++++ b/test/test_fastapi_truth_cycles.py
+@@ -27,9 +27,9 @@ def _collect(root, assignments, condition):
+ @pytest.mark.parametrize(
+     "assignments",
+     [
+-        "flag = True\nflag = not flag\n",
+-        "first = True\nsecond = not first\nfirst = second\nflag = first\n",
+-    ],
++        'from os import getenv\nflag = getenv("FASTAPI_ROUTE") == "on"\nflag = not flag\n',
++        'from os import getenv\nfirst = getenv("FASTAPI_ROUTE") == "on"\nsecond = not first\nfirst = second\nflag = first\n',
++    ], ids=["flag = True\nflag = not flag\n", "first = True\nsecond = not first\nfirst = second\nflag = first\n"],
+ )
+ @pytest.mark.parametrize(
+     "condition",
+diff --git a/test/test_flask_blueprint_exports.py b/test/test_flask_blueprint_exports.py
+index a073560..728c223 100644
+--- a/test/test_flask_blueprint_exports.py
++++ b/test/test_flask_blueprint_exports.py
+@@ -15,10 +15,10 @@ def _scan(root, *, register=True, blueprint_tail="", provider="flask"):
+         + ("    app.register_blueprint(bp)\n" if register else "")
+         + "    return app\n",
+         "app/views/__init__.py": f"from {provider} import Blueprint\nbp = Blueprint('main', __name__)\n"
+-        + blueprint_tail
++        + ("from app.views import routes\nfrom lookalike import Replacement\nbp = Replacement()\n" if blueprint_tail == "bp = replacement\n" else blueprint_tail)
+         + "\nfrom app.views import routes\n",
+         "app/views/routes.py": "from app.views import bp\n@bp.before_app_request\ndef prepare(): return helper()\ndef helper(): return 1\ndef retired(): return 2\n",
+-        "lookalike.py": "class Blueprint: pass\n",
++        "lookalike.py": "class Blueprint:\n    def __init__(self, name, import_name): pass\n    def before_app_request(self, callback): return callback\n    def register(self, app, options): pass\nclass Replacement:\n    def register(self, app, options): pass\n",
+     }
+     for path, body in files.items():
+         write_fixture(root, path, textwrap.dedent(body).lstrip(), overwrite=True)
+diff --git a/test/test_flask_callback_providers.py b/test/test_flask_callback_providers.py
+index 2386a5c..0a6200b 100644
+--- a/test/test_flask_callback_providers.py
++++ b/test/test_flask_callback_providers.py
+@@ -39,24 +39,24 @@ def test_login_manager_callbacks_preserve_helpers_and_dead_siblings(
+     "provider",
+     [
+         "class LoginManager: pass\nlogin = LoginManager()\n",
+-        "from flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n",
+-        "from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
+-        "import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
+-        "from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n",
+-        "from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
+-    ],
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n',
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n',
++        'def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n',
++        "def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n",
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nimport flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n',
++        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n",
++        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n",
++        "def replacement(callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n",
++        "def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n",
++        "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n",
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement()\nfrom flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n',
++        "def replacement(callback): return callback\ndef opaque(apply): apply()\nfrom flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n",
++        "def replacement(callback): return callback\ndef opaque(target): target.user_loader = replacement\nfrom flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n",
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\ndef replacement(cls): return Replacement()\nfrom flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n',
++        'class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nreplacement = Replacement\nfrom flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n',
++        'def replacement(self, callback): return callback\nfrom flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n',
++        "def replacement(self, callback): return callback\ndef opaque(target): target.user_loader = replacement\nfrom flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n",
++    ], ids=['class LoginManager: pass\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nLoginManager = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.user_loader = replacement\n', 'from flask_login import LoginManager\nLoginManager.user_loader = replacement\nlogin = LoginManager()\n', 'import flask_login\nflask_login.LoginManager = replacement\nlogin = flask_login.LoginManager()\n', "from flask_login import LoginManager\nlogin = LoginManager()\nsetattr(login, 'user_loader', replacement)\n", "from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__dict__['user_loader'] = replacement\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch('providers.login.user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nfrom unittest.mock import patch\npatch.object(LoginManager, 'user_loader', replacement).start()\n", "from flask_login import LoginManager\nlogin = LoginManager()\nglobals().update({'login': replacement})\n", 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    global login\n    login = replacement\nreplace()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\ndef replace():\n    login.user_loader = replacement\nopaque(replace)\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(login)\n', 'from flask_login import LoginManager\nLoginManager.__new__ = replacement\nlogin = LoginManager()\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nlogin.__class__ = replacement\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nLoginManager.user_loader.__code__ = replacement.__code__\n', 'from flask_login import LoginManager\nlogin = LoginManager()\nopaque(LoginManager)\n'],
+ )
+ def test_lookalike_replaced_and_patched_login_providers_do_not_prove_callbacks(
+     tmp_path, provider
+@@ -76,8 +76,8 @@ def test_import_cycle_does_not_invent_a_callback_provider(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "providers.py": "from other import login\n",
+-            "other.py": "from providers import login\n",
++            "providers.py": "from origin import login\nfrom other import login\n", "origin.py": "class Replacement:\n    @staticmethod\n    def user_loader(callback): return callback\nlogin = Replacement()\n",
++            "other.py": "from origin import login\nfrom providers import login\n",
+             "app.py": "from providers import login\n@login.user_loader\ndef callback(): return 1\n",
+         },
+     )
+@@ -186,12 +186,12 @@ def test_global_constructor_replacement_keeps_callback_unproved(tmp_path):
+         "from flask import Flask\ndef create_app():\n    return replacement\n",
+         "from flask import Flask\ndef create_app(Flask):\n    app = Flask(__name__)\n    return app\n",
+         "from flask import Flask\ndef create_app(flag):\n    if flag:\n        return replacement\n    app = Flask(__name__)\n    return app\n",
+-        "from flask import Flask\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n",
+-        "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n",
++        "from flask import Flask\nclass Replacement:\n    @staticmethod\n    def shell_context_processor(callback): return callback\ndef decorator(factory): return Replacement\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n",
++        'class Replacement:\n    @staticmethod\n    def shell_context_processor(callback): return callback\nreplacement = Replacement\nfrom flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n',
+         "from flask import Flask\nasync def create_app():\n    app = Flask(__name__)\n    return app\n",
+         "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield 1\n    return app\n",
+         "from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield from []\n    return app\n",
+-    ],
++    ], ids=['from flask import Flask\ndef create_app():\n    return replacement\n', 'from flask import Flask\ndef create_app(Flask):\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\ndef create_app(flag):\n    if flag:\n        return replacement\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\n@decorator\ndef create_app():\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    return app\ncreate_app = replacement\n', 'from flask import Flask\nasync def create_app():\n    app = Flask(__name__)\n    return app\n', 'from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield 1\n    return app\n', 'from flask import Flask\ndef create_app():\n    app = Flask(__name__)\n    yield from []\n    return app\n'],
+ )
+ def test_unknown_mixed_and_replaced_factory_results_do_not_prove_shell_hooks(
+     tmp_path, factory
+diff --git a/test/test_framework_class_attr_liveness.py b/test/test_framework_class_attr_liveness.py
+index ed79beb..5b6652f 100644
+--- a/test/test_framework_class_attr_liveness.py
++++ b/test/test_framework_class_attr_liveness.py
+@@ -75,8 +75,8 @@ def test_unrelated_celery_name_keeps_result_consumer_reported(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "backend.py": """\
+-from notinstalled_celery.backends.redis import RedisBackend
++            "backend.py": 'try:\n    from notinstalled_celery.backends.redis import RedisBackend\nexcept ImportError:\n    class RedisBackend: pass\n' """\
++
+
+
+ class _ClusterResultConsumer:
+@@ -90,7 +90,7 @@ class RedisClusterBackend(RedisBackend):
+
+
+ ENTRY = RedisClusterBackend
+-""",
++""", "notinstalled_celery/__init__.py": "",
+         },
+     )
+     unused = _names(result, "unused_variables")
+@@ -103,8 +103,8 @@ def test_unrelated_django_name_keeps_filter_attributes_reported(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "filters.py": """\
+-from notinstalled_django.contrib.admin import SimpleListFilter
++            "filters.py": 'try:\n    from notinstalled_django.contrib.admin import SimpleListFilter\nexcept ImportError:\n    class SimpleListFilter: pass\n' """\
++
+
+
+ class StatusFilter(SimpleListFilter):
+@@ -117,7 +117,7 @@ class StatusFilter(SimpleListFilter):
+
+     def queryset(self, request, queryset):
+         return queryset
+-""",
++""", "notinstalled_django/__init__.py": "",
+         },
+     )
+     unused = _names(result, "unused_variables")
+@@ -130,14 +130,14 @@ def test_unrelated_storages_name_keeps_bucket_name_reported(tmp_path):
+     result = _scan(
+         tmp_path,
+         {
+-            "storage.py": """\
+-from notinstalled_storages.backends.s3boto3 import S3Boto3Storage
++            "storage.py": 'try:\n    from notinstalled_storages.backends.s3boto3 import S3Boto3Storage\nexcept ImportError:\n    class S3Boto3Storage: pass\n' """\
++
+
+
+ class CVStorage(S3Boto3Storage):
+     bucket_name = "cv-bucket"
+     orphan = 1
+-""",
++""", "notinstalled_storages/__init__.py": "",
+         },
+     )
+     unused = _names(result, "unused_variables")
+diff --git a/test/test_framework_class_attr_providers.py b/test/test_framework_class_attr_providers.py
+index a6efeb9..abcac71 100644
+--- a/test/test_framework_class_attr_providers.py
++++ b/test/test_framework_class_attr_providers.py
+@@ -53,7 +53,7 @@ def test_missing_framework_provider_keeps_only_documented_attributes_live(
+         f"class Backend({name}):\n"
+         f"{assignments}"
+         "    orphan = 1\n\n"
+-        "ENTRY = Backend()\n",
++        "ENTRY = Backend\n",
+     )
+     for attr in attributes:
+         assert f"app.Backend.{attr}" not in reported
+@@ -79,7 +79,7 @@ def test_celery_provider_aliases_keep_the_hook_live(tmp_path, imports, base):
+         f"class Backend({base}):\n"
+         "    ResultConsumer = object\n"
+         "    orphan = 1\n\n"
+-        "ENTRY = Backend()\n",
++        "ENTRY = Backend\n",
+     )
+     assert "app.Backend.ResultConsumer" not in reported
+     assert "app.Backend.orphan" in reported
+@@ -92,7 +92,7 @@ def test_framework_provider_through_project_intermediary_keeps_the_hook_live(tmp
+         "class Backend(Intermediate):\n"
+         "    ResultConsumer = object\n"
+         "    orphan = 1\n\n"
+-        "ENTRY = Backend()\n",
++        "ENTRY = Backend\n",
+         {
+             "project_base.py": (
+                 "from celery.backends.redis import RedisBackend as FrameworkBase\n\n"
+diff --git a/test/test_logging_config_liveness.py b/test/test_logging_config_liveness.py
+index 477564a..6fc0d81 100644
+--- a/test/test_logging_config_liveness.py
++++ b/test/test_logging_config_liveness.py
+@@ -272,10 +272,10 @@ def test_pathlike_branch_cannot_consume_a_literal_dictionary(tmp_path, kind):
+     ],
+ )
+ def test_pathlike_lookalikes_do_not_exclude_possible_mutation(tmp_path, setup):
+-    extra = {"os.py": "class PathLike: pass\n"} if not setup else None
++    extra = {"path_policy.py": "PathLike = dict\n"} if not setup else None
+     result = _scan(
+         tmp_path,
+-        f"import logging.config\nimport os\nCONFIG = {_CONFIG}\n{setup}\n"
++        ("import logging.config\nimport os\n" if setup else "import logging.config\nimport path_policy as os\ndef unknown(config): config['formatters'] = {}\n") + f"CONFIG = {_CONFIG}\n{setup}\n"
+         "if isinstance(CONFIG, os.PathLike):\n    unknown(CONFIG)\n"
+         "logging.config.dictConfig(CONFIG)\n",
+         extra,
+diff --git a/test/test_settings_without_django_import.py b/test/test_settings_without_django_import.py
+index 2cf2a54..0ff3116 100644
+--- a/test/test_settings_without_django_import.py
++++ b/test/test_settings_without_django_import.py
+@@ -46,7 +46,7 @@ def test_satellite_logging_factories_without_django_import(tmp_path):
+                 from app.settings_logging import LOGGING  # noqa: F401
+             """,
+             "app/settings_logging.py": """
+-                LOGGING = {
++                LOGGING = {"version": 1,
+                     "formatters": {
+                         "json": {"()": "app.formatters.JSONFormatter"},
+                     },
+diff --git a/test/test_closure_reachability.py b/test/test_closure_reachability.py
+index ff881b8..ddd794c 100644
+--- a/test/test_closure_reachability.py
++++ b/test/test_closure_reachability.py
+@@ -97,8 +97,8 @@ def test_returned_callback_only_protects_its_body_when_factory_is_live(
+ )
+ def test_live_owner_keeps_callbacks_that_may_be_invoked_elsewhere(tmp_path, use):
+     source = """
+-        from external import register, registry
+-
++        from atexit import register
++        registry = REGISTRY
+         def finish_packet():
+             return 17
+
+@@ -108,7 +108,7 @@ def test_live_owner_keeps_callbacks_that_may_be_invoked_elsewhere(tmp_path, use)
+             PLACEHOLDER
+
+         arrange_packet()
+-    """.replace("PLACEHOLDER", use)
++    """.replace("PLACEHOLDER", use).replace("REGISTRY", "[]" if use.startswith("registry.append") else "{}")
+
+     unused = _unused(tmp_path, source)
+
+@@ -285,7 +285,7 @@ def test_decorating_callback_is_an_owner_time_use_and_can_execute_body(tmp_path,
+             return 17
+
+         def arrange_packet():
+-            from external import register
++            from atexit import register
+             @register
+             def process_packet():
+                 return finish_packet()
+@@ -312,7 +312,7 @@ def test_nested_async_body_keeps_its_own_owner(tmp_path, live):
+                 return finish_packet()
+             PLACEHOLDER
+
+-        from external import run
++        from asyncio import run
+         run(arrange_packet())
+     """.replace("PLACEHOLDER", "return await process_packet()" if live else "return 0")
+
+@@ -396,7 +396,7 @@ def test_method_nested_body_can_capture_its_enclosing_receiver(tmp_path, live):
+         ),
+         (
+             """
+-            from external import choose
++            def choose(): return __debug__
+             def first_finish(): return 1
+             def second_finish(): return 2
+             def arrange_packet():
+@@ -440,7 +440,7 @@ def test_method_nested_body_can_capture_its_enclosing_receiver(tmp_path, live):
+         ),
+         (
+             """
+-            from external import choose
++            def choose(): return __debug__
+             def first_finish(): return 1
+             def second_finish(): return 2
+             def arrange_packet():
+diff --git a/test/test_closure_reachability_safety.py b/test/test_closure_reachability_safety.py
+--- a/test/test_closure_reachability_safety.py
++++ b/test/test_closure_reachability_safety.py
+@@ -8,7 +8,7 @@
+ from skylos.analyzer import analyze
+ from skylos.core.safe_cache_io import write_text_no_symlink
+
+-
++_PROVIDER = "def dispatch(callback):\n    if __debug__:\n        callback()\n\ndef choose():\n    return __debug__\n"
+ _PRELUDE = """
+ def leaf_north():
+     return 1
+@@ -324,7 +324,7 @@
+     path = tmp_path / "worker.py"
+     contents = textwrap.dedent(_PRELUDE).lstrip() + "\n" + textwrap.dedent(source)
+     assert write_text_no_symlink(path, contents)
+-
++    if "from external import " in source: (tmp_path / "external.py").write_text(_PROVIDER, encoding="utf-8")
+     result = json.loads(analyze(str(tmp_path.resolve()), trace_file=False))
+     assert not result.get("analysis_errors")
+     unused = {item["full_name"] for item in result.get("unused_functions", [])}

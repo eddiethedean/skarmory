@@ -3,6 +3,7 @@
 use super::*;
 
 const MAX_PROVIDER_CALLS: usize = 32;
+const MAX_PROVIDER_ASSIGNMENTS: usize = 32;
 
 #[derive(Clone, Copy)]
 enum ProviderReceiver<'a> {
@@ -23,7 +24,59 @@ pub(super) struct SourceProviderCall<'a> {
     supplied: usize,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct FreshProviderArgument {
+    class: SymbolId,
+    assignment: Option<(Location, Location)>,
+}
+
 impl<'a> Graph<'a> {
+    pub(super) fn invoke_unpacked_source_provider(
+        &mut self,
+        callee: Value,
+        call: CallArguments<'_>,
+    ) -> bool {
+        let Value::Callable(invocation) = callee else {
+            return false;
+        };
+        let Binding::Definition(wrapper, scope) = self.symbols[invocation.target].binding else {
+            return false;
+        };
+        if invocation.verified
+            || !matches!(invocation.receiver, Receiver::Ordinary)
+            || invocation.implicit_descriptor_receiver
+            || self.scopes[scope].parent != Some(self.scopes[scope].file)
+            || !field_dispatch::plain_method(wrapper, 1)
+            || !matches!(wrapper_return(wrapper), Some((_, returned, None))
+                if provider_member(returned).is_some_and(|(receiver, _, _)|
+                    receiver == wrapper.parameters[0].text))
+        {
+            return false;
+        }
+        let argument = match (call.positional, call.keywords) {
+            ([argument], []) => argument,
+            ([], [(name, argument)]) if *name == wrapper.parameters[0].text => argument,
+            _ => return false,
+        };
+        let Some(class) = self.plain_provider_constructor(call.scope, argument, call.before) else {
+            return false;
+        };
+        let access = (call.scope, call.before);
+        // The temporary receiver can release its last reference when the
+        // call returns, so a finalizer would make this proof incomplete.
+        if !self.plain_default_provider(class, access, &BTreeSet::new())
+            || self
+                .class_member_at(class, "__del__", 0, Some(access))
+                .is_some()
+        {
+            return false;
+        }
+        self.unpacked_source_provider_calls
+            .insert((call.scope, position(call.at)));
+        self.call_invocation(invocation, call, "certain");
+        true
+    }
+
     pub(super) fn defer_source_provider_call(&mut self, scope: ScopeId, call: &Expression) -> bool {
         let row = &self.scopes[scope];
         let Some(owner) = row.owner else {
@@ -117,7 +170,7 @@ impl<'a> Graph<'a> {
         wrapper: &Definition,
         call: CallArguments<'_>,
         values: &BTreeMap<String, Value>,
-    ) -> Option<SymbolId> {
+    ) -> Option<FreshProviderArgument> {
         let (_, returned, None) = wrapper_return(wrapper)? else {
             return None;
         };
@@ -132,24 +185,146 @@ impl<'a> Graph<'a> {
                 .find(|(name, _)| name == receiver)
                 .map(|(_, value)| value)
         })?;
+        let Some(Value::Instance(class)) = values.get(receiver) else {
+            return None;
+        };
+        if let ExpressionKind::Name(name) = &argument.kind {
+            let scope = call.scope;
+            let row = &self.scopes[scope];
+            // A standalone, single-argument module call has no other
+            // operands that could execute after loading the named instance.
+            if row.owner.is_some() || call.positional.len() + call.keywords.len() != 1 {
+                return None;
+            }
+            let call_statement = row.body.get(
+                row.body
+                    .partition_point(|statement| position(statement.at) < position(call.before)),
+            )?;
+            if !matches!(&call_statement.kind,
+                StatementKind::Evaluate(Expression { at, kind: ExpressionKind::Call { function, .. }, .. })
+                if position(call_statement.at) == position(call.before)
+                    && position(*at) == position(call.at)
+                    && matches!(function.kind, ExpressionKind::Name(_)))
+            {
+                return None;
+            }
+            let binding = self.local(scope, name, call.before)?;
+            let Binding::Variable(Some(initializer), assigned) = self.symbols[binding].binding
+            else {
+                return None;
+            };
+            let statement =
+                row.body
+                    .get(row.body.partition_point(|statement| {
+                        position(statement.at) < position(assigned)
+                    }))?;
+            if position(statement.at) != position(assigned)
+                || !matches!(fresh_assignment(statement), Some((target, value))
+                    if target.text == *name && std::ptr::eq(value, initializer))
+                || self.local(scope, name, assigned).is_some()
+                || self.plain_provider_constructor(scope, initializer, assigned)? != *class
+            {
+                return None;
+            }
+            return Some(FreshProviderArgument {
+                class: *class,
+                assignment: Some((assigned, call.before)),
+            });
+        }
+        (self.provider_constructor((call.scope, call.before), argument)? == *class).then_some(
+            FreshProviderArgument {
+                class: *class,
+                assignment: None,
+            },
+        )
+    }
+
+    fn provider_constructor(
+        &mut self,
+        (scope, before): (ScopeId, Location),
+        expression: &Expression,
+    ) -> Option<SymbolId> {
         let ExpressionKind::Call {
             function,
             arguments,
             keywords,
-        } = &argument.kind
+        } = &expression.kind
         else {
             return None;
         };
         if !arguments.is_empty() || !keywords.is_empty() {
             return None;
         }
-        let (Some(Value::Instance(class)), Value::Callable(constructor)) = (
-            values.get(receiver),
-            self.probe_identity(call.scope, function, call.before),
-        ) else {
+        let Value::Callable(constructor) = self.probe_identity(scope, function, before) else {
             return None;
         };
-        (!constructor.verified && constructor.target == *class).then_some(*class)
+        (!constructor.verified).then_some(constructor.target)
+    }
+
+    pub(super) fn plain_provider_constructor(
+        &mut self,
+        scope: ScopeId,
+        expression: &Expression,
+        before: Location,
+    ) -> Option<SymbolId> {
+        if !matches!(&expression.kind, ExpressionKind::Call { function, .. }
+            if matches!(function.kind, ExpressionKind::Name(_)))
+        {
+            return None;
+        }
+        let class = self.provider_constructor((scope, before), expression)?;
+        (self.is_class(class) && self.source_provider_definition_precedes(class, (scope, before)))
+            .then_some(class)
+    }
+
+    fn named_provider_stays_fresh(
+        &mut self,
+        scope: ScopeId,
+        class: SymbolId,
+        assigned: Location,
+        called: Location,
+        invalidated: &BTreeSet<SymbolId>,
+    ) -> bool {
+        // The receiver can outlive the call. Its finalizer can run when a
+        // later assignment drops the last reference.
+        if self
+            .class_member_at(class, "__del__", 0, Some((scope, assigned)))
+            .is_some()
+        {
+            return false;
+        }
+
+        let body = self.scopes[scope].body;
+        let start = body.partition_point(|statement| position(statement.at) <= position(assigned));
+        let end = body.partition_point(|statement| position(statement.at) < position(called));
+        // Each intervening assignment has a new destination and an inert
+        // initializer. This rules out escapes, reflection and releasing a
+        // previous object. A new instance may also have a finalizer that
+        // runs after the call.
+        end.saturating_sub(start) <= MAX_PROVIDER_ASSIGNMENTS
+            && body.get(start..end).is_some_and(|statements| {
+                statements.iter().all(|statement| {
+                    let Some((target, value)) = fresh_assignment(statement) else {
+                        return false;
+                    };
+                    self.local(scope, &target.text, statement.at).is_none()
+                        && (matches!(
+                            value.kind,
+                            ExpressionKind::Text(_)
+                                | ExpressionKind::Scalar(_)
+                                | ExpressionKind::Bool(_)
+                                | ExpressionKind::None
+                        ) || self
+                            .plain_provider_constructor(scope, value, statement.at)
+                            .is_some_and(|class| {
+                                let access = (scope, statement.at);
+                                self.plain_default_provider(class, access, invalidated)
+                                    && self
+                                        .class_member_at(class, "__del__", 0, Some(access))
+                                        .is_none()
+                            }))
+                })
+            })
     }
 
     pub(super) fn record_opaque_source_provider_arguments(&mut self, call: CallArguments<'_>) {
@@ -190,7 +365,7 @@ impl<'a> Graph<'a> {
             .filter(|(_, site)| reach.scopes.contains(&site.scope))
             .map(|(&owner, &site)| (owner, site))
             .collect();
-        if sites.is_empty() {
+        if sites.is_empty() && self.source_factory_method_calls.is_empty() {
             return;
         }
         let invalidated = self.source_provider_invalidated.take().unwrap_or_else(|| {
@@ -199,6 +374,7 @@ impl<'a> Graph<'a> {
             invalidated.extend(&self.source_provider_opaque_arguments);
             invalidated
         });
+        self.activate_factory_method_calls(reach, pending, possible, &invalidated);
         for (owner, site) in sites {
             if invalidated.contains(&owner) {
                 continue;
@@ -246,6 +422,18 @@ impl<'a> Graph<'a> {
                     complete = false;
                     continue;
                 };
+                if self
+                    .unpacked_source_provider_calls
+                    .contains(&(caller, position(at)))
+                    && !self.source_provider_returns_scalar(target, &invalidated, 0)
+                {
+                    self.scope_issue(
+                        caller,
+                        at,
+                        "unresolved_finalizer",
+                        "the unpacked provider call may return a value with an unmodeled finalizer",
+                    );
+                }
                 self.direct.insert(target);
                 let certainty = if possible || conditional {
                     "possible"
@@ -274,6 +462,60 @@ impl<'a> Graph<'a> {
         self.source_provider_invalidated = Some(invalidated);
     }
 
+    pub(super) fn source_provider_returns_scalar(
+        &mut self,
+        target: SymbolId,
+        invalidated: &BTreeSet<SymbolId>,
+        depth: usize,
+    ) -> bool {
+        if depth >= MAX_BINDING_CHAIN || invalidated.contains(&target) {
+            return false;
+        }
+        let Binding::Definition(definition, scope) = self.symbols[target].binding else {
+            return false;
+        };
+        let body = body_without_docstring(definition);
+        if body.is_empty() {
+            return true;
+        }
+        let [
+            Statement {
+                kind: StatementKind::Return(value),
+                at,
+            },
+        ] = body
+        else {
+            return false;
+        };
+        let Some(value) = value else {
+            return true;
+        };
+        match &value.kind {
+            ExpressionKind::Text(_)
+            | ExpressionKind::Scalar(_)
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::None => true,
+            ExpressionKind::Call {
+                function,
+                arguments,
+                keywords,
+            } if arguments.is_empty() && keywords.is_empty() => {
+                let Value::Callable(callee) = self.probe_identity(scope, function, *at) else {
+                    return false;
+                };
+                let Binding::Definition(helper, _) = self.symbols[callee.target].binding else {
+                    return false;
+                };
+                !callee.verified
+                    && matches!(callee.receiver, Receiver::Ordinary)
+                    && !callee.implicit_descriptor_receiver
+                    && field_dispatch::plain_method(helper, 0)
+                    && self.source_provider_returns_scalar(callee.target, invalidated, depth + 1)
+            }
+            _ => false,
+        }
+    }
+
     fn source_provider_target(
         &mut self,
         site: SourceProviderCall<'a>,
@@ -282,7 +524,20 @@ impl<'a> Graph<'a> {
         invalidated: &BTreeSet<SymbolId>,
     ) -> Option<(SymbolId, SymbolId)> {
         let class = match (site.receiver, input) {
-            (ProviderReceiver::Argument, ProviderInput::Class(class)) => class,
+            (ProviderReceiver::Argument, ProviderInput::Class(argument)) => {
+                if let Some((assigned, called)) = argument.assignment
+                    && !self.named_provider_stays_fresh(
+                        access.0,
+                        argument.class,
+                        assigned,
+                        called,
+                        invalidated,
+                    )
+                {
+                    return None;
+                }
+                argument.class
+            }
             (
                 ProviderReceiver::Factory {
                     expression,
@@ -327,7 +582,7 @@ impl<'a> Graph<'a> {
         .then_some((invocation.target, class))
     }
 
-    fn source_provider_definition_precedes(
+    pub(super) fn source_provider_definition_precedes(
         &self,
         target: SymbolId,
         (mut caller, mut at): (ScopeId, Location),
@@ -383,8 +638,23 @@ fn collect_opaque_provider_arguments(value: &Value, targets: &mut BTreeSet<Symbo
 }
 
 enum ProviderInput {
-    Class(SymbolId),
+    Class(FreshProviderArgument),
     Text(String),
+}
+
+fn fresh_assignment(statement: &Statement) -> Option<(&Name, &Expression)> {
+    let StatementKind::Assign {
+        names,
+        value: Some(value),
+        annotation: None,
+    } = &statement.kind
+    else {
+        return None;
+    };
+    let [target] = names.as_slice() else {
+        return None;
+    };
+    Some((target, value))
 }
 
 fn wrapper_return(definition: &Definition) -> Option<(Location, &Expression, Option<&Statement>)> {

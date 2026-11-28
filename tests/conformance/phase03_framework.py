@@ -35,6 +35,7 @@ _SETTINGS_REASONS = {
     "django_storage_backend": "django_web_storage_backend",
     "django_logging_factory": "django_web_logging_factory",
     "django_setting_reference": "django_web_setting_reference",
+    "django_template_method": "django_web_template_member",
 }
 _SIGNAL_REASONS = {
     ("django_signal", "certain"): "django_web_signal_receiver",
@@ -43,15 +44,21 @@ _SIGNAL_REASONS = {
         "possible",
     ): "django_signal_registration_unknown_loading",
 }
+_METHOD_FINDING_SOURCES = {
+    "test_django_converter_precision.py",
+    "test_django_function_view_roots.py",
+    "test_django_quiet_dead_code.py",
+    "test_django_template_liveness.py",
+}
 
 
-def framework_report(report, *, source=None):
+def framework_report(report, *, source=None, project=None):
     """Match evidence to definitions by qualified name, file, and line."""
 
     def key(entry, name):
         return entry[name], entry["file"], entry["line"]
 
-    if source is not None and PurePath(source).name == "test_django_function_view_roots.py":
+    if source is not None and PurePath(source).name in _METHOD_FINDING_SOURCES:
         # This assertion family observes methods individually. The native
         # report keeps these same findings under their unused class.
         methods = [
@@ -61,6 +68,17 @@ def framework_report(report, *, source=None):
             and row.get("dead_code_classification") == "likely_dead"
         ]
         report = {**report, "unused_functions": [*report["unused_functions"], *methods]}
+
+    if source is not None and PurePath(source).name == "test_django_admin_stubs.py":
+        if project is None:
+            raise ValueError("the admin stub fixture requires its scan root")
+        report = {
+            **report,
+            "unused_files": [
+                {**row, "file": str(PurePath(project) / row["file"])}
+                for row in report["unused_files"]
+            ],
+        }
 
     events = {
         key(symbol, "qualified_name"): symbol["evidence"]
@@ -92,7 +110,10 @@ def framework_report(report, *, source=None):
                 kind = "framework_root" if certainty == "certain" else native_kind
             elif (reason := _SETTINGS_REASONS.get(native_kind)) is not None:
                 rescued.append({"name": name, "reason": reason})
-                kind = native_kind
+                # The reference uses this evidence kind for settings and
+                # template protocol roots. Keep native certainty and kind
+                # available independently of that representation.
+                kind = "framework_root"
             elif native_kind == "unittest_discovery" and certainty == "certain":
                 kind = "framework_root"
                 reason = "unittest_discovery"
@@ -165,6 +186,30 @@ def framework_definitions(report):
     return definitions
 
 
+def unittest_report(report):
+    # The SDK groups evidence by symbol occurrence. Skylos's _marked helper
+    # reads the reason of each certain unittest root under its definition name.
+    discovered = {
+        (symbol["qualified_name"], symbol["file"], symbol["line"])
+        for symbol in report["dead_code_evidence"]["symbols"]
+        if any(
+            row["kind"] == "unittest_discovery" and row["certainty"] == "certain"
+            for row in symbol["evidence"]
+        )
+    }
+    definitions = {}
+    for definition in report["definitions"].values():
+        name = definition["name"]
+        if (name, definition["file"], definition["line"]) in discovered:
+            definitions[name] = {
+                **definition,
+                "dead_code_evidence": [{"reason": "unittest_discovery"}],
+            }
+        else:
+            definitions.setdefault(name, definition)
+    return {**report, "definitions": definitions}
+
+
 def patch_framework_analysis(patch, module, analyze):
     """Route pinned public analysis entry points through the candidate SDK."""
     from skylos import analyzer as reference_analyzer
@@ -181,5 +226,9 @@ def patch_framework_analysis(patch, module, analyze):
     patch.setattr(reference_analyzer.Skylos, "analyze", analyze_instance)
     if hasattr(module, "_scan"):
         patch.setattr(web_framework_fixtures, "analyze", analyze)
+    if module.__name__ == "test.test_django_historical_consumer_controls":
+        from test import test_django_app_repro_liveness
+
+        patch.setattr(test_django_app_repro_liveness, "analyze", analyze)
     if hasattr(module, "analyze"):
         patch.setattr(module, "analyze", analyze)

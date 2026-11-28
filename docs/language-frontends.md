@@ -158,8 +158,10 @@ The source audit identifies where to start collection. The frozen language case 
 
 ### Existing JavaScript and TypeScript preview in main
 
-The earlier experimental `skylos-0.3` implementation supports `SKY-E003` for a single package scanned
-from its root directory. It reads the root `package.json` main entry and
+Enable the experimental `SKY-E003` preview with
+`--profile skylos-0.3 --experimental-javascript` on the CLI or
+`profile="skylos-0.3", experimental_javascript=True` in the compatibility SDK.
+The preview scans a single package from its root directory. It reads the root `package.json` main entry and
 follows local static ECMAScript imports and re-exports, including type-only
 imports. It accepts exact source paths and unique extensionless file or
 `index` matches among selected JavaScript and TypeScript sources. For a

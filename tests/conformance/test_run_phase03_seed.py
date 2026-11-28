@@ -1,0 +1,521 @@
+import hashlib
+import json
+import platform
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
+from xml.etree import ElementTree
+
+from phase03_fastapi import import_scope_report, verify_wheels
+from run_phase03_seed import (
+    CHANGED_FILE_SCOPE,
+    CORPUS_SOURCE,
+    FACT_CACHE_CASES,
+    FUNCTION_CACHE,
+    FUNCTION_CACHE_CASE,
+    METHOD_CACHE_CASE,
+    PORT,
+    ROOT,
+    AssertionTrace,
+    FactCacheReplay,
+    benchmark_assertions,
+    case_assertion_sources,
+    check_candidate_wheel,
+    environment,
+    port_cases,
+    proved_changed_file_projection,
+    proved_changed_file_scope,
+    proved_json_provider_dispatch,
+    scan_candidate,
+    write_receipt,
+)
+
+
+class FrozenReferenceTests(unittest.TestCase):
+    def test_required_frozen_result_must_be_an_ordinary_pass(self):
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            from check_dead_code_gate import passed_pytest_ids
+
+        report = ElementTree.fromstring(
+            '<testsuite><testcase classname="test.test_methods" name="test_alias[local]" /></testsuite>'
+        )
+        source = "test/test_methods.py"
+        self.assertEqual(passed_pytest_ids(report, source), {f"{source}::test_alias[local]"})
+        testcase = report.find("testcase")
+        for outcome in ("skipped", "failure", "error"):
+            with self.subTest(outcome=outcome):
+                marker = ElementTree.SubElement(testcase, outcome)
+                with self.assertRaisesRegex(ValueError, f"frozen reference did not pass \\({outcome}\\)"):
+                    passed_pytest_ids(report, source)
+                testcase.remove(marker)
+
+    def test_frozen_result_accepts_class_qualified_node_ids(self):
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            from check_dead_code_gate import passed_pytest_ids
+
+        report = ElementTree.fromstring(
+            '<testsuite>'
+            '<testcase classname="test.test_analyzer.TestAnalyze" name="test_import[local]" />'
+            '<testcase classname="test.test_analyzer_other.TestAnalyze" name="test_import"><failure />'
+            '</testcase></testsuite>'
+        )
+        source = "test/test_analyzer.py"
+        self.assertEqual(passed_pytest_ids(report, source), {f"{source}::TestAnalyze::test_import[local]"})
+        testcase = report.find("testcase")
+        ElementTree.SubElement(testcase, "skipped")
+        with self.assertRaisesRegex(ValueError, "TestAnalyze::test_import.*did not pass"):
+            passed_pytest_ids(report, source)
+
+
+class DiagnosticPortTests(unittest.TestCase):
+    def test_sdk_diagnostics_and_release_ports_are_separate(self):
+        args = SimpleNamespace(
+            inventory=ROOT / "tests/conformance/phase03-inventory.toml",
+            sdk_python=Path(sys.executable), variant="linux-x86_64-cp311-python-sdk",
+            diagnostics=False,
+        )
+        method = "test/test_method_reachability.py::test_partial_scan_does_not_prove_method_cycles_dead"
+        binding = "test/test_dead_code_local_bindings.py"
+        with patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            with self.assertRaisesRegex(ValueError, "mixed SDK parity case requires --native-cli"):
+                port_cases(args)
+            args.native_cli = Path("target/release/skarmory")
+            _, _, _, release = port_cases(args)
+            args.diagnostics = True
+            args.native_cli = None
+            _, _, _, diagnostics = port_cases(args)
+
+        self.assertIn(f"{method}[file]", release)
+        self.assertIn(f"{method}[excluded-directory]", release)
+        self.assertIn(f"{method}[changed-file]", release)
+        self.assertIn(f"{binding}::test_unused_local_is_reported_when_other_functions_use_the_same_name", release)
+        self.assertIn(f"{binding}::test_local_read_through_locals_is_kept", release)
+        self.assertIn(f"{binding}::test_local_read_by_another_frame_through_f_locals_is_kept", diagnostics)
+        self.assertFalse(release.keys() & diagnostics.keys())
+
+
+    def test_candidate_proof_requires_a_registered_case_and_matching_prerequisite(self):
+        variant = "test-sdk"
+        args = SimpleNamespace(
+            inventory=ROOT / "tests/conformance/phase03-inventory.toml",
+            sdk_python=Path(sys.executable), variant=variant, diagnostics=False,
+        )
+        metadata = {variant: {"layer": "sdk", "backend": "python"}}
+        for key, prerequisites, proof in (
+            ("unregistered", [CHANGED_FILE_SCOPE], "changed-file"),
+            ("unregistered", [FUNCTION_CACHE], "fact-cache"),
+            (FUNCTION_CACHE_CASE, [], "fact-cache"),
+        ):
+            with self.subTest(key=key, prerequisites=prerequisites):
+                cases = {variant: {key: {"port": PORT, "prerequisites": prerequisites}}}
+                with (
+                    patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]),
+                    patch("check_dead_code_gate.read_inventory", return_value=({}, "", metadata, cases)),
+                    self.assertRaisesRegex(ValueError, f"missing native SDK adapter for a mapped {proof} case"),
+                ):
+                    port_cases(args)
+
+
+class FactCacheReplayTests(unittest.TestCase):
+    def replay(self, case=METHOD_CACHE_CASE):
+        _, file_count, expected_hits = FACT_CACHE_CASES[case]
+        return FactCacheReplay(Path("candidate-cache"), file_count, expected_hits)
+
+    def test_fact_cache_replay_requires_every_original_scan(self):
+        cache_dir = Path("candidate-cache")
+        replay = self.replay()
+        for root_present, hits in (
+            (False, None), (False, 0), (False, 1),
+            (True, None), (True, 0), (True, 1),
+            (False, None), (False, 1), (False, 1),
+        ):
+            with self.subTest(index=replay.observed):
+                self.assertFalse(replay.proved)
+                options = replay.options({"grep_cache": hits is not None})
+                report = {"unused_functions": [] if root_present else ["worker.Task.run"]}
+                if hits is not None:
+                    self.assertEqual(options["cache_dir"], cache_dir)
+                    self.assertEqual(options["workers"], 2)
+                    report["cache"] = {
+                        "hits": hits, "misses": 1 - hits, "writes": 1 - hits, "write_failures": 0,
+                    }
+                else:
+                    self.assertNotIn("cache_dir", options)
+                replay.observe(report)
+        self.assertTrue(replay.proved)
+
+    def test_fact_cache_replay_rejects_different_coverage(self):
+        replay = self.replay()
+        replay.observe({"coverage": {"status": "complete"}})
+        with self.assertRaisesRegex(ValueError, "differs from the uncached control"):
+            replay.observe({
+                "coverage": {"status": "incomplete"},
+                "cache": {"hits": 0, "misses": 1, "writes": 1, "write_failures": 0},
+            })
+        self.assertFalse(replay.proved)
+
+    def test_function_root_replay_rejects_skipping_a_file_or_caching_a_control(self):
+        replay = self.replay(FUNCTION_CACHE_CASE)
+        with self.assertRaisesRegex(ValueError, "cache sequence changed"):
+            replay.options({"grep_cache": True})
+        control = {"selected_paths": ["caller.py", "worker.py"]}
+        replay.observe(control)
+        with self.assertRaisesRegex(ValueError, "differs from the uncached control"):
+            replay.observe({
+                **control,
+                "cache": {"hits": 0, "misses": 1, "writes": 1, "write_failures": 0},
+            })
+        replay.observe({
+            **control,
+            "cache": {"hits": 0, "misses": 2, "writes": 2, "write_failures": 0},
+        })
+        self.assertFalse(replay.proved)
+
+
+class FastapiImportScopeTests(unittest.TestCase):
+    def test_projects_declarations_separately_from_registration_evidence(self):
+        project = Path("/example").resolve()
+        dormant = {"file": "app/routes.py", "line": 4}
+        active = {"file": "backend/app/routes.py", "line": 6}
+        possible = {"file": "backend/app/routes.py", "line": 8}
+        native = {
+            "analysis_summary": {"fastapi_route_declarations": [dormant, active, possible]},
+            "coverage": {"status": "complete"},
+            "dead_code_evidence": {"symbols": [
+                {**dormant, "evidence": [{"kind": "grep_rescue", "certainty": "possible"}]},
+                {**active, "evidence": [{"kind": "fastapi_registration", "certainty": "certain"}]},
+                {**possible, "evidence": [{"kind": "fastapi_registration", "certainty": "possible"}]},
+            ]},
+        }
+        report = import_scope_report(native, project)
+        dormant_at = (str(project / dormant["file"]), dormant["line"])
+        active_at = (str(project / active["file"]), active["line"])
+        possible_at = (str(project / possible["file"]), possible["line"])
+        self.assertTrue(report.complete)
+        self.assertEqual(report.candidates, {dormant_at, active_at, possible_at})
+        self.assertEqual(report.roots, {active_at})
+        self.assertEqual(report.uncertain, {possible_at})
+        native["coverage"]["status"] = "incomplete"
+        self.assertFalse(import_scope_report(native, project).complete)
+
+
+def original_assertions(stop, value):
+    assert isinstance(value, int)
+    if stop:
+        return
+    assert value > 0
+
+
+class AssertionTraceTests(unittest.TestCase):
+    def test_unreached_and_failed_assertions_earn_no_credit(self):
+        start = original_assertions.__code__.co_firstlineno
+        source = Path(__file__).name
+        first, last = f"{source}:{start + 1}", f"{source}:{start + 4}"
+        for stop, value, expected in [
+            (True, 1, {first}),
+            (False, -1, {first}),
+            (False, 1, {first, last}),
+        ]:
+            with self.subTest(stop=stop, value=value):
+                trace = AssertionTrace(Path(__file__).resolve().parent, [source])
+                previous = sys.gettrace()
+                try:
+                    sys.settrace(trace)
+                    if value < 0:
+                        with self.assertRaises(AssertionError):
+                            original_assertions(stop, value)
+                    else:
+                        original_assertions(stop, value)
+                finally:
+                    sys.settrace(previous)
+                self.assertEqual(trace.completed & {first, last}, expected)
+
+
+    def test_tracks_shared_fixture_assertions(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            helper = root / "fixture.py"
+            helper.write_text(
+                "def prove(value):\n    assert isinstance(value, int)\n    assert value > 0\n",
+                encoding="utf-8",
+            )
+            scope = {}
+            exec(compile(helper.read_bytes(), str(helper), "exec"), scope)
+            cases = {
+                "test_example.py::test_assert": {
+                    "source": "test_example.py",
+                    "assertions": ["fixture.py:2", "fixture.py:3"],
+                },
+            }
+            sources = case_assertion_sources(root, cases)
+            trace = AssertionTrace(root, sources["test_example.py::test_assert"])
+            previous = sys.gettrace()
+            try:
+                sys.settrace(trace)
+                with self.assertRaises(AssertionError):
+                    scope["prove"](-1)
+            finally:
+                sys.settrace(previous)
+            self.assertIn("fixture.py:2", trace.completed)
+            self.assertNotIn("fixture.py:3", trace.completed)
+
+
+class FastapiRuntimeEvidenceTests(unittest.TestCase):
+    def test_runtime_wheel_must_match_the_reviewed_lock(self):
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            wheel = directory / "fastapi-0.141.1-py3-none-any.whl"
+            artifact = b"original wheel bytes"
+            wheel.write_bytes(artifact)
+            sha256 = hashlib.sha256(artifact).hexdigest()
+            lock = directory / "runtime.txt"
+            lock.write_text(f"fastapi==0.141.1 --hash=sha256:{sha256}\n", encoding="ascii")
+            environment_digest = hashlib.sha256(lock.read_bytes()).hexdigest()
+            with patch("phase03_fastapi.LOCK", lock):
+                self.assertEqual(verify_wheels(directory, environment_digest), [wheel])
+                with self.assertRaisesRegex(ValueError, "lock digest differs"):
+                    verify_wheels(directory, "another lock")
+                wheel.write_bytes(b"modified wheel bytes")
+                with self.assertRaisesRegex(ValueError, "wheel differs from its lock"):
+                    verify_wheels(directory, environment_digest)
+
+
+class BenchmarkEvidenceTests(unittest.TestCase):
+    def test_rejects_missing_scoring_expectations_and_overruns(self):
+        labels = ["coverage", "unused", "live", "budget"]
+        case = {
+            "id": "basic-unused-symbols",
+            "scored": True,
+            "analysis_status": "complete",
+            "true_positives": 5,
+            "false_negatives": 0,
+            "true_negatives": 3,
+            "false_positives": 0,
+            "elapsed_seconds": 0.4,
+        }
+        for changes, expected in (
+            ({}, labels),
+            ({"analysis_status": "incomplete"}, []),
+            ({"scored": False}, []),
+            ({"true_positives": 4, "false_negatives": 1}, ["coverage", "live", "budget"]),
+            ({"true_negatives": 2, "false_positives": 1}, ["coverage", "unused", "budget"]),
+            ({"elapsed_seconds": 5.1}, ["coverage", "unused", "live"]),
+        ):
+            with self.subTest(changes=changes):
+                _, reached = benchmark_assertions(
+                    {"cases": [{**case, **changes}], "skipped_cases": []}, labels,
+                )
+                self.assertEqual(reached, expected)
+        with self.assertRaisesRegex(ValueError, "did not run exactly once"):
+            benchmark_assertions({"cases": [], "skipped_cases": [case]}, labels)
+
+
+class CandidateWheelTests(unittest.TestCase):
+    def test_rejects_candidate_with_wrong_interpreter_or_architecture(self):
+        actual_platform = (
+            f"{sys.platform}-{platform.machine()}-cp{sys.version_info.major}{sys.version_info.minor}"
+        )
+        wrong_python = f"{sys.platform}-{platform.machine()}-cp999"
+        wrong_architecture = actual_platform.replace(platform.machine(), "unsupported-arch")
+        for declared in (wrong_python, wrong_architecture):
+            with (
+                self.subTest(declared=declared),
+                self.assertRaisesRegex(ValueError, "Required candidate SDK platform"),
+            ):
+                check_candidate_wheel(
+                    Path(sys.executable), Path("unused.whl"), declared, Path.cwd(), environment(),
+                )
+
+
+class CandidateScanTests(unittest.TestCase):
+    def test_selects_phase03_and_preserves_runtime_and_grep_options(self):
+        for options, expected in (
+            ({}, {}),
+            (
+                {"grep_verify": False, "trace_file": False},
+                {
+                    "grep_verify": False,
+                    "trace_file": False,
+                },
+            ),
+            (
+                {"grep_verify": True, "trace_file": Path("trace.json")},
+                {
+                    "grep_verify": True,
+                    "trace_file": "trace.json",
+                },
+            ),
+            (
+                {"changed_files": {Path("worker.py"), "app.py"}},
+                {"changed_files": ["app.py", "worker.py"]},
+            ),
+        ):
+            with (
+                self.subTest(options=options),
+                patch("run_phase03_seed.subprocess.run") as run,
+            ):
+                scan_candidate(Path("sdk/bin/python"), "fixture", options)
+                payload = json.loads(run.call_args.kwargs["input"])
+                self.assertEqual(
+                    payload, ["fixture", {"profile": "skylos-0.3", **expected}]
+                )
+
+    def test_changed_file_proof_requires_full_coverage_and_selected_findings(self):
+        project = Path.cwd()
+        full = {
+            "coverage": {"status": "complete", "selected_files": 2},
+            "selected_paths": ["consumer.py", "worker.py"],
+        }
+        projected = {
+            **full,
+            "report_scope": "changed_files",
+            "unused_functions": [{"file": "worker.py"}],
+        }
+        changed = {project / "worker.py"}
+        self.assertTrue(proved_changed_file_scope(projected, full, project, changed))
+        for bad in (
+            {**projected, "report_scope": "full"},
+            {**projected, "selected_paths": ["worker.py"]},
+            {**projected, "coverage": {"status": "incomplete"}},
+            {**projected, "unused_functions": [{"file": "consumer.py"}]},
+        ):
+            self.assertFalse(proved_changed_file_scope(bad, full, project, changed))
+
+
+    def test_changed_file_projection_requires_observable_filtering(self):
+        inside = {"file": "selected.py", "full_name": "selected.selected_unused"}
+        outside = {"file": "outside.py", "full_name": "outside.outside_unused"}
+        full = {
+            "coverage": {"status": "complete", "selected_files": 2},
+            "selected_paths": ["outside.py", "selected.py"],
+            "unused_functions": [inside, outside],
+            "dead_code_evidence": {"symbols": [inside, outside]},
+        }
+        projected = {**full, "report_scope": "changed_files", "unused_functions": [inside]}
+        for report, passes in (
+            (projected, True),
+            ({**full, "report_scope": "changed_files"}, False),
+            ({**projected, "unused_functions": []}, False),
+            ({**projected, "dead_code_evidence": {"symbols": [inside]}}, False),
+        ):
+            with (
+                self.subTest(report=report),
+                patch("run_phase03_seed.scan_candidate", side_effect=[json.dumps(full), json.dumps(report)]) as scan,
+            ):
+                self.assertIs(proved_changed_file_projection(Path("sdk/bin/python"), False), passes)
+                controls = scan.call_args_list
+                self.assertNotIn("changed_files", controls[0].args[2])
+                self.assertEqual([file.name for file in controls[1].args[2]["changed_files"]], ["selected.py"])
+
+
+class ProviderPrecisionTests(unittest.TestCase):
+    def test_json_provider_control_requires_certain_method_evidence(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            for file in ("app.py", "invoice.py"):
+                (project / file).write_bytes(b"# original fixture\n")
+            target = "invoice.Invoice.dump"
+            original = {
+                "coverage": {"status": "complete"},
+                "selected_paths": ["app.py", "invoice.py"],
+                "unused_functions": [{"full_name": target}],
+                "dead_code_evidence": {"symbols": []},
+            }
+            empty = {**original, "unused_functions": []}
+            activated = {
+                **empty,
+                "dead_code_evidence": {"symbols": [{
+                    "qualified_name": target,
+                    "evidence": [{"kind": "direct_call", "certainty": "certain"}],
+                }]},
+            }
+            for control, passes in ((empty, False), (activated, True)):
+                with (
+                    self.subTest(passes=passes),
+                    patch("run_phase03_seed.scan_candidate", return_value=json.dumps(control)),
+                ):
+                    self.assertIs(proved_json_provider_dispatch(None, project, {}, original), passes)
+            self.assertEqual((project / "app.py").read_bytes(), b"# original fixture\n")
+
+
+class CorpusReceiptTests(unittest.TestCase):
+    def test_accepts_only_matching_worker_fixture_hashes(self):
+        case_id = f"{CORPUS_SOURCE}::attrs-define-fields"
+        fixture = "corpus/fixtures/attrs_define.py"
+        lock = b"pinned dependencies\n"
+        lock_digest = hashlib.sha256(lock).hexdigest()
+        revision = "a" * 40
+        variant = {
+            "id": "diagnostic-sdk",
+            "layer": "sdk",
+            "platform": f"{sys.platform}-{platform.machine()}-cp{sys.version_info.major}{sys.version_info.minor}",
+            "environment": lock_digest,
+        }
+        assertions = ["absent:unused_variables:id"]
+        case = {"source": CORPUS_SOURCE, "assertions": assertions, "prerequisites": []}
+        expected = {fixture: "b" * 64}
+        for candidate, reference_times_out in (
+            (expected, False),
+            ({fixture: "c" * 64}, False),
+            (None, False),
+            (expected, True),
+        ):
+            with (
+                self.subTest(candidate=candidate, reference_times_out=reference_times_out),
+                TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                (root / "uv.lock").write_bytes(lock)
+                artifact = root / "candidate.whl"
+                artifact.write_bytes(b"candidate wheel")
+                args = SimpleNamespace(
+                    artifact=artifact, candidate_revision=revision, inventory=root / "inventory.toml",
+                    output=root / "receipt.json", sdk_python=Path(sys.executable), upstream=root,
+                    variant=variant["id"], fastapi_wheels=None, diagnostics=False,
+                )
+
+                def run_worker(command, *, timeout, **_kwargs):
+                    reference = command[-3] == "reference"
+                    self.assertEqual(timeout, 300 if reference else 180)
+                    if reference and reference_times_out:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    result = {"status": "passed", "assertions": assertions, "prerequisites": {}}
+                    fingerprints = expected if reference else candidate
+                    if fingerprints is not None:
+                        result["fixture_sha256"] = fingerprints
+                    Path(command[-1]).write_text(json.dumps({case_id: result}), encoding="utf-8")
+                    return SimpleNamespace(returncode=0)
+
+                with (
+                    patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]),
+                    patch("run_phase03_seed.port_cases", return_value=(
+                        {"reference_revision": revision}, "digest", variant, {case_id: case},
+                    )),
+                    patch("run_phase03_seed.subprocess.check_output", side_effect=[revision, ""]),
+                    patch("run_phase03_seed.check_candidate_wheel"),
+                    patch("run_phase03_seed.subprocess.run", side_effect=run_worker),
+                ):
+                    write_receipt(args)
+
+                receipt = json.loads(args.output.read_text(encoding="utf-8"))
+                result = receipt["results"][0]
+                if candidate == expected and not reference_times_out:
+                    self.assertEqual(receipt["runner_status"], "passed")
+                    self.assertEqual(result["fixture_sha256"], expected)
+                else:
+                    self.assertEqual(receipt["runner_status"], "error")
+                    self.assertNotIn("fixture_sha256", result)
+                if reference_times_out:
+                    self.assertEqual(result["reference_status"], "error")
+                    self.assertTrue(any(
+                        error.startswith("reference:") and "timed out after 300" in error
+                        for error in receipt["runner_errors"]
+                    ))
+
+
+if __name__ == "__main__":
+    unittest.main()

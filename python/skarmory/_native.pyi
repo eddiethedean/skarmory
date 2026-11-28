@@ -18,6 +18,7 @@ class _ScanOptions(TypedDict):
     grep_verify: bool
 
 class _WorkflowOptions(TypedDict):
+    changed_files: Sequence[str] | None
     diff: str | None
     diff_mode: Literal["lines", "files", "impact"]
     baseline: str | None
@@ -33,6 +34,7 @@ class _WorkflowOptions(TypedDict):
 
 class _SkylosOptions(TypedDict):
     phase03: bool
+    experimental_javascript: bool
     enable_quality: bool
     dependency_search_paths: Sequence[str]
     config_file: str | None

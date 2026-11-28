@@ -161,8 +161,9 @@ the [supported dependency declarations](docs/phase-03.md#unused-python-dependenc
 ## Roadmap
 
 Phase 0.3 expands Python dead-code analysis and workflows. Its release gate
-requires every in-scope pinned Python dead-code case and required variant to
-pass. Python quality, security, and developer workflows follow in 0.4–0.6.
+requires each in-scope pinned Python dead-code case and variant to qualify
+through parity or a reviewed runtime correction. Python quality, security,
+and developer workflows follow in 0.4–0.6.
 
 Starting in Phase 0.7, each additional language frontend has a dedicated Rust
 crate and release milestone. JavaScript and TypeScript share one frontend.

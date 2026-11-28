@@ -28,6 +28,8 @@ pub use runtime_evidence::Input as EvidenceInput;
 mod wildcards;
 pub mod workflow;
 
+const SOURCE_FACTORY_METHOD: &str = "source_factory_method";
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Profile {
     #[default]
@@ -38,6 +40,7 @@ pub enum Profile {
 #[derive(Clone, Debug)]
 pub struct Options {
     pub profile: Profile,
+    pub experimental_javascript: bool,
     pub grep_verify: Option<bool>,
     /// Ordered external dependency source paths for the Phase 0.3 model.
     pub dependency_search_paths: Vec<PathBuf>,
@@ -63,6 +66,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             profile: Profile::default(),
+            experimental_javascript: false,
             grep_verify: None,
             dependency_search_paths: Vec::new(),
             enable_quality: Some(false),
@@ -136,11 +140,14 @@ struct Finding {
     method_owner: Option<[usize; 2]>,
     declaration_whitelist: Option<&'static str>,
     confidence: u8,
+    deprecated_api: bool,
     rule_id: &'static str,
     reason: &'static str,
 }
 
 const WEAK_HELPER_FUNCTION: &str = "weak_helper_function";
+const NO_REACHABLE_CALLERS: &str = "no_reachable_callers";
+const NO_STATIC_REFERENCES: &str = "no_static_references";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Evidence {
@@ -156,6 +163,7 @@ struct Analysis {
     definitions: BTreeMap<String, DefinitionContext>,
     findings: Vec<Finding>,
     evidence: Vec<Evidence>,
+    unreachable_function_evidence: Vec<Evidence>,
     fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     #[cfg(test)]
     fastapi_initializer_evidence: FastapiInitializerEvidence,
@@ -285,7 +293,9 @@ impl Diagnostic {
             column: finding.column,
             confidence: (!file || javascript_file).then_some(finding.confidence),
             severity: file.then_some("LOW"),
-            confidence_factors: javascript_file.then_some([finding.reason]),
+            confidence_factors: javascript_file
+                .then_some([finding.reason])
+                .or_else(|| finding.deprecated_api.then_some(["deprecated_api"])),
             message,
             category: file.then_some("DEAD_CODE"),
             rule_id: finding.rule_id,
@@ -400,6 +410,8 @@ struct Summary {
     analysis_error_count: usize,
     coverage_status: &'static str,
     languages: BTreeMap<&'static str, usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excluded_folders: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     fastapi_route_declarations: Vec<FastapiRouteDeclaration>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -439,6 +451,7 @@ struct LivenessSummary {
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct LivenessRescue {
     full_name: String,
+    name: String,
     reason: &'static str,
 }
 
@@ -455,6 +468,13 @@ struct SymbolEvidence {
     file: String,
     line: usize,
     evidence: Vec<SymbolEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision: Option<SymbolDecision>,
+}
+
+#[derive(Debug, Serialize)]
+struct SymbolDecision {
+    reason_tags: [&'static str; 1],
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -504,13 +524,74 @@ impl RetainedEvidence {
         Self::Grouped {
             symbols: symbols
                 .into_iter()
-                .map(|((qualified_name, file, line), evidence)| SymbolEvidence {
-                    qualified_name,
-                    file,
-                    line,
-                    evidence: evidence.into_iter().collect(),
+                .map(|((qualified_name, file, line), evidence)| {
+                    let decision = evidence.iter().find_map(|event| {
+                        let tag = match event.kind {
+                            NO_REACHABLE_CALLERS => NO_REACHABLE_CALLERS,
+                            NO_STATIC_REFERENCES => "no_refs",
+                            _ => return None,
+                        };
+                        Some(SymbolDecision { reason_tags: [tag] })
+                    });
+                    SymbolEvidence {
+                        qualified_name,
+                        file,
+                        line,
+                        evidence: evidence.into_iter().collect(),
+                        decision,
+                    }
                 })
                 .collect(),
+        }
+    }
+
+    fn record_unreachable_methods(&mut self, findings: &[Diagnostic]) {
+        let Self::Grouped { symbols } = self else {
+            return;
+        };
+        let methods: BTreeSet<_> = findings
+            .iter()
+            .filter(|finding| {
+                finding.method_owner.is_some()
+                    && finding
+                        .dead_code_evidence
+                        .iter()
+                        .any(|event| event.kind == NO_REACHABLE_CALLERS)
+            })
+            .map(|finding| (finding.subject(), finding.file.as_str(), finding.line))
+            .collect();
+        let mut added = Vec::new();
+        for (name, file, line) in methods {
+            let decision = Some(SymbolDecision {
+                reason_tags: [NO_REACHABLE_CALLERS],
+            });
+            match symbols.binary_search_by(|symbol| {
+                (
+                    symbol.qualified_name.as_str(),
+                    symbol.file.as_str(),
+                    symbol.line,
+                )
+                    .cmp(&(name, file, line))
+            }) {
+                Ok(index) => symbols[index].decision = decision,
+                Err(_) => added.push(SymbolEvidence {
+                    qualified_name: name.into(),
+                    file: file.into(),
+                    line,
+                    evidence: Vec::new(),
+                    decision,
+                }),
+            }
+        }
+        if !added.is_empty() {
+            symbols.extend(added);
+            symbols.sort_unstable_by(|left, right| {
+                (&left.qualified_name, &left.file, left.line).cmp(&(
+                    &right.qualified_name,
+                    &right.file,
+                    right.line,
+                ))
+            });
         }
     }
 }
@@ -520,6 +601,8 @@ pub struct Report {
     schema_version: u8,
     profile: &'static str,
     selected_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report_scope: Option<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     external_dependency_roots: Vec<String>,
     exclusions: Vec<Exclusion>,
@@ -570,6 +653,9 @@ impl Report {
                 .categories
                 .group_unused_class_methods(&mut self.suppressed);
             evidence.group_reports(grouped);
+            if let Some(retained) = &mut self.dead_code_evidence {
+                retained.record_unreachable_methods(&self.categories.unused_functions);
+            }
         }
     }
 
@@ -837,7 +923,7 @@ fn scan_with_context(
     policy: Option<&config::Policy>,
     diff_sources: Option<&mut BTreeMap<String, String>>,
 ) -> Result<Report, ConfigError> {
-    scan_selected(path, options, policy, diff_sources, None)
+    scan_selected(path, options, policy, diff_sources, None, false)
 }
 
 fn scan_selected(
@@ -846,6 +932,7 @@ fn scan_selected(
     policy: Option<&config::Policy>,
     mut diff_sources: Option<&mut BTreeMap<String, String>>,
     mut cleanup_inputs: Option<&mut cleanup::Inputs>,
+    changed_file_report: bool,
 ) -> Result<Report, ConfigError> {
     validate_category(options.category.as_deref())?;
     let config = config::load_for_scan(path, options, policy)?;
@@ -858,6 +945,11 @@ fn scan_selected(
     if !phase03 && !options.dependency_search_paths.is_empty() {
         return Err(ConfigError::new(
             "dependency source paths require the skylos-0.3 profile",
+        ));
+    }
+    if options.experimental_javascript && !(phase03 && include_dead_code) {
+        return Err(ConfigError::new(
+            "experimental JavaScript and TypeScript analysis requires a skylos-0.3 dead-code scan",
         ));
     }
     if enable_quality && !phase03 {
@@ -873,8 +965,7 @@ fn scan_selected(
             "runtime evidence options require the skylos-0.3 profile",
         ));
     }
-    let src_is_package = phase03 && path.join("src/__init__.py").is_file();
-    let roots = if path.is_dir() && path.join("src").is_dir() && !src_is_package {
+    let roots = if !phase03 && path.is_dir() && path.join("src").is_dir() {
         vec![PathBuf::from("src"), PathBuf::from(".")]
     } else {
         Vec::new()
@@ -883,7 +974,7 @@ fn scan_selected(
         FactCache::for_project(
             directory,
             if project_wildcards {
-                "phase03-module-v41/ruff-0.0.12/py311/utf8-universal"
+                "phase03-module-v51/ruff-0.0.12/py311/utf8-universal"
             } else {
                 "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
             },
@@ -896,7 +987,8 @@ fn scan_selected(
         &roots,
         FileEntry::None,
         Some(&config.selection),
-        phase03 && include_dead_code && cleanup_inputs.is_none(),
+        options.experimental_javascript && cleanup_inputs.is_none(),
+        phase03,
     );
     let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
         BTreeMap::new()
@@ -1099,6 +1191,13 @@ fn scan_selected(
         templates: django_templates.as_ref(),
         gin: gin.as_ref(),
         discovery: (phase03 && path.is_dir()).then_some(&project),
+        partial_sources: phase03
+            && (path.is_file()
+                || project.exclusions.iter().any(|exclusion| {
+                    exclusion.reason == "configured_exclusion"
+                        && !config.selection.is_default_exclusion(&exclusion.path)
+                })),
+        changed_file_report: phase03 && changed_file_report,
         unresolved_project_wildcards: !wildcard_issues.is_empty(),
         wildcard_guards: Some(&wildcard_resolution.guards),
         #[cfg(test)]
@@ -1361,7 +1460,8 @@ fn scan_selected(
                 continue;
             }
             let source = sources.get(&finding.file).map(String::as_str);
-            let inline = file_facts.get(finding.file.as_str()).is_some_and(|facts| {
+            let facts = file_facts.get(finding.file.as_str());
+            let inline = facts.is_some_and(|facts| {
                 facts.inline_ignores.iter().any(|entry| {
                     entry.line == finding.line
                         && (entry.rules.is_empty()
@@ -1376,13 +1476,23 @@ fn scan_selected(
                     && js_modules
                         .get(&finding.file)
                         .is_some_and(|module| module.ignore_file));
-            if inline {
-                suppressed.push(Diagnostic::new(
+            let noqa_f401 = finding.category == Category::Import
+                && facts.is_some_and(|facts| {
+                    facts
+                        .noqa_f401_imports
+                        .contains(&[finding.line, finding.column])
+                });
+            if inline || noqa_f401 {
+                let mut diagnostic = Diagnostic::new(
                     finding,
                     "inline ignore comment".into(),
                     "suppressed",
                     source,
-                ));
+                );
+                if !inline && noqa_f401 {
+                    diagnostic.suppression_code = Some("noqa:F401");
+                }
+                suppressed.push(diagnostic);
                 continue;
             }
             let effective = file_configs
@@ -1492,17 +1602,22 @@ fn scan_selected(
         rescued: analysis
             .evidence
             .iter()
-            .filter(|event| event.kind == "package_entrypoint")
+            .filter(|event| matches!(event.kind, "package_entrypoint" | SOURCE_FACTORY_METHOD))
             .map(|event| LivenessRescue {
                 full_name: event.full_name.clone(),
+                name: event.full_name.clone(),
                 reason: event.kind,
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
     });
+    let mut retained_events = analysis.evidence;
+    if python_complete {
+        retained_events.append(&mut analysis.unreachable_function_evidence);
+    }
     let retained_evidence =
-        RetainedEvidence::for_profile(options.profile, analysis.evidence, &analysis.verification);
+        RetainedEvidence::for_profile(options.profile, retained_events, &analysis.verification);
     let (quality, unused_dependency_analysis, dependency_usage_evidence) =
         if let Some(result) = dependency_result {
             (Some(result.findings), Some(result.receipt), result.evidence)
@@ -1521,6 +1636,7 @@ fn scan_selected(
             analysis_error_count: issues.len(),
             coverage_status: status,
             languages,
+            excluded_folders: phase03.then(|| options.excludes.clone()),
             fastapi_route_declarations: analysis.fastapi_route_declarations,
             javascript_file_analysis: has_javascript.then_some(JavaScriptFileAnalysis {
                 rule_id: javascript::RULE,
@@ -1548,6 +1664,7 @@ fn scan_selected(
             issues,
         },
         selected_paths,
+        report_scope: None,
         external_dependency_roots,
         exclusions: project.exclusions,
         generated_sources,

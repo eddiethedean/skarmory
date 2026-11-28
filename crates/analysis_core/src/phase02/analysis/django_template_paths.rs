@@ -26,6 +26,25 @@ pub(super) fn is_pathlib_member(module: &str, member: &str) -> bool {
 }
 
 impl Graph<'_> {
+    pub(super) fn literal_pathlib_constructor(
+        &self,
+        provider: &str,
+        access: (ScopeId, Location),
+        arguments: &[Expression],
+        keywords: &[(String, Expression)],
+    ) -> bool {
+        matches!(provider, "pathlib.Path" | "pathlib.PurePath")
+            && keywords.is_empty()
+            && matches!(
+                arguments,
+                [Expression {
+                    kind: ExpressionKind::Text(_),
+                    ..
+                }]
+            )
+            && self.pathlib_members_stable(access, &["__new__", "__init__"])
+    }
+
     pub(super) fn source_project_path(
         &self,
         scope: ScopeId,

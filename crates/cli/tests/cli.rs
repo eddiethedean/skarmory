@@ -152,6 +152,86 @@ fn grep_verification_honors_profile_defaults_and_explicit_flags() {
 }
 
 #[test]
+fn grep_from_import_keeps_only_the_selected_declaration() {
+    let project = skylos_fixture();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    for package in ["north", "south"] {
+        fs::create_dir(root.join(package)).unwrap();
+        fs::write(root.join(package).join("__init__.py"), "").unwrap();
+        fs::write(
+            root.join(package).join("worker.py"),
+            "def calculate():\n    return implementation()\n\ndef implementation():\n    return 1\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        root.join("main.py"),
+        "from north.worker import calculate as pending\n",
+    )
+    .unwrap();
+    let scan = |options: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_skarmory"))
+            .current_dir(root)
+            .env_remove("SKYLOS_CONFIG_FILE")
+            .args(["--profile", "skylos-0.3", ".", "--json"])
+            .args(options)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["coverage"]["status"], "complete");
+        report
+    };
+    let ordinary = scan(&[]);
+    let disabled = scan(&["--no-grep-verify"]);
+    for (report, imported_definition_unused) in [(&ordinary, false), (&disabled, true)] {
+        let functions = report["unused_functions"].as_array().unwrap();
+        assert_eq!(
+            functions
+                .iter()
+                .any(|row| row["full_name"] == "north.worker.calculate"),
+            imported_definition_unused,
+            "{report}"
+        );
+        for unrelated in ["north.worker.implementation", "south.worker.calculate"] {
+            assert!(
+                functions.iter().any(|row| row["full_name"] == unrelated),
+                "{report}"
+            );
+        }
+        assert!(
+            report["unused_imports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["full_name"] == "north.worker.calculate"),
+            "{report}"
+        );
+    }
+    assert!(
+        ordinary["grep_verification_evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["kind"] == "imported_symbol"
+                && row["certainty"] == "possible"
+                && row["path"] == "main.py"
+                && row["qualified_name"] == "north.worker.calculate")
+    );
+    for _ in 0..2 {
+        let mut cached = scan(&[
+            "--workers",
+            "4",
+            "--cache-dir",
+            cache.path().to_str().unwrap(),
+        ]);
+        cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(cached, ordinary);
+    }
+}
+
+#[test]
 fn grep_verification_strict_gate_respects_yaml_scalar_context_and_file_identity() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

@@ -72,6 +72,438 @@ fn names<'a>(report: &'a Value, section: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn phase03_configured_entrypoints_match_methods_and_short_qualified_names() {
+    let root = project(&[
+        (
+            "pyproject.toml",
+            "[[tool.skylos.dead_code.entrypoints]]\n\
+             type = 'method'\nname = 'Main.create'\nparent = { base_classes = ['Application'] }\n\
+             [[tool.skylos.dead_code.entrypoints]]\n\
+             type = 'function'\ndecorators = ['runtime_hook']\n\
+             [[tool.skylos.dead_code.entrypoints]]\n\
+             type = 'class'\nname = 'Other.Nested'\n",
+        ),
+        (
+            "app.py",
+            "class Application: pass\n\
+             def runtime_hook(fn): return fn\n\
+             class Main(Application):\n    def create(self): return 1\n\
+             def create(): return 2\n\
+             @runtime_hook\ndef boot(): return 3\n\
+             class Other(Application):\n    class Nested: pass\n    @runtime_hook\n    def unselected(self): return 4\n\
+             Main()\nOther()\n",
+        ),
+    ]);
+    let report = scan(root.path(), &["--json", "--confidence", "0"], 0);
+    let functions: Vec<_> = items(&report, "unused_functions")
+        .iter()
+        .map(|item| item["full_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        functions,
+        ["app.create", "app.Other.unselected"],
+        "{report}"
+    );
+    assert!(
+        items(&report, "unused_classes")
+            .iter()
+            .any(|item| item["full_name"] == "app.Other.Nested"),
+        "{report}"
+    );
+}
+
+#[test]
+fn phase03_dotted_import_respects_a_package_binding_after_indirect_loading() {
+    let root = project(&[
+        (
+            "pkg/__init__.py",
+            "from . import loader\nfrom . import alternative as sub\n",
+        ),
+        ("pkg/loader.py", "import pkg.sub\n"),
+        ("pkg/sub.py", "def which(): return 'original'\n"),
+        ("pkg/alternative.py", "def which(): return 'alternative'\n"),
+        (
+            "app.py",
+            "import pkg.sub\ndef run(): return pkg.sub.which()\nprint(run())\n",
+        ),
+    ]);
+    let root = root.path();
+    let report = scan(root, &["--json", "--confidence", "0", "--workers", "1"], 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert!(names(&report, "unused_functions").is_empty(), "{report}");
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "ambiguous_binding" && issue["path"] == "app.py")
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "pkg.sub.which"
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "direct_call")),
+        "{report}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    let flags = [
+        "--json",
+        "--confidence",
+        "0",
+        "--workers",
+        "4",
+        "--cache-dir",
+        cache.path().to_str().unwrap(),
+    ];
+    for _ in 0..2 {
+        let mut cached = scan(root, &flags, 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    // When the initializer itself loads the child first, the later package
+    // binding wins. Without a package binding, the dotted import attaches it.
+    for (initializer, unused) in [
+        (
+            "import pkg.sub\nfrom . import alternative as sub\n",
+            "pkg.sub.which",
+        ),
+        ("", "pkg.alternative.which"),
+    ] {
+        fs::write(root.join("pkg/__init__.py"), initializer).unwrap();
+        let complete = scan(root, &["--json", "--confidence", "0"], 0);
+        assert!(
+            items(&complete, "unused_functions")
+                .iter()
+                .any(|item| item["full_name"] == unused),
+            "{complete}"
+        );
+        assert_eq!(items(&complete, "unused_functions").len(), 1);
+    }
+}
+
+#[test]
+fn phase03_guarded_import_tracks_the_selected_binding_and_the_caught_raise() {
+    let root = project(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/core.py", "def read(value): return value\n"),
+        ("app.py", ""),
+    ]);
+    let root = root.path();
+    let prefix = "try:\n    from pkg.core import read\n";
+    let handler = "except ImportError:\n    def read(value): return 0\n";
+    let use_binding = "def run(): return read(1)\nrun()\n";
+    let cache = tempfile::tempdir().unwrap();
+    for (tail, unused) in [
+        ("", &[][..]),
+        ("    raise ImportError('fallback')\n", &["read"][..]),
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!("{prefix}{tail}{handler}{use_binding}"),
+        )
+        .unwrap();
+        let report = scan(root, &["--json", "--confidence", "0", "--workers", "1"], 0);
+        assert_eq!(names(&report, "unused_imports"), unused, "{report}");
+        for _ in 0..2 {
+            let flags = [
+                "--json",
+                "--confidence",
+                "0",
+                "--workers",
+                "4",
+                "--cache-dir",
+                cache.path().to_str().unwrap(),
+            ];
+            let mut cached = scan(root, &flags, 0);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    for source in [
+        format!(
+            "class ImportError: pass\n{prefix}    raise ImportError('fallback')\n{handler}{use_binding}"
+        ),
+        format!(
+            "{}    raise ImportError('fallback')\n{handler}{use_binding}",
+            prefix.replace("import read", "import read as ImportError")
+        ),
+    ] {
+        fs::write(root.join("app.py"), source).unwrap();
+        let report = scan(root, &["--json", "--confidence", "0"], 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_optional_import")
+        );
+    }
+
+    fs::write(
+        root.join("app.py"),
+        format!("{prefix}{handler}{use_binding}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("pkg/core.py"),
+        "raise ImportError('initializer')\ndef read(value): return value\n",
+    )
+    .unwrap();
+    let report = scan(root, &["--json", "--confidence", "0"], 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_optional_import")
+    );
+}
+
+#[test]
+fn phase03_guarded_import_rejects_mutated_source_members() {
+    let root = project(&[
+        ("pkg/__init__.py", ""),
+        (
+            "pkg/core.py",
+            "def read(value): return value\ndef other(): return 0\n",
+        ),
+        ("app.py", ""),
+    ]);
+    let root = root.path();
+    let guarded = concat!(
+        "try:\n    from pkg.core import read\n",
+        "except ImportError:\n    print('fallback')\n",
+        "else:\n    print(read(1))\n",
+    );
+    for (mutation, expected) in [
+        ("delattr(core, 'other')", 0),
+        ("delattr(core, 'read')", 2),
+        ("name = 'read'\ndelattr(core, name)", 2),
+        ("def remove(): delattr(core, 'read')\nremove()", 2),
+        (
+            "def remove(module): delattr(module, 'read')\nremove(core)",
+            2,
+        ),
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!("import pkg.core as core\n{mutation}\n{guarded}"),
+        )
+        .unwrap();
+        let report = scan(root, &["--json", "--confidence", "0"], expected);
+        if expected == 2 {
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_optional_import"),
+                "{report}"
+            );
+        }
+    }
+}
+
+#[test]
+fn phase03_selected_packages_resolve_bounded_sibling_calls() {
+    for container in ["", "src/", "lib/", "python/"] {
+        let package = format!("{container}pkg");
+        let root = project(&[
+            (&format!("{package}/__init__.py"), ""),
+            (
+                &format!("{package}/api.py"),
+                "from .payload import action as _action\ndef action(): return _action()\n",
+            ),
+            (
+                &format!("{package}/payload.py"),
+                "def action(): return 1\ndef side(): return opaque()\ndef unused(): return 3\n",
+            ),
+            (
+                &format!("{package}/consumer.py"),
+                "import pkg.api as api\nfrom pkg import payload\ndef run(): return api.action(), payload.side()\n",
+            ),
+            ("outside.py", "def outside(): return 4\n"),
+        ]);
+        let requested = if container.is_empty() {
+            root.path().join(package)
+        } else {
+            root.path().to_owned()
+        };
+        let report = scan(
+            &requested,
+            &["--json", "--confidence", "0", "--workers", "1"],
+            0,
+        );
+        let mut unused: Vec<_> = items(&report, "unused_functions")
+            .iter()
+            .map(|item| item["full_name"].as_str().unwrap())
+            .collect();
+        unused.sort_unstable();
+        if container.is_empty() {
+            assert_eq!(
+                unused,
+                ["pkg.consumer.run", "pkg.payload.unused"],
+                "{report}"
+            );
+        } else {
+            assert_eq!(
+                unused,
+                ["outside.outside", "pkg.consumer.run", "pkg.payload.unused"],
+                "{report}"
+            );
+        }
+        for name in ["pkg.api.action", "pkg.payload.action", "pkg.payload.side"] {
+            assert!(
+                report["dead_code_evidence"]["symbols"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|symbol| {
+                        symbol["qualified_name"] == name
+                            && symbol["evidence"]
+                                == serde_json::json!([
+                                    {"kind": "package_call_reference", "certainty": "possible"}
+                                ])
+                    }),
+                "{name}: {report}"
+            );
+        }
+        let cache = tempfile::tempdir().unwrap();
+        let flags = [
+            "--json",
+            "--confidence",
+            "0",
+            "--workers",
+            "4",
+            "--cache-dir",
+            cache.path().to_str().unwrap(),
+        ];
+        for _ in 0..2 {
+            let mut cached = scan(&requested, &flags, 0);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn phase03_inferred_package_roots_respect_source_exclusion() {
+    let root = project(&[
+        ("pyproject.toml", "[tool.skylos]\nexclude = ['lib']\n"),
+        ("lib/pkg/__init__.py", ""),
+        ("lib/pkg/hidden.py", "def hidden(): return 1\n"),
+        ("app.py", "def stale(): return 2\n"),
+    ]);
+    let report = scan(root.path(), &["--json", "--confidence", "0"], 0);
+    assert_eq!(report["selected_paths"], serde_json::json!(["app.py"]));
+    assert_eq!(names(&report, "unused_functions"), ["stale"]);
+}
+
+#[test]
+fn phase03_inferred_source_roots_preserve_unrelated_and_competing_packages() {
+    let root = project(&[
+        ("pkg/__init__.py", ""),
+        (
+            "app.py",
+            concat!(
+                "try:\n    from pkg import Missing\n",
+                "except ImportError:\n    class Missing:\n        pass\n",
+                "value = Missing()\ndef stale(): return 1\n",
+            ),
+        ),
+    ]);
+    let root = root.path();
+    fs::create_dir(root.join("lib")).unwrap();
+    for sibling in [None, Some("unrelated"), Some("pkg")] {
+        if let Some(sibling) = sibling {
+            let package = root.join("lib").join(sibling);
+            fs::create_dir(&package).unwrap();
+            fs::write(package.join("__init__.py"), "").unwrap();
+            fs::write(package.join("member.py"), "def member(): return 1\n").unwrap();
+        }
+        let report = scan(root, &["--json", "--confidence", "0"], 0);
+        assert!(
+            names(&report, "unused_functions").contains(&"stale"),
+            "{report}"
+        );
+        if let Some(sibling) = sibling {
+            let expected = if sibling == "pkg" {
+                "lib.pkg.member.member"
+            } else {
+                "unrelated.member.member"
+            };
+            assert!(
+                items(&report, "unused_functions")
+                    .iter()
+                    .any(|item| item["full_name"] == expected),
+                "{report}"
+            );
+        }
+    }
+}
+
+#[test]
+fn phase03_package_exports_keep_explicit_edits_authoritative() {
+    let root = project(&[
+        (
+            "explicit/__init__.py",
+            "__all__: list[str] = ['FIRST']\n\
+             __all__ += ('SECOND',)\n__all__.append('third')\n__all__.extend(['fourth'])\n\
+             FIRST = 1\nSECOND = 2\n\
+             def third(): return 3\n\
+             def fourth(): return 4\n\
+             def stale(): return 5\n",
+        ),
+        ("support.py", "print('selected source')\n"),
+    ]);
+    let cache = tempfile::tempdir().unwrap();
+    let cache = cache.path().to_str().unwrap();
+    let report = scan(
+        root.path(),
+        &["--json", "--confidence", "0", "--workers", "1"],
+        0,
+    );
+    assert_eq!(names(&report, "unused_functions"), ["stale"], "{report}");
+    assert!(names(&report, "unused_variables").is_empty(), "{report}");
+    for hits in [0, 2] {
+        let cached = scan(
+            root.path(),
+            &[
+                "--json",
+                "--confidence",
+                "0",
+                "--workers",
+                "4",
+                "--cache-dir",
+                cache,
+            ],
+            0,
+        );
+        assert_eq!(cached["unused_functions"], report["unused_functions"]);
+        assert_eq!(cached["coverage"], report["coverage"]);
+        assert_eq!(cached["dead_code_evidence"], report["dead_code_evidence"]);
+        assert_eq!(cached["cache"]["hits"], hits);
+        assert_eq!(cached["cache"]["misses"], 2 - hits);
+    }
+
+    fs::write(
+        root.path().join("explicit/__init__.py"),
+        "__all__ = ('first',)\n__all__.append('second')\n",
+    )
+    .unwrap();
+    let unsupported = scan(root.path(), &["--json", "--confidence", "0"], 2);
+    assert_eq!(unsupported["coverage"]["status"], "incomplete");
+}
+
+#[test]
 fn strict_filters_keep_a_new_unused_method_when_its_class_is_outside_the_report() {
     let root = project(&[("model.py", "class Dormant:\n    pass\n")]);
     let baseline = ".skylos/baseline.json";
@@ -504,6 +936,30 @@ fn python_baseline_round_trips_in_a_mixed_repository() {
 }
 
 #[test]
+fn malformed_discovered_ignore_replaces_parent_rules_in_strict_gate() {
+    let root = project(&[
+        (
+            ".skylos.toml",
+            "root = true\nignore = ['SKY-U001']\n[gate]\nmax_dead_code = 0\n",
+        ),
+        ("package/pyproject.toml", "[tool.skylos]\nignore = 1\n"),
+        ("package/app.py", "def abandoned():\n    return 1\n"),
+    ]);
+    let package = root.path().join("package");
+    let args = ["--gate", "--strict"];
+
+    let recovered = scan(&package, &args, 1);
+    assert_eq!(recovered["gate"]["verdict"], "failed");
+    assert_eq!(recovered["coverage"]["status"], "complete");
+    assert_eq!(names(&recovered, "unused_functions"), ["abandoned"]);
+
+    fs::write(package.join("pyproject.toml"), "[tool.skylos]\n").unwrap();
+    let inherited = scan(&package, &args, 0);
+    assert_eq!(inherited["gate"]["verdict"], "passed");
+    assert!(items(&inherited, "unused_functions").is_empty());
+}
+
+#[test]
 fn gate_coverage_is_independent_of_the_verdict_and_display_filters() {
     let root = project(&[
         ("a.py", "print(1)\n"),
@@ -577,6 +1033,62 @@ fn gate_coverage_is_independent_of_the_verdict_and_display_filters() {
             .unwrap()
             .contains("c.py:1")
     );
+}
+
+#[test]
+fn method_cycle_reports_the_decision_for_each_unused_member() {
+    let source = "class Worker:\n    def first(self): return self.second()\n    def second(self): return self.first()\n    def idle(self): return 0\nworker = Worker()\n";
+    let root = project(&[("worker.py", source)]);
+    let methods = ["worker.Worker.first", "worker.Worker.second"];
+    let dead = scan(root.path(), &["--json"], 0);
+    assert_eq!(
+        names(&dead, "unused_functions"),
+        ["first", "second", "idle"]
+    );
+    for method in methods {
+        let symbol = items(&dead["dead_code_evidence"], "symbols")
+            .iter()
+            .find(|symbol| symbol["qualified_name"] == method)
+            .expect("each reported method has its own decision");
+        assert_eq!(
+            symbol["decision"]["reason_tags"],
+            serde_json::json!(["no_reachable_callers"])
+        );
+        assert_eq!(symbol["evidence"], serde_json::json!([]));
+    }
+    assert!(
+        !items(&dead["dead_code_evidence"], "symbols")
+            .iter()
+            .any(|symbol| {
+                symbol["qualified_name"] == "worker.Worker.idle" && symbol.get("decision").is_some()
+            })
+    );
+    let filtered = scan(root.path(), &["--json", "--select", "SKY-U002"], 0);
+    assert!(
+        items(&filtered["dead_code_evidence"], "symbols")
+            .iter()
+            .all(|symbol| symbol.get("decision").is_none())
+    );
+
+    fs::write(
+        root.path().join("worker.py"),
+        format!("{source}worker.first()\n"),
+    )
+    .unwrap();
+    let live = scan(root.path(), &["--json"], 0);
+    assert_eq!(names(&live, "unused_functions"), ["idle"]);
+    for method in methods {
+        let symbol = items(&live["dead_code_evidence"], "symbols")
+            .iter()
+            .find(|symbol| symbol["qualified_name"] == method)
+            .expect("live method evidence");
+        assert!(symbol.get("decision").is_none(), "{symbol}");
+        assert!(
+            items(symbol, "evidence")
+                .iter()
+                .any(|row| row["kind"] == "direct_call")
+        );
+    }
 }
 
 #[test]

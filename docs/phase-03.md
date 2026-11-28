@@ -16,6 +16,11 @@ must be isolated from the Python release gate and default Python scan scope.
 
 Track release conformance in issue [#41](https://github.com/eddiethedean/skarmory/issues/41).
 
+The [release gate implementation](phase-03-gate.md) checks a candidate against
+the [initial inventory](../tests/conformance/phase03-inventory.toml). The
+inventory remains incomplete while the case audit and ports are in progress.
+The gate blocks publication until the inventory and required evidence pass.
+
 ### Discover and review cases
 
 Audit the entire pinned checkout. Classify at the case level by what the
@@ -62,6 +67,10 @@ to track implementation:
 - **Port mapping** identifies the Skarmory test or adapter and the fields that
   carry the asserted behavior. Use the engine for semantic facts and the native
   CLI or installed SDK for public interface assertions.
+- **Reviewed runtime correction** records the original disagreement, evidence
+  of the runtime behavior, and corrected assertions on the same fixture.
+  Each correction must identify its case and variant and preserve unaffected
+  controls and fixture prerequisites.
 
 ### Execute and account for every required variant
 
@@ -76,13 +85,16 @@ to track implementation:
    a divergent reference result under the
    [difference policy](compatibility.md#difference-policy).
    [Pinned expected-failure example](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_package_local_exports.py#L60-L81)
-2. Give pass credit when a required case and variant executes against Skarmory
-   and all mapped assertions run and pass. Check fixture prerequisites
-   explicitly and record setup failures or early returns as blocking outcomes.
+2. Give release credit when a required case and variant executes against
+   Skarmory and all original in-scope assertions run and pass. Record reviewed
+   runtime controls alongside the original results for the release preview.
+   Check fixture prerequisites explicitly and record setup failures or early
+   returns as blocking outcomes.
    For example, verify symlink creation before running the legacy trace symlink
    control. A missing prerequisite, collection error, skip, deselection, xfail,
    xpass, or absent implementation blocks that case. An upstream-only run,
-   mocked analysis result, or reviewed difference earns zero credit.
+   mocked analysis result, or reviewed runtime correction earns zero release
+   credit on its own.
    [Pinned symlink control](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/test/test_trace_file_analyzer.py#L90-L103)
 3. Require the aggregated Python-scoped suite to pass before publication in
    the [release workflow](../.github/workflows/release.yml). Join expected and
@@ -112,6 +124,9 @@ unsupported or incomplete JavaScript/TypeScript sources. The Python findings
 and coverage must agree. An explicitly requested experimental frontend must
 report its own scope and incomplete coverage where applicable. This condition
 and deferred-case gate validation are tracked in [#41](https://github.com/eddiethedean/skarmory/issues/41).
+The bounded JS/TS preview is available with `--experimental-javascript` or
+`analyze(..., profile="skylos-0.3", experimental_javascript=True)`. Its
+scope and limits are recorded in the [language plan](language-frontends.md#existing-javascript-and-typescript-preview-in-main).
 
 ## Scope and acceptance
 
@@ -160,12 +175,14 @@ or network resolution are outside this scope.
 
 JSON reports findings in `quality`, positive references in
 `dependency_usage_evidence`, and rule coverage in
-`analysis_summary.unused_dependency_analysis`. Reported declarations keep
-their manifest line. For a declaration above the report directory, the
-finding uses the report directory and line zero. SARIF omits the location
-for this fallback. The rule abstains when a source, include or dynamic import
-prevents a reliable absence claim. Ambiguous providers only block the
-affected distributions. Explicit single-file scans and scans without
+`analysis_summary.unused_dependency_analysis`. When the rule runs,
+`declarations` in that summary records the normalized runtime dependency names
+and the project name when available. The outcome and reasons describe coverage.
+Reported findings keep their manifest line. For a declaration above the
+report directory, the finding uses the report directory and line zero. SARIF
+omits the location for this fallback. The rule abstains when a source, include
+or dynamic import prevents a reliable absence claim. Ambiguous providers only
+block the affected distributions. Explicit single-file scans and scans without
 eligible Python sources record that the rule did not run. These limits
 affect aggregate coverage and strict exit status. A rule ignored in project
 configuration is outside the requested coverage.
@@ -665,8 +682,12 @@ and declared fields through a resolved SQLAlchemy or SQLModel base, including
 SQLModel's literal `table` class option. It recognizes Pydantic model hooks,
 unittest tests and lifecycle methods through effective class bindings, and pytest
 hooks and fixtures through selected conftest modules or literal `pytest_plugins`
-declarations. In a conventional unselected plugin module, a bounded hook
-signature and a resolved pytest import can contribute possible-use evidence.
+declarations. For an imported unittest case with runnable tests, unittest module
+hooks follow the case's defining module. An explicitly overridden class
+`__module__` leaves unittest module hook coverage incomplete. pytest can run
+xUnit module hooks in the test file that collects an imported case.
+In a conventional unselected plugin module, a bounded hook signature and a
+resolved pytest import can contribute possible-use evidence.
 pytest autouse fixtures also apply to unittest cases collected by pytest. A reachable eager Pydantic
 model declaration can execute its core-schema hook during class creation.
 A resolved model dump can invoke the selected Pydantic serializers and computed
@@ -716,7 +737,9 @@ evidence intact and creates no call or registration evidence.
 [Pinned path classification](https://github.com/duriantaco/skylos/blob/87978e69adf91b3811e97b00c40aa39d7937cd94/skylos/constants.py#L165-L211)
 
 The Starlette preview records possible HTTP route use through the supported
-`add_route` call on a resolved conventional ASGI application. The aiohttp
+`add_route` call on a resolved conventional ASGI application. A resolved
+`starlette.responses.PlainTextResponse` call with known text or `None` content
+and default response options stays within the analysis model. The aiohttp
 preview records the callback captured by a genuine route table decorator.
 Mounting and serving an aiohttp table requires a separate activation proof.
 Recognized Gunicorn config files contribute possible-use evidence for supported

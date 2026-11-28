@@ -1,23 +1,37 @@
 //! Serializable source facts for the bounded Python 3.11 compatibility profile.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use ruff_python_ast::{
-    Alias, BoolOp, CmpOp, ElifElseClause, ExceptHandler, Expr, InterpolatedStringElement, Mod,
-    Operator, Stmt, StmtTry, UnaryOp,
+    Alias, BoolOp, CmpOp, ElifElseClause, ExceptHandler, Expr, ExprContext,
+    InterpolatedStringElement, Mod, Operator, Stmt, StmtFunctionDef, StmtTry, UnaryOp,
 };
 use ruff_python_ast::{
     token::TokenKind,
     visitor::{self, Visitor},
 };
-use ruff_text_size::Ranged;
+use ruff_text_size::{Ranged, TextSize};
 use serde::{Deserialize, Serialize};
 
 use crate::{FrontendError, Lines, Location, parse_source};
 
 // Limit recursive walks and the depth of serialized facts.
 const MAX_NESTING: usize = 32;
+
+pub fn is_private_name(name: &str) -> bool {
+    name.starts_with("__") && !name.ends_with("__")
+}
+
+fn name_in_class(name: &str, class: Option<&str>) -> String {
+    if let Some(class) = class
+        && is_private_name(name)
+    {
+        format!("_{class}{name}")
+    } else {
+        name.to_owned()
+    }
+}
 
 fn lambda_parameter(lambda: &ruff_python_ast::ExprLambda) -> Option<&str> {
     let parameters = lambda.parameters.as_ref()?;
@@ -70,12 +84,24 @@ fn django_settings_global_call<'a>(statement: &'a Stmt, name: &str) -> Option<&'
     .then_some(statement.value.as_ref())
 }
 
+fn bounded_cell_value(value: &Expr) -> bool {
+    matches!(value, Expr::Name(_))
+        || matches!(value, Expr::Call(call)
+            if matches!(call.func.as_ref(), Expr::Name(_))
+                && call.arguments.args.is_empty()
+                && call.arguments.keywords.is_empty())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ModuleFacts {
     pub body: Vec<Statement>,
     pub empty: bool,
     pub inline_ignores: Vec<InlineIgnore>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub noqa_f401_imports: BTreeSet<[usize; 2]>,
     pub postponed_annotations: bool,
+    #[serde(default)]
+    pub explicit_lazy_table_access: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_named_condition: Option<Location>,
 }
@@ -108,6 +134,12 @@ pub enum StatementKind {
         missing_member: String,
         fallback: Vec<Statement>,
     },
+    GuardedProjectImport {
+        import: Box<Statement>,
+        raises_import_error: bool,
+        fallback: Vec<Statement>,
+        otherwise: Vec<Statement>,
+    },
     Assign {
         names: Vec<Name>,
         value: Option<Expression>,
@@ -117,11 +149,21 @@ pub enum StatementKind {
         names: Vec<Name>,
         value: Expression,
     },
+    GuardedLazyUnpack {
+        names: Vec<Name>,
+        value: Expression,
+        key_error_at: Location,
+        attribute_error_at: Location,
+    },
     AssignDjangoSettings {
         environment: Expression,
         value: Expression,
     },
     SetGlobalName {
+        name: Name,
+        value: Expression,
+    },
+    SetNonlocalName {
         name: Name,
         value: Expression,
     },
@@ -201,6 +243,8 @@ pub struct Definition {
     pub is_generator: bool,
     pub body: Vec<Statement>,
     pub body_coverage_lines: Vec<usize>,
+    #[serde(default)]
+    pub global_reads: Vec<String>,
     pub decorators: Vec<Expression>,
     pub parameters: Vec<Name>,
     pub positional_only_parameter_count: usize,
@@ -212,6 +256,8 @@ pub struct Definition {
     pub has_variadic_keyword_parameter: bool,
     pub simple_positional_parameters: bool,
     pub defaults: Vec<Expression>,
+    #[serde(default)]
+    pub default_binding: Option<Name>,
     pub annotations: Vec<Expression>,
     pub parameter_annotation_count: usize,
     pub bases: Vec<Expression>,
@@ -274,6 +320,47 @@ fn provider_wildcard_members(module: &str) -> Option<&'static str> {
     }
 }
 
+fn guarded_lazy_unpack(node: &StmtTry) -> Option<(&[Expr], &Expr, &Expr, &Expr)> {
+    let [Stmt::Assign(assignment)] = node.body.as_ref() else {
+        return None;
+    };
+    let [Expr::Tuple(targets)] = assignment.targets.as_slice() else {
+        return None;
+    };
+    let [Expr::Name(module), Expr::Name(attribute)] = targets.elts.as_slice() else {
+        return None;
+    };
+    let Expr::Subscript(lookup) = assignment.value.as_ref() else {
+        return None;
+    };
+    let (Expr::Name(table), Expr::Name(selector)) = (lookup.value.as_ref(), lookup.slice.as_ref())
+    else {
+        return None;
+    };
+    let [ExceptHandler::ExceptHandler(handler)] = node.handlers.as_slice() else {
+        return None;
+    };
+    let key_error = handler.type_.as_deref()?;
+    let [Stmt::Raise(raise)] = handler.body.as_ref() else {
+        return None;
+    };
+    let Expr::Call(exception) = raise.exc.as_deref()? else {
+        return None;
+    };
+    (!node.is_star
+        && node.orelse.is_empty()
+        && node.finalbody.is_empty()
+        && table.id.as_str() == "_LAZY"
+        && module.id != attribute.id
+        && matches!(key_error, Expr::Name(name) if name.id.as_str() == "KeyError")
+        && handler.name.is_none()
+        && raise.cause.as_deref().is_none_or(|cause| matches!(cause, Expr::NoneLiteral(_)))
+        && matches!(exception.func.as_ref(), Expr::Name(name) if name.id.as_str() == "AttributeError")
+        && matches!(exception.arguments.args.as_ref(), [Expr::Name(name)] if name.id == selector.id)
+        && exception.arguments.keywords.is_empty())
+    .then_some((&targets.elts, &assignment.value, key_error, &exception.func))
+}
+
 fn optional_project_wildcard(node: &StmtTry) -> Option<&str> {
     let [Stmt::ImportFrom(import)] = node.body.as_ref() else {
         return None;
@@ -328,6 +415,40 @@ fn optional_project_class_fallback(node: &StmtTry) -> Option<(&str, &str, &[Stmt
     .then_some((package, missing_member, handler.body.as_ref()))
 }
 
+/// A single from-import with a named ImportError handler. Resolve the
+/// source and decide which body can run after project discovery.
+fn guarded_project_import(node: &StmtTry) -> Option<(&Stmt, bool, &[Stmt])> {
+    let [statement @ Stmt::ImportFrom(import), tail @ ..] = node.body.as_slice() else {
+        return None;
+    };
+    let [ExceptHandler::ExceptHandler(handler)] = node.handlers.as_slice() else {
+        return None;
+    };
+    if node.is_star
+        || !node.finalbody.is_empty()
+        || import.is_lazy
+        || !matches!(import.names.as_slice(), [alias] if alias.name.as_str() != "*")
+        || handler.name.is_some()
+        || !matches!(handler.type_.as_deref(), Some(Expr::Name(name)) if name.id.as_str() == "ImportError")
+    {
+        return None;
+    }
+    let raises = match tail {
+        [] => false,
+        [Stmt::Raise(raise)]
+            if raise.cause.is_none()
+                && matches!(raise.exc.as_deref(), Some(Expr::Call(call))
+                    if matches!(call.func.as_ref(), Expr::Name(name) if name.id.as_str() == "ImportError")
+                        && matches!(call.arguments.args.as_ref(), [Expr::StringLiteral(_)])
+                        && call.arguments.keywords.is_empty()) =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    Some((statement, raises, &handler.body))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Expression {
     pub at: Location,
@@ -340,6 +461,11 @@ pub enum ExpressionKind {
     IterationVariable(Location),
     Member(Box<Expression>, String),
     Call {
+        function: Box<Expression>,
+        arguments: Vec<Expression>,
+        keywords: Vec<(String, Expression)>,
+    },
+    SingleArgumentExpansion {
         function: Box<Expression>,
         arguments: Vec<Expression>,
         keywords: Vec<(String, Expression)>,
@@ -366,9 +492,11 @@ pub enum ExpressionKind {
     ConstantLambda,
     NullaryConstantLambda,
     IdentityLambda,
+    IdentityDefaultLambda(Box<Expression>),
     IdentityDecoratorLambda,
     DeferredLambda(Box<Expression>),
     DeferredBoolLambda,
+    DeferredCallbackLambda,
     EmptyListComprehension,
     Sequence {
         items: Vec<Expression>,
@@ -415,6 +543,66 @@ pub enum ExpressionKind {
     Operands(Vec<Expression>),
 }
 
+/// Parse the non-executable subset of a quoted type annotation.
+pub fn quoted_annotation(source: &str, at: Location) -> Option<Expression> {
+    fn lower(node: &Expr, at: Location, depth: usize) -> Option<Expression> {
+        if depth >= MAX_NESTING {
+            return None;
+        }
+        let next = |node: &Expr| lower(node, at, depth + 1);
+        let kind = match node {
+            Expr::Name(node) => ExpressionKind::Name(node.id.to_string()),
+            Expr::Attribute(node) => {
+                ExpressionKind::Member(Box::new(next(&node.value)?), node.attr.to_string())
+            }
+            Expr::Subscript(node) => ExpressionKind::Subscript {
+                value: Box::new(next(&node.value)?),
+                index: Box::new(next(&node.slice)?),
+            },
+            Expr::BinOp(node) if node.op == Operator::BitOr => {
+                ExpressionKind::Operands(vec![next(&node.left)?, next(&node.right)?])
+            }
+            Expr::Tuple(node) => {
+                // Keep the positions of opaque operands so the analyzer can
+                // skip metadata without dropping a recognized type argument.
+                ExpressionKind::Operands(
+                    node.elts
+                        .iter()
+                        .map(|item| {
+                            next(item).unwrap_or_else(|| Expression {
+                                at,
+                                kind: ExpressionKind::Operands(Vec::new()),
+                            })
+                        })
+                        .collect(),
+                )
+            }
+            Expr::List(node) => {
+                ExpressionKind::Operands(node.elts.iter().map(next).collect::<Option<_>>()?)
+            }
+            Expr::StringLiteral(node) => ExpressionKind::Text(node.value.to_str().into()),
+            Expr::NoneLiteral(_) => ExpressionKind::None,
+            Expr::EllipsisLiteral(_) => ExpressionKind::Scalar(None),
+            _ => return None,
+        };
+        Some(Expression { at, kind })
+    }
+
+    if source.len() > 4096 {
+        return None;
+    }
+    let options = crate::ParseOptions::from(crate::Mode::Expression)
+        .with_target_version(ruff_python_ast::PythonVersion::PY311);
+    let parsed = crate::parse_unchecked(source.trim(), options);
+    if !parsed.errors().is_empty() || !parsed.unsupported_syntax_errors().is_empty() {
+        return None;
+    }
+    let Mod::Expression(expression) = parsed.syntax() else {
+        return None;
+    };
+    lower(&expression.body, at, 0)
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ComprehensionForm {
     Generator,
@@ -446,6 +634,7 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         unreachable!("module mode always produces a module AST");
     };
     let mut inline_ignores = Vec::new();
+    let mut noqa_lines = BTreeMap::new();
     let mut block_start = None;
     for token in parsed
         .tokens()
@@ -456,6 +645,9 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         let comment = &source[usize::from(range.start())..usize::from(range.end())];
         let line = lines.locate(range.start()).line;
         let marker = comment.trim_start_matches('#').trim().to_ascii_lowercase();
+        if project_wildcards && let Some(suppresses) = noqa_import_code(&marker) {
+            noqa_lines.insert(line, suppresses);
+        }
         let directive = marker.strip_prefix("skylos:").map(str::trim);
         match directive {
             Some("ignore-start") => {
@@ -495,19 +687,49 @@ fn extract_module(source: &str, project_wildcards: bool) -> Result<ModuleFacts, 
         BTreeMap::new(),
         &named_condition,
         project_wildcards,
+        None,
+        None,
     )
     .suite(&syntax.body, 0)?;
+    let mut noqa = NoqaImportAliases {
+        lines: &lines,
+        codes: &noqa_lines,
+        aliases: BTreeSet::new(),
+    };
+    if noqa_lines.values().any(|&suppresses| suppresses) {
+        noqa.visit_body(&syntax.body);
+    }
+    let mut table_references = LazyTableReferences::default();
+    if project_wildcards {
+        table_references.visit_body(&syntax.body);
+    }
     Ok(ModuleFacts {
         body,
+        explicit_lazy_table_access: table_references.0,
         first_named_condition: named_condition.get(),
         empty,
         inline_ignores,
+        noqa_f401_imports: noqa.aliases,
         postponed_annotations: syntax.body.iter().any(|statement|
             matches!(statement, Stmt::ImportFrom(node)
                 if node.level == 0 && node.module.as_ref().is_some_and(|name| name.as_str() == "__future__")
                     && node.names.iter().any(|alias| alias.name.as_str() == "annotations"))
         ),
     })
+}
+
+#[derive(Default)]
+struct LazyTableReferences(bool);
+
+impl<'ast> Visitor<'ast> for LazyTableReferences {
+    fn visit_expr(&mut self, expression: &'ast Expr) {
+        match expression {
+            Expr::Attribute(node) if node.attr.as_str() == "_LAZY" => self.0 = true,
+            Expr::StringLiteral(node) if node.value.to_str() == "_LAZY" => self.0 = true,
+            _ if !self.0 => visitor::walk_expr(self, expression),
+            _ => {}
+        }
+    }
 }
 
 fn append_block(
@@ -557,6 +779,59 @@ fn ignore_rules(lower: &str) -> Option<Vec<String>> {
     (!rules.is_empty()).then_some(rules)
 }
 
+fn noqa_import_code(lower: &str) -> Option<bool> {
+    let codes = lower
+        .split('#')
+        .find_map(|segment| segment.trim_start().strip_prefix("noqa:"))?;
+    let mut has_code = false;
+    for word in codes.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if word == "f401" {
+            return Some(true);
+        }
+        if let Some(digits) = word.find(|c: char| c.is_ascii_digit())
+            && digits > 0
+            && word[..digits].bytes().all(|b| b.is_ascii_alphabetic())
+            && word[digits..].bytes().all(|b| b.is_ascii_digit())
+        {
+            has_code = true;
+        }
+    }
+    has_code.then_some(false)
+}
+
+struct NoqaImportAliases<'a> {
+    lines: &'a Lines,
+    codes: &'a BTreeMap<usize, bool>,
+    aliases: BTreeSet<[usize; 2]>,
+}
+
+impl<'ast> Visitor<'ast> for NoqaImportAliases<'_> {
+    fn visit_stmt(&mut self, statement: &'ast Stmt) {
+        let aliases = match statement {
+            Stmt::Import(node) => &node.names,
+            Stmt::ImportFrom(node) => &node.names,
+            _ => return visitor::walk_stmt(self, statement),
+        };
+        let start = self.lines.locate(statement.start()).line;
+        let end = self.lines.locate(statement.end()).line;
+        for alias in aliases.iter().filter(|alias| alias.name.as_str() != "*") {
+            let line = self.lines.locate(alias.start()).line;
+            // The pinned baseline uses the first directive on these three lines.
+            if [start, line, end]
+                .into_iter()
+                .find_map(|line| self.codes.get(&line))
+                == Some(&true)
+            {
+                let identifier = alias.asname.as_ref().unwrap_or(&alias.name);
+                let at = self.lines.locate(identifier.start());
+                self.aliases.insert([at.line, at.column]);
+            }
+        }
+    }
+
+    fn visit_expr(&mut self, _: &'ast Expr) {}
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SyntaxScope {
     Module,
@@ -571,7 +846,145 @@ struct Lowering<'a>(
     BTreeMap<String, Location>,
     &'a Cell<Option<Location>>,
     bool,
+    Option<&'a str>,
+    Option<&'a FunctionBindings<'a>>,
 );
+
+struct FunctionBindings<'a> {
+    node: &'a StmtFunctionDef,
+    overwrites: OnceCell<BTreeSet<TextSize>>,
+}
+
+struct LocalBindings<'a> {
+    class: Option<&'a str>,
+    first: BTreeMap<String, TextSize>,
+    overwrites: BTreeSet<TextSize>,
+    nested_body: Option<Option<&'a str>>,
+    depth: usize,
+}
+
+impl LocalBindings<'_> {
+    fn record(&mut self, name: &str, node: &impl Ranged) {
+        let at = node.start();
+        self.first
+            .entry(name_in_class(name, self.class))
+            .and_modify(|first| {
+                self.overwrites.insert((*first).max(at));
+                *first = (*first).min(at);
+            })
+            .or_insert(at);
+    }
+
+    fn record_imports(&mut self, aliases: &[Alias], from: bool) {
+        for alias in aliases {
+            let name = alias.name.as_str();
+            let local = alias.asname.as_ref().map_or_else(
+                || {
+                    if from {
+                        name
+                    } else {
+                        name.split('.').next().unwrap_or(name)
+                    }
+                },
+                |name| name.as_str(),
+            );
+            self.record(local, alias);
+        }
+    }
+}
+
+fn literal_public_export_edit(statement: &Stmt) -> Option<&[Expr]> {
+    let (value, append) = match statement {
+        Stmt::AugAssign(node)
+            if node.op == Operator::Add
+                && matches!(node.target.as_ref(), Expr::Name(name) if name.id.as_str() == "__all__") =>
+        {
+            (node.value.as_ref(), false)
+        }
+        Stmt::Expr(node)
+            if let Expr::Call(call) = node.value.as_ref()
+                && let Expr::Attribute(attribute) = call.func.as_ref()
+                && matches!(attribute.value.as_ref(), Expr::Name(name) if name.id.as_str() == "__all__")
+                && matches!(attribute.attr.as_str(), "append" | "extend")
+                && call.arguments.keywords.is_empty()
+                && let [value] = call.arguments.args.as_ref() =>
+        {
+            (value, attribute.attr.as_str() == "append")
+        }
+        _ => return None,
+    };
+    let values = if append {
+        std::slice::from_ref(value)
+    } else {
+        match value {
+            Expr::List(list) => &list.elts,
+            Expr::Tuple(tuple) => &tuple.elts,
+            _ => return None,
+        }
+    };
+    values
+        .iter()
+        .all(Expr::is_string_literal_expr)
+        .then_some(values)
+}
+
+impl<'a, 'ast: 'a> Visitor<'ast> for LocalBindings<'a> {
+    fn visit_stmt(&mut self, statement: &'ast Stmt) {
+        if let Stmt::Nonlocal(node) = statement {
+            // A nested setter can initialize a cell before its first local assignment.
+            for name in &node.names {
+                self.record(name.as_str(), name);
+            }
+        }
+        if self.depth == 0 {
+            match statement {
+                Stmt::FunctionDef(node) => self.record(node.name.as_str(), &node.name),
+                Stmt::ClassDef(node) => self.record(node.name.as_str(), &node.name),
+                Stmt::Import(node) => self.record_imports(&node.names, false),
+                Stmt::ImportFrom(node) => self.record_imports(&node.names, true),
+                _ => {}
+            }
+        }
+        let nested = match statement {
+            Stmt::FunctionDef(_) => Some(self.class),
+            Stmt::ClassDef(node) => {
+                let class = node.name.as_str().trim_start_matches('_');
+                Some((!class.is_empty()).then_some(class))
+            }
+            _ => None,
+        };
+        let previous = std::mem::replace(&mut self.nested_body, nested);
+        visitor::walk_stmt(self, statement);
+        self.nested_body = previous;
+    }
+
+    fn visit_body(&mut self, statements: &'ast [Stmt]) {
+        let depth = self.depth;
+        let class = self.class;
+        if let Some(body_class) = self.nested_body {
+            self.class = body_class;
+            self.depth += 1;
+        }
+        visitor::walk_body(self, statements);
+        self.depth = depth;
+        self.class = class;
+    }
+
+    fn visit_expr(&mut self, expression: &'ast Expr) {
+        if self.depth == 0
+            && let Expr::Name(name) = expression
+        {
+            match name.ctx {
+                ExprContext::Store => self.record(name.id.as_str(), name),
+                ExprContext::Del => {
+                    self.overwrites.insert(name.start());
+                }
+                _ => {}
+            }
+        }
+        visitor::walk_expr(self, expression);
+    }
+}
 
 struct BodyCoverage<'a> {
     source: &'a Lines,
@@ -623,6 +1036,46 @@ impl<'ast> Visitor<'ast> for BodyCoverage<'_> {
 }
 
 impl Lowering<'_> {
+    fn finally_initializes_fresh_locals(&self, node: &StmtTry) -> bool {
+        if !node.body.iter().all(|statement| match statement {
+            Stmt::Pass(_) => true,
+            Stmt::Assign(assign) => {
+                matches!(assign.targets.as_slice(), [Expr::Name(_)])
+                    && matches!(
+                        assign.value.as_ref(),
+                        Expr::NoneLiteral(_)
+                            | Expr::BooleanLiteral(_)
+                            | Expr::NumberLiteral(_)
+                            | Expr::StringLiteral(_)
+                    )
+            }
+            _ => false,
+        }) {
+            return false;
+        }
+        self.local_overwrites()
+            .is_some_and(|overwrites| overwrites.range(node.start()..node.end()).next().is_none())
+    }
+
+    fn local_overwrites(&self) -> Option<&BTreeSet<TextSize>> {
+        let function = self.6?;
+        Some(function.overwrites.get_or_init(|| {
+            let mut bindings = LocalBindings {
+                class: self.5,
+                first: BTreeMap::new(),
+                overwrites: BTreeSet::new(),
+                nested_body: None,
+                depth: 0,
+            };
+            for parameter in function.node.parameters.iter() {
+                let name = parameter.name();
+                bindings.record(name.as_str(), name);
+            }
+            bindings.visit_body(&function.node.body);
+            bindings.overwrites
+        }))
+    }
+
     fn repeated_keyword_arguments(call: &ruff_python_ast::ExprCall) -> Option<Vec<&Expr>> {
         let (expansion, explicit) = call.arguments.keywords.split_last()?;
         if expansion.arg.is_some() || explicit.is_empty() {
@@ -690,6 +1143,12 @@ impl Lowering<'_> {
         }
     }
 
+    fn attribute_name(&self, name: &str) -> String {
+        // Syntactic attribute names use the enclosing class, even when the
+        // receiver is unrelated to that class. Literal strings stay unchanged.
+        name_in_class(name, self.5)
+    }
+
     fn write_target(
         &self,
         target: &Expr,
@@ -699,7 +1158,7 @@ impl Lowering<'_> {
         match target {
             Expr::Attribute(node) => Ok(StatementKind::WriteAttribute {
                 receiver: self.expression(&node.value, depth)?,
-                member: node.attr.to_string(),
+                member: self.attribute_name(node.attr.as_str()),
                 value,
             }),
             Expr::Subscript(node) => {
@@ -792,6 +1251,58 @@ impl Lowering<'_> {
             .collect()
     }
 
+    fn definition_decorators(
+        &self,
+        decorators: &[ruff_python_ast::Decorator],
+        simple_header: bool,
+        output: &mut Vec<Statement>,
+        depth: usize,
+    ) -> Result<Vec<Expression>, FrontendError> {
+        if self.4
+            && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+            && simple_header
+            && let [decorator] = decorators
+            && let Expr::BoolOp(test) = &decorator.expression
+            && test.op == BoolOp::And
+            && let [Expr::Named(assignment), right @ Expr::Name(_)] = test.values.as_slice()
+        {
+            let guard = self.definition_header_assignment(assignment, output, depth)?;
+            return Ok(vec![Expression {
+                at: self.0.locate(test.start()),
+                kind: ExpressionKind::Boolean {
+                    and: true,
+                    values: vec![guard, self.expression(right, depth)?],
+                },
+            }]);
+        }
+        decorators
+            .iter()
+            .map(|decorator| self.expression(&decorator.expression, depth))
+            .collect()
+    }
+
+    fn definition_header_assignment(
+        &self,
+        assignment: &ruff_python_ast::ExprNamed,
+        output: &mut Vec<Statement>,
+        depth: usize,
+    ) -> Result<Expression, FrontendError> {
+        let name = self.target(&assignment.target)?;
+        let read = Expression {
+            at: self.0.locate(assignment.end()),
+            kind: ExpressionKind::Name(name.text.clone()),
+        };
+        output.push(Statement {
+            at: self.0.locate(assignment.start()),
+            kind: StatementKind::Assign {
+                names: vec![name],
+                value: Some(self.expression(&assignment.value, depth)?),
+                annotation: None,
+            },
+        });
+        Ok(read)
+    }
+
     fn imports(
         &self,
         output: &mut Vec<Statement>,
@@ -874,9 +1385,71 @@ impl Lowering<'_> {
         Ok(())
     }
 
+    fn fold_public_export_edit(
+        &self,
+        result: &mut [Statement],
+        statement: &Stmt,
+        depth: usize,
+        already_folded: bool,
+    ) -> Result<bool, FrontendError> {
+        // Consecutive literal edits of a fresh built-in list have no
+        // intervening observer. Keep one binding for every later use.
+        let Some(values) = literal_public_export_edit(statement) else {
+            return Ok(false);
+        };
+        let Some((previous, prefix)) = result.split_last_mut() else {
+            return Ok(false);
+        };
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation,
+        } = &mut previous.kind
+        else {
+            return Ok(false);
+        };
+        let builtin_annotation = matches!(annotation,
+            Some(Expression { kind: ExpressionKind::Subscript { value, index }, .. })
+            if matches!(&value.kind, ExpressionKind::Name(name) if name == "list")
+                && matches!(&index.kind, ExpressionKind::Name(name) if name == "str"))
+            && matches!(
+                prefix,
+                [] | [Statement {
+                    kind: StatementKind::Evaluate(Expression {
+                        kind: ExpressionKind::Text(_),
+                        ..
+                    }),
+                    ..
+                }]
+            );
+        if !matches!(names.as_slice(), [name] if name.text == "__all__")
+            || (annotation.is_some() && !builtin_annotation)
+        {
+            return Ok(false);
+        }
+        let ExpressionKind::Sequence { items, list: true } = &mut value.kind else {
+            return Ok(false);
+        };
+        if !already_folded
+            && !items
+                .iter()
+                .all(|item| matches!(item.kind, ExpressionKind::Text(_)))
+        {
+            return Ok(false);
+        }
+        items.extend(
+            values
+                .iter()
+                .map(|value| self.expression(value, depth))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        Ok(true)
+    }
+
     fn suite(&self, statements: &[Stmt], depth: usize) -> Result<Vec<Statement>, FrontendError> {
-        let mut result = Vec::new();
+        let mut result: Vec<Statement> = Vec::new();
         let mut allows_future_import = depth == 0;
+        let mut folded_export_position = None;
         for (index, statement) in statements.iter().enumerate() {
             self.check(statement, depth)?;
             if let Stmt::ImportFrom(node) = statement
@@ -909,6 +1482,15 @@ impl Lowering<'_> {
 
             let next = depth + 1;
             let expression = |expr: &Expr| self.expression(expr, next);
+            let folded = folded_export_position == Some(result.len());
+            if self.4
+                && depth == 0
+                && self.1 == SyntaxScope::Module
+                && self.fold_public_export_edit(&mut result, statement, next, folded)?
+            {
+                folded_export_position = Some(result.len());
+                continue;
+            }
             let kind = match statement {
                 Stmt::Pass(_) => continue,
                 Stmt::Import(node) if !node.is_lazy => {
@@ -944,6 +1526,10 @@ impl Lowering<'_> {
                     }
                     let name = self.binding_name(node.name.as_str(), &node.name)?;
                     let is_async = node.is_async;
+                    let bindings = FunctionBindings {
+                        node,
+                        overwrites: OnceCell::new(),
+                    };
                     let lowering = Lowering(
                         self.0,
                         if is_async {
@@ -954,7 +1540,10 @@ impl Lowering<'_> {
                         BTreeMap::new(),
                         self.3,
                         self.4,
+                        self.5,
+                        Some(&bindings),
                     );
+                    let mut global_reads = Vec::new();
                     let body = if !is_async
                         && parameters.is_empty()
                         && node.decorator_list.is_empty()
@@ -962,7 +1551,13 @@ impl Lowering<'_> {
                         && let [name] = declare.names.as_slice()
                         && let [Expr::Name(target)] = assign.targets.as_slice()
                         && target.id.as_str() == name.as_str()
-                        && matches!(assign.value.as_ref(), Expr::Name(_))
+                        && (matches!(assign.value.as_ref(), Expr::Name(_))
+                            || self.4
+                                && matches!(
+                                    self.1,
+                                    SyntaxScope::Function | SyntaxScope::AsyncFunction
+                                )
+                                && bounded_cell_value(&assign.value))
                     {
                         vec![Statement {
                             at: self.0.locate(declare.start()),
@@ -986,6 +1581,42 @@ impl Lowering<'_> {
                                 lowering.expression(call, next + 1)?,
                             ),
                         }]
+                    } else if self.4
+                        && !is_async
+                        && parameters.is_empty()
+                        && node.decorator_list.is_empty()
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && let [Stmt::Nonlocal(declare), Stmt::Assign(assign), tail @ ..] =
+                            node.body.as_slice()
+                        && let [name] = declare.names.as_slice()
+                        && let [Expr::Name(target)] = assign.targets.as_slice()
+                        && target.id.as_str() == name.as_str()
+                        && bounded_cell_value(&assign.value)
+                        && (tail.is_empty()
+                            || matches!(tail, [Stmt::Return(ret)]
+                                if matches!(ret.value.as_deref(), Some(Expr::Name(_)))))
+                    {
+                        let mut statements = vec![Statement {
+                            at: self.0.locate(declare.start()),
+                            kind: StatementKind::SetNonlocalName {
+                                name: self.binding_name(name.as_str(), target)?,
+                                value: lowering.expression(&assign.value, next + 1)?,
+                            },
+                        }];
+                        statements.extend(lowering.suite(tail, next)?);
+                        statements
+                    } else if self.4
+                        && let [Stmt::Global(declare), statement @ Stmt::Return(_)] =
+                            node.body.as_slice()
+                        && declare
+                            .names
+                            .iter()
+                            .all(|name| !parameter_names.contains(name.as_str()))
+                    {
+                        // A lone return cannot rebind the declared module names
+                        // in the supported expression subset.
+                        global_reads.extend(declare.names.iter().map(ToString::to_string));
+                        lowering.suite(std::slice::from_ref(statement), next)?
                     } else {
                         lowering.suite(&node.body, next)?
                     };
@@ -996,6 +1627,36 @@ impl Lowering<'_> {
                         is_generator: false,
                     };
                     coverage.visit_body(&node.body);
+                    let defaults: Vec<_> = node
+                        .parameters
+                        .iter_non_variadic_params()
+                        .filter_map(|parameter| parameter.default.as_deref())
+                        .collect();
+                    let (defaults, default_binding) = if self.4
+                        && node.decorator_list.is_empty()
+                        && annotations.is_empty()
+                        && let [Expr::Named(named)] = defaults.as_slice()
+                        && let Expr::Name(target) = named.target.as_ref()
+                    {
+                        (
+                            vec![expression(&named.value)?],
+                            Some(self.binding_name(target.id.as_str(), target)?),
+                        )
+                    } else {
+                        (
+                            defaults
+                                .into_iter()
+                                .map(expression)
+                                .collect::<Result<_, _>>()?,
+                            None,
+                        )
+                    };
+                    let decorators = self.definition_decorators(
+                        &node.decorator_list,
+                        defaults.is_empty() && annotations.is_empty(),
+                        &mut result,
+                        next,
+                    )?;
                     StatementKind::Define(Definition {
                         name,
                         kind: if is_async {
@@ -1008,11 +1669,8 @@ impl Lowering<'_> {
                         is_generator: coverage.is_generator,
                         body,
                         body_coverage_lines: coverage.lines.into_iter().collect(),
-                        decorators: node
-                            .decorator_list
-                            .iter()
-                            .map(|item| expression(&item.expression))
-                            .collect::<Result<_, _>>()?,
+                        global_reads,
+                        decorators,
                         parameters,
                         positional_only_parameter_count: node.parameters.posonlyargs.len(),
                         positional_parameter_count: node.parameters.posonlyargs.len()
@@ -1041,12 +1699,8 @@ impl Lowering<'_> {
                             && node.parameters.kwonlyargs.is_empty()
                             && node.parameters.vararg.is_none()
                             && node.parameters.kwarg.is_none()),
-                        defaults: node
-                            .parameters
-                            .iter_non_variadic_params()
-                            .filter_map(|parameter| parameter.default.as_deref())
-                            .map(expression)
-                            .collect::<Result<_, _>>()?,
+                        defaults,
+                        default_binding,
                         annotations,
                         parameter_annotation_count,
                         bases: Vec::new(),
@@ -1063,6 +1717,7 @@ impl Lowering<'_> {
                             }))
                     }) =>
                 {
+                    let class = node.name.as_str().trim_start_matches('_');
                     StatementKind::Define(Definition {
                         name: self.binding_name(node.name.as_str(), &node.name)?,
                         kind: DefinitionKind::Class,
@@ -1092,14 +1747,26 @@ impl Lowering<'_> {
                             .map(|keyword| expression(&keyword.value))
                             .transpose()?,
                         is_generator: false,
-                        body: Lowering(self.0, SyntaxScope::Class, BTreeMap::new(), self.3, self.4)
-                            .suite(&node.body, next)?,
+                        body: Lowering(
+                            self.0,
+                            SyntaxScope::Class,
+                            BTreeMap::new(),
+                            self.3,
+                            self.4,
+                            (self.4 && !class.is_empty()).then_some(class),
+                            None,
+                        )
+                        .suite(&node.body, next)?,
                         body_coverage_lines: Vec::new(),
-                        decorators: node
-                            .decorator_list
-                            .iter()
-                            .map(|item| expression(&item.expression))
-                            .collect::<Result<_, _>>()?,
+                        global_reads: Vec::new(),
+                        decorators: self.definition_decorators(
+                            &node.decorator_list,
+                            node.arguments.as_ref().is_none_or(|arguments| {
+                                arguments.args.is_empty() && arguments.keywords.is_empty()
+                            }),
+                            &mut result,
+                            next,
+                        )?,
                         parameters: Vec::new(),
                         positional_only_parameter_count: 0,
                         positional_parameter_count: 0,
@@ -1110,6 +1777,7 @@ impl Lowering<'_> {
                         has_variadic_keyword_parameter: false,
                         simple_positional_parameters: false,
                         defaults: Vec::new(),
+                        default_binding: None,
                         annotations: Vec::new(),
                         parameter_annotation_count: 0,
                         bases: node
@@ -1121,7 +1789,33 @@ impl Lowering<'_> {
                     })
                 }
                 Stmt::Assign(node) => {
-                    if let [Expr::Subscript(target)] = node.targets.as_slice()
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && let [Expr::Name(target)] = node.targets.as_slice()
+                        && let Expr::Lambda(lambda) = node.value.as_ref()
+                        && let Some(parameters) = &lambda.parameters
+                        && parameters.len() == 1
+                        && parameters.kwonlyargs.is_empty()
+                        && let Some(parameter) = parameters.iter_non_variadic_params().next()
+                        && let Some(Expr::Named(assignment)) = parameter.default.as_deref()
+                        && let Expr::Name(default_name) = assignment.target.as_ref()
+                        && self.attribute_name(target.id.as_str())
+                            != self.attribute_name(default_name.id.as_str())
+                        && matches!(lambda.body.as_ref(), Expr::Name(name)
+                            if self.attribute_name(name.id.as_str())
+                                == self.attribute_name(parameter.name().as_str()))
+                    {
+                        let default =
+                            self.definition_header_assignment(assignment, &mut result, next)?;
+                        StatementKind::Assign {
+                            names: vec![self.target(&node.targets[0])?],
+                            value: Some(Expression {
+                                at: self.0.locate(lambda.start()),
+                                kind: ExpressionKind::IdentityDefaultLambda(Box::new(default)),
+                            }),
+                            annotation: None,
+                        }
+                    } else if let [Expr::Subscript(target)] = node.targets.as_slice()
                         && matches!(target.slice.as_ref(), Expr::StringLiteral(key)
                             if key.value.to_str() == "DJANGO_SETTINGS_MODULE")
                     {
@@ -1217,6 +1911,28 @@ impl Lowering<'_> {
                     )?);
                     continue;
                 }
+                Stmt::For(node)
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && let Expr::Name(target) = node.target.as_ref()
+                        && let Some((selected, unreachable)) = terminating_literal_loop(node)
+                        && self
+                            .local_overwrites()
+                            .is_some_and(|writes| !writes.contains(&target.start())) =>
+                {
+                    // Only the loop assignment runs. Validate the dormant
+                    // expressions without emitting executable facts for them.
+                    for statement in unreachable {
+                        if let Stmt::Expr(statement) = statement {
+                            self.expression(&statement.value, next + 1)?;
+                        }
+                    }
+                    StatementKind::Assign {
+                        names: vec![self.target(&node.target)?],
+                        value: Some(expression(selected)?),
+                        annotation: None,
+                    }
+                }
                 Stmt::For(node) => {
                     let Some((last, registration)) = literal_route_loop(node) else {
                         return Err(self
@@ -1267,6 +1983,58 @@ impl Lowering<'_> {
                         missing_member: missing_member.into(),
                         fallback: self.suite(fallback, next)?,
                     }
+                }
+                Stmt::Try(node)
+                    if self.4
+                        && depth == 0
+                        && self.1 == SyntaxScope::Module
+                        && let Some((import, raises_import_error, fallback)) =
+                            guarded_project_import(node) =>
+                {
+                    let [import]: [Statement; 1] = self
+                        .suite(std::slice::from_ref(import), next)?
+                        .try_into()
+                        .expect("one bounded from-import");
+                    StatementKind::GuardedProjectImport {
+                        import: Box::new(import),
+                        raises_import_error,
+                        fallback: self.suite(fallback, next)?,
+                        otherwise: self.suite(&node.orelse, next)?,
+                    }
+                }
+                Stmt::Try(node)
+                    if self.4
+                        && self.1 == SyntaxScope::Function
+                        && self.6.is_some_and(|bindings| {
+                            bindings.node.name.as_str() == "__getattr__"
+                        })
+                        && let Some((names, lookup, key_error, attribute_error)) =
+                            guarded_lazy_unpack(node) =>
+                {
+                    StatementKind::GuardedLazyUnpack {
+                        names: names
+                            .iter()
+                            .map(|name| self.target(name))
+                            .collect::<Result<_, _>>()?,
+                        value: expression(lookup)?,
+                        key_error_at: self.0.locate(key_error.start()),
+                        attribute_error_at: self.0.locate(attribute_error.start()),
+                    }
+                }
+                Stmt::Try(node)
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && !node.is_star
+                        && node.handlers.is_empty()
+                        && node.orelse.is_empty()
+                        && !node.finalbody.is_empty()
+                        && self.finally_initializes_fresh_locals(node) =>
+                {
+                    // Fresh local bindings cannot release an earlier value
+                    // and invoke its finalizer before the following suite.
+                    result.extend(self.suite(&node.body, next)?);
+                    result.extend(self.suite(&node.finalbody, next)?);
+                    continue;
                 }
                 Stmt::Return(node) => {
                     if matches!(self.1, SyntaxScope::Module | SyntaxScope::Class) {
@@ -1353,6 +2121,15 @@ impl Lowering<'_> {
         self.check(expression, depth)?;
         let descend = |node: &Expr| self.annotation(node, depth + 1);
         let references = match expression {
+            Expr::Subscript(node) if self.4 => {
+                return Ok(Expression {
+                    at: self.0.locate(expression.start()),
+                    kind: ExpressionKind::Subscript {
+                        value: Box::new(descend(&node.value)?),
+                        index: Box::new(descend(&node.slice)?),
+                    },
+                });
+            }
             Expr::Subscript(node) => vec![descend(&node.value)?, descend(&node.slice)?],
             Expr::BinOp(node) if node.op == ruff_python_ast::Operator::BitOr => {
                 vec![descend(&node.left)?, descend(&node.right)?]
@@ -1377,7 +2154,41 @@ impl Lowering<'_> {
                 |&target| ExpressionKind::IterationVariable(target),
             ),
             Expr::Attribute(node) => {
-                ExpressionKind::Member(Box::new(lower(&node.value)?), node.attr.to_string())
+                ExpressionKind::Member(
+                    Box::new(lower(&node.value)?),
+                    self.attribute_name(node.attr.as_str()),
+                )
+            }
+            Expr::Call(node)
+                if self.4
+                    && matches!(node.func.as_ref(), Expr::Name(_))
+                    && let ([Expr::Starred(expansion)], []) =
+                        (node.arguments.args.as_ref(), node.arguments.keywords.as_slice())
+                    && let Expr::Tuple(tuple) = expansion.value.as_ref()
+                    && let [value] = tuple.elts.as_slice()
+                    && !matches!(value, Expr::Starred(_)) =>
+            {
+                ExpressionKind::SingleArgumentExpansion {
+                    function: Box::new(lower(&node.func)?),
+                    arguments: vec![self.expression(value, next + 2)?],
+                    keywords: Vec::new(),
+                }
+            }
+            Expr::Call(node)
+                if self.4
+                    && matches!(node.func.as_ref(), Expr::Name(_))
+                    && node.arguments.args.is_empty()
+                    && let [expansion] = node.arguments.keywords.as_slice()
+                    && expansion.arg.is_none()
+                    && let Expr::Dict(mapping) = &expansion.value
+                    && let [item] = mapping.items.as_slice()
+                    && let Some(Expr::StringLiteral(key)) = &item.key =>
+            {
+                ExpressionKind::SingleArgumentExpansion {
+                    function: Box::new(lower(&node.func)?),
+                    arguments: Vec::new(),
+                    keywords: vec![(key.value.to_str().into(), self.expression(&item.value, next + 1)?)],
+                }
             }
             Expr::Call(node)
                 if let [Expr::Starred(positional)] = node.arguments.args.as_ref()
@@ -1447,6 +2258,20 @@ impl Lowering<'_> {
             }
             Expr::BooleanLiteral(node) => ExpressionKind::Bool(node.value),
             Expr::Lambda(node)
+                if self.4
+                    && let Some(parameters) = &node.parameters
+                    && parameters.len() == 1
+                    && parameters.kwonlyargs.is_empty()
+                    && let Some(parameter) = parameters.iter_non_variadic_params().next()
+                    && let Some(default) = parameter.default.as_deref()
+                    && matches!(node.body.as_ref(), Expr::Name(name)
+                        if self.attribute_name(name.id.as_str())
+                            == self.attribute_name(parameter.name().as_str())) =>
+            {
+                self.binding_name(parameter.name().as_str(), parameter.name())?;
+                ExpressionKind::IdentityDefaultLambda(Box::new(lower(default)?))
+            }
+            Expr::Lambda(node)
                 if lambda_parameter(node).is_some()
                     && matches!(node.body.as_ref(), Expr::Lambda(inner)
                         if lambda_parameter(inner).is_some_and(|parameter|
@@ -1484,6 +2309,18 @@ impl Lowering<'_> {
                     && matches!(node.body.as_ref(), Expr::BooleanLiteral(_)) =>
             {
                 ExpressionKind::DeferredBoolLambda
+            }
+            Expr::Lambda(node)
+                if self.4
+                    && let Some(parameter) = lambda_parameter(node)
+                    && parameter != "__debug__"
+                    && let Expr::Call(call) = node.body.as_ref()
+                    && call.arguments.args.is_empty()
+                    && call.arguments.keywords.is_empty()
+                    && matches!(&*call.func, Expr::Name(name)
+                        if self.attribute_name(name.id.as_str()) == self.attribute_name(parameter)) =>
+            {
+                ExpressionKind::DeferredCallbackLambda
             }
             Expr::NoneLiteral(_) => ExpressionKind::None,
             Expr::ListComp(node)
@@ -1645,7 +2482,15 @@ impl Lowering<'_> {
                 .or_insert_with(|| self.0.locate(target.start()));
             targets.push(target);
         }
-        let mut child = Self(self.0, self.1, self.2.clone(), self.3, self.4);
+        let mut child = Self(
+            self.0,
+            self.1,
+            self.2.clone(),
+            self.3,
+            self.4,
+            self.5,
+            self.6,
+        );
         child.2.extend(local_targets);
         let iterators = generators
             .iter()
@@ -1685,6 +2530,35 @@ fn discarded_comprehension_iterable(expression: &Expr) -> Option<&Expr> {
         _ => return None,
     };
     (!generator.is_async && (!must_be_empty || elements.is_empty())).then_some(&generator.iter)
+}
+
+fn terminating_literal_loop(node: &ruff_python_ast::StmtFor) -> Option<(&Expr, &[Stmt])> {
+    if node.is_async || !node.orelse.is_empty() {
+        return None;
+    }
+    let values = match node.iter.as_ref() {
+        Expr::Tuple(tuple) => &tuple.elts,
+        Expr::List(list) => &list.elts,
+        _ => return None,
+    };
+    let (terminal, unreachable) = node.body.split_first()?;
+    let selected = match terminal {
+        Stmt::Break(_) => values.first()?,
+        Stmt::Continue(_) => values.last()?,
+        _ => return None,
+    };
+    (values.iter().all(|value| {
+        matches!(
+            value,
+            Expr::NoneLiteral(_)
+                | Expr::BooleanLiteral(_)
+                | Expr::NumberLiteral(_)
+                | Expr::StringLiteral(_)
+        )
+    }) && unreachable
+        .iter()
+        .all(|statement| matches!(statement, Stmt::Expr(_) | Stmt::Pass(_))))
+    .then_some((selected, unreachable))
 }
 
 fn literal_route_loop(node: &ruff_python_ast::StmtFor) -> Option<(&Expr, &Expr)> {

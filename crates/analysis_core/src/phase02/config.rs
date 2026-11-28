@@ -243,6 +243,13 @@ fn translate_glob(pattern: &str) -> String {
 }
 
 impl Selection {
+    pub(super) fn is_default_exclusion(&self, label: &str) -> bool {
+        self.defaults
+            && label
+                .split('/')
+                .any(|part| DEFAULT_EXCLUDES.contains(&part) || part.ends_with(".egg-info"))
+    }
+
     pub(crate) fn exclusion(&self, label: &str) -> Option<&'static str> {
         self.exclusion_matching(label, |_| true)
     }
@@ -270,11 +277,7 @@ impl Selection {
         {
             return Some("configured_exclusion");
         }
-        if self.defaults
-            && label
-                .split('/')
-                .any(|part| DEFAULT_EXCLUDES.contains(&part) || part.ends_with(".egg-info"))
-        {
+        if self.is_default_exclusion(label) {
             return Some("default_exclusion");
         }
         None
@@ -458,6 +461,8 @@ struct Layer {
     dead_code: Option<DeadCode>,
     nudges: Option<bool>,
     check_circular: Option<bool>,
+    #[serde(skip)]
+    warnings: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -666,6 +671,7 @@ impl Entrypoint {
         name: &str,
         full_name: &str,
         qualifiers: &[(String, String)],
+        phase03: bool,
     ) -> bool {
         if self
             .locations
@@ -679,11 +685,25 @@ impl Entrypoint {
             match *kind {
                 "path" => patterns.iter().any(|pattern| pattern.path_matches(file)),
                 "module" => matches(module),
-                "name" => matches(name),
+                "name" => {
+                    matches(name)
+                        || qualifiers
+                            .iter()
+                            .any(|(key, value)| key == "method_display_name" && matches(value))
+                }
                 "full_name" => matches(full_name),
-                other => qualifiers
-                    .iter()
-                    .any(|(key, value)| key == other && matches(value)),
+                other => qualifiers.iter().any(|(key, value)| {
+                    key == other
+                        && (matches(value)
+                            || phase03
+                                && matches!(
+                                    other,
+                                    "decorator" | "base_class" | "parent_base_class"
+                                )
+                                && value
+                                    .rsplit_once('.')
+                                    .is_some_and(|(_, name)| matches(name)))
+                }),
             }
         })
     }
@@ -786,10 +806,12 @@ fn load_at(
     let mut fastapi_router_mode = FastapiRouterMode::Auto;
     let mut whitelist = WhitelistTables::default();
     let mut path_rules = PathRules::default();
+    let mut warnings = Vec::new();
 
     for (file, layer, digest) in layers(path, options, policy)? {
         sources.push(file.to_string_lossy().replace('\\', "/"));
         digests.push(digest);
+        warnings.extend(layer.warnings);
         if let Some(values) = layer.exclude {
             excludes = values;
         }
@@ -862,7 +884,6 @@ fn load_at(
         .map(|(pattern, reason)| Ok((Pattern::new(&pattern)?, reason)))
         .collect::<Result<_, ConfigError>>()?;
 
-    let mut warnings = Vec::new();
     for (pattern, temporary) in whitelist.temporary {
         let reason = temporary
             .reason
@@ -977,9 +998,11 @@ fn layers(
     }
     let explicit = match policy {
         Some(policy) => policy.explicit.map(|input| {
-            parse_layer(&input.path, &input.bytes).map(|layer| (input.path.clone(), layer))
+            parse_layer(&input.path, &input.bytes, false).map(|layer| (input.path.clone(), layer))
         }),
-        None => explicit_path(options).map(|path| read_layer(&path).map(|layer| (path, layer))),
+        None => {
+            explicit_path(options).map(|path| read_layer(&path, false).map(|layer| (path, layer)))
+        }
     };
     if let Some(explicit) = explicit {
         let (path, layer) = explicit?;
@@ -1012,6 +1035,8 @@ fn layers(
     } else {
         start
     };
+    let recover_project_fields =
+        options.profile == super::Profile::SkylosPhase03 && policy.is_none();
     let mut result = Vec::new();
     for (depth, directory) in start.ancestors().enumerate() {
         if depth >= MAX_CONFIG_LAYERS {
@@ -1032,7 +1057,7 @@ fn layers(
             if !file.try_exists().map_err(ConfigError::new)? {
                 continue;
             }
-            if let Some((layer, digest)) = read_layer(&file)? {
+            if let Some((layer, digest)) = read_layer(&file, recover_project_fields)? {
                 stop |= layer.root;
                 let file = policy.map_or(file.clone(), |policy| {
                     policy.head_root.join(
@@ -1052,8 +1077,11 @@ fn layers(
     Ok(result)
 }
 
-fn read_layer(file: &Path) -> Result<Option<(Layer, blake3::Hash)>, ConfigError> {
-    parse_layer(file, &read_layer_bytes(file)?)
+fn read_layer(
+    file: &Path,
+    recover_project_fields: bool,
+) -> Result<Option<(Layer, blake3::Hash)>, ConfigError> {
+    parse_layer(file, &read_layer_bytes(file)?, recover_project_fields)
 }
 
 fn read_layer_bytes(file: &Path) -> Result<Vec<u8>, ConfigError> {
@@ -1081,7 +1109,11 @@ fn read_layer_bytes(file: &Path) -> Result<Vec<u8>, ConfigError> {
     Ok(bytes)
 }
 
-fn parse_layer(file: &Path, bytes: &[u8]) -> Result<Option<(Layer, blake3::Hash)>, ConfigError> {
+fn parse_layer(
+    file: &Path,
+    bytes: &[u8],
+    recover_project_fields: bool,
+) -> Result<Option<(Layer, blake3::Hash)>, ConfigError> {
     let failure =
         |error: &dyn std::fmt::Display| ConfigError::new(format!("{}: {error}", file.display()));
     let text = std::str::from_utf8(bytes).map_err(|error| failure(&error))?;
@@ -1092,20 +1124,145 @@ fn parse_layer(file: &Path, bytes: &[u8]) -> Result<Option<(Layer, blake3::Hash)
     } else if project {
         return Ok(None);
     }
-    let layer: Layer = table.try_into().map_err(|error| failure(&error))?;
+    let mut warnings = Vec::new();
+    // Discovered pyproject settings may come from the broader Skylos analyzer.
+    // Dedicated files, explicit configuration and Git policy stay strict.
+    if recover_project_fields
+        && project
+        && let Some(config) = table.as_table_mut()
+    {
+        for key in ["complexity", "max_args"] {
+            if config.remove(key).is_some() {
+                warnings.push(format!(
+                    "{}: ignored tool.skylos.{key}, a quality threshold outside the dead-code profile",
+                    file.display()
+                ));
+            }
+        }
+        if config.get("ignore").is_some_and(|value| !value.is_array()) {
+            config.insert("ignore".into(), toml::Value::Array(Vec::new()));
+            warnings.push(format!(
+                "{}: ignored malformed tool.skylos.ignore, expected an array of rule IDs",
+                file.display()
+            ));
+        }
+    }
+    let mut layer: Layer = table.try_into().map_err(|error| failure(&error))?;
     if layer.nudges == Some(true) || layer.check_circular == Some(true) {
         return Err(ConfigError::new(format!(
             "{} enables analysis outside the Skylos dead-code profile",
             file.display()
         )));
     }
+    layer.warnings = warnings;
     Ok(Some((layer, blake3::hash(bytes))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::phase02::Category;
+    use crate::phase02::{Category, Profile};
+
+    #[test]
+    fn discovered_phase03_project_recovers_legacy_config_fields_independently() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(
+            root.join(".skylos.toml"),
+            "root = true\nignore = ['SKY-U002']\n[gate]\nmax_dead_code = 0\n",
+        )
+        .unwrap();
+        let package = root.join("package");
+        fs::create_dir(&package).unwrap();
+        let path = package.join("pyproject.toml");
+        let legacy = "complexity = 'boom'\nmax_args = false\nexclude = ['vendor']\n";
+        fs::write(&path, format!("[tool.skylos]\n{legacy}ignore = 1\n")).unwrap();
+        let options = Options {
+            profile: Profile::SkylosPhase03,
+            ..Options::default()
+        };
+
+        let recovered = load(&package, &options).unwrap();
+        assert!(!recovered.ignores_rule("SKY-U002"));
+        assert!(!recovered.ignores_rule("SKY-U001"));
+        assert_eq!(recovered.gate.max_dead_code, Some(0));
+        assert_eq!(
+            recovered.selection.exclusion("vendor"),
+            Some("configured_exclusion")
+        );
+        assert_eq!(recovered.sources.len(), 2);
+        assert_eq!(recovered.warnings.len(), 3);
+        for key in ["complexity", "max_args", "ignore"] {
+            assert!(recovered.warnings.iter().any(|message| {
+                message.contains("pyproject.toml")
+                    && message.contains(&format!("tool.skylos.{key}"))
+            }));
+        }
+        assert!(recovered.unchanged(&package, &options, None));
+        fs::write(&path, format!("[tool.skylos]\n{legacy}ignore = 2\n")).unwrap();
+        assert!(!recovered.unchanged(&package, &options, None));
+
+        fs::write(
+            &path,
+            format!("[tool.skylos]\n{legacy}ignore = ['SKY-U001']\n"),
+        )
+        .unwrap();
+        let explicit_ignore = load(&package, &options).unwrap();
+        assert!(explicit_ignore.ignores_rule("SKY-U001"));
+        assert!(!explicit_ignore.ignores_rule("SKY-U002"));
+        assert_eq!(explicit_ignore.warnings.len(), 2);
+    }
+
+    #[test]
+    fn phase03_project_recovery_does_not_drop_other_policy_errors() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let path = root.join("pyproject.toml");
+        fs::write(&path, "[tool.skylos]\nroot = true\nignore = 1\n").unwrap();
+        let phase03 = Options {
+            profile: Profile::SkylosPhase03,
+            ..Options::default()
+        };
+        assert!(load(root, &Options::default()).is_err());
+        assert!(
+            load(
+                root,
+                &Options {
+                    config_file: Some(path.clone()),
+                    ..phase03.clone()
+                }
+            )
+            .is_err()
+        );
+        let resolved_root = root.canonicalize().unwrap();
+        let policy = Policy {
+            scan_root: &resolved_root,
+            head_root: &resolved_root,
+            base_root: &resolved_root,
+            date: OffsetDateTime::now_utc().date(),
+            explicit: None,
+        };
+        let error = load_for_scan(root, &phase03, Some(&policy))
+            .err()
+            .expect("malformed Git policy should fail");
+        assert!(error.to_string().contains("ignore"), "{error}");
+
+        for invalid in [
+            "ignroe = ['SKY-U001']",
+            "exclude = 1",
+            "[tool.skylos.gate]\nstrict = 'true'",
+            "[tool.skylos.dead_code]\nentrypoints = 'not a selector list'",
+        ] {
+            fs::write(
+                &path,
+                format!("[tool.skylos]\nroot = true\nignore = 1\ncomplexity = 'boom'\n{invalid}\n"),
+            )
+            .unwrap();
+            assert!(load(root, &phase03).is_err(), "{invalid}");
+        }
+        fs::write(root.join(".skylos.toml"), "root = true\nignore = 1\n").unwrap();
+        assert!(load(root, &phase03).is_err());
+    }
 
     #[test]
     fn path_selection_honors_default_and_forced_includes() {
@@ -1172,6 +1329,7 @@ expires = "not a date"
             method_owner: None,
             declaration_whitelist: None,
             confidence: 90,
+            deprecated_api: false,
             rule_id: "SKY-U001",
             reason: "no_call_path_from_root",
         };

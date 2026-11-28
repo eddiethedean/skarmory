@@ -207,7 +207,7 @@ struct RawSource {
 impl Scan {
     fn read(root: &Path, options: &Options) -> Result<Self, ConfigError> {
         let mut inputs = Inputs::default();
-        let mut report = scan_selected(root, options, None, None, Some(&mut inputs))?;
+        let mut report = scan_selected(root, options, None, None, Some(&mut inputs), false)?;
         report.group_unused_class_methods();
         Ok(Self { report, inputs })
     }
@@ -625,7 +625,8 @@ fn compare_rescan(
     };
     if before.inputs.policy != after.inputs.policy {
         return incomplete(
-            "configuration or other analysis inputs changed during cleanup validation".into(),
+            "configuration changed or another analysis input changed during cleanup validation"
+                .into(),
             false,
         );
     }

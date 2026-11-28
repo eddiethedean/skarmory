@@ -10,6 +10,7 @@ import sys
 from unittest.mock import patch
 
 from check_phase03_framework import SDK_SCAN, check_checkout, environment
+from phase03_runtime_corpus import CONTROLS, evaluate_runtime_control
 
 
 MANIFEST = "corpus/manifest.json"
@@ -124,8 +125,46 @@ def score_corpus(corpus_ci, manifest, selected, scan=None):
         return corpus_ci.run_manifest(manifest, selected_cases=selected)
 
 
-def run(upstream, sdk_python, selected, backend):
-    check_checkout(upstream, "corpus")
+def check_runtime_corpus(corpus_ci, manifest, selected, scan):
+    selected = set(selected or CONTROLS)
+    if unexpected := selected - CONTROLS.keys():
+        raise ValueError(f"unknown runtime corpus controls: {', '.join(sorted(unexpected))}")
+    results = []
+    for case_id in sorted(selected):
+        reports = []
+
+        def capture(path, options):
+            root = Path(path).resolve()
+            paths = sorted(
+                file.relative_to(root).as_posix() for file in root.rglob("*.py")
+            ) if root.is_dir() else [root.name]
+            report = scan(path, options)
+            reports.append((report, paths))
+            return report
+
+        # The frozen scorer stages the original fixture. The runtime
+        # expectations examine the raw scan independently of its verdict.
+        original = score_corpus(corpus_ci, manifest, {case_id}, capture)
+        if len(reports) != 1 or [row["id"] for row in original["cases"]] != [case_id]:
+            raise ValueError(f"{case_id}: expected exactly one installed SDK scan")
+        (report, paths), = reports
+        failures = evaluate_runtime_control(report, paths, CONTROLS[case_id])
+        results.append({
+            "id": case_id,
+            "status": "failed" if failures else "passed",
+            "coverage": report["coverage"],
+            "failures": failures,
+        })
+    return {
+        "suite": "reviewed-runtime-controls",
+        "case_count": len(results),
+        "pass_count": sum(case["status"] == "passed" for case in results),
+        "cases": results,
+    }
+
+
+def run(upstream, sdk_python, selected, backend, *, runtime_controls=False):
+    check_checkout(upstream, "corpus", frozen_only=runtime_controls)
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(upstream))
     if backend == "python":
@@ -154,6 +193,11 @@ def run(upstream, sdk_python, selected, backend):
         )
         return json.loads(completed.stdout)
 
+    if runtime_controls:
+        if sdk_python is None:
+            raise ValueError("runtime corpus controls require the installed SDK")
+        return check_runtime_corpus(corpus_ci, manifest, selected, scan)
+
     return score_corpus(
         corpus_ci,
         manifest,
@@ -168,6 +212,10 @@ def main():
     parser.add_argument("--sdk-python", type=Path)
     parser.add_argument("--backend", choices=("python", "skylos_fast"), default="python")
     parser.add_argument("--case", action="append")
+    parser.add_argument(
+        "--runtime-controls", action="store_true",
+        help="check the separate runtime-derived expectations with the installed SDK",
+    )
     args = parser.parse_args()
 
     report = run(
@@ -175,8 +223,11 @@ def main():
         args.sdk_python.absolute() if args.sdk_python else None,
         args.case,
         args.backend,
+        runtime_controls=args.runtime_controls,
     )
     print(json.dumps(report, indent=2))
+    if args.runtime_controls:
+        return int(report["pass_count"] != report["case_count"])
     return int(bool(report["failure_count"] or report["unscored_case_count"]))
 
 

@@ -27,6 +27,8 @@ struct Options {
 struct SkylosOptions {
     phase03: bool,
     #[pyo3(default)]
+    experimental_javascript: bool,
+    #[pyo3(default)]
     enable_quality: bool,
     #[pyo3(default)]
     dependency_search_paths: Vec<PathBuf>,
@@ -50,6 +52,8 @@ struct SkylosOptions {
 #[derive(FromPyObject)]
 #[pyo3(from_item_all)]
 struct WorkflowOptions {
+    #[pyo3(default)]
+    changed_files: Option<Vec<PathBuf>>,
     diff: Option<String>,
     diff_mode: String,
     baseline: Option<PathBuf>,
@@ -92,6 +96,7 @@ impl WorkflowOptions {
             .transpose()
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(workflow::Settings {
+            changed_files: self.changed_files,
             diff: self.diff,
             diff_mode,
             baseline,
@@ -174,6 +179,7 @@ fn scan_skylos(py: Python<'_>, path: PathBuf, options: SkylosOptions) -> PyResul
         } else {
             phase02::Profile::SkylosPhase02
         },
+        experimental_javascript: options.experimental_javascript,
         config_file: options.config_file,
         dependency_search_paths: options.dependency_search_paths,
         excludes: options.exclude_folders,

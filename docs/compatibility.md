@@ -202,6 +202,10 @@ Do not blindly preserve upstream bugs in the native policy. Do not silently
 change the contract of a strict compatibility profile. Keep a documented
 distinction where those goals diverge.
 
+Phase 0.3 receipts can include reviewed runtime controls for a pinned case.
+The release preview reports those controls alongside the original test
+outcomes. Publication requires the original in-scope assertions to pass.
+
 ## Acceptance gates
 
 For each declared surface:

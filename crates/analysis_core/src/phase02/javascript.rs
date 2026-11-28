@@ -411,6 +411,7 @@ pub(super) fn analyze(
                 method_owner: None,
                 declaration_whitelist: None,
                 confidence: if has_importers { 65 } else { 80 },
+                deprecated_api: false,
                 rule_id: RULE,
                 reason: if has_importers {
                     DEAD_IMPORTERS

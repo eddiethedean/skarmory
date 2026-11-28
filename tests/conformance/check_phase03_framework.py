@@ -12,7 +12,8 @@ import tomllib
 from phase03_framework import framework_report, patch_framework_analysis
 
 
-BASELINE = Path(__file__).with_name("baselines") / "skylos-5.7.0.toml"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from phase03_reference import BASELINE, phase03_revisions
 SIGNALS = "test/test_django_signal_liveness.py"
 UNITTEST = "test/test_unittest_discovery_liveness.py"
 WEB = "test/test_web_framework_liveness.py"
@@ -58,15 +59,14 @@ def environment():
     return env
 
 
-def check_checkout(upstream, *fixture_sources):
-    baseline = tomllib.loads(BASELINE.read_text(encoding="utf-8"))["reference"]
+def check_checkout(upstream, *fixture_sources, frozen_only=False):
+    original, selected = phase03_revisions(tomllib.loads(BASELINE.read_text(encoding="utf-8")))
+    allowed = (original,) if frozen_only else (original, selected)
     revision = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=upstream, text=True
     ).strip()
-    if revision != baseline["git_revision"]:
-        raise ValueError(
-            f"Expected pinned Skylos revision {baseline['git_revision']}, got {revision}"
-        )
+    if revision not in allowed:
+        raise ValueError(f"Expected a pinned Skylos revision from {allowed}, got {revision}")
     modified = subprocess.check_output(
         [
             "git",
@@ -139,7 +139,9 @@ def run(upstream, sdk_python, selected, backend, diagnostics_path=None):
                     "coverage": report["coverage"],
                     "analysis_errors": report["analysis_errors"],
                 })
-                return json.dumps(framework_report(report, source=item.nodeid.split("::", 1)[0]))
+                return json.dumps(framework_report(
+                    report, source=item.nodeid.split("::", 1)[0], project=path,
+                ))
 
             with pytest.MonkeyPatch.context() as patch:
                 patch_framework_analysis(patch, item.module, analyze)

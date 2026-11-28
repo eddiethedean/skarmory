@@ -31,6 +31,17 @@ fn scan_with_excludes(
     excludes: &[&str],
     code: i32,
 ) -> Value {
+    scan_target_with_excludes(project, ".", settings, cache, excludes, code)
+}
+
+fn scan_target_with_excludes(
+    project: &Path,
+    target: &str,
+    settings: Option<&str>,
+    cache: Option<&Path>,
+    excludes: &[&str],
+    code: i32,
+) -> Value {
     fs::write(project.join(".skylos.toml"), "root = true\n").unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_skarmory"));
     command.env_remove("DJANGO_SETTINGS_MODULE");
@@ -49,7 +60,7 @@ fn scan_with_excludes(
         .args([
             "--profile",
             "skylos-0.3",
-            ".",
+            target,
             "--json",
             "--no-grep-verify",
             "--confidence",
@@ -88,6 +99,2135 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
         .filter(|edge| edge["kind"] == kind)
         .map(|edge| edge["certainty"].as_str().unwrap())
         .collect()
+}
+
+#[test]
+fn subclass_discovery_follows_reached_imports_at_the_actual_call() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("base.py"), "class Base: pass\n").unwrap();
+    fs::write(root.join("unrelated.py"), "class OtherBase: pass\n").unwrap();
+    fs::create_dir(root.join("plugins")).unwrap();
+    fs::write(
+        root.join("plugins/selected.py"),
+        "from base import Base\nclass Selected(Base): pass\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plugins/unrelated.py"),
+        "from base import Base\nclass Unrelated(Base): pass\n",
+    )
+    .unwrap();
+
+    for (package, local_before, selected_live) in [
+        ("import plugins.selected\n", false, true),
+        ("if False:\n    import plugins.selected\n", true, false),
+    ] {
+        fs::write(root.join("plugins/__init__.py"), package).unwrap();
+        let prefix = "from base import Base\nimport plugins\nimport unrelated\ndef discover(): return Base.__subclasses__()\n";
+        let local = "class Local(Base): pass\n";
+        let call = "print(discover())\n";
+        let tail = if local_before {
+            format!("{local}{call}")
+        } else {
+            format!("{call}{local}")
+        };
+        fs::write(root.join("app.py"), format!("{prefix}{tail}")).unwrap();
+        let report = scan(root);
+        let unused = findings(&report, "unused_classes");
+        assert_eq!(unused.contains(&"app.Local"), !local_before, "{report}");
+        assert_eq!(
+            unused.contains(&"plugins.selected.Selected"),
+            !selected_live,
+            "{report}"
+        );
+        assert!(unused.contains(&"plugins.unrelated.Unrelated"), "{report}");
+        let imports = findings(&report, "unused_imports");
+        assert_eq!(imports.contains(&"plugins"), !selected_live, "{report}");
+        if selected_live {
+            assert!(!imports.contains(&"plugins.selected"), "{report}");
+        }
+        assert!(imports.contains(&"unrelated"), "{report}");
+        assert_eq!(
+            evidence_certainties(&report, "plugins.selected.Selected", "subclass_discovery"),
+            if selected_live {
+                vec!["possible"]
+            } else {
+                Vec::new()
+            },
+            "{report}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    fs::write(
+        root.join("app.py"),
+        "from base import Base\ndef load(): import plugins.unrelated\nprint(load(), Base.__subclasses__())\n",
+    ).unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call" && issue["path"] == "app.py")
+    );
+}
+
+#[test]
+fn default_logging_reads_the_selected_binding_across_modules() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let logger = "import logging\nlogger = logging.getLogger(__name__)\n";
+    fs::write(root.join("selected.py"), logger).unwrap();
+    fs::write(root.join("unused.py"), logger).unwrap();
+    fs::write(
+        root.join("main.py"),
+        "from selected import logger, logging\ndef emit():\n    logger.info('message')\nemit()\nlogging.info('root message')\n",
+    )
+    .unwrap();
+
+    let complete = scan(root);
+    assert_eq!(findings(&complete, "unused_variables"), ["unused.logger"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, complete);
+    }
+
+    // A setter on the selected provider can change what the final call does.
+    fs::write(
+        root.join("main.py"),
+        "from selected import logger, logging\ndef replacement(_message): return 1\nsetattr(logger, 'info', replacement)\nlogger.info('message')\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert_eq!(incomplete["coverage"]["status"], "incomplete");
+    assert!(findings(&incomplete, "unused_functions").is_empty());
+
+    // Formatting or a foreign initializer can invoke code outside this proof.
+    for source in [
+        "from selected import logger\nlogger.info('%s', 'message')\n",
+        "import external_logging_setup\nfrom selected import logger\nlogger.info('message')\n",
+    ] {
+        fs::write(root.join("main.py"), source).unwrap();
+        assert_eq!(
+            scan_with_exit(root, None, None, 2)["coverage"]["status"],
+            "incomplete"
+        );
+    }
+}
+
+#[test]
+fn plain_class_fields_follow_receivers_and_returned_declarations() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        "class First:\n    flag = True\n\nclass Second:\n    flag = False\n\nclass Spare:\n    flag = False\n\ndef pick(obj):\n    return obj.flag\n\ndef make_schema():\n    class Payload:\n        queries = []\n        _scratch = 1\n    return Payload\n\nprint(pick(First()), pick(Second()), Spare(), make_schema())\n",
+    )
+    .unwrap();
+    fs::write(root.join("neighbors.py"), "queries = None\n").unwrap();
+
+    let complete = scan(root);
+    let unused = findings(&complete, "unused_variables");
+    assert!(unused.contains(&"app.Spare.flag"), "{complete}");
+    assert!(unused.contains(&"neighbors.queries"), "{complete}");
+    assert!(
+        unused.contains(&"app.make_schema.Payload._scratch"),
+        "{complete}"
+    );
+    for retained in [
+        "app.First.flag",
+        "app.Second.flag",
+        "app.make_schema.Payload.queries",
+    ] {
+        assert!(!unused.contains(&retained), "{complete}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, complete);
+    }
+}
+
+#[test]
+fn returned_literal_class_fields_follow_the_consumer() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let factory = concat!(
+        "def make_schema():\n",
+        "    class Payload:\n",
+        "        query = 1\n",
+        "        timeout = 30\n",
+        "    return Payload\n",
+    );
+    let query = "app.make_schema.Payload.query";
+    let timeout = "app.make_schema.Payload.timeout";
+    for (consumer, expected_unused) in [
+        ("make_schema()", &[query, timeout][..]),
+        ("print(make_schema().query)", &[timeout][..]),
+        (
+            "payload = make_schema()\nprint(payload.query)",
+            &[timeout][..],
+        ),
+        (
+            "def read(cls): return cls.query\nprint(read(make_schema()))",
+            &[timeout][..],
+        ),
+        (
+            "payload = make_schema()\nprint(payload)",
+            &[query, timeout][..],
+        ),
+        (
+            "def print(cls): return None\nprint(make_schema())",
+            &[query, timeout][..],
+        ),
+        ("print(make_schema())", &[][..]),
+    ] {
+        fs::write(root.join("app.py"), format!("{factory}{consumer}\n")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            findings(&report, "unused_variables"),
+            expected_unused,
+            "{consumer}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+}
+
+#[test]
+fn report_preserves_requested_exclusion_order_and_selected_sources() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for dir in ["scratch", "prototypes"] {
+        fs::create_dir(root.join(dir)).unwrap();
+        fs::write(root.join(dir).join("sample.py"), "print(1)\n").unwrap();
+    }
+    fs::write(root.join("app.py"), "print(2)\n").unwrap();
+    let full = scan(root);
+    assert_eq!(
+        full["selected_paths"],
+        serde_json::json!(["app.py", "prototypes/sample.py", "scratch/sample.py"])
+    );
+    let scoped = scan_with_excludes(root, None, None, &["scratch", "prototypes"], 0);
+    assert_eq!(scoped["selected_paths"], serde_json::json!(["app.py"]));
+    assert_eq!(
+        scoped["analysis_summary"]["excluded_folders"],
+        serde_json::json!(["scratch", "prototypes"])
+    );
+    assert_eq!(scoped["coverage"]["status"], "complete");
+}
+
+#[test]
+fn typing_cast_reads_quoted_imports_only_for_the_stdlib_provider() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("models.py"), "class Action:\n    pass\n").unwrap();
+    fs::write(root.join("local.py"), "def cast(typ, val): return val\n").unwrap();
+    for (provider, expected) in [("typing", Vec::new()), ("local", vec!["models.Action"])] {
+        fs::write(
+            root.join("app.py"),
+            format!(
+                "from {provider} import cast as as_action\nfrom models import Action\ndef normalize(action):\n    return as_action('Action', action)\nprint(normalize(1))\n"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert_eq!(findings(&report, "unused_imports"), expected, "{report}");
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(cached, report);
+    }
+    for patch in [
+        "setattr(typing, 'cast', None)",
+        "def install(module):\n    setattr(module, 'cast', None)\ninstall(typing)",
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!(
+                "import typing\nfrom models import Action\n{patch}\ntyping.cast('Action', 1)\n"
+            ),
+        )
+        .unwrap();
+        let invalid = scan_with_exit(root, None, None, 2);
+        assert_eq!(invalid["coverage"]["status"], "incomplete", "{invalid}");
+    }
+}
+
+#[test]
+fn stdlib_json_literals_do_not_exercise_a_same_named_method() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("invoice.py"),
+        "class Invoice:\n    def dump(self, payload): return payload\n",
+    )
+    .unwrap();
+    let app = root.join("app.py");
+    let source = "import json as codec\nfrom invoice import Invoice\ninvoice = Invoice()\nserialized = codec.dumps({'amount': 3})\nwith open('report.json', 'w') as stream:\n    codec.dump({}, stream)\n";
+    fs::write(&app, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["invoice.Invoice.dump"]
+    );
+    assert!(evidence_certainties(&report, "invoice.Invoice.dump", "direct_call").is_empty());
+    assert!(!root.join("report.json").exists());
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache").unwrap();
+        assert_eq!(cached, report);
+    }
+    for (original, unsupported) in [
+        ("'amount': 3", "'amount': b'wide'"),
+        ("'report.json', 'w'", "'report.json', 'wb'"),
+        ("codec.dump({}, stream)", "codec.dump({}, invoice)"),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec, 'dump', None)",
+        ),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec, '_default_encoder', None)",
+        ),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec.JSONEncoder, 'encode', None)",
+        ),
+        (
+            "invoice = Invoice()",
+            "invoice = Invoice()\nsetattr(codec.encoder, 'encode_basestring_ascii', None)",
+        ),
+    ] {
+        fs::write(&app, source.replace(original, unsupported)).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(!root.join("report.json").exists());
+    }
+}
+
+#[test]
+fn stdlib_provider_mutations_invalidate_static_call_proofs() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for (source, control, patch, unused) in [
+        (
+            concat!(
+                "import typing\n",
+                "def normal(): return 'normal'\n",
+                "def observed(): return 'replacement'\n",
+                "def replacement(_kind, _value): return observed\n",
+                "# configure\n",
+                "print(typing.cast('object', normal)())\n",
+            ),
+            "",
+            "def patch_cast():\n    return setattr(typing, 'cast', replacement)\npatch_cast()",
+            vec!["app.observed", "app.replacement"],
+        ),
+        (
+            concat!(
+                "import json\n",
+                "def replacement(self, data): return 'replacement'\n",
+                "# configure\n",
+                "print(json.dumps({'value': 2}))\n",
+            ),
+            "method = 'unrelated'\nsetattr(json.JSONEncoder, method, replacement)",
+            "method = 'encode'\nsetattr(json.JSONEncoder, method, replacement)",
+            vec!["app.replacement"],
+        ),
+    ] {
+        let app = root.join("app.py");
+        fs::write(&app, source.replace("# configure", control)).unwrap();
+        let original = scan(root);
+        assert_eq!(
+            findings(&original, "unused_functions"),
+            unused,
+            "{original}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+
+        fs::write(&app, source.replace("# configure", patch)).unwrap();
+        assert_unresolved_provider_mutation(root, cache.path(), &unused, "unresolved_call");
+    }
+}
+
+#[test]
+fn deprecation_decorator_requires_a_plain_function() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let import = "from typing_extensions import deprecated as retire\n";
+    fs::write(
+        &app,
+        format!("{import}@retire('old')\ndef previous(): return 1\n"),
+    )
+    .unwrap();
+    let report = scan(root);
+    let functions = report["unused_functions"].as_array().unwrap();
+    assert_eq!(functions.len(), 1, "{report}");
+    assert_eq!(functions[0]["full_name"], "app.previous");
+    assert_eq!(functions[0]["confidence"], 40);
+    assert_eq!(
+        functions[0]["confidence_factors"],
+        serde_json::json!(["deprecated_api"])
+    );
+
+    for decorators in [
+        "    @retire('old')\n    @classmethod\n",
+        "    @classmethod\n    @retire('old')\n",
+    ] {
+        fs::write(
+            &app,
+            format!("{import}class Provider:\n{decorators}    def previous(cls): return 1\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_decorator"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn deprecation_provider_mutations_require_coverage_diagnostics() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let app = root.join("app.py");
+    let settings = root.join("settings.py");
+    let warning_source = concat!(
+        "def old_api():\n",
+        "    warnings.warn('old', FutureWarning)\n",
+        "old_api()\n",
+        "def unused_neighbor(): return 0\n",
+    );
+    let warning_setup = concat!(
+        "def configure(provider):\n",
+        "    def log_warning(message, category, filename, lineno, file=None, line=None):\n",
+        "        print('warning hook')\n",
+        "    setattr(provider, 'showwarning', log_warning)\n",
+    );
+    let computed_warning_setup = warning_setup.replace(
+        "    setattr(provider, 'showwarning',",
+        "    member = 'showwarning'\n    setattr(provider, member,",
+    );
+    for (module, source, setup, unused, called, diagnostic) in [
+        (
+            "warnings",
+            warning_source,
+            warning_setup,
+            vec!["app.unused_neighbor"],
+            "settings.configure.log_warning",
+            "unresolved_call",
+        ),
+        (
+            "warnings",
+            warning_source,
+            computed_warning_setup.as_str(),
+            vec!["app.unused_neighbor"],
+            "settings.configure.log_warning",
+            "unresolved_call",
+        ),
+        (
+            "typing_extensions",
+            concat!(
+                "def used(): print('decorated callback')\n",
+                "@typing_extensions.deprecated('old')\n",
+                "def old_api(): used()\n",
+            ),
+            concat!(
+                "def configure(provider):\n",
+                "    def run_immediately(message):\n",
+                "        def decorate(function):\n",
+                "            function()\n",
+                "            return function\n",
+                "        return decorate\n",
+                "    setattr(provider, 'deprecated', run_immediately)\n",
+            ),
+            vec!["app.old_api", "app.used"],
+            "app.used",
+            "unresolved_decorator",
+        ),
+    ] {
+        fs::write(&app, format!("import {module}\n{source}")).unwrap();
+        let original = scan(root);
+        assert_eq!(
+            findings(&original, "unused_functions"),
+            unused,
+            "{original}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+
+        fs::write(&settings, setup).unwrap();
+        fs::write(
+            &app,
+            format!(
+                "import {module}\nfrom settings import configure\nconfigure({module})\n{source}"
+            ),
+        )
+        .unwrap();
+        assert_unresolved_provider_mutation(root, cache.path(), &[called], diagnostic);
+        fs::remove_file(&settings).unwrap();
+    }
+
+    let unrelated = computed_warning_setup
+        .replace("'showwarning'", "'unrelated'")
+        .replace("setattr(provider,", "setattr(warnings,");
+    fs::write(&settings, format!("import warnings\n{unrelated}")).unwrap();
+    fs::write(
+        &app,
+        format!(
+            "import warnings\nfrom settings import configure\nconfigure(warnings)\n{warning_source}"
+        ),
+    )
+    .unwrap();
+    let original = scan(root);
+    assert_eq!(
+        findings(&original, "unused_functions"),
+        ["app.unused_neighbor", "settings.configure.log_warning"],
+        "{original}"
+    );
+    assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+    fs::remove_file(&settings).unwrap();
+
+    let parameter_warning_setup = warning_setup
+        .replace("configure(provider)", "configure(provider, member)")
+        .replace("'showwarning'", "member");
+    fs::write(
+        &settings,
+        format!("{parameter_warning_setup}def bootstrap(provider, member):\n    configure(provider, member)\n"),
+    )
+    .unwrap();
+    let warning_imports = "import warnings\nfrom settings import bootstrap, configure\n";
+    for (setup, mutates_warnings) in [
+        (
+            "class Reporter: pass\nconfigure(Reporter(), 'showwarning')",
+            false,
+        ),
+        ("configure(warnings, 'showwarning')", true),
+        (
+            "class Reporter: pass\nbootstrap(Reporter(), 'showwarning')",
+            false,
+        ),
+        ("bootstrap(warnings, 'showwarning')", true),
+        (
+            concat!(
+                "import os\n",
+                "class Reporter: pass\n",
+                "receiver = warnings if os.getenv('SETUP_WARNINGS') else Reporter()\n",
+                "configure(receiver, 'showwarning')",
+            ),
+            true,
+        ),
+    ] {
+        fs::write(&app, format!("{warning_imports}{setup}\n{warning_source}")).unwrap();
+        if mutates_warnings {
+            assert_unresolved_provider_mutation(
+                root,
+                cache.path(),
+                &["settings.configure.log_warning"],
+                "unresolved_call",
+            );
+        } else {
+            let original = scan(root);
+            assert!(
+                findings(&original, "unused_functions").contains(&"app.unused_neighbor"),
+                "{original}"
+            );
+            assert_provider_cache_equivalence(root, cache.path(), &original, 0);
+        }
+    }
+    fs::remove_file(&settings).unwrap();
+
+    fs::write(
+        &app,
+        format!(
+            concat!(
+                "import warnings\n",
+                "def log_warning(message, category, filename, lineno, file=None, line=None):\n",
+                "    print('warning hook')\n",
+                "setattr(warnings, 'showwarning', log_warning)\n",
+                "{}",
+            ),
+            warning_source
+        ),
+    )
+    .unwrap();
+    assert_unresolved_provider_mutation(
+        root,
+        cache.path(),
+        &["app.log_warning"],
+        "unresolved_call",
+    );
+}
+
+fn assert_unresolved_provider_mutation(
+    root: &Path,
+    cache: &Path,
+    called: &[&str],
+    diagnostic: &str,
+) {
+    let patched = scan_with_exit(root, None, None, 2);
+    assert_eq!(patched["coverage"]["status"], "incomplete", "{patched}");
+    let patched_findings = findings(&patched, "unused_functions");
+    for name in called {
+        assert!(!patched_findings.contains(name), "{patched}");
+    }
+    assert!(
+        patched["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == diagnostic && issue["path"] == "app.py"),
+        "{patched}"
+    );
+    assert_provider_cache_equivalence(root, cache, &patched, 2);
+}
+
+#[test]
+fn lazy_table_imports_require_a_safe_path_probe() {
+    let cache = tempfile::tempdir().unwrap();
+    let unguarded = "def __getattr__(name):\n    module, attr = _LAZY[name]\n";
+    let guarded = "def __getattr__(name):\n    try:\n        module, attr = _LAZY[name]\n    except KeyError:\n        raise AttributeError(name) from None\n";
+    for (is_package, wrap, provider_hook, complete) in [
+        (true, unguarded, "", true),
+        (false, unguarded, "", false),
+        (false, guarded, "", true),
+        (
+            true,
+            guarded,
+            "def __getattr__(name):\n    raise RuntimeError(name)\n",
+            false,
+        ),
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let owner = if is_package {
+            fs::create_dir(root.join("facade")).unwrap();
+            "facade/__init__.py"
+        } else {
+            "facade.py"
+        };
+        fs::write(
+            root.join(owner),
+            format!(
+                "_LAZY = {{'Thing': ('provider', 'Thing')}}\n{wrap}    return getattr(__import__(module, fromlist=[attr]), attr)\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("provider.py"),
+            format!("def Thing(): return 1\n{provider_hook}"),
+        )
+        .unwrap();
+        fs::write(root.join("main.py"), "from facade import Thing\nThing()\n").unwrap();
+
+        let exit = if complete { 0 } else { 2 };
+        let report = scan_with_exit(root, None, None, exit);
+        let calls = evidence_certainties(&report, "provider.Thing", "direct_call");
+        if complete {
+            assert_eq!(report["coverage"]["status"], "complete", "{report}");
+            assert_eq!(calls, ["certain"], "{report}");
+        } else {
+            assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+            assert!(calls.is_empty(), "{report}");
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_lazy_export"),
+                "{report}"
+            );
+        }
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), exit);
+            cached.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn lazy_package_hook_replacement_withholds_the_original_target() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    let initializer = root.join("pkg/__init__.py");
+    let source = r#"import importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .worker import Thing
+
+__all__ = ["Thing"]
+
+def __getattr__(name):
+    if name == "Thing":
+        loaded = importlib.import_module("pkg.worker")
+        return getattr(loaded, name)
+    raise AttributeError(name)
+"#;
+    fs::write(&initializer, source).unwrap();
+    fs::write(root.join("pkg/worker.py"), "def Thing(): return 1\n").unwrap();
+    let consumer = root.join("consumer.py");
+    fs::write(&consumer, "from pkg import Thing\nThing()\n").unwrap();
+    let control = scan(root);
+    for kind in ["direct_call", "public_export"] {
+        assert_eq!(
+            evidence_certainties(&control, "pkg.worker.Thing", kind),
+            ["certain"],
+            "{control}"
+        );
+    }
+
+    for write in [
+        "pkg.__getattr__ = replacement",
+        "setattr(pkg, '__getattr__', replacement)",
+        "def install():\n    setattr(pkg, '__getattr__', replacement)\ninstall()",
+    ] {
+        fs::write(
+            &consumer,
+            format!(
+                "import pkg\ndef alternate(): return 2\n\
+                 def replacement(name): return alternate\n{write}\n\
+                 from pkg import Thing\nThing()\n"
+            ),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_lazy_export"),
+            "{report}"
+        );
+        assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+        for kind in ["direct_call", "public_export"] {
+            assert!(
+                evidence_certainties(&report, "pkg.worker.Thing", kind).is_empty(),
+                "{report}"
+            );
+        }
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(&initializer, source.replace("[\"Thing\"]", "[]")).unwrap();
+    fs::write(
+        &consumer,
+        "import pkg\nfrom pkg import Thing\nThing()\n\
+         def replacement(name): return None\nsetattr(pkg, '__getattr__', replacement)\n",
+    )
+    .unwrap();
+    let captured = scan(root);
+    assert_eq!(
+        evidence_certainties(&captured, "pkg.worker.Thing", "direct_call"),
+        ["certain"],
+        "{captured}"
+    );
+}
+
+#[test]
+fn explicit_truth_tests_follow_the_selected_receiver_hook() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"def available(): return True
+def count(): return 1
+def unused_count(): return 1
+
+class Inventory:
+    def __bool__(self): return available()
+    def __len__(self): return unused_count()
+
+class Sized:
+    def __len__(self): return count()
+"#;
+    for operation in [
+        "ready = bool(Inventory())\nprint(ready, bool(Sized()))",
+        "assert Inventory()\nassert Sized()",
+    ] {
+        fs::write(root.join("main.py"), format!("{source}{operation}\n")).unwrap();
+        let serial = scan(root);
+        let unused = findings(&serial, "unused_functions");
+        assert!(unused.contains(&"main.unused_count"), "{serial}");
+        assert!(!unused.contains(&"main.available"), "{serial}");
+        assert!(!unused.contains(&"main.count"), "{serial}");
+        for method in ["main.Inventory.__bool__", "main.Sized.__len__"] {
+            assert_eq!(
+                evidence_certainties(&serial, method, "truth_test"),
+                ["certain"],
+                "{serial}"
+            );
+        }
+        assert!(
+            evidence_certainties(&serial, "main.Inventory.__len__", "truth_test").is_empty(),
+            "{serial}"
+        );
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, serial);
+    }
+}
+
+#[test]
+fn truth_tests_abstain_after_an_unresolved_hook_write() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"def selected_helper(): return True
+def fallback_helper(): return 1
+
+class Job:
+    def __bool__(self): return False
+    def __len__(self): return fallback_helper()
+
+def replacement(self): return selected_helper()
+"#;
+    for (mutation, live_helper) in [
+        (
+            "setattr(Job, \"__bool__\", replacement)",
+            "main.selected_helper",
+        ),
+        ("Job.__bool__ = replacement", "main.selected_helper"),
+        (
+            "def configure():\n    setattr(Job, \"__bool__\", replacement)\nconfigure()",
+            "main.selected_helper",
+        ),
+        ("delattr(Job, \"__bool__\")", "main.fallback_helper"),
+    ] {
+        for operation in ["print(bool(Job()))", "assert Job()"] {
+            fs::write(
+                root.join("main.py"),
+                format!("{source}{mutation}\n{operation}\n"),
+            )
+            .unwrap();
+            let report = scan_with_exit(root, None, None, 2);
+            assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_truth_test"),
+                "{report}"
+            );
+            assert!(
+                evidence_certainties(&report, "main.Job.__bool__", "truth_test").is_empty(),
+                "{report}"
+            );
+            assert!(!findings(&report, "unused_functions").contains(&live_helper));
+
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn literal_format_expansion_reads_the_named_local_binding() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("main.py");
+    let source = r#"def render():
+    shown = 5
+    hidden = 1
+    return "{shown}".format(**locals())
+print(render())
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_variables"),
+        ["main.render.hidden"]
+    );
+
+    fs::write(
+        &path,
+        format!(
+            "class Formatter:\n    def __format__(self, spec): return 'custom'\n{}",
+            source.replace("shown = 5", "shown = Formatter()")
+        ),
+    )
+    .unwrap();
+    let opaque = scan_with_exit(root, None, None, 2);
+    assert!(
+        opaque["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unsupported_construct"),
+        "{opaque}"
+    );
+}
+
+#[test]
+fn literal_format_expansion_refreshes_a_previously_captured_namespace() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(
+        root.join("pkg/__init__.py"),
+        r#"__all__ = ["response_context"]
+
+def handle():
+    return 42
+
+def response_context():
+    context = locals()
+    status = "ready"
+    retry_interval = 30
+    def action():
+        return handle()
+    print("{status}".format(**locals()))
+    return context
+"#,
+    )
+    .unwrap();
+
+    let serial = scan(root);
+    assert!(findings(&serial, "unused_variables").is_empty(), "{serial}");
+    assert!(findings(&serial, "unused_functions").is_empty(), "{serial}");
+    assert_eq!(
+        evidence_certainties(&serial, "pkg.response_context.action", "local_namespace"),
+        ["possible"],
+        "{serial}"
+    );
+
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, serial);
+    }
+}
+
+#[test]
+fn function_groups_preserve_partial_scope_and_explain_complete_findings() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("consumers")).unwrap();
+    fs::write(
+        root.join("worker.py"),
+        r#"def alpha(count):
+    return beta(count - 1) if count else 1
+
+def beta(count):
+    return alpha(count - 1) if count else 2
+
+def entry():
+    return alpha(2)
+
+def unrelated():
+    return 3
+"#,
+    )
+    .unwrap();
+    let full = scan(root);
+    let symbols = full["dead_code_evidence"]["symbols"].as_array().unwrap();
+    for name in ["worker.alpha", "worker.beta"] {
+        let row = symbols
+            .iter()
+            .find(|row| row["qualified_name"] == name)
+            .unwrap_or_else(|| panic!("missing evidence for {name}: {full}"));
+        assert_eq!(
+            row["decision"]["reason_tags"],
+            serde_json::json!(["no_reachable_callers"])
+        );
+        assert_eq!(
+            evidence_certainties(&full, name, "no_reachable_callers"),
+            ["certain"]
+        );
+    }
+    let entry = symbols
+        .iter()
+        .find(|row| row["qualified_name"] == "worker.entry")
+        .unwrap();
+    assert_eq!(
+        entry["decision"]["reason_tags"],
+        serde_json::json!(["no_refs"])
+    );
+    assert_eq!(
+        evidence_certainties(&full, "worker.entry", "no_static_references"),
+        ["certain"]
+    );
+
+    fs::write(
+        root.join("consumers/main.py"),
+        "from worker import entry\nprint(entry())\n",
+    )
+    .unwrap();
+    let live = scan(root);
+    assert_eq!(findings(&live, "unused_functions"), ["worker.unrelated"]);
+    assert!(evidence_certainties(&live, "worker.alpha", "no_reachable_callers").is_empty());
+
+    for (target, excludes) in [("worker.py", &[][..]), (".", &["consumers"][..])] {
+        let result = scan_target_with_excludes(root, target, None, None, excludes, 0);
+        assert_eq!(result["coverage"]["status"], "complete", "{result}");
+        assert_eq!(
+            findings(&result, "unused_functions"),
+            ["worker.entry", "worker.unrelated"]
+        );
+        assert_eq!(
+            findings(&result, "dead_code_abstentions"),
+            ["worker.alpha", "worker.beta"]
+        );
+        let mut cached =
+            scan_target_with_excludes(root, target, None, Some(cache.path()), excludes, 0);
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, result);
+    }
+}
+
+#[test]
+fn from_imports_withhold_no_static_reference_evidence() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/__init__.py"), "").unwrap();
+    let definitions = "def dispatch(): return 1\ndef receive(): return 2\n";
+    fs::write(root.join("worker.py"), definitions).unwrap();
+    fs::write(root.join("pkg/worker.py"), definitions).unwrap();
+    fs::write(
+        root.join("pkg/consumer.py"),
+        "from worker import dispatch\n\ndef dormant():\n    from .worker import receive as alias\n",
+    )
+    .unwrap();
+
+    let report = scan(root);
+    for name in ["worker.dispatch", "pkg.worker.receive"] {
+        assert!(findings(&report, "unused_functions").contains(&name));
+        assert!(
+            evidence_certainties(&report, name, "no_static_references").is_empty(),
+            "{report}"
+        );
+    }
+    for name in ["pkg.worker.dispatch", "worker.receive"] {
+        assert_eq!(
+            evidence_certainties(&report, name, "no_static_references"),
+            ["certain"],
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn unresolved_dormant_references_withhold_no_static_reference_evidence() {
+    for (path, source) in [
+        (
+            "worker.py",
+            "def target(): pass\ndef target(): pass\ndef dormant(): target()\n",
+        ),
+        (
+            "app.py",
+            "import worker\ndef dormant(index):\n    options = [worker]\n    options[index].target()\n",
+        ),
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::write(root.join("worker.py"), "def target(): pass\n").unwrap();
+        fs::write(root.join(path), source).unwrap();
+
+        let report = scan(root);
+        assert!(findings(&report, "unused_functions").contains(&"worker.target"));
+        assert!(
+            evidence_certainties(&report, "worker.target", "no_static_references").is_empty(),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn partial_source_selection_abstains_from_unrooted_method_groups() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::create_dir(root.join("consumers")).unwrap();
+    let consumer = root.join("consumers/main.py");
+    fs::write(
+        &consumer,
+        "from worker import worker\nworker.advance_phase(3)\n",
+    )
+    .unwrap();
+    fs::write(root.join("selected.py"), "flag = True\nprint(flag)\n").unwrap();
+    fs::write(root.join(".skylos.toml"), "root = true\n").unwrap();
+    fs::write(
+        root.join("worker.py"),
+        r#"def reached_from_group(): return 3
+def unrelated(): return 4
+
+class PacketWorker:
+    def advance_phase(self, count):
+        return self.finish_phase(count - 1) if count else reached_from_group()
+
+    def finish_phase(self, count):
+        return self.advance_phase(count - 1) if count else 2
+
+    def idle(self): return 0
+
+class OtherWorker:
+    def advance_phase(self, count): return 0
+
+worker = PacketWorker()
+other = OtherWorker()
+"#,
+    )
+    .unwrap();
+    let method_group = [
+        "worker.PacketWorker.advance_phase",
+        "worker.PacketWorker.finish_phase",
+        "worker.reached_from_group",
+    ];
+    let idle = [
+        "worker.OtherWorker.advance_phase",
+        "worker.PacketWorker.idle",
+        "worker.unrelated",
+    ];
+    for (path, excludes) in [
+        ("worker.py", [].as_slice()),
+        (".", ["consumers"].as_slice()),
+    ] {
+        let serial = scan_target_with_excludes(root, path, None, None, excludes, 0);
+        assert_eq!(serial["coverage"]["status"], "complete", "{serial}");
+        assert_eq!(findings(&serial, "unused_functions"), idle, "{serial}");
+        assert_eq!(
+            findings(&serial, "dead_code_abstentions"),
+            method_group,
+            "{serial}"
+        );
+        for name in method_group {
+            assert!(
+                evidence_certainties(&serial, name, "direct_call").is_empty(),
+                "{serial}"
+            );
+        }
+        for _ in 0..2 {
+            let mut cached =
+                scan_target_with_excludes(root, path, None, Some(cache.path()), excludes, 0);
+            cached.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(cached, serial);
+        }
+    }
+
+    let full = scan(root);
+    assert_eq!(findings(&full, "unused_functions"), idle, "{full}");
+    assert!(
+        findings(&full, "dead_code_abstentions").is_empty(),
+        "{full}"
+    );
+    fs::remove_file(consumer).unwrap();
+    let full = scan(root);
+    let mut expected = [idle, method_group].concat();
+    expected.sort_unstable();
+    assert_eq!(findings(&full, "unused_functions"), expected, "{full}");
+    assert!(
+        findings(&full, "dead_code_abstentions").is_empty(),
+        "{full}"
+    );
+    fs::create_dir(root.join("vendor")).unwrap();
+    fs::write(
+        root.join("vendor/consumer.py"),
+        "from worker import worker\nworker.advance_phase(3)\n",
+    )
+    .unwrap();
+    let redundant = scan_with_excludes(root, None, None, &["vendor"], 0);
+    assert_eq!(
+        findings(&redundant, "unused_functions"),
+        expected,
+        "{redundant}"
+    );
+    assert!(
+        findings(&redundant, "dead_code_abstentions").is_empty(),
+        "{redundant}"
+    );
+}
+
+#[test]
+fn fresh_builtin_property_dispatch_uses_the_getters_result() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = r#"from support import release
+
+class ReturnedResource:
+    def __del__(self): release()
+
+class Payload:
+    def deliver(self): return 1
+
+class Envelope:
+    @property
+    def payload(self): return Payload()
+    def deliver(self): return 0
+
+Envelope().payload.deliver()
+"#;
+    fs::write(root.join("support.py"), "def release(): return None\n").unwrap();
+    let path = root.join("worker.py");
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(unused.contains(&"worker.Envelope.deliver"), "{report}");
+    assert!(!unused.contains(&"worker.Payload.deliver"), "{report}");
+    for name in ["worker.Envelope.payload", "worker.Payload.deliver"] {
+        assert_eq!(
+            evidence_certainties(&report, name, "direct_call"),
+            ["certain"]
+        );
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &path,
+        source.replace("return 1", "return ReturnedResource()"),
+    )
+    .unwrap();
+    let with_finalizer = scan_with_exit(root, None, None, 2);
+    assert!(
+        with_finalizer["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_finalizer" }),
+        "{with_finalizer}"
+    );
+    assert!(!findings(&with_finalizer, "unused_functions").contains(&"support.release"));
+
+    fs::write(
+        &path,
+        source.replace(
+            "Envelope().payload.deliver()",
+            "box = Envelope()\nbox.payload.deliver()",
+        ),
+    )
+    .unwrap();
+    let named = scan_with_exit(root, None, None, 2);
+    assert!(
+        named["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_descriptor" }),
+        "{named}"
+    );
+
+    // A descriptor in the class member table must not be invoked as an
+    // ordinary method when a subclass supplies the receiver.
+    fs::write(
+        &path,
+        r#"class Receiver:
+    def __call__(self): return 1
+
+class Base:
+    @property
+    def delegate(self): return Receiver()
+    def run(self): return self.delegate()
+
+class Child(Base): pass
+Child().run()
+"#,
+    )
+    .unwrap();
+    let inherited = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&inherited, "worker.Base.delegate", "direct_call").is_empty());
+
+    fs::write(
+        &path,
+        source.replace(
+            "class Envelope:",
+            "property = staticmethod\n\nclass Envelope:",
+        ),
+    )
+    .unwrap();
+    let shadowed = scan_with_exit(root, None, None, 2);
+    assert!(evidence_certainties(&shadowed, "worker.Payload.deliver", "direct_call").is_empty());
+}
+
+#[test]
+fn reused_property_leaves_descriptor_access_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    for defaults in [
+        r#"class Defaults:
+    @property
+    def settings(self): return Settings()
+"#,
+        r#"enabled = True
+class Defaults:
+    if enabled:
+        @property
+        def settings(self): return Settings()
+    else:
+        settings = None
+"#,
+    ] {
+        fs::write(
+            root.join("main.py"),
+            format!(
+                r#"class Settings: pass
+{defaults}
+class Service:
+    settings = Defaults.settings
+
+print(Service().settings)
+"#
+            ),
+        )
+        .unwrap();
+
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_descriptor"),
+            "{report}"
+        );
+        assert!(!findings(&report, "unused_classes").contains(&"main.Settings"));
+        assert!(!findings(&report, "unused_functions").contains(&"main.Defaults.settings"));
+
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn exported_factory_retains_only_the_public_methods_of_returned_instances() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("neighbors.py"),
+        "def used(): return 1\ndef unused(): return 2\n",
+    )
+    .unwrap();
+    let source = r#"from neighbors import used, unused
+
+class Base:
+    def run(self):
+        return self._dispatch()
+
+    def _dispatch(self):
+        return unused()
+
+class Service(Base):
+    def _dispatch(self):
+        return used()
+
+    def _unexposed(self):
+        return 0
+
+class Decoy:
+    def run(self):
+        return unused()
+
+def make_service(flag):
+    Decoy()
+    return Service() if flag else None
+
+make_service(False)
+"#;
+    let app = project.path().join("app.py");
+    for (exports, exported) in [
+        ("__all__ = ['make_service']", true),
+        ("__all__ = []", false),
+        ("__all__ = ['make_service']", true),
+    ] {
+        fs::write(&app, format!("{source}\n{exports}\n")).unwrap();
+        let serial = scan(project.path());
+        let unused = findings(&serial, "unused_functions");
+        assert!(unused.contains(&"app.Base._dispatch"), "{serial}");
+        assert!(unused.contains(&"app.Decoy.run"), "{serial}");
+        assert!(unused.contains(&"app.Service._unexposed"), "{serial}");
+        assert!(unused.contains(&"neighbors.unused"), "{serial}");
+        for name in ["app.Base.run", "app.Service._dispatch", "neighbors.used"] {
+            assert_eq!(unused.contains(&name), !exported, "{name}: {serial}");
+        }
+        assert_eq!(
+            evidence_certainties(&serial, "app.Base.run", "public_export"),
+            if exported {
+                vec!["possible"]
+            } else {
+                Vec::new()
+            },
+            "{serial}"
+        );
+        for _ in 0..2 {
+            let mut parallel = scan_with_settings(project.path(), None, Some(cache.path()));
+            parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(parallel, serial);
+        }
+    }
+
+    fs::write(
+        &app,
+        format!("{source}\ndef main():\n    return Service()\n"),
+    )
+    .unwrap();
+    fs::write(
+        project.path().join("pyproject.toml"),
+        "[project]\nname = 'example'\n[project.scripts]\nexample = 'app:main'\n",
+    )
+    .unwrap();
+    let console = scan(project.path());
+    assert_eq!(
+        evidence_certainties(&console, "app.main", "package_entrypoint"),
+        ["certain"],
+        "{console}"
+    );
+    assert!(
+        findings(&console, "unused_functions").contains(&"app.Base.run"),
+        "{console}"
+    );
+}
+
+#[test]
+fn exported_factory_preserves_known_return_arms_when_a_fallback_is_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let app = project.path().join("app.py");
+    fs::write(
+        project.path().join("helpers.py"),
+        "def used(): return 1\ndef unused(): return 2\n",
+    )
+    .unwrap();
+    let source = r#"from helpers import used
+
+class Service:
+    def run(self):
+        return used()
+"#;
+    for (guard, exports, exit, possible) in [
+        ("flag", "__all__ = ['factory']", 2, true),
+        ("flag", "__all__ = []\nfactory(True)", 0, false),
+        ("True", "__all__ = ['factory']", 0, true),
+        ("False", "__all__ = ['factory']", 0, false),
+    ] {
+        fs::write(
+            &app,
+            format!(
+                "{source}\ndef factory(flag, fallback=None):\n    return Service() if {guard} else fallback\n{exports}\n",
+            ),
+        )
+        .unwrap();
+        let serial = scan_with_exit(project.path(), None, None, exit);
+        let coverage = &serial["coverage"];
+        assert_eq!(
+            coverage["status"],
+            if exit == 0 { "complete" } else { "incomplete" },
+            "{serial}"
+        );
+        assert_eq!(
+            coverage["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_export"),
+            exit == 2,
+            "{serial}"
+        );
+        assert_eq!(
+            evidence_certainties(&serial, "app.Service.run", "public_export"),
+            if possible {
+                vec!["possible"]
+            } else {
+                Vec::new()
+            },
+            "{serial}"
+        );
+        let unused = findings(&serial, "unused_functions");
+        let suppressed = findings(&serial, "suppressed");
+        assert_eq!(
+            unused.contains(&"app.Service.run") || suppressed.contains(&"app.Service.run"),
+            !possible,
+            "{serial}"
+        );
+        assert_eq!(unused.contains(&"helpers.used"), !possible, "{serial}");
+        for _ in 0..2 {
+            let mut parallel = scan_with_exit(project.path(), None, Some(cache.path()), exit);
+            parallel.as_object_mut().unwrap().remove("cache").unwrap();
+            assert_eq!(parallel, serial);
+        }
+    }
+}
+
+#[test]
+fn closure_safety_retains_bindings_from_straight_line_finally() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let source = r#"def live(): return 2
+def dormant(): return 3
+def launch():
+    try:
+        offset = 1
+    finally:
+        def callback():
+            return live() + offset
+    return callback()
+launch()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["app.dormant"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(&path, source.replace("offset = 1", "offset = live()")).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+}
+
+#[test]
+fn closure_safety_finally_requires_fresh_local_bindings() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let definitions = r#"def release(): print("released")
+class Resource:
+    def __del__(self): release()
+"#;
+    let close = "    try:\n        resource = None\n    finally:\n        return resource\n";
+    let local = "def close():\n    resource = Resource()\n";
+    for (prefix, body, call) in [
+        (local, close, "close()"),
+        ("def close(resource):\n", close, "close(Resource())"),
+        (
+            "def close():\n    if __debug__:\n        resource = Resource()\n",
+            close,
+            "close()",
+        ),
+        (
+            local,
+            "    try:\n        unbound = 1\n    finally:\n        resource = None\n",
+            "close()",
+        ),
+        (
+            local,
+            "    try:\n        unbound = 1\n    finally:\n        def resource(): return 2\n",
+            "close()",
+        ),
+    ] {
+        fs::write(&path, format!("{definitions}{prefix}{body}{call}\n")).unwrap();
+        let report = scan_with_exit(project.path(), None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete");
+        assert!(findings(&report, "unused_functions").is_empty());
+        let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+}
+
+#[test]
+fn closure_import_rebinding_keeps_possible_finalizers_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("helper.py"), "def release(): print('released')\n").unwrap();
+    for imports in [
+        "    from math import floor as reader",
+        "    if flag:\n        from math import floor as reader\n    else:\n        from math import ceil as reader",
+    ] {
+        let source = format!(
+            r#"from helper import release
+class Resource:
+    def __del__(self): release()
+def choose(flag):
+    reader = Resource()
+{imports}
+    def build():
+        return reader
+    return build()
+print(choose(True))
+"#
+        );
+        fs::write(root.join("worker.py"), source).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding"),
+            "{report}"
+        );
+        assert!(!findings(&report, "unused_functions").contains(&"helper.release"));
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(root, None, Some(cache.path()), 2);
+            assert!(cached.as_object_mut().unwrap().remove("cache").is_some());
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn closure_safety_rebinding_keeps_unresolved_finalizers_visible() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let definitions = r#"def release(): print("released")
+class First:
+    def read(self): return 1
+class Second:
+    def read(self): return 2
+"#;
+    let run = r#"def run():
+    selected = First()
+    def switch():
+        nonlocal selected
+        selected = Second()
+    def read():
+        return selected.read()
+    switch()
+    return read()
+run()
+"#;
+    let ordinary_init = definitions.replace(
+        "class First:\n",
+        "class First:\n    def __init__(self): pass\n",
+    );
+    fs::write(&path, format!("{ordinary_init}{run}")).unwrap();
+    let report = scan(project.path());
+    assert!(findings(&report, "unused_functions").contains(&"app.First.read"));
+    assert!(!findings(&report, "unused_functions").contains(&"app.Second.read"));
+
+    let provider = project.path().join("provider.py");
+    fs::write(&provider, "def replacement(): return 2\n").unwrap();
+    fs::write(
+        &path,
+        r#"from provider import replacement
+def earlier(): return 1
+def run():
+    selected = earlier
+    def switch():
+        nonlocal selected
+        selected = replacement
+    def read():
+        return selected()
+    switch()
+    return read()
+run()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    assert_eq!(findings(&report, "unused_functions"), ["app.earlier"]);
+    fs::remove_file(provider).unwrap();
+
+    for class in ["First", "Second"] {
+        let definitions = definitions.replace(
+            &format!("class {class}:\n"),
+            &format!("class {class}:\n    def __del__(self): release()\n"),
+        );
+        for run in [
+            run.to_owned(),
+            run.replace(
+                "    def switch():",
+                "    replacement = Second()\n    def switch():",
+            )
+            .replace(
+                "        selected = Second()",
+                "        selected = replacement",
+            ),
+        ] {
+            fs::write(&path, format!("{definitions}{run}")).unwrap();
+            let report = scan_with_exit(project.path(), None, None, 2);
+            assert_eq!(report["coverage"]["status"], "incomplete");
+            assert!(findings(&report, "unused_functions").is_empty());
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| {
+                        issue["message"] == "nonlocal assignment has no bounded closure call"
+                    }),
+                "{report}"
+            );
+            let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn closure_safety_comprehension_dispatch_follows_iteration_and_consumption() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let source = r#"def shadowed(): return 1
+def eagerly_called(): return 2
+def called_on_resume(): return 3
+def dormant_yield(): return 4
+def eager():
+    def callback(): return shadowed()
+    return [callback() for callback in [eagerly_called]]
+def generator():
+    def callback(): return shadowed()
+    return (callback() for callback in [called_on_resume])
+def unused_generator():
+    return (callback() for callback in [dormant_yield])
+eager()
+list(generator())
+unused_generator()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    for live in ["app.eagerly_called", "app.called_on_resume"] {
+        assert!(!unused.contains(&live), "{unused:?}");
+    }
+    for dead in ["app.shadowed", "app.dormant_yield"] {
+        assert!(unused.contains(&dead), "{unused:?}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    for consumer in [
+        "set(generator())",
+        "[item for item in generator()]",
+        "list(generator() if __debug__ else unused_generator())",
+        "dict([generator()])",
+        "__all__ = ['generator']",
+        "stream = generator()\n__all__ = ['stream']",
+    ] {
+        fs::write(&path, source.replace("list(generator())", consumer)).unwrap();
+        let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn deferred_generator_results_from_forwarding_lambdas_keep_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let forwarded = r#"def make():
+    return (callback() for callback in [leaf])
+def launch():
+    forward = lambda callback: callback()
+"#;
+    let captured = r#"def launch():
+    def make():
+        return (callback() for callback in [leaf])
+    forward = lambda: make()
+"#;
+    for (source, call) in [(forwarded, "forward(make)"), (captured, "forward()")] {
+        let project_source = format!("def leaf(): return 2\n{source}");
+        fs::write(
+            &path,
+            format!("{project_source}    return {call}\nlist(launch())\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(project.path(), None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
+            "{report}"
+        );
+        assert!(
+            !findings(&report, "unused_functions").contains(&"app.leaf"),
+            "{report}"
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+
+        fs::write(&path, format!("{project_source}    {call}\nlaunch()\n")).unwrap();
+        let report = scan(project.path());
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["app.leaf"],
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn deferred_generator_arguments_to_executors_keep_coverage_incomplete() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let prelude = r#"from concurrent.futures import ThreadPoolExecutor
+
+def leaf(): return 42
+def make(): return (callback() for callback in [leaf])
+def collect(items):
+    print(list(items))
+
+pool = ThreadPoolExecutor()
+"#;
+    for argument in ["make()", "items=make()"] {
+        fs::write(
+            &path,
+            format!("{prelude}pool.submit(collect, {argument})\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(project.path(), None, None, 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| { issue["kind"] == "unresolved_generator_execution" }),
+            "{report}"
+        );
+        assert!(
+            !findings(&report, "unused_functions").contains(&"app.leaf"),
+            "{report}"
+        );
+        assert_eq!(
+            evidence_certainties(&report, "app.collect", "executor_submission"),
+            ["possible"]
+        );
+        for _ in 0..2 {
+            let mut cached = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    fs::write(&path, format!("{prelude}pool.submit(collect, [42])\n")).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.leaf", "app.make"],
+        "{report}"
+    );
+}
+
+#[test]
+fn direct_lambda_calls_resolve_private_captures_and_parameter_shadowing() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let path = project.path().join("app.py");
+    let source = r#"def captured(): return 'captured'
+def passed(): return 'passed'
+def shadowed(): return 'shadowed'
+
+class _Capture:
+    def run(self):
+        callback = lambda: _Capture__step()
+        def __step():
+            return captured()
+        return callback()
+
+class Shadow:
+    def run(self):
+        def __step():
+            return shadowed()
+        callback = lambda __step: _Shadow__step()
+        return callback(passed)
+
+_Capture().run()
+Shadow().run()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(project.path());
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.Shadow.run.__step", "app.shadowed"]
+    );
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(project.path(), None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &path,
+        source.replace("return callback(passed)", "return callback"),
+    )
+    .unwrap();
+    let escaped = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        escaped["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_lambda_execution" }),
+        "{escaped}"
+    );
+
+    let mutated = source.replace(
+        "        return callback()",
+        "        def replace():\n            nonlocal __step\n            __step = passed\n        replace()\n        return callback()",
+    );
+    fs::write(&path, mutated).unwrap();
+    let report = scan_with_exit(project.path(), None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "unresolved_lambda_execution" }),
+        "{report}"
+    );
+}
+
+#[test]
+fn definition_headers_update_a_captured_receiver_before_invocation() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let code = root.join("app.py");
+    let prelude = r#"def stale(): return "old"
+def active(): return "new"
+
+class Earlier:
+    def read(self): return stale()
+
+class Later:
+    def read(self): return active()
+
+def preserve(item): return item
+"#;
+    let lambda = r#"def run():
+    current = Earlier()
+    def get(): return current.read()
+    initialize = lambda default=(current := Later()): default
+    return get(), initialize
+run()
+"#;
+    let function_decorator = r#"def run():
+    current = Earlier()
+    @((current := Later()) and preserve)
+    def get(): return current.read()
+    return get()
+run()
+"#;
+    let class_decorator = r#"def run():
+    current = Earlier()
+    @((current := Later()) and preserve)
+    class Local: pass
+    def get(): return current.read()
+    return get(), Local
+run()
+"#;
+    for source in [lambda, function_decorator, class_decorator] {
+        fs::write(&code, format!("{prelude}\n{source}")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            evidence_certainties(&report, "app.Later.read", "direct_call"),
+            ["certain"]
+        );
+        let unused = findings(&report, "unused_functions");
+        assert!(unused.contains(&"app.Earlier.read"), "{report}");
+        assert!(!unused.contains(&"app.active"), "{report}");
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    let unknown_guard = prelude.replace(
+        "class Later:\n",
+        "class Later:\n    def __bool__(self): return False\n",
+    );
+    fs::write(&code, format!("{unknown_guard}\n{function_decorator}")).unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert!(
+        report["analysis_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_decorator")
+    );
+}
+
+#[test]
+fn private_attribute_lookup_uses_the_lexical_class_and_runtime_key() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let source = r#"def base_helper(): return "base"
+def child_helper(): return "child"
+def earlier_helper(): return "earlier"
+def explicit_helper(): return "explicit"
+
+class Base:
+    def __step(self):
+        return base_helper()
+
+    def run(self):
+        return self.__step()
+
+class Child(Base):
+    def __step(self):
+        return child_helper()
+
+class _Owner:
+    def __step(self):
+        return earlier_helper()
+
+    def _Owner__step(self):
+        return explicit_helper()
+
+Child().run()
+_Owner()._Owner__step()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    for live in ["app.Base.__step", "app.base_helper", "app.explicit_helper"] {
+        assert!(!unused.contains(&live), "{live}: {unused:?}");
+    }
+    for dead in ["app.Child.__step", "app.child_helper", "app.earlier_helper"] {
+        assert!(unused.contains(&dead), "{dead}: {unused:?}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let conditional = source
+        .replace("class _Owner:", "def choose(): return __debug__\n\nclass _Owner:")
+        .replace(
+            "    def _Owner__step(self):\n        return explicit_helper()",
+            "    if choose():\n        def _Owner__step(self):\n            return explicit_helper()",
+        );
+    fs::write(&path, conditional).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"].as_array().unwrap().iter().any(|issue| {
+            issue["kind"] == "ambiguous_binding"
+                && issue["message"] == "a private attribute has conditional declarations under different spellings"
+        }),
+        "{report}"
+    );
+}
+
+#[test]
+fn private_class_alias_captures_the_active_binding_at_assignment() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let cache = tempfile::tempdir().unwrap();
+    let path = root.join("app.py");
+    let source = r#"def original(): return "original"
+def installed(self): return "installed"
+def later(self): return "later"
+
+class Processor:
+    def __step(self):
+        return original()
+    _Processor__step = installed
+    __callback = __step
+    _Processor__step = later
+
+Processor()._Processor__callback()
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    let unused = findings(&report, "unused_functions");
+    assert!(!unused.contains(&"app.installed"), "{unused:?}");
+    assert!(unused.contains(&"app.original"), "{unused:?}");
+    assert!(unused.contains(&"app.later"), "{unused:?}");
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    let conditional = source
+        .replace(
+            "class Processor:",
+            "def choose(): return __debug__\n\nclass Processor:",
+        )
+        .replace(
+            "    _Processor__step = installed",
+            "    if choose():\n        _Processor__step = installed",
+        );
+    fs::write(&path, conditional).unwrap();
+    let report = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| { issue["kind"] == "ambiguous_binding" }),
+        "{report}"
+    );
+    assert!(findings(&report, "unused_functions").is_empty());
+}
+
+#[test]
+fn private_class_alias_uses_module_fallback_before_the_class_binding() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join("app.py"),
+        r#"def _Handler__step(self): return "module"
+def alternate(self): return "outer"
+
+def setup():
+    _Handler__step = alternate
+    class Handler:
+        __callback = __step
+        def __step(self): return "later"
+    return Handler()._Handler__callback()
+
+setup()
+"#,
+    )
+    .unwrap();
+    let report = scan(project.path());
+    let unused = findings(&report, "unused_functions");
+    assert!(!unused.contains(&"app._Handler__step"), "{unused:?}");
+    assert!(unused.contains(&"app.alternate"), "{unused:?}");
 }
 
 #[test]
@@ -1588,6 +3728,125 @@ fn click_command_declarations_and_reference_safe_helpers_have_distinct_dispositi
                 })),
         "{report}"
     );
+}
+
+#[test]
+fn click_command_declarations_do_not_execute_a_short_circuited_callback() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = "from click import command\n@command()\ndef entry(): return helper()\ndef helper(): return 1\ndef unused_neighbor(): return 2\nflag = True\nflag = not flag\nflag and entry()\n";
+    fs::write(root.join("app.py"), source).unwrap();
+    let report = scan(root);
+    assert_eq!(
+        findings(&report, "unused_functions"),
+        ["app.helper", "app.unused_neighbor"],
+        "{report}"
+    );
+    assert_eq!(
+        evidence_certainties(&report, "app.entry", "click_command_declaration"),
+        ["possible"]
+    );
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        root.join("app.py"),
+        source.replace(
+            "from click import command",
+            "def command(): return lambda callback: callback",
+        ),
+    )
+    .unwrap();
+    let shadowed = scan(root);
+    assert!(
+        findings(&shadowed, "unused_functions").contains(&"app.entry"),
+        "{shadowed}"
+    );
+    assert!(evidence_certainties(&shadowed, "app.entry", "click_command_declaration").is_empty());
+
+    fs::write(
+        root.join("app.py"),
+        source
+            .replace(
+                "from click import command",
+                "import click\ndef local_factory(): return lambda callback: callback\nclick.command = local_factory",
+            )
+            .replace("@command()", "@click.command()"),
+    )
+    .unwrap();
+    let rebound = scan(root);
+    assert!(
+        findings(&rebound, "unused_functions").contains(&"app.entry"),
+        "{rebound}"
+    );
+    assert!(evidence_certainties(&rebound, "app.entry", "click_command_declaration").is_empty());
+
+    fs::write(
+        root.join("app.py"),
+        source.replace("flag and entry()", "entry()"),
+    )
+    .unwrap();
+    let invocation = scan_with_exit(root, None, None, 2);
+    assert_eq!(
+        invocation["coverage"]["status"], "incomplete",
+        "{invocation}"
+    );
+    assert!(
+        evidence_certainties(&invocation, "app.entry", "direct_call").is_empty(),
+        "{invocation}"
+    );
+}
+
+#[test]
+fn starlette_plain_text_responses_require_bounded_content() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let path = root.join("app.py");
+    let source = r#"from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse as TextResponse
+
+app = Starlette()
+
+async def homepage(request):
+    return TextResponse(content="home")
+
+app.add_route("/", route=homepage, methods=["GET"])
+
+def status_page(): return "status"
+"#;
+    fs::write(&path, source).unwrap();
+    let report = scan(root);
+    assert_eq!(findings(&report, "unused_functions"), ["app.status_page"]);
+
+    let cache = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    fs::write(
+        &path,
+        source.replace(r#"content="home""#, "content=request"),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, Some(cache.path()), 2);
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call" && issue["line"] == 7)
+    );
+
+    fs::write(&path, source).unwrap();
+    let mut cached = scan_with_settings(root, None, Some(cache.path()));
+    cached.as_object_mut().unwrap().remove("cache");
+    assert_eq!(cached, report);
 }
 
 #[test]
@@ -12536,6 +14795,349 @@ fn assert_provider_cache_equivalence(root: &Path, cache: &Path, report: &Value, 
 }
 
 #[test]
+fn fresh_source_factory_keeps_proven_calls_separate_from_dormant_ones() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("provider.py");
+    let consumer = root.join("app.py");
+    let target = "provider.Producer.collect";
+    let control = "provider.Unrelated.collect";
+    let factory = concat!(
+        "class Producer:\n    def collect(self): return 1\n",
+        "class Unrelated:\n    def collect(self): return 2\n",
+        "decoy = Unrelated()\n",
+        "def make_producer(): return Producer()\n",
+    );
+    fs::write(&provider, factory).unwrap();
+
+    for (body, runs) in [
+        ("return make_producer().collect()", true),
+        ("True and make_producer().collect()", true),
+        ("False and make_producer().collect()", false),
+        ("stop()\n    make_producer().collect()", false),
+        ("return lambda value=make_producer().collect(): value", true),
+        (
+            "for item in [1, 2]:\n        break\n        make_producer().collect()",
+            false,
+        ),
+        (
+            "for item in [1, 2]:\n        continue\n        make_producer().collect()",
+            false,
+        ),
+        (
+            "for item in [1, 2]:\n        break\n        make_producer().collect()\n    return item",
+            false,
+        ),
+        ("finish()\n    make_producer().collect()", true),
+    ] {
+        fs::write(
+            &consumer,
+            format!(
+                "from provider import make_producer\ndef stop(): raise ValueError()\n\n\
+             def finish(): return None\ndef consume():\n    {body}\nconsume()\n"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        let rescued = report["analysis_summary"]["dead_code_liveness"]["rescued"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            rescued
+                .iter()
+                .any(|event| event["name"] == target && event["reason"] == "source_factory_method"),
+            runs,
+            "{report}"
+        );
+        assert_eq!(provider_call(&report, target, "certain"), runs, "{report}");
+        assert!(
+            findings(&report, "unused_functions").contains(&control),
+            "{report}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    fs::write(
+        &provider,
+        factory.replace(
+            "def collect(self): return 1",
+            "def collect(self): return 1\n    def __del__(self): print('finalizer')",
+        ),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(!provider_call(&incomplete, target, "certain"));
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call" && issue["path"] == "app.py")
+    );
+}
+
+#[test]
+fn source_provider_dispatch_resolves_literal_argument_unpacking() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let main = root.join("main.py");
+    let declarations = r#"from helper import live
+
+class Local:
+    def accept(self): return 0
+
+class Remote:
+    def accept(self): return live()
+
+def dispatch(receiver):
+    return receiver.accept()
+
+dispatch(Local())
+"#;
+    fs::write(
+        root.join("helper.py"),
+        "def live(): return 1\ndef dormant(): return 2\n",
+    )
+    .unwrap();
+    for call in [
+        "dispatch(*(Remote(),))",
+        "dispatch(**{'receiver': Remote()})",
+    ] {
+        fs::write(&main, format!("{declarations}{call}\n")).unwrap();
+        let report = scan(root);
+        assert_provider_call(&report, "main.Local.accept", "certain");
+        assert_provider_call(&report, "main.Remote.accept", "certain");
+        assert_provider_call(&report, "helper.live", "certain");
+        assert_eq!(
+            findings(&report, "unused_functions"),
+            ["helper.dormant"],
+            "{report}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    let with_finalizers = format!(
+        "{declarations}\n{}",
+        r#"def release(): print("released")
+
+class FinalizingRemote(Remote):
+    def __del__(self): release()
+
+class InheritedFinalizer(FinalizingRemote):
+    pass
+
+"#
+    );
+    for (prefix, call) in [
+        (
+            declarations,
+            "arguments = (Remote(),)\ndispatch(*arguments)",
+        ),
+        (
+            declarations,
+            "arguments = {'receiver': Remote()}\ndispatch(**arguments)",
+        ),
+        (
+            declarations,
+            "dispatch(receiver=Local(), **{'receiver': Remote()})",
+        ),
+        (declarations, "dispatch(*(Remote(), Local()))"),
+        (with_finalizers.as_str(), "dispatch(*(FinalizingRemote(),))"),
+        (
+            with_finalizers.as_str(),
+            "dispatch(**{'receiver': InheritedFinalizer()})",
+        ),
+    ] {
+        let source = format!("{prefix}{call}\n");
+        let line = source.lines().count();
+        fs::write(&main, source).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["analysis_errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| {
+                    issue["kind"] == "unsupported_construct"
+                        && issue["file"] == "main.py"
+                        && issue["line"] == line
+                }),
+            "{report}"
+        );
+        assert!(
+            !provider_call(&report, "main.Remote.accept", "certain"),
+            "{report}"
+        );
+        assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+        assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+    }
+}
+
+#[test]
+fn source_provider_dispatch_leaves_unpacked_return_finalizers_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("helper.py"), "def release(): print('released')\n").unwrap();
+    for result in ["Resource()", "create_resource()"] {
+        for call in [
+            "dispatch(*(Provider(),))",
+            "dispatch(**{'receiver': Provider()})",
+        ] {
+            fs::write(
+                root.join("main.py"),
+                format!(
+                    "from helper import release\n\
+                     class Resource:\n    def __del__(self): release()\n\
+                     def create_resource(): return Resource()\n\
+                     class Provider:\n    def accept(self): return {result}\n\
+                     def dispatch(receiver): return receiver.accept()\n{call}\n"
+                ),
+            )
+            .unwrap();
+            let report = scan_with_exit(root, None, None, 2);
+            assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_finalizer"),
+                "{report}"
+            );
+            assert_provider_call(&report, "main.Provider.accept", "certain");
+            assert!(!findings(&report, "unused_functions").contains(&"helper.release"));
+            assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+        }
+    }
+}
+
+#[test]
+fn source_provider_dispatch_does_not_enter_wrapper_after_raising_unpacked_constructor() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let main = root.join("main.py");
+    let declarations = r#"class Raising:
+    def __init__(self): raise RuntimeError
+    def accept(self): return 1
+
+def dispatch(receiver):
+    return receiver.accept()
+
+"#;
+    for call in [
+        "dispatch(*(Raising(),))",
+        "dispatch(**{'receiver': Raising()})",
+    ] {
+        fs::write(&main, format!("{declarations}{call}\n")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            !provider_call(&report, "main.dispatch", "certain"),
+            "{report}"
+        );
+        assert!(
+            !provider_call(&report, "main.Raising.accept", "certain"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn source_provider_dispatch_follows_a_fresh_instance_assigned_to_a_name() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("main.py");
+    let declarations = r#"class Provider:
+    def execute(self): return 1
+
+class Spare:
+    def execute(self): return 2
+
+def run(provider):
+    return provider.execute()
+
+provider = Provider()
+spare = Spare()
+"#;
+    fs::write(root.join("helper.py"), "def unused(): pass\n").unwrap();
+    for call in ["run(provider)", "run(provider=provider)"] {
+        fs::write(&source, format!("{declarations}{call}\n")).unwrap();
+        let report = scan(root);
+        assert_provider_call(&report, "main.Provider.execute", "certain");
+        assert!(unreachable_functions(&report).contains(&"main.Spare.execute"));
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    fs::write(
+        &source,
+        format!("{declarations}provider.execute = spare.execute\nrun(provider)\n"),
+    )
+    .unwrap();
+    let report = scan_with_exit(root, None, None, 2);
+    assert_provider_dispatch_unresolved(&report, "main.py", 8);
+    assert!(!provider_call(&report, "main.Provider.execute", "certain"));
+    assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+}
+
+#[test]
+fn source_provider_dispatch_leaves_named_instance_finalizers_unresolved() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let source = root.join("main.py");
+    let wrapper = r#"def release(): print("released")
+
+def run(provider):
+    return provider.execute()
+
+"#;
+    fs::write(root.join("helper.py"), "def unused(): pass\n").unwrap();
+    for fixture in [
+        r#"class Provider:
+    def execute(self): return 1
+    def __del__(self): release()
+
+provider = Provider()
+run(provider)
+provider = None
+"#,
+        r#"class Resource:
+    def __del__(self): release()
+
+class Provider(Resource):
+    def execute(self): return 1
+
+provider = Provider()
+run(provider)
+provider = None
+"#,
+        r#"class Provider:
+    def execute(self): return 1
+
+class Resource:
+    def __del__(self): release()
+
+provider = Provider()
+spare = Resource()
+run(provider)
+spare = None
+"#,
+    ] {
+        fs::write(&source, format!("{wrapper}{fixture}")).unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert_provider_dispatch_unresolved(&report, "main.py", 4);
+        assert!(findings(&report, "unused_functions").is_empty(), "{report}");
+        assert_provider_cache_equivalence(root, cache.path(), &report, 2);
+    }
+}
+
+#[test]
 fn source_provider_dispatch_does_not_invoke_a_factory_class_before_definition() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -12594,77 +15196,6 @@ with patch.object(Provider, 'execute', replacement):
     assert_provider_dispatch_unresolved(&report, "main.py", 7);
     assert!(!provider_call(&report, "main.Provider.execute", "certain"));
     assert!(!provider_call(&report, "main.Provider.execute", "possible"));
-}
-
-#[test]
-fn click_command_declarations_do_not_execute_a_short_circuited_callback() {
-    let project = tempfile::tempdir().unwrap();
-    let root = project.path();
-    let source = "from click import command\n@command()\ndef entry(): return helper()\ndef helper(): return 1\ndef unused_neighbor(): return 2\nflag = True\nflag = not flag\nflag and entry()\n";
-    fs::write(root.join("app.py"), source).unwrap();
-    let report = scan(root);
-    assert_eq!(
-        findings(&report, "unused_functions"),
-        ["app.helper", "app.unused_neighbor"],
-        "{report}"
-    );
-    assert_eq!(
-        evidence_certainties(&report, "app.entry", "click_command_declaration"),
-        ["possible"]
-    );
-    let cache = tempfile::tempdir().unwrap();
-    for _ in 0..2 {
-        let mut cached = scan_with_settings(root, None, Some(cache.path()));
-        cached.as_object_mut().unwrap().remove("cache");
-        assert_eq!(cached, report);
-    }
-
-    fs::write(
-        root.join("app.py"),
-        source.replace(
-            "from click import command",
-            "def command(): return lambda callback: callback",
-        ),
-    )
-    .unwrap();
-    let shadowed = scan(root);
-    assert!(
-        findings(&shadowed, "unused_functions").contains(&"app.entry"),
-        "{shadowed}"
-    );
-    assert!(evidence_certainties(&shadowed, "app.entry", "click_command_declaration").is_empty());
-
-    fs::write(
-        root.join("app.py"),
-        source
-            .replace(
-                "from click import command",
-                "import click\ndef local_factory(): return lambda callback: callback\nclick.command = local_factory",
-            )
-            .replace("@command()", "@click.command()"),
-    )
-    .unwrap();
-    let rebound = scan(root);
-    assert!(
-        findings(&rebound, "unused_functions").contains(&"app.entry"),
-        "{rebound}"
-    );
-    assert!(evidence_certainties(&rebound, "app.entry", "click_command_declaration").is_empty());
-
-    fs::write(
-        root.join("app.py"),
-        source.replace("flag and entry()", "entry()"),
-    )
-    .unwrap();
-    let invocation = scan_with_exit(root, None, None, 2);
-    assert_eq!(
-        invocation["coverage"]["status"], "incomplete",
-        "{invocation}"
-    );
-    assert!(
-        evidence_certainties(&invocation, "app.entry", "direct_call").is_empty(),
-        "{invocation}"
-    );
 }
 
 #[test]
@@ -13127,4 +15658,74 @@ fn django_settings_cannot_read_aliases_from_a_failed_initializer() {
         assert!(evidence_certainties(&report, target, "django_setting").is_empty());
     }
     assert!(evidence_certainties(&report, "wsgi.application", "django_application").is_empty());
+}
+
+#[test]
+fn module_binding_timing_uses_a_definite_overwrite_before_the_reader_runs() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("source.py"), "def original(x): return x\n").unwrap();
+    fs::write(root.join("main.py"), "from mod import use\nuse()\n").unwrap();
+    for prefix in [
+        "from source import original as work\ndef reader(): return work(1)\n",
+        "def reader(): return work(1)\nfrom source import original as work\n",
+    ] {
+        fs::write(
+            root.join("mod.py"),
+            format!("{prefix}def work(x): return x * 2\ndef use(): return reader()\ndef unused(): pass\n"),
+        )
+        .unwrap();
+        let report = scan(root);
+        assert!(
+            report["unused_imports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["file"] == "mod.py" && row["full_name"] == "source.original" }),
+            "{report}"
+        );
+        let functions = findings(&report, "unused_functions");
+        assert!(functions.contains(&"mod.unused"), "{report}");
+        assert!(functions.contains(&"source.original"), "{report}");
+        assert!(!functions.contains(&"mod.work"), "{report}");
+        for _ in 0..2 {
+            let mut cached = scan_with_settings(root, None, Some(cache.path()));
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn module_binding_timing_preserves_possible_early_reads() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(root.join("source.py"), "def original(x): return x\n").unwrap();
+    fs::write(root.join("main.py"), "from mod import use\nuse()\n").unwrap();
+    for (before, after, reader_line) in [
+        ("", "reader()\n", 2),
+        ("", "invoke(reader)\n", 2),
+        (
+            "class Trigger:\n    def __del__(self):\n        print(reader())\ntrigger = Trigger()\n",
+            "trigger = None\n",
+            6,
+        ),
+    ] {
+        fs::write(
+            root.join("mod.py"),
+            format!("from source import original as work\n{before}def reader(): return work(1)\n{after}def work(x): return x * 2\ndef use(): return reader()\n"),
+        )
+        .unwrap();
+        let report = scan_with_exit(root, None, None, 2);
+        assert_eq!(report["coverage"]["status"], "incomplete", "{report}");
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "ambiguous_binding" && issue["line"] == reader_line),
+            "{report}"
+        );
+    }
 }

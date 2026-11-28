@@ -104,6 +104,21 @@ impl<'a> Python<'a> {
                     self.module(statement.at.line, package, "python_import");
                     bindings = self.suite(fallback, &bindings);
                 }
+                Stmt::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } => {
+                    let success = self.suite(std::slice::from_ref(import.as_ref()), &bindings);
+                    if *raises_import_error {
+                        bindings = self.suite(fallback, &merge_bindings(success, bindings));
+                    } else {
+                        let success = self.suite(otherwise, &success);
+                        let fallback = self.suite(fallback, &bindings);
+                        bindings = merge_bindings(success, fallback);
+                    }
+                }
                 Stmt::Assign {
                     names,
                     value,
@@ -126,7 +141,8 @@ impl<'a> Python<'a> {
                         bindings.insert(&name.text, origin.clone());
                     }
                 }
-                Stmt::AssignUnpack { names, value } => {
+                Stmt::AssignUnpack { names, value }
+                | Stmt::GuardedLazyUnpack { names, value, .. } => {
                     self.expression(value, &bindings);
                     if let Expr::Sequence { items, .. } = &value.kind
                         && items.len() == names.len()
@@ -170,6 +186,15 @@ impl<'a> Python<'a> {
                 Stmt::SetGlobalName { value, .. } => {
                     self.expression(value, &bindings);
                 }
+                Stmt::SetNonlocalName { value, .. } => {
+                    self.expression(value, &bindings);
+                    self.usage.reasons.push(Reason::new(
+                        "unresolved_dependency_configuration",
+                        self.path,
+                        Some(statement.at.line),
+                        "a local callback can rebind a dependency configuration alias",
+                    ));
+                }
                 Stmt::DjangoSettingsGlobalCall(value) => {
                     self.expression(value, &bindings);
                     self.usage.reasons.push(Reason::new(
@@ -194,6 +219,12 @@ impl<'a> Python<'a> {
                         .chain(&definition.bases)
                     {
                         self.expression(expression, &bindings);
+                    }
+                    if let (Some(target), [value]) =
+                        (&definition.default_binding, definition.defaults.as_slice())
+                    {
+                        let origin = qualified(value, &bindings);
+                        bindings.insert(&target.text, origin);
                     }
                     if is_test_file(self.path)
                         && definition.name.text.starts_with("test_")
@@ -493,6 +524,12 @@ impl<'a> Python<'a> {
                     "deferred callable dependency bindings are outside the bounded model",
                 ));
             }
+            Expr::DeferredCallbackLambda => self.usage.reasons.push(Reason::new(
+                "unresolved_dependency_configuration",
+                self.path,
+                Some(expression.at.line),
+                "deferred callable dependency bindings are outside the bounded model",
+            )),
             Expr::Sequence { items: values, .. }
             | Expr::Dictionary(values)
             | Expr::FormattedString(values)
@@ -661,6 +698,9 @@ fn shadow<'a>(body: &'a [Statement], bindings: &mut Bindings<'a>) {
             }
             Stmt::Define(definition) => {
                 bindings.insert(&definition.name.text, None);
+                if let Some(target) = &definition.default_binding {
+                    bindings.insert(&target.text, None);
+                }
             }
             Stmt::Import(import) => {
                 bindings.insert(&import.local.text, None);
