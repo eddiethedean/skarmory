@@ -14742,7 +14742,6 @@ fn fresh_source_factory_keeps_proven_calls_separate_from_dormant_ones() {
         ("True and make_producer().collect()", true),
         ("False and make_producer().collect()", false),
         ("stop()\n    make_producer().collect()", false),
-        ("finish()\n    make_producer().collect()", true),
         ("return lambda value=make_producer().collect(): value", true),
         (
             "for item in [1, 2]:\n        break\n        make_producer().collect()",
@@ -14756,6 +14755,7 @@ fn fresh_source_factory_keeps_proven_calls_separate_from_dormant_ones() {
             "for item in [1, 2]:\n        break\n        make_producer().collect()\n    return item",
             false,
         ),
+        ("finish()\n    make_producer().collect()", true),
     ] {
         fs::write(
             &consumer,
