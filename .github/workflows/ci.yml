@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust checks
+    name: Rust lint and tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,8 +29,18 @@ jobs:
           python-version: "3.11"
       - name: Test the SDK without a native extension
         env:
-          PYTHONPATH: python
-        run: python -m unittest discover -s tests/python -k source_only -v
+          PYTHONPATH: python:tests/python
+        run: |
+          python - <<'PY'
+          import unittest
+
+          suite = unittest.defaultTestLoader.loadTestsFromName(
+              "test_sdk.SdkTests.test_source_only_scan_raises"
+          )
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.testsRun != 1 or result.skipped:
+              raise SystemExit("The source-only SDK test must execute and pass")
+          PY
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # rust-toolchain action
         with:
           toolchain: "1.98.1"
@@ -40,6 +50,96 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+
+  preview-scope:
+    name: Check compatibility preview scope
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      required: ${{ steps.scope.outputs.required }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Check changed paths
+        id: scope
+        run: |
+          git rev-parse --verify HEAD^2 > /dev/null
+          python3 - <<'PY'
+          from fnmatch import fnmatchcase
+          import os
+          import subprocess
+
+          paths = subprocess.check_output([
+              "git", "diff", "--name-only", "--no-renames", "-z", "HEAD^1", "HEAD",
+          ]).split(b"\0")
+          patterns = (
+              ".github/workflows/ci.yml",
+              ".github/workflows/dead-code.yml",
+              ".github/workflows/release-wheel.yml",
+              "Cargo.lock", "Cargo.toml", "crates/**", "pyproject.toml",
+              "python/**", "rust-toolchain.toml", "scripts/check_dead_code_gate.py",
+              "scripts/phase03_*.py", "tests/conformance/**",
+          )
+          required = any(fnmatchcase(os.fsdecode(path), pattern) for path in paths for pattern in patterns)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"required={str(required).lower()}", file=output)
+          PY
+
+  preview-wheel:
+    name: Build Linux SDK for compatibility
+    needs: [preview-scope]
+    if: needs.preview-scope.outputs.required == 'true'
+    uses: ./.github/workflows/release-wheel.yml
+    with:
+      wheel-name: manylinux-x86_64
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      manylinux: '2_17'
+      args: --zig
+
+  preview-dead-code:
+    name: Preview pinned dead-code compatibility
+    needs: [preview-wheel]
+    uses: ./.github/workflows/dead-code.yml
+    with:
+      strict: false
+
+  required-rust:
+    # Keep the check name configured in the main branch ruleset.
+    name: Rust checks
+    if: ${{ always() }}
+    needs: [rust, preview-scope, preview-dead-code]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require Rust checks and applicable compatibility preview
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+          SCOPE_RESULT: ${{ needs.preview-scope.result }}
+          PREVIEW_REQUIRED: ${{ needs.preview-scope.outputs.required }}
+          PREVIEW_RESULT: ${{ needs.preview-dead-code.result }}
+        run: |
+          if [[ "$RUST_RESULT" != success ]]; then
+            echo "Rust lint and tests: $RUST_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            exit 0
+          fi
+          if [[ "$SCOPE_RESULT" != success ]]; then
+            echo "Compatibility scope check: $SCOPE_RESULT" >&2
+            exit 1
+          fi
+          case "$PREVIEW_REQUIRED:$PREVIEW_RESULT" in
+            true:success|false:skipped) ;;
+            *)
+              echo "Compatibility preview required=$PREVIEW_REQUIRED result=$PREVIEW_RESULT" >&2
+              exit 1
+              ;;
+          esac
 
   package:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}

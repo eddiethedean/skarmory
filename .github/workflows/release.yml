@@ -77,11 +77,37 @@ jobs:
           print(f"Release version {version}")
           PY
 
-  checks:
+  regular-ci:
     needs: [release-metadata]
     # The regular CI workflow already runs separately for pull requests.
     if: ${{ github.event_name != 'pull_request' }}
     uses: ./.github/workflows/ci.yml
+
+  checks:
+    name: Require release checks
+    needs: [release-metadata, regular-ci, verify-dead-code]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require regular CI and applicable compatibility results
+        env:
+          CI_RESULT: ${{ needs.regular-ci.result }}
+          GATE_REQUIRED: ${{ needs.release-metadata.outputs.dead-code-gate-required }}
+          GATE_RESULT: ${{ needs.verify-dead-code.result }}
+        run: |
+          if [[ "$CI_RESULT" != success ]]; then
+            echo "Regular CI: $CI_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$GATE_RESULT" == success ]]; then
+            exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GATE_REQUIRED" == false && "$GATE_RESULT" == skipped ]]; then
+            exit 0
+          fi
+          echo "Dead-code gate required=$GATE_REQUIRED result=$GATE_RESULT" >&2
+          exit 1
 
   verify-crates:
     name: Verify crate packages
@@ -106,17 +132,6 @@ jobs:
           name: release-crates
           path: target/package/*.crate
           if-no-files-found: error
-
-  build-gate-wheel:
-    name: Python wheel (manylinux-x86_64)
-    needs: [release-metadata]
-    uses: ./.github/workflows/release-wheel.yml
-    with:
-      wheel-name: manylinux-x86_64
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
-      manylinux: '2_17'
-      args: --zig
 
   build-wheels:
     name: Python wheel (${{ matrix.name }})
@@ -167,6 +182,27 @@ jobs:
       target: ${{ matrix.target }}
       manylinux: ${{ matrix.manylinux }}
       args: ${{ matrix.args }}
+
+  build-gate-wheel:
+    name: Python wheel (manylinux-x86_64)
+    needs: [release-metadata]
+    uses: ./.github/workflows/release-wheel.yml
+    with:
+      wheel-name: manylinux-x86_64
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      manylinux: '2_17'
+      args: --zig
+
+  verify-dead-code:
+    name: Verify pinned dead-code compatibility
+    needs: [release-metadata, build-gate-wheel]
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && needs.release-metadata.outputs.dead-code-gate-required != 'false')
+    uses: ./.github/workflows/dead-code.yml
+    with:
+      strict: ${{ needs.release-metadata.outputs.dead-code-gate-required != 'false' }}
 
   build-sdist:
     name: Python source distribution
@@ -224,28 +260,10 @@ jobs:
           python -m pip install "twine==$TWINE_VERSION"
           python -m twine check --strict dist/*
 
-  verify-dead-code:
-    name: Verify pinned dead-code compatibility
-    needs: [release-metadata, build-gate-wheel]
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'push' && needs.release-metadata.outputs.dead-code-gate-required != 'false')
-    uses: ./.github/workflows/dead-code.yml
-    with:
-      strict: ${{ needs.release-metadata.outputs.dead-code-gate-required != 'false' }}
-
   publish-crates:
     name: Publish to crates.io
-    needs: [release-metadata, checks, verify-crates, verify-python, verify-dead-code]
-    if: >-
-      !cancelled() && github.event_name == 'push' && github.ref_type == 'tag'
-      && needs.release-metadata.result == 'success'
-      && needs.checks.result == 'success'
-      && needs.verify-crates.result == 'success'
-      && needs.verify-python.result == 'success'
-      && (needs.verify-dead-code.result == 'success'
-          || (needs.release-metadata.outputs.dead-code-gate-required == 'false'
-              && needs.verify-dead-code.result == 'skipped'))
+    needs: [checks, verify-crates, verify-python]
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
