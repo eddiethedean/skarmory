@@ -40,6 +40,20 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.11'
+      - name: Require the Phase 0.3 gate workflow on new tags
+        if: github.ref_type == 'tag'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          with open("Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["workspace"]["package"]["version"]
+          major, minor, _ = version.split(".", 2)
+          gate = Path(".github/workflows/dead-code.yml")
+          if (int(major), int(minor)) >= (0, 3) and not gate.is_file():
+              raise SystemExit("Phase 0.3 publication requires the pinned dead-code release gate")
+          PY
       - run: python scripts/check_structure.py
       - name: Match the tag to the package version
         run: |
@@ -52,9 +66,6 @@ jobs:
           expected_tag = f"v{version}"
           if os.environ["GITHUB_REF_TYPE"] == "tag" and os.environ["GITHUB_REF_NAME"] != expected_tag:
               raise SystemExit(f"Expected release tag {expected_tag}")
-          major, minor, _ = version.split(".", 2)
-          if os.environ["GITHUB_REF_TYPE"] == "tag" and (int(major), int(minor)) >= (0, 3):
-              raise SystemExit("Phase 0.3 publication requires the pinned dead-code release gate")
           print(f"Release version {version}")
           PY
 

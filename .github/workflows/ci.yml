@@ -29,8 +29,18 @@ jobs:
           python-version: "3.11"
       - name: Test the SDK without a native extension
         env:
-          PYTHONPATH: python
-        run: python -m unittest discover -s tests/python -k source_only -v
+          PYTHONPATH: python:tests/python
+        run: |
+          python - <<'PY'
+          import unittest
+
+          suite = unittest.defaultTestLoader.loadTestsFromName(
+              "test_sdk.SdkTests.test_source_only_scan_raises"
+          )
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.testsRun != 1 or result.skipped:
+              raise SystemExit("The source-only SDK test must execute and pass")
+          PY
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # rust-toolchain action
         with:
           toolchain: "1.98.1"
