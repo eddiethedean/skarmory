@@ -268,6 +268,101 @@ fn phase03_guarded_import_tracks_the_selected_binding_and_the_caught_raise() {
 }
 
 #[test]
+fn phase03_selected_packages_resolve_bounded_sibling_calls() {
+    for container in ["", "src/", "lib/", "python/"] {
+        let package = format!("{container}pkg");
+        let root = project(&[
+            (&format!("{package}/__init__.py"), ""),
+            (
+                &format!("{package}/api.py"),
+                "from .payload import action as _action\ndef action(): return _action()\n",
+            ),
+            (
+                &format!("{package}/payload.py"),
+                "def action(): return 1\ndef side(): return opaque()\ndef unused(): return 3\n",
+            ),
+            (
+                &format!("{package}/consumer.py"),
+                "import pkg.api as api\nfrom pkg import payload\ndef run(): return api.action(), payload.side()\n",
+            ),
+            ("outside.py", "def outside(): return 4\n"),
+        ]);
+        let requested = if container.is_empty() {
+            root.path().join(package)
+        } else {
+            root.path().to_owned()
+        };
+        let report = scan(
+            &requested,
+            &["--json", "--confidence", "0", "--workers", "1"],
+            0,
+        );
+        let mut unused: Vec<_> = items(&report, "unused_functions")
+            .iter()
+            .map(|item| item["full_name"].as_str().unwrap())
+            .collect();
+        unused.sort_unstable();
+        if container.is_empty() {
+            assert_eq!(
+                unused,
+                ["pkg.consumer.run", "pkg.payload.unused"],
+                "{report}"
+            );
+        } else {
+            assert_eq!(
+                unused,
+                ["outside.outside", "pkg.consumer.run", "pkg.payload.unused"],
+                "{report}"
+            );
+        }
+        for name in ["pkg.api.action", "pkg.payload.action", "pkg.payload.side"] {
+            assert!(
+                report["dead_code_evidence"]["symbols"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|symbol| {
+                        symbol["qualified_name"] == name
+                            && symbol["evidence"]
+                                == serde_json::json!([
+                                    {"kind": "package_call_reference", "certainty": "possible"}
+                                ])
+                    }),
+                "{name}: {report}"
+            );
+        }
+        let cache = tempfile::tempdir().unwrap();
+        let flags = [
+            "--json",
+            "--confidence",
+            "0",
+            "--workers",
+            "4",
+            "--cache-dir",
+            cache.path().to_str().unwrap(),
+        ];
+        for _ in 0..2 {
+            let mut cached = scan(&requested, &flags, 0);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+}
+
+#[test]
+fn phase03_inferred_package_roots_respect_source_exclusion() {
+    let root = project(&[
+        ("pyproject.toml", "[tool.skylos]\nexclude = ['lib']\n"),
+        ("lib/pkg/__init__.py", ""),
+        ("lib/pkg/hidden.py", "def hidden(): return 1\n"),
+        ("app.py", "def stale(): return 2\n"),
+    ]);
+    let report = scan(root.path(), &["--json", "--confidence", "0"], 0);
+    assert_eq!(report["selected_paths"], serde_json::json!(["app.py"]));
+    assert_eq!(names(&report, "unused_functions"), ["stale"]);
+}
+
+#[test]
 fn phase03_package_exports_keep_explicit_edits_authoritative() {
     let root = project(&[
         (

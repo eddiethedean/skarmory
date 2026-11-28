@@ -965,8 +965,7 @@ fn scan_selected(
             "runtime evidence options require the skylos-0.3 profile",
         ));
     }
-    let src_is_package = phase03 && path.join("src/__init__.py").is_file();
-    let roots = if path.is_dir() && path.join("src").is_dir() && !src_is_package {
+    let roots = if !phase03 && path.is_dir() && path.join("src").is_dir() {
         vec![PathBuf::from("src"), PathBuf::from(".")]
     } else {
         Vec::new()
@@ -989,6 +988,7 @@ fn scan_selected(
         FileEntry::None,
         Some(&config.selection),
         options.experimental_javascript && cleanup_inputs.is_none(),
+        phase03,
     );
     let mut languages: BTreeMap<_, usize> = if phase03 && !project.files.is_empty() {
         BTreeMap::new()

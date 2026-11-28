@@ -12408,6 +12408,57 @@ impl<'a> Graph<'a> {
         referenced
     }
 
+    fn package_call_declarations(&self, reach: &Reachability) -> BTreeSet<SymbolId> {
+        let Some(discovery) = self.discovery.filter(|_| self.phase03) else {
+            return BTreeSet::new();
+        };
+        let mut retained = BTreeSet::new();
+        for (scope, row) in self.scopes.iter().enumerate() {
+            if reach.scopes.contains(&scope) || row.parent != Some(row.file) {
+                continue;
+            }
+            let file = &self.files[row.file];
+            let Some((package, _)) = file.module.split_once('.') else {
+                continue;
+            };
+            if !discovery.package_reference_boundary(&file.path)
+                || !self
+                    .modules
+                    .get(package)
+                    .is_some_and(|&root| self.files[root].is_package)
+            {
+                continue;
+            }
+            if !row.owner.is_some_and(|id| {
+                matches!(self.symbols[id].binding, Binding::Definition(def, _)
+                    if def.kind == DefinitionKind::Function && def.decorators.is_empty())
+            }) {
+                continue;
+            }
+            retained.extend(row.edges.iter().filter_map(|edge| {
+                if edge.kind != "direct_call"
+                    || edge.certainty != "certain"
+                    || reach.symbols.contains(&edge.target)
+                {
+                    return None;
+                }
+                let target = &self.symbols[edge.target];
+                let destination = &self.files[self.scopes[target.scope].file];
+                (target.scope < self.files.len()
+                    && target.scope != row.file
+                    && destination
+                        .module
+                        .split_once('.')
+                        .is_some_and(|(root, _)| root == package)
+                    && discovery.package_reference_boundary(&destination.path)
+                    && matches!(target.binding, Binding::Definition(def, _)
+                        if def.kind == DefinitionKind::Function && def.decorators.is_empty()))
+                .then_some(edge.target)
+            }));
+        }
+        retained
+    }
+
     fn finish(
         mut self,
         roots: Vec<Edge>,
@@ -12532,6 +12583,7 @@ impl<'a> Graph<'a> {
             ));
         }
         verification.rescued_count += imported_declarations.len();
+        let package_call_declarations = self.package_call_declarations(&reach);
         let Reachability {
             scopes: reachable_scopes,
             symbols: reachable_symbols,
@@ -12669,6 +12721,11 @@ impl<'a> Graph<'a> {
             .into_iter()
             .chain(transitive)
             .chain(declaration_evidence)
+            .chain(
+                package_call_declarations
+                    .iter()
+                    .map(|&target| (target, "package_call_reference", "possible")),
+            )
         {
             if is_verification_edge(kind) {
                 continue;
@@ -12752,6 +12809,7 @@ impl<'a> Graph<'a> {
                     if !reachable_symbols.contains(&id)
                         && !coverage_declarations.contains(&id)
                         && !imported_declarations.contains(&id)
+                        && !package_call_declarations.contains(&id)
                         && def.kind != DefinitionKind::Class =>
                 {
                     let is_method = scope.owner.is_some_and(|id| self.is_class(id));

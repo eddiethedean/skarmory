@@ -29,6 +29,8 @@ pub(super) struct Exclusion {
     pub(super) reason: &'static str,
 }
 
+const CONVENTIONAL_PYTHON_ROOTS: &[&str] = &["src", "lib", "python"];
+
 pub(super) struct Project {
     pub files: Vec<SourceFile>,
     pub roots: Vec<String>,
@@ -42,6 +44,7 @@ pub(super) struct Project {
     directories: BTreeMap<PathBuf, DirectoryEntries>,
     ambiguous: BTreeSet<usize>,
     include_javascript: bool,
+    selected_package: bool,
 }
 
 pub(super) struct SourceFile {
@@ -133,7 +136,7 @@ pub(super) fn discover_filtered(
     entry: FileEntry<'_>,
     selection: Option<&Selection>,
 ) -> Project {
-    discover_sources(path, roots, entry, selection, false)
+    discover_sources(path, roots, entry, selection, false, false)
 }
 
 pub(super) fn discover_sources(
@@ -142,6 +145,7 @@ pub(super) fn discover_sources(
     entry: FileEntry<'_>,
     selection: Option<&Selection>,
     include_javascript: bool,
+    infer_package: bool,
 ) -> Project {
     let mut project = Project {
         files: Vec::new(),
@@ -156,6 +160,7 @@ pub(super) fn discover_sources(
         directories: BTreeMap::new(),
         ambiguous: BTreeSet::new(),
         include_javascript,
+        selected_package: false,
     };
     let path = normalized(path);
     let (input, metadata) = match checked_path(&path) {
@@ -270,7 +275,30 @@ pub(super) fn discover_sources(
             discovered,
         });
     }
-    project.identify_files(&selected_roots, entry_path.as_deref(), selection.is_some());
+    if infer_package
+        && !input_file
+        && project
+            .files_by_path
+            .contains_key(&project.base.join("__init__.py"))
+        && project
+            .base
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(skarmory_python::simple_name)
+        && let Some(parent) = project.base.parent()
+    {
+        // The enclosing directory supplies the import prefix only. Keep the
+        // scan and all labels relative to the selected package directory.
+        project.search = vec![parent.to_owned()];
+        project.import_roots = vec![project.label(parent)];
+        project.selected_package = true;
+        project.identify_files(&[], None, selection.is_some());
+    } else if infer_package && !input_file {
+        project.infer_python_source_roots();
+        project.identify_files(&[], None, selection.is_some());
+    } else {
+        project.identify_files(&selected_roots, entry_path.as_deref(), selection.is_some());
+    }
     if let Some(path) = entry_path {
         project.script = project.files_by_path.get(&path).copied();
         if project.script.is_none() {
@@ -291,6 +319,31 @@ pub(super) fn discover_sources(
 }
 
 impl Project {
+    fn infer_python_source_roots(&mut self) {
+        // Start from admitted directories to preserve the caller's selection.
+        // A conventional name also used for an actual package stays a package.
+        let mut roots: Vec<_> = CONVENTIONAL_PYTHON_ROOTS
+            .iter()
+            .map(|candidate| self.base.join(candidate))
+            .filter(|directory| {
+                self.directories
+                    .get(directory)
+                    .is_some_and(|entries| !entries.iter().any(|(name, _)| name == "__init__.py"))
+            })
+            .collect();
+        roots.append(&mut self.search);
+        self.import_roots = roots.iter().map(|root| self.label(root)).collect();
+        self.search = roots;
+    }
+
+    pub(super) fn package_reference_boundary(&self, path: &str) -> bool {
+        self.selected_package
+            || self.import_roots.iter().any(|root| {
+                CONVENTIONAL_PYTHON_ROOTS.contains(&root.as_str())
+                    && Path::new(path).starts_with(root)
+            })
+    }
+
     fn entry_path(&mut self, input: Option<&PathBuf>, entry: FileEntry<'_>) -> Option<PathBuf> {
         let candidate = match entry {
             FileEntry::None => return None,
