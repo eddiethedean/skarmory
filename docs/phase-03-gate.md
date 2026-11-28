@@ -346,7 +346,8 @@ an unresolved lookup inside a function. The analyzer only
 coalesces alternative imports when it can prove that the initialization arms
 cover the choice and the read occurs after initialization. A guarded from-import
 can select the success or caught-raise suite when the project definitively
-supplies an inert initializer and the declared member. Later self-copies and
+supplies an inert initializer and the declared member. A write that could
+change the import target leaves coverage incomplete. Later self-copies and
 overwrites resolve against the bindings installed by that suite.
 
 The provider cases compare original assertions with paired installed-wheel
@@ -425,7 +426,8 @@ unusable legacy fields in a discovered `pyproject.toml` and still reports
 the unused function. Its independent danger-rule assertion stays outside
 Phase 0.3. Selected package directories preserve their package-qualified module
 names. Bounded sibling calls supply reference evidence when the package is
-scanned directly or under a conventional Python source root.
+scanned directly or under a conventional Python source root. Inferred roots
+preserve existing module identities when the same name occurs elsewhere.
 
 The frontend folds consecutive literal additions to a fresh `__all__` list
 into the declared export list. This covers list `+=` with a literal list or

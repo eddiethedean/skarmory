@@ -236,7 +236,10 @@ impl<'a> Graph<'a> {
             _ => None,
         };
         if let Some(member) = member {
-            if !proof_only || proof_mutation_providers(member).next().is_some() {
+            if !proof_only
+                || proof_mutation_providers(member).next().is_some()
+                || self.guarded_import_mutation_name(member)
+            {
                 self.index_deferred_proof_write(scope, at, receiver, Some(member), None);
             }
         } else {
@@ -252,11 +255,17 @@ impl<'a> Graph<'a> {
         member: Option<&str>,
         dynamic_name: Option<&Expression>,
     ) {
-        if member.is_some_and(|name| !is_truth_hook(name) && !tracked_deferred_member(name)) {
+        if member.is_some_and(|name| {
+            !is_truth_hook(name)
+                && !tracked_deferred_member(name)
+                && !self.guarded_import_mutation_name(name)
+        }) {
             return;
         }
-        if member.is_none_or(|name| proof_mutation_providers(name).next().is_some())
-            && let Some(parameter) = self.parameter_binding(scope, receiver, at)
+        if member.is_none_or(|name| {
+            proof_mutation_providers(name).next().is_some()
+                || self.guarded_import_mutation_name(name)
+        }) && let Some(parameter) = self.parameter_binding(scope, receiver, at)
             && self.symbols[parameter].scope == scope
             && let Some(owner) = self.scopes[scope].owner
         {
@@ -278,15 +287,15 @@ impl<'a> Graph<'a> {
                 .push(ParameterProofWrite { receiver, member });
         }
         let Some(member) = member else {
-            if let Value::Provider(module) = self.probe_identity(scope, receiver, at) {
+            let receiver = self.probe_identity(scope, receiver, at);
+            if let Some(module) = self.proof_receiver_module(&receiver) {
                 // An opaque name can modify any protected slot of this provider.
-                for member in protected_provider_members(&module) {
-                    self.mutations
-                        .deferred_member_writes
-                        .entry(ReceiverKey::Module(module.clone()))
-                        .or_default()
-                        .insert(member.into());
-                }
+                let protected = self.protected_module_members(&module);
+                self.mutations
+                    .deferred_member_writes
+                    .entry(ReceiverKey::Module(module))
+                    .or_default()
+                    .extend(protected);
             }
             return;
         };
@@ -296,10 +305,16 @@ impl<'a> Graph<'a> {
             {
                 ReceiverKey::Class(invocation.target)
             }
-            Value::Module(file) if matches!(member, "__getattr__" | "_LAZY") => {
+            Value::Module(file)
+                if matches!(member, "__getattr__" | "_LAZY")
+                    || self.guarded_import_mutation(&self.files[file].module, member) =>
+            {
                 ReceiverKey::Module(self.files[file].module.clone())
             }
-            Value::Provider(module) if tracked_provider_member(&module, member) => {
+            Value::Provider(module)
+                if tracked_provider_member(&module, member)
+                    || self.guarded_import_mutation(&module, member) =>
+            {
                 ReceiverKey::Module(module)
             }
             Value::Unknown | Value::ReceiverParameter(_) => {
@@ -423,6 +438,25 @@ impl<'a> Graph<'a> {
                 StatementKind::With { body, .. } => {
                     self.collect_proof_writer_calls(scope, body, calls)
                 }
+                StatementKind::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } if self.proven_guarded_project_import(
+                    scope,
+                    at,
+                    import,
+                    *raises_import_error,
+                ) =>
+                {
+                    let selected = if *raises_import_error {
+                        fallback
+                    } else {
+                        otherwise
+                    };
+                    self.collect_proof_writer_calls(scope, selected, calls);
+                }
                 StatementKind::Evaluate(expression)
                 | StatementKind::Return(Some(expression))
                 | StatementKind::Assign {
@@ -472,9 +506,14 @@ impl<'a> Graph<'a> {
             _ => None,
         };
         match value {
-            Value::Provider(module) => {
-                for member in protected_provider_members(module)
-                    .filter(|member| name.is_none_or(|name| name == *member))
+            Value::Provider(_) | Value::Module(_) => {
+                let Some(module) = self.proof_receiver_module(value) else {
+                    return;
+                };
+                for member in self
+                    .protected_module_members(&module)
+                    .into_iter()
+                    .filter(|member| name.is_none_or(|name| name == member))
                 {
                     let receiver = ReceiverKey::Module(module.clone());
                     if call.scope == self.scopes[call.scope].file {
@@ -482,7 +521,7 @@ impl<'a> Graph<'a> {
                             .members
                             .entry(receiver)
                             .or_default()
-                            .entry(member.into())
+                            .entry(member)
                             .or_default()
                             .push(Write {
                                 file: call.scope,
@@ -494,7 +533,7 @@ impl<'a> Graph<'a> {
                             .deferred_member_writes
                             .entry(receiver)
                             .or_default()
-                            .insert(member.into());
+                            .insert(member);
                     }
                 }
             }
@@ -774,6 +813,24 @@ impl<'a> Graph<'a> {
                         }
                     }
                 }
+                StatementKind::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } if self.proven_guarded_project_import(file, at, import, *raises_import_error) => {
+                    let selected = if *raises_import_error {
+                        fallback
+                    } else {
+                        otherwise
+                    };
+                    self.index_module_mutations(
+                        file,
+                        selected,
+                        conditional,
+                        track_framework_escapes,
+                    );
+                }
                 StatementKind::If {
                     test,
                     body,
@@ -815,22 +872,64 @@ impl<'a> Graph<'a> {
             self.index_member_write(file, at, receiver, member, value, conditional);
             return;
         }
-        let Value::Provider(module) = self.probe_identity(file, receiver, at) else {
+        let resolved = self.probe_identity(file, receiver, at);
+        let Some(module) = self.proof_receiver_module(&resolved) else {
             return;
         };
-        let mut protected = protected_provider_members(&module).peekable();
-        if protected.peek().is_none() {
+        let protected = self.protected_module_members(&module);
+        if protected.is_empty() {
             return;
         }
         if let Value::Text(member) = self.probe_identity(file, name, at) {
-            if protected.any(|candidate| candidate == member) {
+            if protected.contains(&member) {
                 self.index_member_write(file, at, receiver, &member, value, conditional);
             }
         } else {
             for member in protected {
-                self.index_member_write(file, at, receiver, member, value, conditional);
+                let possible = conditional || self.guarded_import_mutation(&module, &member);
+                self.index_member_write(file, at, receiver, &member, value, possible);
             }
         }
+    }
+
+    fn guarded_import_mutation_name(&self, name: &str) -> bool {
+        self.guarded_import_members
+            .values()
+            .any(|members| members.contains(name))
+    }
+
+    fn guarded_import_mutation(&self, module: &str, member: &str) -> bool {
+        self.guarded_import_members
+            .get(module)
+            .is_some_and(|members| members.contains(member))
+    }
+
+    fn proof_receiver_module(&self, value: &Value) -> Option<String> {
+        match value {
+            Value::Provider(module) => Some(module.clone()),
+            Value::Module(file)
+                if self
+                    .guarded_import_members
+                    .contains_key(&self.files[*file].module) =>
+            {
+                Some(self.files[*file].module.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn protected_module_members(&self, module: &str) -> BTreeSet<String> {
+        let mut members: BTreeSet<_> = protected_provider_members(module)
+            .map(str::to_owned)
+            .collect();
+        members.extend(
+            self.guarded_import_members
+                .get(module)
+                .into_iter()
+                .flatten()
+                .cloned(),
+        );
+        members
     }
 
     fn index_framework_escape(
@@ -970,7 +1069,8 @@ impl<'a> Graph<'a> {
         let changes_lazy_lookup = matches!(&receiver, ReceiverKey::Module(module)
             if tracked_provider_member(module, member)
                 || matches!(member, "__getattr__" | "_LAZY")
-                    && self.modules.contains_key(module.as_str()));
+                    && self.modules.contains_key(module.as_str())
+                || self.guarded_import_mutation(module, member));
         let changes_truth_hook = if let ReceiverKey::Class(class) = &receiver
             && is_truth_hook(member)
         {

@@ -26,6 +26,21 @@ impl Graph<'_> {
         else {
             return false;
         };
+        let access = (scope, at);
+        if self
+            .module_member_write("builtins", "__import__", access)
+            .is_some()
+            || raises_import_error
+                && self
+                    .module_member_write("builtins", "ImportError", access)
+                    .is_some()
+            || self.imported_module_write(&module, access).is_some()
+            || [member, "__class__", "__getattr__"]
+                .iter()
+                .any(|name| self.module_member_write(&module, name, access).is_some())
+        {
+            return false;
+        }
         let Some((package, child)) = module.rsplit_once('.') else {
             return false;
         };
@@ -39,12 +54,51 @@ impl Graph<'_> {
                 project.package_source_unambiguous(package, child, Some(&selected.path))
             })
             && module.match_indices('.').all(|(end, _)| {
-                self.modules.get(&module[..end]).is_some_and(|&parent| self.files[parent].facts.body.is_empty())
+                let name = &module[..end];
+                self.modules.get(name).is_some_and(|&parent| self.files[parent].facts.body.is_empty())
+                    && self.imported_module_write(name, access).is_none()
+                    && ["__path__", "__class__", "__getattr__"].iter().all(|member| {
+                        self.module_member_write(name, member, access).is_none()
+                    })
             })
             && selected.facts.body.iter().all(passive_module_statement)
             && selected.facts.body.iter().filter(|statement| {
                 matches!(&statement.kind, StatementKind::Define(def) if def.name.text == member)
             }).count() == 1
+    }
+
+    pub(super) fn register_guarded_project_import(
+        &mut self,
+        scope: ScopeId,
+        statement: &Statement,
+        raises_import_error: bool,
+    ) {
+        let StatementKind::Import(import) = &statement.kind else {
+            return;
+        };
+        let Some((module, member)) = self
+            .import_module(scope, import)
+            .zip(import.member.as_deref())
+        else {
+            return;
+        };
+        let builtins = self
+            .guarded_import_members
+            .entry("builtins".into())
+            .or_default();
+        builtins.insert("__import__".into());
+        if raises_import_error {
+            builtins.insert("ImportError".into());
+        }
+        for (end, _) in module.match_indices('.') {
+            let members = self
+                .guarded_import_members
+                .entry(module[..end].into())
+                .or_default();
+            members.extend(["__path__", "__class__", "__getattr__"].map(str::to_owned));
+        }
+        let members = self.guarded_import_members.entry(module).or_default();
+        members.extend([member, "__class__", "__getattr__"].map(str::to_owned));
     }
 
     pub(super) fn settled_module_import_read(

@@ -767,6 +767,7 @@ pub(super) fn analyze_with_verification(
         phase03,
         bounded_deprecation: phase03 && !framework.partial_sources,
         logging_calls: logging_calls::Calls::default(),
+        guarded_import_members: BTreeMap::new(),
         terminal_proofs: entrypoints.is_empty()
             && package_entrypoints.is_none_or(|snapshot| snapshot.entries.is_empty())
             && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
@@ -1043,6 +1044,7 @@ struct Graph<'a> {
     phase03: bool,
     bounded_deprecation: bool,
     logging_calls: logging_calls::Calls,
+    guarded_import_members: BTreeMap<String, BTreeSet<String>>,
     terminal_proofs: bool,
     failed_terminal_modules: BTreeSet<ScopeId>,
     failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
@@ -1201,6 +1203,7 @@ impl<'a> Graph<'a> {
                     *raises_import_error,
                 ) =>
                 {
+                    self.register_guarded_project_import(scope, import, *raises_import_error);
                     self.index(scope, std::slice::from_ref(import));
                     self.index(
                         scope,

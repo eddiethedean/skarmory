@@ -268,6 +268,51 @@ fn phase03_guarded_import_tracks_the_selected_binding_and_the_caught_raise() {
 }
 
 #[test]
+fn phase03_guarded_import_rejects_mutated_source_members() {
+    let root = project(&[
+        ("pkg/__init__.py", ""),
+        (
+            "pkg/core.py",
+            "def read(value): return value\ndef other(): return 0\n",
+        ),
+        ("app.py", ""),
+    ]);
+    let root = root.path();
+    let guarded = concat!(
+        "try:\n    from pkg.core import read\n",
+        "except ImportError:\n    print('fallback')\n",
+        "else:\n    print(read(1))\n",
+    );
+    for (mutation, expected) in [
+        ("delattr(core, 'other')", 0),
+        ("delattr(core, 'read')", 2),
+        ("name = 'read'\ndelattr(core, name)", 2),
+        ("def remove(): delattr(core, 'read')\nremove()", 2),
+        (
+            "def remove(module): delattr(module, 'read')\nremove(core)",
+            2,
+        ),
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!("import pkg.core as core\n{mutation}\n{guarded}"),
+        )
+        .unwrap();
+        let report = scan(root, &["--json", "--confidence", "0"], expected);
+        if expected == 2 {
+            assert!(
+                report["coverage"]["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["kind"] == "unresolved_optional_import"),
+                "{report}"
+            );
+        }
+    }
+}
+
+#[test]
 fn phase03_selected_packages_resolve_bounded_sibling_calls() {
     for container in ["", "src/", "lib/", "python/"] {
         let package = format!("{container}pkg");
@@ -360,6 +405,49 @@ fn phase03_inferred_package_roots_respect_source_exclusion() {
     let report = scan(root.path(), &["--json", "--confidence", "0"], 0);
     assert_eq!(report["selected_paths"], serde_json::json!(["app.py"]));
     assert_eq!(names(&report, "unused_functions"), ["stale"]);
+}
+
+#[test]
+fn phase03_inferred_source_roots_preserve_unrelated_and_competing_packages() {
+    let root = project(&[
+        ("pkg/__init__.py", ""),
+        (
+            "app.py",
+            concat!(
+                "try:\n    from pkg import Missing\n",
+                "except ImportError:\n    class Missing:\n        pass\n",
+                "value = Missing()\ndef stale(): return 1\n",
+            ),
+        ),
+    ]);
+    let root = root.path();
+    fs::create_dir(root.join("lib")).unwrap();
+    for sibling in [None, Some("unrelated"), Some("pkg")] {
+        if let Some(sibling) = sibling {
+            let package = root.join("lib").join(sibling);
+            fs::create_dir(&package).unwrap();
+            fs::write(package.join("__init__.py"), "").unwrap();
+            fs::write(package.join("member.py"), "def member(): return 1\n").unwrap();
+        }
+        let report = scan(root, &["--json", "--confidence", "0"], 0);
+        assert!(
+            names(&report, "unused_functions").contains(&"stale"),
+            "{report}"
+        );
+        if let Some(sibling) = sibling {
+            let expected = if sibling == "pkg" {
+                "lib.pkg.member.member"
+            } else {
+                "unrelated.member.member"
+            };
+            assert!(
+                items(&report, "unused_functions")
+                    .iter()
+                    .any(|item| item["full_name"] == expected),
+                "{report}"
+            );
+        }
+    }
 }
 
 #[test]
