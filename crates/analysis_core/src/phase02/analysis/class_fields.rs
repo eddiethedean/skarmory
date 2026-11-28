@@ -5,7 +5,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Uses {
     parameter_reads: BTreeSet<(ScopeId, ScopeId, SymbolId, String)>,
-    returned_classes: BTreeSet<(ScopeId, SymbolId)>,
+    printed_classes: BTreeSet<(ScopeId, SymbolId)>,
 }
 
 impl Graph<'_> {
@@ -44,9 +44,21 @@ impl Graph<'_> {
         if keyword.is_some_and(|name| name != &parameter.text) {
             return;
         }
-        // A named instance supplied later could already shadow the field.
-        let Some(class) = self.plain_provider_constructor(call.scope, argument, call.before) else {
-            return;
+        // A named instance can shadow the field. A proven class value
+        // supplies the class attribute directly.
+        let class = match self.plain_provider_constructor(call.scope, argument, call.before) {
+            Some(class) => class,
+            None if field_dispatch::plain_method(definition, 1) => {
+                let Value::Callable(value) = self.probe_identity(call.scope, argument, call.before)
+                else {
+                    return;
+                };
+                if !self.is_returned_literal_class(value, call.scope) {
+                    return;
+                }
+                value.target
+            }
+            None => return,
         };
         let Binding::Definition(_, body) = self.symbols[callee].binding else {
             return;
@@ -56,13 +68,58 @@ impl Graph<'_> {
             .insert((call.scope, body, class, member.clone()));
     }
 
-    pub(super) fn record_returned_class(&mut self, scope: ScopeId, class: SymbolId) {
-        // The returned object is a class created in this invocation. Its
-        // public namespace can escape the declaring function with it.
-        if self.symbols[class].scope == scope && self.is_class(class) {
+    pub(super) fn returned_literal_class(
+        &self,
+        factory: SymbolId,
+        caller: ScopeId,
+    ) -> Option<SymbolId> {
+        let Binding::Definition(definition, scope) = self.symbols[factory].binding else {
+            return None;
+        };
+        if !field_dispatch::plain_method(definition, 0) {
+            return None;
+        }
+        let [
+            Statement {
+                kind: StatementKind::Define(class),
+                ..
+            },
+            Statement {
+                kind:
+                    StatementKind::Return(Some(Expression {
+                        kind: ExpressionKind::Name(name),
+                        ..
+                    })),
+                ..
+            },
+        ] = body_without_docstring(definition)
+        else {
+            return None;
+        };
+        if class.kind != DefinitionKind::Class || *name != class.name.text {
+            return None;
+        }
+        let id = self.local(scope, name, END)?;
+        self.literal_class_body(id, caller)?;
+        Some(id)
+    }
+
+    fn is_returned_literal_class(&self, value: Invocation, scope: ScopeId) -> bool {
+        let class = value.target;
+        !value.verified
+            && self.is_class(class)
+            && self.scopes[self.symbols[class].scope]
+                .owner
+                .is_some_and(|factory| self.returned_literal_class(factory, scope) == Some(class))
+    }
+
+    pub(super) fn record_printed_returned_class(&mut self, scope: ScopeId, value: Invocation) {
+        if self.is_returned_literal_class(value, scope) {
+            // The pinned profile retains fields when print directly consumes
+            // the factory call. A field lookup uses ordinary class resolution.
             self.class_field_uses
-                .returned_classes
-                .insert((scope, class));
+                .printed_classes
+                .insert((scope, value.target));
         }
     }
 
@@ -72,6 +129,9 @@ impl Graph<'_> {
             if reach.scopes.contains(&caller)
                 && reach.scopes.contains(&body)
                 && let Some(class_body) = self.literal_class_body(class, caller)
+                && self.scopes[self.symbols[class].scope]
+                    .class_bodies
+                    .contains(&class_body)
                 && let Some(field) = self.local(class_body, &member, END)
             {
                 self.read.insert(field);
@@ -81,7 +141,7 @@ impl Graph<'_> {
             }
         }
 
-        for (scope, class) in uses.returned_classes {
+        for (scope, class) in uses.printed_classes {
             if !reach.scopes.contains(&scope) {
                 continue;
             }
@@ -111,7 +171,6 @@ impl Graph<'_> {
             && definition.bases.is_empty()
             && definition.decorators.is_empty()
             && !definition.has_class_keywords()
-            && self.scopes[declaration.scope].class_bodies.contains(&body)
             && !self.has_unmodeled_class_write(class)
             && self.class_discovery_writes(class, consumer).is_empty()
             && body_without_docstring(definition).iter().all(|statement| {

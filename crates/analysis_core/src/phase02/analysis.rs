@@ -2007,9 +2007,10 @@ impl<'a> Graph<'a> {
             } else {
                 !self.conditional.contains_key(&id)
                     && (symbol.scope == package && caller != package
-                        // The enclosing definition cannot become callable
-                        // before an earlier ordinary import in its module.
-                        || symbol.scope == caller
+                        // The definition follows the import, but a cached
+                        // child need not replace an existing package binding.
+                        || binding.is_none()
+                            && symbol.scope == caller
                             && matches!(symbol.binding, Binding::Import(import) if import.member.is_none())
                             && enclosing_definition.is_some_and(|definition| {
                                 position(symbol.name.at) < definition
@@ -4750,11 +4751,18 @@ impl<'a> Graph<'a> {
                     )
                 }
                 Value::Callable(invocation) if self.phase03 => {
-                    if arguments.is_empty()
-                        && keywords.is_empty()
-                        && let Some(callback) = self.returned_local_callable(invocation)
-                    {
-                        return callback;
+                    if arguments.is_empty() && keywords.is_empty() {
+                        if let Some(callback) = self.returned_local_callable(invocation) {
+                            return callback;
+                        }
+                        if !invocation.verified
+                            && !invocation.implicit_descriptor_receiver
+                            && matches!(invocation.receiver, Receiver::Ordinary)
+                            && let Some(class) =
+                                self.returned_literal_class(invocation.target, scope)
+                        {
+                            return Value::Callable(Invocation::ordinary(class));
+                        }
                     }
                     if arguments.is_empty()
                         && keywords.is_empty()
@@ -5720,9 +5728,6 @@ impl<'a> Graph<'a> {
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
             Value::Callable(invocation) => {
-                if self.phase03 && kind == "returned_callable" {
-                    self.record_returned_class(scope, invocation.target);
-                }
                 if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
                     self.report_unmodeled_deferred_value(scope, at, &Value::DeferredComprehension);
                 }
@@ -7373,9 +7378,15 @@ impl<'a> Graph<'a> {
                     }
                     Value::Provider(name) if is_known_call(&name, self.phase03) => {
                         if self.phase03 {
-                            for arg in arguments.iter().chain(keywords.iter().map(|(_, expr)| expr)) {
+                            for (index, arg) in arguments.iter().chain(keywords.iter().map(|(_, expr)| expr)).enumerate() {
                                 let value = self.probe_identity(scope, arg, before);
                                 match value {
+                                    Value::Callable(invocation)
+                                        if name == "builtins.print" && index < arguments.len()
+                                            && matches!(arg.kind, ExpressionKind::Call { .. }) =>
+                                    {
+                                        self.record_printed_returned_class(scope, invocation);
+                                    }
                                     Value::CallbackGenerator(calls)
                                         if matches!(name.as_str(), "builtins.list" | "builtins.tuple")
                                             && arguments.len() == 1 && keywords.is_empty() =>

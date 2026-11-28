@@ -181,6 +181,52 @@ fn plain_class_fields_follow_receivers_and_returned_declarations() {
 }
 
 #[test]
+fn returned_literal_class_fields_follow_the_consumer() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let factory = concat!(
+        "def make_schema():\n",
+        "    class Payload:\n",
+        "        query = 1\n",
+        "        timeout = 30\n",
+        "    return Payload\n",
+    );
+    let query = "app.make_schema.Payload.query";
+    let timeout = "app.make_schema.Payload.timeout";
+    for (consumer, expected_unused) in [
+        ("make_schema()", &[query, timeout][..]),
+        ("print(make_schema().query)", &[timeout][..]),
+        (
+            "payload = make_schema()\nprint(payload.query)",
+            &[timeout][..],
+        ),
+        (
+            "def read(cls): return cls.query\nprint(read(make_schema()))",
+            &[timeout][..],
+        ),
+        (
+            "payload = make_schema()\nprint(payload)",
+            &[query, timeout][..],
+        ),
+        (
+            "def print(cls): return None\nprint(make_schema())",
+            &[query, timeout][..],
+        ),
+        ("print(make_schema())", &[][..]),
+    ] {
+        fs::write(root.join("app.py"), format!("{factory}{consumer}\n")).unwrap();
+        let report = scan(root);
+        assert_eq!(
+            findings(&report, "unused_variables"),
+            expected_unused,
+            "{consumer}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+}
+
+#[test]
 fn report_preserves_requested_exclusion_order_and_selected_sources() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();

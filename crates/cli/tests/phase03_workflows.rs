@@ -113,6 +113,82 @@ fn phase03_configured_entrypoints_match_methods_and_short_qualified_names() {
 }
 
 #[test]
+fn phase03_dotted_import_respects_a_package_binding_after_indirect_loading() {
+    let root = project(&[
+        (
+            "pkg/__init__.py",
+            "from . import loader\nfrom . import alternative as sub\n",
+        ),
+        ("pkg/loader.py", "import pkg.sub\n"),
+        ("pkg/sub.py", "def which(): return 'original'\n"),
+        ("pkg/alternative.py", "def which(): return 'alternative'\n"),
+        (
+            "app.py",
+            "import pkg.sub\ndef run(): return pkg.sub.which()\nprint(run())\n",
+        ),
+    ]);
+    let root = root.path();
+    let report = scan(root, &["--json", "--confidence", "0", "--workers", "1"], 2);
+    assert_eq!(report["coverage"]["status"], "incomplete");
+    assert!(names(&report, "unused_functions").is_empty(), "{report}");
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "ambiguous_binding" && issue["path"] == "app.py")
+    );
+    assert!(
+        !report["dead_code_evidence"]["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|symbol| symbol["qualified_name"] == "pkg.sub.which"
+                && symbol["evidence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|edge| edge["kind"] == "direct_call")),
+        "{report}"
+    );
+    let cache = tempfile::tempdir().unwrap();
+    let flags = [
+        "--json",
+        "--confidence",
+        "0",
+        "--workers",
+        "4",
+        "--cache-dir",
+        cache.path().to_str().unwrap(),
+    ];
+    for _ in 0..2 {
+        let mut cached = scan(root, &flags, 2);
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, report);
+    }
+
+    // When the initializer itself loads the child first, the later package
+    // binding wins. Without a package binding, the dotted import attaches it.
+    for (initializer, unused) in [
+        (
+            "import pkg.sub\nfrom . import alternative as sub\n",
+            "pkg.sub.which",
+        ),
+        ("", "pkg.alternative.which"),
+    ] {
+        fs::write(root.join("pkg/__init__.py"), initializer).unwrap();
+        let complete = scan(root, &["--json", "--confidence", "0"], 0);
+        assert!(
+            items(&complete, "unused_functions")
+                .iter()
+                .any(|item| item["full_name"] == unused),
+            "{complete}"
+        );
+        assert_eq!(items(&complete, "unused_functions").len(), 1);
+    }
+}
+
+#[test]
 fn phase03_package_exports_keep_explicit_edits_authoritative() {
     let root = project(&[
         (

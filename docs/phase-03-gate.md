@@ -333,12 +333,16 @@ The local-binding cases distinguish same-named module variables and class
 fields. Bounded standard logging reads the actual lexical binding used as a
 logger or module receiver. Handler configuration, receiver escape, and other
 unresolved effects keep those scans incomplete. A lookup on a fresh receiver
-reads only the owning class field. Exposing a returned class can retain its
-public field declarations without reading same-named module variables.
+reads only the owning class field. Reading a field of a returned literal class
+retains that field. Passing the factory call directly to `print` retains the
+class's public fields in the pinned profile. Discarding the result leaves its
+fields unread.
 
 The import cases require a bounded annotated lazy export to resolve the
 requested provider member. A real dotted attribute reference reads an attached
-submodule even when the enclosing function is dormant. The analyzer only
+submodule even when the enclosing function is dormant. When a package binding
+may survive an import from the module cache, coverage remains incomplete for
+an unresolved lookup inside a function. The analyzer only
 coalesces alternative imports when it can prove that the initialization arms
 cover the choice and the read occurs after initialization.
 
