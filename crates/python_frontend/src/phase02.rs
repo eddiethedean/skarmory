@@ -853,6 +853,41 @@ impl LocalBindings<'_> {
     }
 }
 
+fn literal_public_export_edit(statement: &Stmt) -> Option<&[Expr]> {
+    let (value, append) = match statement {
+        Stmt::AugAssign(node)
+            if node.op == Operator::Add
+                && matches!(node.target.as_ref(), Expr::Name(name) if name.id.as_str() == "__all__") =>
+        {
+            (node.value.as_ref(), false)
+        }
+        Stmt::Expr(node)
+            if let Expr::Call(call) = node.value.as_ref()
+                && let Expr::Attribute(attribute) = call.func.as_ref()
+                && matches!(attribute.value.as_ref(), Expr::Name(name) if name.id.as_str() == "__all__")
+                && matches!(attribute.attr.as_str(), "append" | "extend")
+                && call.arguments.keywords.is_empty()
+                && let [value] = call.arguments.args.as_ref() =>
+        {
+            (value, attribute.attr.as_str() == "append")
+        }
+        _ => return None,
+    };
+    let values = if append {
+        std::slice::from_ref(value)
+    } else {
+        match value {
+            Expr::List(list) => &list.elts,
+            Expr::Tuple(tuple) => &tuple.elts,
+            _ => return None,
+        }
+    };
+    values
+        .iter()
+        .all(Expr::is_string_literal_expr)
+        .then_some(values)
+}
+
 impl<'a, 'ast: 'a> Visitor<'ast> for LocalBindings<'a> {
     fn visit_stmt(&mut self, statement: &'ast Stmt) {
         if let Stmt::Nonlocal(node) = statement {
@@ -1308,9 +1343,71 @@ impl Lowering<'_> {
         Ok(())
     }
 
+    fn fold_public_export_edit(
+        &self,
+        result: &mut [Statement],
+        statement: &Stmt,
+        depth: usize,
+        already_folded: bool,
+    ) -> Result<bool, FrontendError> {
+        // Consecutive literal edits of a fresh built-in list have no
+        // intervening observer. Keep one binding for every later use.
+        let Some(values) = literal_public_export_edit(statement) else {
+            return Ok(false);
+        };
+        let Some((previous, prefix)) = result.split_last_mut() else {
+            return Ok(false);
+        };
+        let StatementKind::Assign {
+            names,
+            value: Some(value),
+            annotation,
+        } = &mut previous.kind
+        else {
+            return Ok(false);
+        };
+        let builtin_annotation = matches!(annotation,
+            Some(Expression { kind: ExpressionKind::Subscript { value, index }, .. })
+            if matches!(&value.kind, ExpressionKind::Name(name) if name == "list")
+                && matches!(&index.kind, ExpressionKind::Name(name) if name == "str"))
+            && matches!(
+                prefix,
+                [] | [Statement {
+                    kind: StatementKind::Evaluate(Expression {
+                        kind: ExpressionKind::Text(_),
+                        ..
+                    }),
+                    ..
+                }]
+            );
+        if !matches!(names.as_slice(), [name] if name.text == "__all__")
+            || (annotation.is_some() && !builtin_annotation)
+        {
+            return Ok(false);
+        }
+        let ExpressionKind::Sequence { items, list: true } = &mut value.kind else {
+            return Ok(false);
+        };
+        if !already_folded
+            && !items
+                .iter()
+                .all(|item| matches!(item.kind, ExpressionKind::Text(_)))
+        {
+            return Ok(false);
+        }
+        items.extend(
+            values
+                .iter()
+                .map(|value| self.expression(value, depth))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        Ok(true)
+    }
+
     fn suite(&self, statements: &[Stmt], depth: usize) -> Result<Vec<Statement>, FrontendError> {
-        let mut result = Vec::new();
+        let mut result: Vec<Statement> = Vec::new();
         let mut allows_future_import = depth == 0;
+        let mut folded_export_position = None;
         for (index, statement) in statements.iter().enumerate() {
             self.check(statement, depth)?;
             if let Stmt::ImportFrom(node) = statement
@@ -1343,6 +1440,15 @@ impl Lowering<'_> {
 
             let next = depth + 1;
             let expression = |expr: &Expr| self.expression(expr, next);
+            let folded = folded_export_position == Some(result.len());
+            if self.4
+                && depth == 0
+                && self.1 == SyntaxScope::Module
+                && self.fold_public_export_edit(&mut result, statement, next, folded)?
+            {
+                folded_export_position = Some(result.len());
+                continue;
+            }
             let kind = match statement {
                 Stmt::Pass(_) => continue,
                 Stmt::Import(node) if !node.is_lazy => {

@@ -305,8 +305,8 @@ model leaves coverage incomplete.
 The frozen reference checks all 101 cases in `test_dead_code_local_bindings.py`,
 `test_dead_code_import_evidence.py`, and `test_provider_method_precision.py`.
 The inventory preserves the original assertions, fixture setup and grep modes.
-The installed-wheel replay qualifies 7 local-binding cases, 9 import-evidence
-cases, and 16 provider-method cases. Imports read in bounded quoted type
+The installed-wheel replay qualifies 11 local-binding cases, 13 import-evidence
+cases, and 27 provider-method cases. Imports read in bounded quoted type
 annotations count as uses, including imports on each feasible conditional
 path. The analyzer skips `Literal` values and `Annotated` metadata when
 resolving type references. Quoted calls remain unevaluated.
@@ -329,9 +329,29 @@ nor the replacement can be called before the overwrite has completed.
 Calls, decorators, and assignments that could release a finalizer keep
 this analysis incomplete.
 
+The local-binding cases distinguish same-named module variables and class
+fields. Bounded standard logging reads the actual lexical binding used as a
+logger or module receiver. Handler configuration, receiver escape, and other
+unresolved effects keep those scans incomplete. A lookup on a fresh receiver
+reads only the owning class field. Exposing a returned class can retain its
+public field declarations without reading same-named module variables.
+
+The import cases require a bounded annotated lazy export to resolve the
+requested provider member. A real dotted attribute reference reads an attached
+submodule even when the enclosing function is dormant. The analyzer only
+coalesces alternative imports when it can prove that the initialization arms
+cover the choice and the read occurs after initialization.
+
+The provider cases compare original assertions with paired installed-wheel
+controls. An executed call on a fresh, unmodified source factory result records
+the selected method. Short-circuited calls and consumers constructed without
+execution supply no execution evidence. Cases that require retaining an
+unchosen provider remain blocked while the native analysis can prove the
+actual target from a literal.
+
 Diagnostics retain incomplete coverage, failed assertions, and cases where
 the native report cannot establish the evidence required by the assertion.
-The remaining 69 cases carry no release credit.
+The remaining 50 cases carry no release credit.
 
 ### Dead-code proof regressions
 
@@ -380,15 +400,25 @@ and misses after source edits or repeated scans of external configuration.
 
 The frozen workflow runs 38 reviewed cases from `test/test_analyzer.py` by
 their class-qualified pytest IDs. They cover package surfaces, source
-selection, suppressions, and reachability. Twenty-one qualify through the
+selection, suppressions, and reachability. Twenty-four qualify through the
 installed SDK, including four cases for `# noqa: F401`. The native
 frontend associates that directive with the Python import aliases it covers,
-and the Rust report retains each suppression as evidence. Sixteen cases
+and the Rust report retains each suppression as evidence. Thirteen cases
 have diagnostic receipts and one still requires a candidate port. The
 malformed-configuration replay verifies that the installed SDK warns about
 unusable legacy fields in a discovered `pyproject.toml` and still reports
 the unused function. Its independent danger-rule assertion stays outside
 Phase 0.3.
+
+The frontend folds consecutive literal additions to a fresh `__all__` list
+into the declared export list. This covers list `+=` with a literal list or
+tuple of names and literal `append` and `extend` calls. Aliased and otherwise
+unresolved edits remain outside that proof. The implicit-package-surface case
+remains blocked because treating all public declarations as exports would
+also keep unrelated package-level application factory lookalikes live.
+Configured entrypoints distinguish methods from functions and support the
+class-qualified method name. A decorator or base selector can match the last
+component of its resolved name.
 
 Add one case per upstream pytest node, native subtest, or deterministic
 benchmark case. Record its source, assertions, prerequisites, fixture

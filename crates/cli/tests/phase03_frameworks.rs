@@ -102,6 +102,85 @@ fn evidence_certainties<'a>(report: &'a Value, symbol: &str, kind: &str) -> Vec<
 }
 
 #[test]
+fn default_logging_reads_the_selected_binding_across_modules() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let logger = "import logging\nlogger = logging.getLogger(__name__)\n";
+    fs::write(root.join("selected.py"), logger).unwrap();
+    fs::write(root.join("unused.py"), logger).unwrap();
+    fs::write(
+        root.join("main.py"),
+        "from selected import logger, logging\ndef emit():\n    logger.info('message')\nemit()\nlogging.info('root message')\n",
+    )
+    .unwrap();
+
+    let complete = scan(root);
+    assert_eq!(findings(&complete, "unused_variables"), ["unused.logger"]);
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, complete);
+    }
+
+    // A setter on the selected provider can change what the final call does.
+    fs::write(
+        root.join("main.py"),
+        "from selected import logger, logging\ndef replacement(_message): return 1\nsetattr(logger, 'info', replacement)\nlogger.info('message')\n",
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert_eq!(incomplete["coverage"]["status"], "incomplete");
+    assert!(findings(&incomplete, "unused_functions").is_empty());
+
+    // Formatting or a foreign initializer can invoke code outside this proof.
+    for source in [
+        "from selected import logger\nlogger.info('%s', 'message')\n",
+        "import external_logging_setup\nfrom selected import logger\nlogger.info('message')\n",
+    ] {
+        fs::write(root.join("main.py"), source).unwrap();
+        assert_eq!(
+            scan_with_exit(root, None, None, 2)["coverage"]["status"],
+            "incomplete"
+        );
+    }
+}
+
+#[test]
+fn plain_class_fields_follow_receivers_and_returned_declarations() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    fs::write(
+        root.join("app.py"),
+        "class First:\n    flag = True\n\nclass Second:\n    flag = False\n\nclass Spare:\n    flag = False\n\ndef pick(obj):\n    return obj.flag\n\ndef make_schema():\n    class Payload:\n        queries = []\n        _scratch = 1\n    return Payload\n\nprint(pick(First()), pick(Second()), Spare(), make_schema())\n",
+    )
+    .unwrap();
+    fs::write(root.join("neighbors.py"), "queries = None\n").unwrap();
+
+    let complete = scan(root);
+    let unused = findings(&complete, "unused_variables");
+    assert!(unused.contains(&"app.Spare.flag"), "{complete}");
+    assert!(unused.contains(&"neighbors.queries"), "{complete}");
+    assert!(
+        unused.contains(&"app.make_schema.Payload._scratch"),
+        "{complete}"
+    );
+    for retained in [
+        "app.First.flag",
+        "app.Second.flag",
+        "app.make_schema.Payload.queries",
+    ] {
+        assert!(!unused.contains(&retained), "{complete}");
+    }
+    for _ in 0..2 {
+        let mut cached = scan_with_settings(root, None, Some(cache.path()));
+        cached.as_object_mut().unwrap().remove("cache");
+        assert_eq!(cached, complete);
+    }
+}
+
+#[test]
 fn report_preserves_requested_exclusion_order_and_selected_sources() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
@@ -14593,6 +14672,76 @@ fn assert_provider_cache_equivalence(root: &Path, cache: &Path, report: &Value, 
         cached.as_object_mut().unwrap().remove("cache");
         assert_eq!(&cached, report);
     }
+}
+
+#[test]
+fn fresh_source_factory_keeps_proven_calls_separate_from_dormant_ones() {
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let root = project.path();
+    let provider = root.join("provider.py");
+    let consumer = root.join("app.py");
+    let target = "provider.Producer.collect";
+    let control = "provider.Unrelated.collect";
+    let factory = concat!(
+        "class Producer:\n    def collect(self): return 1\n",
+        "class Unrelated:\n    def collect(self): return 2\n",
+        "decoy = Unrelated()\n",
+        "def make_producer(): return Producer()\n",
+    );
+    fs::write(&provider, factory).unwrap();
+
+    for (body, runs) in [
+        ("return make_producer().collect()", true),
+        ("True and make_producer().collect()", true),
+        ("False and make_producer().collect()", false),
+        ("stop()\n    make_producer().collect()", false),
+        ("finish()\n    make_producer().collect()", true),
+    ] {
+        fs::write(
+            &consumer,
+            format!(
+                "from provider import make_producer\ndef stop(): raise ValueError()\n\n\
+             def finish(): return None\ndef consume():\n    {body}\nconsume()\n"
+            ),
+        )
+        .unwrap();
+        let report = scan(root);
+        let rescued = report["analysis_summary"]["dead_code_liveness"]["rescued"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            rescued
+                .iter()
+                .any(|event| event["name"] == target && event["reason"] == "source_factory_method"),
+            runs,
+            "{report}"
+        );
+        assert_eq!(provider_call(&report, target, "certain"), runs, "{report}");
+        assert!(
+            findings(&report, "unused_functions").contains(&control),
+            "{report}"
+        );
+        assert_provider_cache_equivalence(root, cache.path(), &report, 0);
+    }
+
+    fs::write(
+        &provider,
+        factory.replace(
+            "def collect(self): return 1",
+            "def collect(self): return 1\n    def __del__(self): print('finalizer')",
+        ),
+    )
+    .unwrap();
+    let incomplete = scan_with_exit(root, None, None, 2);
+    assert!(!provider_call(&incomplete, target, "certain"));
+    assert!(
+        incomplete["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_call" && issue["path"] == "app.py")
+    );
 }
 
 #[test]

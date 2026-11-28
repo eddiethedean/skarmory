@@ -16,7 +16,8 @@ use skarmory_python::phase02::{
 
 use super::config::{Entrypoint, FastapiRouterMode};
 use super::{
-    Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding, WEAK_HELPER_FUNCTION,
+    Analysis, AnalyzedFile, Category, DefinitionContext, Evidence, Finding, SOURCE_FACTORY_METHOD,
+    WEAK_HELPER_FUNCTION,
 };
 use super::{external_classes, package_entrypoints, runtime_evidence};
 use crate::Issue;
@@ -25,6 +26,7 @@ use crate::grep_verification::{self, Evidence as VerificationEvidence};
 mod aiohttp;
 mod celery;
 mod celery_routes;
+mod class_fields;
 mod class_parameter_calls;
 mod closures;
 mod comprehension;
@@ -50,11 +52,13 @@ mod gunicorn;
 mod lazy_tables;
 mod lazy_type_imports;
 mod literal_text;
+mod logging_calls;
 mod logging_config;
 mod mcp_tools;
 mod metaclasses;
 mod module_import_timing;
 mod mutations;
+mod provider_factory;
 mod pydantic;
 mod sanic;
 mod source_properties;
@@ -96,6 +100,8 @@ enum Value {
     CommandNamespaceGet(ScopeId),
     FrameworkCode(SymbolId),
     Provider(String),
+    StdlibLogger,
+    StdlibLoggerInfo,
     Object(Object, ObjectKind),
     Method(Object, ObjectKind, String),
     DjangoInclude(Object),
@@ -724,6 +730,7 @@ pub(super) fn analyze_with_verification(
         source_property_invocations: Vec::new(),
         constructor_hook_stores: Vec::new(),
         source_provider_calls: BTreeMap::new(),
+        source_factory_method_calls: Vec::new(),
         unpacked_source_provider_calls: BTreeSet::new(),
         source_provider_invalidated: None,
         source_provider_opaque_arguments: BTreeSet::new(),
@@ -743,6 +750,7 @@ pub(super) fn analyze_with_verification(
         static_parameter_calls: Vec::new(),
         closed_class_replacements: None,
         class_argument_consumers: BTreeMap::new(),
+        class_field_uses: class_fields::Uses::default(),
         has_ordering_hooks: false,
         has_equality_hooks: false,
         has_hash_hooks: false,
@@ -756,6 +764,7 @@ pub(super) fn analyze_with_verification(
         grep_import_declarations: BTreeMap::new(),
         phase03,
         bounded_deprecation: phase03 && !framework.partial_sources,
+        logging_calls: logging_calls::Calls::default(),
         terminal_proofs: entrypoints.is_empty()
             && package_entrypoints.is_none_or(|snapshot| snapshot.entries.is_empty())
             && runtime.is_none_or(|snapshot| snapshot.observations.is_empty()),
@@ -842,6 +851,7 @@ pub(super) fn analyze_with_verification(
     }
     if phase03 {
         graph.index_logging_os_initializers();
+        graph.index_logging_calls();
     }
     for symbol in &graph.symbols {
         if graph.scopes[symbol.scope]
@@ -995,6 +1005,7 @@ struct Graph<'a> {
     source_property_invocations: Vec<source_properties::SourcePropertyInvocation>,
     constructor_hook_stores: Vec<field_dispatch::ConstructorHookStore>,
     source_provider_calls: BTreeMap<SymbolId, source_provider_calls::SourceProviderCall<'a>>,
+    source_factory_method_calls: Vec<provider_factory::FactoryMethodCall>,
     unpacked_source_provider_calls: BTreeSet<(ScopeId, [usize; 2])>,
     source_provider_invalidated: Option<BTreeSet<SymbolId>>,
     source_provider_opaque_arguments: BTreeSet<SymbolId>,
@@ -1014,6 +1025,7 @@ struct Graph<'a> {
     static_parameter_calls: Vec<class_parameter_calls::StaticParameterCall>,
     closed_class_replacements: Option<BTreeSet<SymbolId>>,
     class_argument_consumers: BTreeMap<SymbolId, BTreeSet<(ScopeId, SymbolId)>>,
+    class_field_uses: class_fields::Uses,
     has_ordering_hooks: bool,
     has_equality_hooks: bool,
     has_hash_hooks: bool,
@@ -1027,6 +1039,7 @@ struct Graph<'a> {
     grep_import_declarations: BTreeMap<SymbolId, SymbolId>,
     phase03: bool,
     bounded_deprecation: bool,
+    logging_calls: logging_calls::Calls,
     terminal_proofs: bool,
     failed_terminal_modules: BTreeSet<ScopeId>,
     failed_flask_provider_initializers: BTreeMap<ScopeId, Location>,
@@ -1966,6 +1979,15 @@ impl<'a> Graph<'a> {
             _ => None,
         };
         let (scope, before) = access;
+        let caller = self.scopes[scope].file;
+        let enclosing_definition = (self.phase03 && scope != caller)
+            .then(|| {
+                std::iter::successors(Some(scope), |&scope| self.scopes[scope].parent)
+                    .find(|&scope| self.scopes[scope].parent == Some(caller))
+                    .and_then(|scope| self.scopes[scope].owner)
+                    .map(|owner| position(self.symbols[owner].name.at))
+            })
+            .flatten();
         let mut attached: Option<SymbolId> = None;
         let mut possible_attachment = false;
         let mut possible_earlier_attachment = false;
@@ -1983,9 +2005,15 @@ impl<'a> Graph<'a> {
                     .get(&id)
                     .is_none_or(|guards| guards.iter().all(|span| span.contains(&position(before))))
             } else {
-                symbol.scope == package
-                    && self.scopes[scope].file != package
-                    && !self.conditional.contains_key(&id)
+                !self.conditional.contains_key(&id)
+                    && (symbol.scope == package && caller != package
+                        // The enclosing definition cannot become callable
+                        // before an earlier ordinary import in its module.
+                        || symbol.scope == caller
+                            && matches!(symbol.binding, Binding::Import(import) if import.member.is_none())
+                            && enclosing_definition.is_some_and(|definition| {
+                                position(symbol.name.at) < definition
+                            }))
             };
             // Other scopes may already have executed. A later statement in
             // this module's own initializer has not yet attached the child.
@@ -3515,6 +3543,7 @@ impl<'a> Graph<'a> {
                 ModuleMemberAccess::Attribute,
                 depth,
             ),
+            Value::StdlibLogger if name == "info" => Value::StdlibLoggerInfo,
             Value::ProjectPath(path) => self.project_path_member(path, name, access),
             Value::Instance(class) | Value::Callable(Invocation { target: class, .. })
                 if self.is_class(class) =>
@@ -4774,6 +4803,12 @@ impl<'a> Graph<'a> {
                         Value::Unknown
                     }
                 }
+                Value::Provider(name)
+                    if name == "logging.getLogger"
+                        && self.bounded_logger_name(scope, before, arguments, keywords) =>
+                {
+                    Value::StdlibLogger
+                }
                 Value::IdentityDefaultFunction(default) if keywords.is_empty() => {
                     match arguments.as_slice() {
                         [] => *default,
@@ -5685,6 +5720,9 @@ impl<'a> Graph<'a> {
     fn expose(&mut self, scope: ScopeId, value: Value, kind: &'static str, at: Location) {
         let invocation = match value {
             Value::Callable(invocation) => {
+                if self.phase03 && kind == "returned_callable" {
+                    self.record_returned_class(scope, invocation.target);
+                }
                 if self.phase03 && self.callback_generator_return(invocation, 0).is_some() {
                     self.report_unmodeled_deferred_value(scope, at, &Value::DeferredComprehension);
                 }
@@ -6422,6 +6460,18 @@ impl<'a> Graph<'a> {
                     return;
                 }
                 let callee = self.call_target_identity(scope, function, before, 0);
+                if self.record_logging_call(
+                    &callee,
+                    CallArguments {
+                        scope,
+                        before,
+                        at: expr.at,
+                        positional: arguments,
+                        keywords,
+                    },
+                ) {
+                    return;
+                }
                 if self.phase03
                     && arguments.is_empty()
                     && keywords.is_empty()
@@ -7442,6 +7492,9 @@ impl<'a> Graph<'a> {
                         }
                         if self.phase03
                             && (self.defer_fresh_field_call(scope, expr)
+                                || self.defer_factory_method_call(function, CallArguments {
+                                    scope, before, at: expr.at, positional: arguments, keywords,
+                                })
                                 || self.defer_source_provider_call(scope, expr))
                         {
                             return;
@@ -7912,6 +7965,9 @@ impl<'a> Graph<'a> {
                     .iter()
                     .all(|(name, _)| parameters.iter().any(|parameter| parameter.text == *name));
             if self.phase03 && arguments_bound {
+                if !invocation.verified && !invocation.implicit_descriptor_receiver {
+                    self.record_fresh_class_field_read(callee, definition, call);
+                }
                 for (parameter, argument) in definition
                     .parameters
                     .iter()
@@ -11579,16 +11635,33 @@ impl<'a> Graph<'a> {
             let scope = symbol.scope;
             let file = &self.files[self.scopes[scope].file];
             let full_name = self.full_name(id);
+            let parent = self.scopes[scope].owner;
+            let method = self.phase03
+                && !self.is_class(id)
+                && parent.is_some_and(|parent| self.is_class(parent));
             let mut qualifiers = vec![(
                 "type".into(),
                 if self.is_class(id) {
                     "class"
+                } else if method {
+                    "method"
                 } else {
                     "function"
                 }
                 .into(),
             )];
-            if let Some(parent) = self.scopes[scope].owner {
+            if let Some(parent) = parent
+                && (!self.phase03 || self.is_class(parent))
+            {
+                if method {
+                    qualifiers.push((
+                        "method_display_name".into(),
+                        format!(
+                            "{}.{}",
+                            self.symbols[parent].name.text, definition.name.text
+                        ),
+                    ));
+                }
                 qualifiers.push(("parent_name".into(), self.symbols[parent].name.text.clone()));
                 qualifiers.push(("parent_full_name".into(), self.full_name(parent)));
                 qualifiers.push(("parent_module".into(), file.module.clone()));
@@ -11636,6 +11709,7 @@ impl<'a> Graph<'a> {
                     &definition.name.text,
                     &full_name,
                     &qualifiers,
+                    self.phase03,
                 )
             }) {
                 roots.push(Edge {
@@ -12336,6 +12410,7 @@ impl<'a> Graph<'a> {
         self.report_fresh_field_calls(&reach);
         self.report_constructor_hook_stores(&reach);
         self.report_source_provider_calls(&reach);
+        self.report_unresolved_factory_method_calls(&reach);
         self.report_escaped_flask_login_mutators(&reach);
         self.issues
             .extend(
@@ -12359,6 +12434,8 @@ impl<'a> Graph<'a> {
             self.remove_proven_django_command_option_diagnostics(&reach);
             self.report_django_middleware_calls(&reach);
             self.report_log_record_calls(&reach);
+            self.report_stdlib_logging_calls(&reach);
+            self.retain_source_class_fields(&mut reach);
             self.report_django_widget_data_gets(&reach);
             self.report_flask_parameter_hooks(&reach);
         }
@@ -12865,6 +12942,7 @@ struct Reachability {
     resolved_django_reloader_parameters: BTreeSet<usize>,
     resolved_static_parameter_calls: BTreeSet<usize>,
     resolved_source_provider_calls: BTreeSet<SymbolId>,
+    resolved_factory_method_calls: BTreeSet<usize>,
     closed_class_call_sites: BTreeSet<(ScopeId, [usize; 2], &'static str)>,
     fastapi_callbacks: BTreeSet<SymbolId>,
     fastapi_websocket_query_bindings: BTreeMap<SymbolId, bool>,
@@ -14376,6 +14454,150 @@ def __getattr__(name):
                 "{:?}",
                 report.findings
             );
+        }
+    }
+
+    #[test]
+    fn annotated_lazy_table_preserves_its_matching_type_import() {
+        let source = r#"from typing import TYPE_CHECKING, Any
+if TYPE_CHECKING:
+    from pkg.models import Entry, Unlisted
+_LAZY = {"Entry": ("pkg.models", "Entry")}
+__all__ = []
+
+def __getattr__(name: str) -> Any:
+    module, attribute = _LAZY[name]
+    return getattr(__import__(module, fromlist=[attribute]), attribute)
+"#;
+        for (contents, used) in [
+            (source.to_owned(), true),
+            (source.replace("name: str", "name: factory()"), false),
+            (
+                source.replace("pkg.models\", \"Entry\"", "pkg.models\", \"Unlisted\""),
+                false,
+            ),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("pkg/__init__.py", "pkg", &contents),
+                    module(
+                        "pkg/models.py",
+                        "pkg.models",
+                        "class Entry: pass\nclass Unlisted: pass\n",
+                    ),
+                ],
+                &[],
+            );
+            let imports = names(&report, Category::Import);
+            assert_eq!(!imports.contains(&"Entry"), used, "{contents}\n{imports:?}");
+            assert!(imports.contains(&"Unlisted"), "{contents}\n{imports:?}");
+            if used {
+                assert!(report.issues.is_empty(), "{:?}", report.issues);
+                assert!(
+                    !report
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.kind == "public_export")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn module_level_dotted_import_can_supply_a_later_definition() {
+        let body = "def run():\n    print('pkg.mod.time is slow here')\n    return pkg.mod.json.dumps({})\n# pkg.mod.os is patched here\n";
+        for (source, attached) in [
+            (format!("import pkg.mod\n{body}"), true),
+            (format!("{body}\nrun()\nimport pkg.mod\n"), false),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("pkg/__init__.py", "pkg", ""),
+                    module(
+                        "pkg/mod.py",
+                        "pkg.mod",
+                        "import json\nimport os\nimport time\n",
+                    ),
+                    module("pkg/other.py", "pkg.other", &source),
+                ],
+                &[],
+            );
+            let imports = names(&report, Category::Import);
+            assert_eq!(
+                !imports.contains(&"json"),
+                attached,
+                "{source}\n{imports:?}"
+            );
+            assert!(
+                imports.contains(&"time") && imports.contains(&"os"),
+                "{imports:?}"
+            );
+            assert_eq!(report.issues.is_empty(), attached, "{:?}", report.issues);
+        }
+    }
+
+    #[test]
+    fn module_reader_sees_an_exhaustive_import_or_definition_after_initialization() {
+        let imported = "from pkg.core import fast";
+        let fallback = "def fast(value): return value";
+        let reader = "def use(): return fast(1)\n";
+        let branch = |yes, no| format!("if sys.platform == 'win32':\n    {yes}\nelse:\n    {no}\n");
+        for (source, complete) in [
+            (
+                format!("import sys\n{reader}{}", branch(imported, fallback)),
+                true,
+            ),
+            (
+                format!("import sys\n{}{reader}", branch(fallback, imported)),
+                true,
+            ),
+            (
+                format!("import sys\n{reader}use()\n{}", branch(imported, fallback)),
+                false,
+            ),
+            (
+                format!("import sys\n{reader}{}", branch(imported, "pass")),
+                false,
+            ),
+        ] {
+            let report = analyze_phase03(
+                &[
+                    module("pkg/__init__.py", "pkg", ""),
+                    module("pkg/core.py", "pkg.core", "def fast(value): return value\n"),
+                    module("pkg/mod.py", "pkg.mod", &source),
+                    module("main.py", "main", "from pkg.mod import use\nuse()\n"),
+                ],
+                &[],
+            );
+            assert_eq!(
+                report.issues.is_empty(),
+                complete,
+                "{source}\n{:?}",
+                report.issues
+            );
+            if complete {
+                assert!(
+                    names(&report, Category::Import).is_empty(),
+                    "{source}\n{:?}",
+                    report.findings
+                );
+                assert!(
+                    report
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.full_name == "pkg.core.fast"
+                            && edge.kind == "direct_call"
+                            && edge.certainty == "possible")
+                );
+                assert!(
+                    report
+                        .evidence
+                        .iter()
+                        .any(|edge| edge.full_name == "pkg.mod.fast"
+                            && edge.kind == "direct_call"
+                            && edge.certainty == "possible")
+                );
+            }
         }
     }
 

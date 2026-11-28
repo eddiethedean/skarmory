@@ -365,7 +365,7 @@ impl<'a> Graph<'a> {
             .filter(|(_, site)| reach.scopes.contains(&site.scope))
             .map(|(&owner, &site)| (owner, site))
             .collect();
-        if sites.is_empty() {
+        if sites.is_empty() && self.source_factory_method_calls.is_empty() {
             return;
         }
         let invalidated = self.source_provider_invalidated.take().unwrap_or_else(|| {
@@ -374,6 +374,7 @@ impl<'a> Graph<'a> {
             invalidated.extend(&self.source_provider_opaque_arguments);
             invalidated
         });
+        self.activate_factory_method_calls(reach, pending, possible, &invalidated);
         for (owner, site) in sites {
             if invalidated.contains(&owner) {
                 continue;
@@ -581,7 +582,7 @@ impl<'a> Graph<'a> {
         .then_some((invocation.target, class))
     }
 
-    fn source_provider_definition_precedes(
+    pub(super) fn source_provider_definition_precedes(
         &self,
         target: SymbolId,
         (mut caller, mut at): (ScopeId, Location),

@@ -28,6 +28,8 @@ pub use runtime_evidence::Input as EvidenceInput;
 mod wildcards;
 pub mod workflow;
 
+const SOURCE_FACTORY_METHOD: &str = "source_factory_method";
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Profile {
     #[default]
@@ -449,6 +451,7 @@ struct LivenessSummary {
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct LivenessRescue {
     full_name: String,
+    name: String,
     reason: &'static str,
 }
 
@@ -972,7 +975,7 @@ fn scan_selected(
         FactCache::for_project(
             directory,
             if project_wildcards {
-                "phase03-module-v49/ruff-0.0.12/py311/utf8-universal"
+                "phase03-module-v50/ruff-0.0.12/py311/utf8-universal"
             } else {
                 "phase02-module-v39/ruff-0.0.12/py311/utf8-universal"
             },
@@ -1599,9 +1602,10 @@ fn scan_selected(
         rescued: analysis
             .evidence
             .iter()
-            .filter(|event| event.kind == "package_entrypoint")
+            .filter(|event| matches!(event.kind, "package_entrypoint" | SOURCE_FACTORY_METHOD))
             .map(|event| LivenessRescue {
                 full_name: event.full_name.clone(),
+                name: event.full_name.clone(),
                 reason: event.kind,
             })
             .collect::<BTreeSet<_>>()

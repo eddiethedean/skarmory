@@ -21,6 +21,14 @@ impl Graph<'_> {
         {
             return None;
         }
+        if self.conditional_groups.contains_key(&replacement) {
+            return self.settled_conditional_import_read(
+                scope,
+                reader,
+                [*initial, replacement],
+                depth,
+            );
+        }
         let Binding::Import(import) = self.symbols[*initial].binding else {
             return None;
         };
@@ -83,6 +91,94 @@ impl Graph<'_> {
         // No statement through both definitions can enter the reader, so
         // every execution of its body sees the replacement installed.
         (imports == 1).then(|| self.binding(replacement, END, depth + 1))
+    }
+
+    fn settled_conditional_import_read(
+        &mut self,
+        scope: ScopeId,
+        reader: SymbolId,
+        [first, last]: [SymbolId; 2],
+        depth: usize,
+    ) -> Option<Value> {
+        let file = self.scopes[scope].file;
+        let (import, fallback) = match (&self.symbols[first].binding, &self.symbols[last].binding) {
+            (Binding::Import(import), Binding::Definition(fallback, _))
+            | (Binding::Definition(fallback, _), Binding::Import(import)) => (*import, *fallback),
+            _ => return None,
+        };
+        let Binding::Definition(reader_def, _) = self.symbols[reader].binding else {
+            return None;
+        };
+        if fallback.kind != DefinitionKind::Function
+            || !closures::passive_definition(fallback)
+            || !self.quiet_callable_import(file, import)
+        {
+            return None;
+        }
+        let body = self.scopes[file].body;
+        let branch_index = body.iter().position(|statement| {
+            let StatementKind::If {
+                test,
+                body,
+                otherwise,
+            } = &statement.kind
+            else {
+                return false;
+            };
+            let ([then], [otherwise]) = (body.as_slice(), otherwise.as_slice()) else {
+                return false;
+            };
+            let matching_arms = matches!((&then.kind, &otherwise.kind),
+                (StatementKind::Import(actual), StatementKind::Define(definition))
+                | (StatementKind::Define(definition), StatementKind::Import(actual))
+                    if std::ptr::eq(actual, import) && std::ptr::eq(definition, fallback));
+            matching_arms && self.stable_platform_comparison(file, test, statement.at)
+        })?;
+        let reader_index = direct_definition_index(body, reader_def)?;
+        for (index, statement) in body[..=branch_index.max(reader_index)].iter().enumerate() {
+            if index == branch_index {
+                continue;
+            }
+            match &statement.kind {
+                StatementKind::Import(import)
+                    if import.level == 0
+                        && import.module == "sys"
+                        && import.member.is_none()
+                        && !import.wildcard_member
+                        && self.scopes[file].names[import.local.text.as_str()].len() == 1
+                        && !self.has_module_binding_write(file, &import.local.text)
+                        && self.import_module(file, import).as_deref() == Some("sys")
+                        && !self.modules.contains_key("sys")
+                        && self
+                            .imported_module_write("sys", (file, statement.at))
+                            .is_none() => {}
+                StatementKind::Define(definition)
+                    if closures::passive_definition(definition)
+                        && self.scopes[file].names[definition.name.text.as_str()].len() == 1
+                        && !self.has_module_binding_write(file, &definition.name.text) => {}
+                StatementKind::Evaluate(value) if closures::inert_default(value) => {}
+                // The reader can escape or run as soon as its declaration is
+                // evaluated. Require a quiet prefix through the whole branch.
+                _ => return None,
+            }
+        }
+        self.finite_conditional_value(last, END, depth + 1)
+    }
+
+    fn stable_platform_comparison(&self, file: ScopeId, test: &Expression, at: Location) -> bool {
+        let ExpressionKind::Compare {
+            left,
+            right,
+            identity: false,
+            ..
+        } = &test.kind
+        else {
+            return false;
+        };
+        (matches!(right.kind, ExpressionKind::Text(_))
+            && self.lazy_provider_member(file, left, at, "sys", "platform"))
+            || (matches!(left.kind, ExpressionKind::Text(_))
+                && self.lazy_provider_member(file, right, at, "sys", "platform"))
     }
 
     fn quiet_callable_import(&self, file: ScopeId, import: &Import) -> bool {

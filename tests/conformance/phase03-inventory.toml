@@ -20209,10 +20209,8 @@ assertions = ["test/test_dead_code_local_bindings.py:306"]
 prerequisites = ["test/test_dead_code_local_bindings.py:17", "installed-sdk", "grep-verification"]
 provenance = "Pinned inline Python local-binding fixtures written by the original _write helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The complete SDK scan reports a class flag as unused even though pick reads the flag from both instantiated receivers."
 
 [[cases]]
 id = "test/test_dead_code_local_bindings.py::test_module_variables_sharing_a_name_are_reported_independently"
@@ -20223,10 +20221,8 @@ assertions = ["test/test_dead_code_local_bindings.py:337", "test/test_dead_code_
 prerequisites = ["test/test_dead_code_local_bindings.py:17", "installed-sdk", "grep-verification"]
 provenance = "Pinned inline Python local-binding fixtures written by the original _write helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The complete SDK scan reports queries on the returned nested class in a.py as unused alongside the distinct unused module binding in b.py."
 
 [[cases]]
 id = "test/test_dead_code_local_bindings.py::test_variables_whose_same_named_attributes_read_other_objects_are_reported"
@@ -20277,10 +20273,8 @@ assertions = ["test/test_dead_code_local_bindings.py:587", "test/test_dead_code_
 prerequisites = ["test/test_dead_code_local_bindings.py:17", "installed-sdk", "grep-verification"]
 provenance = "Pinned inline Python local-binding fixtures written by the original _write helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call) in busy.py, lone.py, main.py, shared.py."
 
 [[cases]]
 id = "test/test_dead_code_local_bindings.py::test_module_variable_reached_from_another_module_stays_used"
@@ -20305,10 +20299,8 @@ assertions = ["test/test_dead_code_local_bindings.py:646", "test/test_dead_code_
 prerequisites = ["test/test_dead_code_local_bindings.py:17", "installed-sdk", "grep-verification"]
 provenance = "Pinned inline Python local-binding fixtures written by the original _write helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call) in pkg/other.py, pkg/shared.py, pkg/user.py."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_a_test_mentioning_the_word_does_not_keep_an_import"
@@ -20347,10 +20339,8 @@ assertions = ["test/test_dead_code_import_evidence.py:105", "test/test_dead_code
 prerequisites = ["test/test_dead_code_import_evidence.py:14", "test/test_dead_code_import_evidence.py:18", "installed-sdk", "grep-verification"]
 provenance = "Original pinned pytest case and inline project written by test/test_dead_code_import_evidence.py:13-14 using test/fixture_paths.py::write_fixture."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A complete scan reports the TYPE_CHECKING import Thing unused despite its literal lazy export."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_a_deprecated_module_keeps_its_reexports_hidden"
@@ -20387,10 +20377,8 @@ assertions = ["test/test_dead_code_import_evidence.py:159", "test/test_dead_code
 prerequisites = ["test/test_dead_code_import_evidence.py:14", "test/test_dead_code_import_evidence.py:18", "installed-sdk", "grep-verification"]
 provenance = "Original pinned pytest case and inline project written by test/test_dead_code_import_evidence.py:13-14 using test/fixture_paths.py::write_fixture."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "A complete scan reports the genuinely referenced pkg.mod.json import unused."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_a_literal_getattr_on_the_module_elsewhere_keeps_an_import"
@@ -20495,10 +20483,8 @@ assertions = ["test/test_dead_code_import_evidence.py:423"]
 prerequisites = ["test/test_dead_code_import_evidence.py:14", "test/test_dead_code_import_evidence.py:18", "installed-sdk", "grep-verification"]
 provenance = "Original pinned pytest case and inline project written by test/test_dead_code_import_evidence.py:13-14 using test/fixture_paths.py::write_fixture."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "The called function's reference to fast across the platform branches is unresolved."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_function_above_a_straight_overwrite_still_reports"
@@ -20611,10 +20597,8 @@ assertions = ["test/test_dead_code_import_evidence.py:559"]
 prerequisites = ["test/test_dead_code_import_evidence.py:14", "test/test_dead_code_import_evidence.py:18", "installed-sdk", "grep-verification"]
 provenance = "Original pinned pytest case and inline project written by test/test_dead_code_import_evidence.py:13-14 using test/fixture_paths.py::write_fixture."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-blocker = "Lookup of fast across the reversed platform branches is unresolved."
 
 [[cases]]
 id = "test/test_dead_code_import_evidence.py::test_a_function_called_before_the_import_is_overwritten_keeps_it"
@@ -21234,13 +21218,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:371"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The raw SDK lacks the pinned native provider-method rescue or classification evidence; an empty rescue list cannot prove this assertion."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_creating_a_deferred_consumer_does_not_prove_method_execution[generator]"
@@ -21248,13 +21230,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:371"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The raw SDK lacks the pinned native provider-method rescue or classification evidence; an empty rescue list cannot prove this assertion."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_expression_bodies_keep_eager_provider_calls_without_inventing_dead_arms[make_provider().inspect_payload() if choose() else None-True]"
@@ -21290,13 +21270,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:406"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The raw SDK lacks the pinned native provider-method rescue or classification evidence; an empty rescue list cannot prove this assertion."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[if True:\\n    return\\nmake_provider().inspect_payload()-False]"
@@ -21304,13 +21282,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The raw SDK lacks the pinned native provider-method rescue or classification evidence; an empty rescue list cannot prove this assertion."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[if False:\\n    return\\nmake_provider().inspect_payload()-True]"
@@ -21318,13 +21294,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[for item in [1]:\\n    break\\n    make_provider().inspect_payload()-False]"
@@ -21360,13 +21334,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The raw SDK lacks the pinned native provider-method rescue or classification evidence; an empty rescue list cannot prove this assertion."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[True or make_provider().inspect_payload()-False]"
@@ -21374,13 +21346,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The raw SDK lacks the pinned native provider-method rescue or classification evidence; an empty rescue list cannot prove this assertion."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[True and make_provider().inspect_payload()-True]"
@@ -21388,13 +21358,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[False or make_provider().inspect_payload()-True]"
@@ -21402,13 +21370,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[stop()\\nmake_provider().inspect_payload()-False]"
@@ -21416,13 +21382,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call) in app.py."
 
 [[cases]]
 id = "test/test_provider_method_precision.py::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[finish()\\nmake_provider().inspect_payload()-True]"
@@ -21430,13 +21394,11 @@ milestone = "0.3"
 languages = ["python"]
 source = "test/test_provider_method_precision.py"
 assertions = ["test/test_provider_method_precision.py:19", "test/test_provider_method_precision.py:451"]
-prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "native-provider-method-evidence"]
+prerequisites = ["test/test_provider_method_precision.py:15", "installed-sdk", "grep-verification-disabled", "installed-sdk-source-factory-method-evidence"]
 provenance = "Pinned inline Python provider-method fixtures written by the original _scan helper."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "Installed SDK coverage is incomplete (unresolved_call) in app.py."
 
 # Frozen Python dead-code proof regression cases.
 
@@ -22799,10 +22761,8 @@ assertions = ["test/test_analyzer.py:1160", "test/test_analyzer.py:1161", "test/
 prerequisites = ["test/test_analyzer.py:1130", "installed-sdk", "grep-verification-disabled", "runtime-trace-disabled"]
 provenance = "Original pinned fixture and assertions at test/test_analyzer.py:1127-1164."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The installed SDK reports incomplete coverage because the augmented __all__ assignment is outside the supported source subset."
 
 [[cases]]
 id = "test/test_analyzer.py::TestAnalyze::test_init_dynamic_all_mutation_falls_back_to_public_surface"
@@ -22856,7 +22816,7 @@ variants = ["linux-x86_64-cp311-python-sdk"]
 port = ""
 omitted_assertions = []
 diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The original assertions still fail because the public function in the package initializer is reported unused without an explicit __all__."
+blocker = "Implicit initializer exports are outside the current public-surface model. Retaining every public declaration would also hide the unused package-level create_app in the separate native Flask control."
 
 [[cases]]
 id = "test/test_analyzer.py::TestAnalyze::test_package_subdir_scan_keeps_absolute_imports_live"
@@ -23020,10 +22980,8 @@ assertions = ["test/test_analyzer.py:3593", "test/test_analyzer.py:3594"]
 prerequisites = ["test/test_analyzer.py:3558", "test/test_analyzer.py:3571", "installed-sdk", "grep-verification"]
 provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3557-3594."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The original assertions still fail because the configured create method is reported unused despite matching its class and parent base."
 
 [[cases]]
 id = "test/test_analyzer.py::TestConfiguredDeadCodeEntrypoints::test_configured_function_entrypoint_matches_decorator"
@@ -23034,10 +22992,8 @@ assertions = ["test/test_analyzer.py:3627", "test/test_analyzer.py:3628"]
 prerequisites = ["test/test_analyzer.py:3597", "test/test_analyzer.py:3609", "installed-sdk", "grep-verification"]
 provenance = "Original pinned fixture and assertions at test/test_analyzer.py:3596-3628."
 variants = ["linux-x86_64-cp311-python-sdk"]
-port = ""
+port = "tests/conformance/run_phase03_seed.py"
 omitted_assertions = []
-diagnostic_port = "tests/conformance/run_phase03_seed.py"
-blocker = "The original assertions still fail because the boot function is reported unused despite matching the configured entrypoint decorator."
 
 [[cases]]
 id = "test/test_analyzer.py::TestIgnorePragmas::test_analyze_respects_ignore_pragmas"

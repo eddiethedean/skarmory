@@ -671,6 +671,7 @@ impl Entrypoint {
         name: &str,
         full_name: &str,
         qualifiers: &[(String, String)],
+        phase03: bool,
     ) -> bool {
         if self
             .locations
@@ -684,11 +685,25 @@ impl Entrypoint {
             match *kind {
                 "path" => patterns.iter().any(|pattern| pattern.path_matches(file)),
                 "module" => matches(module),
-                "name" => matches(name),
+                "name" => {
+                    matches(name)
+                        || qualifiers
+                            .iter()
+                            .any(|(key, value)| key == "method_display_name" && matches(value))
+                }
                 "full_name" => matches(full_name),
-                other => qualifiers
-                    .iter()
-                    .any(|(key, value)| key == other && matches(value)),
+                other => qualifiers.iter().any(|(key, value)| {
+                    key == other
+                        && (matches(value)
+                            || phase03
+                                && matches!(
+                                    other,
+                                    "decorator" | "base_class" | "parent_base_class"
+                                )
+                                && value
+                                    .rsplit_once('.')
+                                    .is_some_and(|(_, name)| matches(name)))
+                }),
             }
         })
     }

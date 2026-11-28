@@ -83,8 +83,9 @@ pub(super) const JSON_ENCODER_GLOBALS: &[&str] = &[
 
 fn proof_provider_members() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
     const MODULE_MEMBERS: &[(&str, &[&str])] = &[
-        ("typing", &["cast"]),
-        ("builtins", &["open"]),
+        ("typing", &["cast", "Any"]),
+        ("sys", &["platform"]),
+        ("builtins", &["open", "str"]),
         ("builtins", deprecation::WARNING_CATEGORIES),
         ("warnings", &["warn", "showwarning"]),
         ("typing_extensions", &["deprecated"]),
@@ -2821,7 +2822,8 @@ fn flask_globals_update(expression: &Expression) -> Option<(&Expression, &str, &
 fn provider_module(name: &str) -> bool {
     matches!(
         name,
-        "unittest"
+        "sys"
+            | "unittest"
             | "logging"
             | "logging.config"
             | "unittest.case"

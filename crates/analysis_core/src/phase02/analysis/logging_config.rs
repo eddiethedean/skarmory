@@ -11,7 +11,7 @@ const MAX_ITEMS: usize = 256;
 const MAX_REPLAY_DEPTH: usize = 16;
 // CPython 3.11 logging and logging.config import dependencies, including
 // platform alternatives and the conventional startup hooks.
-const LOGGING_IMPORT_NAMES: &str = "
+pub(super) const LOGGING_IMPORT_NAMES: &str = "
     _abc _codecs _collections _collections_abc _compat_pickle _functools _heapq _io _operator
     _pickle _queue _signal _socket _sre _stat _string _struct _thread _warnings _weakref
     _weakrefset _winapi abc array atexit builtins codecs collections contextlib copy copyreg

@@ -31,7 +31,7 @@ impl<'a> Graph<'a> {
         let file = self.scopes[scope].file;
         if !hook.simple_positional_parameters
             || !hook.decorators.is_empty()
-            || !hook.annotations.is_empty()
+            || !self.lazy_table_annotations(file, hook)
             || !hook.defaults.is_empty()
             || hook.is_generator
             || self.scopes[scope].open_wildcard
@@ -224,6 +224,16 @@ impl<'a> Graph<'a> {
             branches.push((export.as_str(), branch));
         }
         Some(LazyTable { branches, fallback })
+    }
+
+    fn lazy_table_annotations(&self, file: ScopeId, hook: &Definition) -> bool {
+        self.files[file].facts.postponed_annotations
+            || hook.annotations.iter().all(|annotation| {
+                matches!(annotation.kind, ExpressionKind::Text(_))
+                    || expression_name(annotation, "str")
+                        && self.unshadowed_lazy_builtin(file, "str", hook.name.at)
+                    || self.lazy_provider_member(file, annotation, hook.name.at, "typing", "Any")
+            })
     }
 
     fn unshadowed_lazy_builtin(&self, scope: ScopeId, name: &str, at: Location) -> bool {

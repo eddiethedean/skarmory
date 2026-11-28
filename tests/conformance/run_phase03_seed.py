@@ -43,6 +43,8 @@ from phase03_dependencies import (
     unused_dependencies,
 )
 from phase03_engine import ENGINE_CASES, INCLUDE_SOURCE, TRACED_ENGINE_CASES, engine_case
+from phase03_factory import METHOD_CASES as FACTORY_METHOD_CASES
+from phase03_factory import PREREQUISITE as FACTORY_METHOD_EXECUTION, verify_factory_method
 from phase03_framework import framework_report, patch_framework_analysis
 from phase03_fastapi import CASES as FASTAPI_CASES
 from phase03_fastapi import (
@@ -295,6 +297,8 @@ def port_cases(args):
             raise ValueError("missing native CLI adapter for a mapped SDK parity case")
         if key.startswith(JSON_PROVIDER_CASE) and PROVIDER_METHOD_EVIDENCE not in case["prerequisites"]:
             raise ValueError("the JSON provider cases require the native method evidence control")
+        if (FACTORY_METHOD_EXECUTION in case["prerequisites"]) != (key in FACTORY_METHOD_CASES):
+            raise ValueError("the source factory method adapter requires its paired evidence control")
     if SDK_CLI_PARITY_CASE in cases and (
         layer != "sdk" or getattr(args, "native_cli", None) is None
     ):
@@ -724,6 +728,13 @@ def pytest_worker(args):
                     if not proved_json_provider_dispatch(args.sdk_python, path, options, report):
                         pytest.fail("the native provider control did not distinguish an actual method call")
                     self.provider_method_proofs.add(key)
+                if FACTORY_METHOD_EXECUTION in case["prerequisites"]:
+                    if not verify_factory_method(
+                        key, path, options, report,
+                        lambda project, settings: scan_candidate(args.sdk_python, project, settings),
+                    ):
+                        pytest.fail("source provider method evidence did not match the execution controls")
+                    self.provider_method_proofs.add(key)
                 if CHANGED_FILE_SCOPE in case["prerequisites"]:
                     full = json.loads(scan_candidate(
                         args.sdk_python, path,
@@ -975,7 +986,7 @@ def pytest_worker(args):
                 proven = key in capture.config_recoveries
             elif required == SDK_CLI_PARITY:
                 proven = key in capture.sdk_cli_parity
-            elif required == PROVIDER_METHOD_EVIDENCE:
+            elif required in {PROVIDER_METHOD_EVIDENCE, FACTORY_METHOD_EXECUTION}:
                 proven = key in capture.provider_method_proofs
             elif required == "runtime-trace-rejected":
                 proven = key in capture.trace_rejections

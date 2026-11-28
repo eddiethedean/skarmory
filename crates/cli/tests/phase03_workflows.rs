@@ -72,6 +72,100 @@ fn names<'a>(report: &'a Value, section: &str) -> Vec<&'a str> {
 }
 
 #[test]
+fn phase03_configured_entrypoints_match_methods_and_short_qualified_names() {
+    let root = project(&[
+        (
+            "pyproject.toml",
+            "[[tool.skylos.dead_code.entrypoints]]\n\
+             type = 'method'\nname = 'Main.create'\nparent = { base_classes = ['Application'] }\n\
+             [[tool.skylos.dead_code.entrypoints]]\n\
+             type = 'function'\ndecorators = ['runtime_hook']\n\
+             [[tool.skylos.dead_code.entrypoints]]\n\
+             type = 'class'\nname = 'Other.Nested'\n",
+        ),
+        (
+            "app.py",
+            "class Application: pass\n\
+             def runtime_hook(fn): return fn\n\
+             class Main(Application):\n    def create(self): return 1\n\
+             def create(): return 2\n\
+             @runtime_hook\ndef boot(): return 3\n\
+             class Other(Application):\n    class Nested: pass\n    @runtime_hook\n    def unselected(self): return 4\n\
+             Main()\nOther()\n",
+        ),
+    ]);
+    let report = scan(root.path(), &["--json", "--confidence", "0"], 0);
+    let functions: Vec<_> = items(&report, "unused_functions")
+        .iter()
+        .map(|item| item["full_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        functions,
+        ["app.create", "app.Other.unselected"],
+        "{report}"
+    );
+    assert!(
+        items(&report, "unused_classes")
+            .iter()
+            .any(|item| item["full_name"] == "app.Other.Nested"),
+        "{report}"
+    );
+}
+
+#[test]
+fn phase03_package_exports_keep_explicit_edits_authoritative() {
+    let root = project(&[
+        (
+            "explicit/__init__.py",
+            "__all__: list[str] = ['FIRST']\n\
+             __all__ += ('SECOND',)\n__all__.append('third')\n__all__.extend(['fourth'])\n\
+             FIRST = 1\nSECOND = 2\n\
+             def third(): return 3\n\
+             def fourth(): return 4\n\
+             def stale(): return 5\n",
+        ),
+        ("support.py", "print('selected source')\n"),
+    ]);
+    let cache = tempfile::tempdir().unwrap();
+    let cache = cache.path().to_str().unwrap();
+    let report = scan(
+        root.path(),
+        &["--json", "--confidence", "0", "--workers", "1"],
+        0,
+    );
+    assert_eq!(names(&report, "unused_functions"), ["stale"], "{report}");
+    assert!(names(&report, "unused_variables").is_empty(), "{report}");
+    for hits in [0, 2] {
+        let cached = scan(
+            root.path(),
+            &[
+                "--json",
+                "--confidence",
+                "0",
+                "--workers",
+                "4",
+                "--cache-dir",
+                cache,
+            ],
+            0,
+        );
+        assert_eq!(cached["unused_functions"], report["unused_functions"]);
+        assert_eq!(cached["coverage"], report["coverage"]);
+        assert_eq!(cached["dead_code_evidence"], report["dead_code_evidence"]);
+        assert_eq!(cached["cache"]["hits"], hits);
+        assert_eq!(cached["cache"]["misses"], 2 - hits);
+    }
+
+    fs::write(
+        root.path().join("explicit/__init__.py"),
+        "__all__ = ('first',)\n__all__.append('second')\n",
+    )
+    .unwrap();
+    let unsupported = scan(root.path(), &["--json", "--confidence", "0"], 2);
+    assert_eq!(unsupported["coverage"]["status"], "incomplete");
+}
+
+#[test]
 fn strict_filters_keep_a_new_unused_method_when_its_class_is_outside_the_report() {
     let root = project(&[("model.py", "class Dormant:\n    pass\n")]);
     let baseline = ".skylos/baseline.json";

@@ -128,7 +128,10 @@ impl Graph<'_> {
         };
         if let Some(target) = branch.table_target {
             return target.attribute == member
-                && self.lazy_import_target_matches(file, import, target.module, member);
+                && self
+                    .module_member_write(&self.files[file].module, "__getattr__", (file, END))
+                    .is_none()
+                && self.lazy_import_target_matches(file, import, target.module, member, true);
         }
         let ExpressionKind::Call {
             function,
@@ -202,7 +205,7 @@ impl Graph<'_> {
                 "importlib",
                 "import_module",
             )
-            && self.lazy_import_target_matches(file, import, target, member)
+            && self.lazy_import_target_matches(file, import, target, member, false)
     }
 
     fn lazy_import_target_matches(
@@ -211,6 +214,7 @@ impl Graph<'_> {
         import: &Import,
         target: &str,
         member: &str,
+        stable_owner_table: bool,
     ) -> bool {
         let Some(&target_file) = self.modules.get(target) else {
             return false;
@@ -219,9 +223,13 @@ impl Graph<'_> {
             && self
                 .import_module(file, import)
                 .is_some_and(|source| source == target)
-            && target
-                .match_indices('.')
-                .all(|(end, _)| self.lazy_import_parent(target, end).is_some())
+            && target.match_indices('.').all(|(end, _)| {
+                // The proven table is already installed when its own package
+                // performs the import. Matching the type-only declaration
+                // needs no claim about the child attachment's timing.
+                stable_owner_table && self.files[file].module == target[..end]
+                    || self.lazy_import_parent(target, end).is_some()
+            })
             && self.local(target_file, member, END).is_some_and(|id| {
                 !self.binding_depends_on_branch(id, END)
                     && !matches!(
