@@ -134,6 +134,12 @@ pub enum StatementKind {
         missing_member: String,
         fallback: Vec<Statement>,
     },
+    GuardedProjectImport {
+        import: Box<Statement>,
+        raises_import_error: bool,
+        fallback: Vec<Statement>,
+        otherwise: Vec<Statement>,
+    },
     Assign {
         names: Vec<Name>,
         value: Option<Expression>,
@@ -407,6 +413,40 @@ fn optional_project_class_fallback(node: &StmtTry) -> Option<(&str, &str, &[Stmt
         && fallback.type_params.is_none()
         && matches!(fallback.body.as_ref(), [Stmt::Pass(_)]))
     .then_some((package, missing_member, handler.body.as_ref()))
+}
+
+/// A single from-import with a named ImportError handler. Resolve the
+/// source and decide which body can run after project discovery.
+fn guarded_project_import(node: &StmtTry) -> Option<(&Stmt, bool, &[Stmt])> {
+    let [statement @ Stmt::ImportFrom(import), tail @ ..] = node.body.as_slice() else {
+        return None;
+    };
+    let [ExceptHandler::ExceptHandler(handler)] = node.handlers.as_slice() else {
+        return None;
+    };
+    if node.is_star
+        || !node.finalbody.is_empty()
+        || import.is_lazy
+        || !matches!(import.names.as_slice(), [alias] if alias.name.as_str() != "*")
+        || handler.name.is_some()
+        || !matches!(handler.type_.as_deref(), Some(Expr::Name(name)) if name.id.as_str() == "ImportError")
+    {
+        return None;
+    }
+    let raises = match tail {
+        [] => false,
+        [Stmt::Raise(raise)]
+            if raise.cause.is_none()
+                && matches!(raise.exc.as_deref(), Some(Expr::Call(call))
+                    if matches!(call.func.as_ref(), Expr::Name(name) if name.id.as_str() == "ImportError")
+                        && matches!(call.arguments.args.as_ref(), [Expr::StringLiteral(_)])
+                        && call.arguments.keywords.is_empty()) =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    Some((statement, raises, &handler.body))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1918,6 +1958,23 @@ impl Lowering<'_> {
                         package: package.into(),
                         missing_member: missing_member.into(),
                         fallback: self.suite(fallback, next)?,
+                    }
+                }
+                Stmt::Try(node)
+                    if self.4
+                        && self.1 == SyntaxScope::Module
+                        && let Some((import, raises_import_error, fallback)) =
+                            guarded_project_import(node) =>
+                {
+                    let [import]: [Statement; 1] = self
+                        .suite(std::slice::from_ref(import), next)?
+                        .try_into()
+                        .expect("one bounded from-import");
+                    StatementKind::GuardedProjectImport {
+                        import: Box::new(import),
+                        raises_import_error,
+                        fallback: self.suite(fallback, next)?,
+                        otherwise: self.suite(&node.orelse, next)?,
                     }
                 }
                 Stmt::Try(node)

@@ -1186,6 +1186,28 @@ impl<'a> Graph<'a> {
                 {
                     self.index(scope, fallback);
                 }
+                StatementKind::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } if self.proven_guarded_project_import(
+                    scope,
+                    statement.at,
+                    import,
+                    *raises_import_error,
+                ) =>
+                {
+                    self.index(scope, std::slice::from_ref(import));
+                    self.index(
+                        scope,
+                        if *raises_import_error {
+                            fallback
+                        } else {
+                            otherwise
+                        },
+                    );
+                }
                 StatementKind::ProviderWildcardImport(imports)
                     if self.supported_provider_wildcard(scope, statement.at, imports) =>
                 {
@@ -9270,6 +9292,33 @@ impl<'a> Graph<'a> {
                         "star imports cannot resolve finite bindings at this location",
                     );
                 }
+                StatementKind::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } => {
+                    if self.proven_guarded_project_import(scope, at, import, *raises_import_error) {
+                        self.suite(scope, std::slice::from_ref(import));
+                        if self.suite(
+                            scope,
+                            if *raises_import_error {
+                                fallback
+                            } else {
+                                otherwise
+                            },
+                        ) {
+                            return true;
+                        }
+                    } else {
+                        self.scope_issue(
+                            scope,
+                            at,
+                            "unresolved_optional_import",
+                            "cannot prove that this guarded import initializes the selected source and member",
+                        );
+                    }
+                }
                 StatementKind::OptionalProjectClassFallback {
                     package,
                     missing_member,
@@ -13045,7 +13094,8 @@ fn namespace_free_names(definition: &Definition, postponed: bool) -> BTreeSet<&s
                 assigned.extend(imports.iter().map(|import| import.local.text.as_str()));
             }
             StatementKind::ProjectWildcardImport { .. }
-            | StatementKind::OptionalProjectClassFallback { .. } => {}
+            | StatementKind::OptionalProjectClassFallback { .. }
+            | StatementKind::GuardedProjectImport { .. } => {}
             StatementKind::Assign {
                 names,
                 value,

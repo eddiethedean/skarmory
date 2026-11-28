@@ -189,6 +189,85 @@ fn phase03_dotted_import_respects_a_package_binding_after_indirect_loading() {
 }
 
 #[test]
+fn phase03_guarded_import_tracks_the_selected_binding_and_the_caught_raise() {
+    let root = project(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/core.py", "def read(value): return value\n"),
+        ("app.py", ""),
+    ]);
+    let root = root.path();
+    let prefix = "try:\n    from pkg.core import read\n";
+    let handler = "except ImportError:\n    def read(value): return 0\n";
+    let use_binding = "def run(): return read(1)\nrun()\n";
+    let cache = tempfile::tempdir().unwrap();
+    for (tail, unused) in [
+        ("", &[][..]),
+        ("    raise ImportError('fallback')\n", &["read"][..]),
+    ] {
+        fs::write(
+            root.join("app.py"),
+            format!("{prefix}{tail}{handler}{use_binding}"),
+        )
+        .unwrap();
+        let report = scan(root, &["--json", "--confidence", "0", "--workers", "1"], 0);
+        assert_eq!(names(&report, "unused_imports"), unused, "{report}");
+        for _ in 0..2 {
+            let flags = [
+                "--json",
+                "--confidence",
+                "0",
+                "--workers",
+                "4",
+                "--cache-dir",
+                cache.path().to_str().unwrap(),
+            ];
+            let mut cached = scan(root, &flags, 0);
+            cached.as_object_mut().unwrap().remove("cache");
+            assert_eq!(cached, report);
+        }
+    }
+
+    for source in [
+        format!(
+            "class ImportError: pass\n{prefix}    raise ImportError('fallback')\n{handler}{use_binding}"
+        ),
+        format!(
+            "{}    raise ImportError('fallback')\n{handler}{use_binding}",
+            prefix.replace("import read", "import read as ImportError")
+        ),
+    ] {
+        fs::write(root.join("app.py"), source).unwrap();
+        let report = scan(root, &["--json", "--confidence", "0"], 2);
+        assert!(
+            report["coverage"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["kind"] == "unresolved_optional_import")
+        );
+    }
+
+    fs::write(
+        root.join("app.py"),
+        format!("{prefix}{handler}{use_binding}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("pkg/core.py"),
+        "raise ImportError('initializer')\ndef read(value): return value\n",
+    )
+    .unwrap();
+    let report = scan(root, &["--json", "--confidence", "0"], 2);
+    assert!(
+        report["coverage"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["kind"] == "unresolved_optional_import")
+    );
+}
+
+#[test]
 fn phase03_package_exports_keep_explicit_edits_authoritative() {
     let root = project(&[
         (

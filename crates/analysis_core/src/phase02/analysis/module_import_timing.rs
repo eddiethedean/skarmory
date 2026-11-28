@@ -1,6 +1,52 @@
 use super::*;
 
 impl Graph<'_> {
+    pub(super) fn proven_guarded_project_import(
+        &self,
+        scope: ScopeId,
+        at: Location,
+        statement: &Statement,
+        raises_import_error: bool,
+    ) -> bool {
+        let StatementKind::Import(import) = &statement.kind else {
+            return false;
+        };
+        if scope != self.scopes[scope].file
+            || !self.terminal_proofs
+            || self.local(scope, "__builtins__", at).is_some()
+            || raises_import_error
+                && (import.local.text == "ImportError"
+                    || self.local(scope, "ImportError", at).is_some())
+        {
+            return false;
+        }
+        let Some((module, member)) = self
+            .import_module(scope, import)
+            .zip(import.member.as_deref())
+        else {
+            return false;
+        };
+        let Some((package, child)) = module.rsplit_once('.') else {
+            return false;
+        };
+        let Some(&source) = self.modules.get(module.as_str()) else {
+            return false;
+        };
+        let selected = &self.files[source];
+        source != scope
+            && !selected.is_package
+            && self.discovery.is_some_and(|project| {
+                project.package_source_unambiguous(package, child, Some(&selected.path))
+            })
+            && module.match_indices('.').all(|(end, _)| {
+                self.modules.get(&module[..end]).is_some_and(|&parent| self.files[parent].facts.body.is_empty())
+            })
+            && selected.facts.body.iter().all(passive_module_statement)
+            && selected.facts.body.iter().filter(|statement| {
+                matches!(&statement.kind, StatementKind::Define(def) if def.name.text == member)
+            }).count() == 1
+    }
+
     pub(super) fn settled_module_import_read(
         &mut self,
         scope: ScopeId,
@@ -32,12 +78,36 @@ impl Graph<'_> {
         let Binding::Import(import) = self.symbols[*initial].binding else {
             return None;
         };
-        let Binding::Definition(replacement_def, _) = self.symbols[replacement].binding else {
-            return None;
-        };
         let Binding::Definition(reader_def, _) = self.symbols[reader].binding else {
             return None;
         };
+        if !self.quiet_callable_import(file, import) {
+            return None;
+        }
+        let body: Vec<_> = self.initializer_statements(file).collect();
+        let reader_index = definition_index(body.iter().copied(), reader_def)?;
+        let import_index = body.iter().position(|statement| {
+            matches!(&statement.kind, StatementKind::Import(actual) if std::ptr::eq(actual, import))
+        })?;
+        if let Binding::Variable(Some(value), at) = self.symbols[replacement].binding
+            && matches!(&value.kind, ExpressionKind::Name(value) if value == name)
+            && import_index < reader_index
+            && body[import_index + 1..reader_index]
+                .iter()
+                .any(|statement| position(statement.at) == position(at))
+        {
+            // The right hand side of a self-copy reads the previous binding.
+            return Some(self.binding(replacement, END, depth + 1));
+        }
+        let Binding::Definition(replacement_def, _) = self.symbols[replacement].binding else {
+            return None;
+        };
+        let replacement_index = definition_index(body.iter().copied(), replacement_def)?;
+        if import_index < replacement_index && replacement_index < reader_index {
+            // A later direct definition cannot enter this reader before the
+            // replacement is installed by the same module initializer.
+            return Some(self.binding(replacement, END, depth + 1));
+        }
         if !field_dispatch::plain_method(reader_def, 0) || !reader_def.annotations.is_empty() {
             return None;
         }
@@ -63,14 +133,10 @@ impl Graph<'_> {
             || !arguments.iter().all(closures::inert_default)
             || !field_dispatch::plain_method(replacement_def, arguments.len())
             || !replacement_def.annotations.is_empty()
-            || !self.quiet_callable_import(file, import)
         {
             return None;
         }
 
-        let body = self.scopes[file].body;
-        let reader_index = direct_definition_index(body, reader_def)?;
-        let replacement_index = direct_definition_index(body, replacement_def)?;
         let mut imports = 0;
         for statement in &body[..=reader_index.max(replacement_index)] {
             match &statement.kind {
@@ -134,7 +200,7 @@ impl Graph<'_> {
                     if std::ptr::eq(actual, import) && std::ptr::eq(definition, fallback));
             matching_arms && self.stable_platform_comparison(file, test, statement.at)
         })?;
-        let reader_index = direct_definition_index(body, reader_def)?;
+        let reader_index = definition_index(body.iter(), reader_def)?;
         for (index, statement) in body[..=branch_index.max(reader_index)].iter().enumerate() {
             if index == branch_index {
                 continue;
@@ -163,6 +229,36 @@ impl Graph<'_> {
             }
         }
         self.finite_conditional_value(last, END, depth + 1)
+    }
+
+    fn initializer_statements(&self, file: ScopeId) -> impl Iterator<Item = &Statement> + '_ {
+        self.scopes[file].body.iter().flat_map(move |statement| {
+            let (first, tail) = match &statement.kind {
+                StatementKind::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } if self.proven_guarded_project_import(
+                    file,
+                    statement.at,
+                    import,
+                    *raises_import_error,
+                ) =>
+                {
+                    (
+                        import.as_ref(),
+                        if *raises_import_error {
+                            fallback.as_slice()
+                        } else {
+                            otherwise.as_slice()
+                        },
+                    )
+                }
+                _ => (statement, &[][..]),
+            };
+            std::iter::once(first).chain(tail)
+        })
     }
 
     fn stable_platform_comparison(&self, file: ScopeId, test: &Expression, at: Location) -> bool {
@@ -214,8 +310,11 @@ impl Graph<'_> {
     }
 }
 
-fn direct_definition_index(body: &[Statement], expected: &Definition) -> Option<usize> {
-    body.iter().position(|statement| {
+fn definition_index<'a>(
+    body: impl IntoIterator<Item = &'a Statement>,
+    expected: &Definition,
+) -> Option<usize> {
+    body.into_iter().position(|statement| {
         matches!(&statement.kind, StatementKind::Define(actual) if std::ptr::eq(actual, expected))
     })
 }

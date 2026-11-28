@@ -104,6 +104,21 @@ impl<'a> Python<'a> {
                     self.module(statement.at.line, package, "python_import");
                     bindings = self.suite(fallback, &bindings);
                 }
+                Stmt::GuardedProjectImport {
+                    import,
+                    raises_import_error,
+                    fallback,
+                    otherwise,
+                } => {
+                    let success = self.suite(std::slice::from_ref(import.as_ref()), &bindings);
+                    if *raises_import_error {
+                        bindings = self.suite(fallback, &merge_bindings(success, bindings));
+                    } else {
+                        let success = self.suite(otherwise, &success);
+                        let fallback = self.suite(fallback, &bindings);
+                        bindings = merge_bindings(success, fallback);
+                    }
+                }
                 Stmt::Assign {
                     names,
                     value,
