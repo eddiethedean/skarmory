@@ -107,6 +107,7 @@ fn subclass_discovery_follows_reached_imports_at_the_actual_call() {
     let cache = tempfile::tempdir().unwrap();
     let root = project.path();
     fs::write(root.join("base.py"), "class Base: pass\n").unwrap();
+    fs::write(root.join("unrelated.py"), "class OtherBase: pass\n").unwrap();
     fs::create_dir(root.join("plugins")).unwrap();
     fs::write(
         root.join("plugins/selected.py"),
@@ -124,8 +125,7 @@ fn subclass_discovery_follows_reached_imports_at_the_actual_call() {
         ("if False:\n    import plugins.selected\n", true, false),
     ] {
         fs::write(root.join("plugins/__init__.py"), package).unwrap();
-        let prefix =
-            "from base import Base\nimport plugins\ndef discover(): return Base.__subclasses__()\n";
+        let prefix = "from base import Base\nimport plugins\nimport unrelated\ndef discover(): return Base.__subclasses__()\n";
         let local = "class Local(Base): pass\n";
         let call = "print(discover())\n";
         let tail = if local_before {
@@ -143,6 +143,12 @@ fn subclass_discovery_follows_reached_imports_at_the_actual_call() {
             "{report}"
         );
         assert!(unused.contains(&"plugins.unrelated.Unrelated"), "{report}");
+        let imports = findings(&report, "unused_imports");
+        assert_eq!(imports.contains(&"plugins"), !selected_live, "{report}");
+        if selected_live {
+            assert!(!imports.contains(&"plugins.selected"), "{report}");
+        }
+        assert!(imports.contains(&"unrelated"), "{report}");
         assert_eq!(
             evidence_certainties(&report, "plugins.selected.Selected", "subclass_discovery"),
             if selected_live {

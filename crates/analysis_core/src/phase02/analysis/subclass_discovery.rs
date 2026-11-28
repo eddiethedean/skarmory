@@ -10,6 +10,12 @@ pub(super) struct Lookup {
     base: SymbolId,
 }
 
+#[derive(Default)]
+struct Discovery {
+    targets: BTreeSet<SymbolId>,
+    imports: BTreeSet<SymbolId>,
+}
+
 impl Graph<'_> {
     pub(super) fn record_subclass_lookup(
         &mut self,
@@ -87,9 +93,10 @@ impl Graph<'_> {
             if !reach.scopes.contains(&lookup.scope) {
                 continue;
             }
-            let targets = self.subclasses_at_lookup(lookup, reach);
-            if let Some(targets) = targets {
-                for target in targets {
+            let discovery = self.subclasses_at_lookup(lookup, reach);
+            if let Some(discovery) = discovery {
+                self.read.extend(discovery.imports);
+                for target in discovery.targets {
                     reach.symbols.insert(target);
                     reach
                         .evidence
@@ -108,11 +115,7 @@ impl Graph<'_> {
         }
     }
 
-    fn subclasses_at_lookup(
-        &mut self,
-        lookup: Lookup,
-        reach: &Reachability,
-    ) -> Option<Vec<SymbolId>> {
+    fn subclasses_at_lookup(&mut self, lookup: Lookup, reach: &Reachability) -> Option<Discovery> {
         let file = self.scopes[lookup.scope].file;
         if !self.plain_subclass_base(lookup.base)
             || !self
@@ -162,7 +165,7 @@ impl Graph<'_> {
             callers.into_iter().map(|call| call.at).collect()
         };
 
-        let mut targets = BTreeSet::new();
+        let mut discovery = Discovery::default();
         for before in caller_positions {
             let boundary = self.subclass_call_boundary(file, before)?;
             let mut pending = Vec::new();
@@ -177,22 +180,25 @@ impl Graph<'_> {
             {
                 return None;
             }
-            let mut loaded = BTreeMap::from([(file, boundary)]);
-            while let Some(module) = pending.pop() {
+            let mut loaded = BTreeMap::from([(file, (boundary, None))]);
+            pending.reverse();
+            while let Some((scope, import, module)) = pending.pop() {
                 if let std::collections::btree_map::Entry::Vacant(entry) = loaded.entry(module) {
-                    entry.insert(END);
+                    entry.insert((END, Some((self.scopes[scope].file, import))));
+                    let mut initializer_imports = Vec::new();
                     if !self.subclass_prefix_imports(
                         module,
                         self.scopes[module].body,
                         END,
-                        &mut pending,
+                        &mut initializer_imports,
                     ) {
                         return None;
                     }
+                    pending.extend(initializer_imports.into_iter().rev());
                 }
             }
 
-            for (&module, &before) in &loaded {
+            for (&module, &(before, _)) in &loaded {
                 let declarations: Vec<_> = self.scopes[module]
                     .names
                     .values()
@@ -214,16 +220,25 @@ impl Graph<'_> {
                         continue;
                     }
                     let scope = symbol.scope;
-                    if definition.bases.iter().any(|base| {
-                    matches!(self.probe_identity(scope, base, definition.name.at),
-                        Value::Callable(invocation) if !invocation.verified && invocation.target == lookup.base)
-                }) {
-                    targets.insert(id);
-                }
+                    let inherits_base = definition.bases.iter().any(|base| {
+                        matches!(self.probe_identity(scope, base, definition.name.at),
+                            Value::Callable(invocation)
+                                if !invocation.verified && invocation.target == lookup.base)
+                    });
+                    if inherits_base {
+                        discovery.targets.insert(id);
+                        // Removing any import on this path could change the
+                        // subclass list, even if its local alias is unread.
+                        let mut file = module;
+                        while let Some((_, Some((caller, import)))) = loaded.get(&file) {
+                            discovery.imports.insert(*import);
+                            file = *caller;
+                        }
+                    }
                 }
             }
         }
-        Some(targets.into_iter().collect())
+        Some(discovery)
     }
 
     fn subclass_call_boundary(&self, scope: ScopeId, at: Location) -> Option<Location> {
@@ -265,7 +280,7 @@ impl Graph<'_> {
         scope: ScopeId,
         body: &[Statement],
         before: Location,
-        pending: &mut Vec<ScopeId>,
+        pending: &mut Vec<(ScopeId, SymbolId, ScopeId)>,
     ) -> bool {
         body.iter()
             .take_while(|statement| position(statement.at) < position(before))
@@ -287,7 +302,7 @@ impl Graph<'_> {
                     if imports.peek().is_none() {
                         return false;
                     }
-                    pending.extend(imports);
+                    pending.extend(imports.map(|target| (scope, id, target)));
                     true
                 }
                 StatementKind::Define(definition) => {
