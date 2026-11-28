@@ -1037,9 +1037,6 @@ impl<'ast> Visitor<'ast> for BodyCoverage<'_> {
 
 impl Lowering<'_> {
     fn finally_initializes_fresh_locals(&self, node: &StmtTry) -> bool {
-        let Some(function) = self.6 else {
-            return false;
-        };
         if !node.body.iter().all(|statement| match statement {
             Stmt::Pass(_) => true,
             Stmt::Assign(assign) => {
@@ -1056,7 +1053,13 @@ impl Lowering<'_> {
         }) {
             return false;
         }
-        let overwrites = function.overwrites.get_or_init(|| {
+        self.local_overwrites()
+            .is_some_and(|overwrites| overwrites.range(node.start()..node.end()).next().is_none())
+    }
+
+    fn local_overwrites(&self) -> Option<&BTreeSet<TextSize>> {
+        let function = self.6?;
+        Some(function.overwrites.get_or_init(|| {
             let mut bindings = LocalBindings {
                 class: self.5,
                 first: BTreeMap::new(),
@@ -1070,8 +1073,7 @@ impl Lowering<'_> {
             }
             bindings.visit_body(&function.node.body);
             bindings.overwrites
-        });
-        overwrites.range(node.start()..node.end()).next().is_none()
+        }))
     }
 
     fn repeated_keyword_arguments(call: &ruff_python_ast::ExprCall) -> Option<Vec<&Expr>> {
@@ -1909,6 +1911,28 @@ impl Lowering<'_> {
                     )?);
                     continue;
                 }
+                Stmt::For(node)
+                    if self.4
+                        && matches!(self.1, SyntaxScope::Function | SyntaxScope::AsyncFunction)
+                        && let Expr::Name(target) = node.target.as_ref()
+                        && let Some((selected, unreachable)) = terminating_literal_loop(node)
+                        && self
+                            .local_overwrites()
+                            .is_some_and(|writes| !writes.contains(&target.start())) =>
+                {
+                    // Only the loop assignment runs. Validate the dormant
+                    // expressions without emitting executable facts for them.
+                    for statement in unreachable {
+                        if let Stmt::Expr(statement) = statement {
+                            self.expression(&statement.value, next + 1)?;
+                        }
+                    }
+                    StatementKind::Assign {
+                        names: vec![self.target(&node.target)?],
+                        value: Some(expression(selected)?),
+                        annotation: None,
+                    }
+                }
                 Stmt::For(node) => {
                     let Some((last, registration)) = literal_route_loop(node) else {
                         return Err(self
@@ -2233,6 +2257,20 @@ impl Lowering<'_> {
             }
             Expr::BooleanLiteral(node) => ExpressionKind::Bool(node.value),
             Expr::Lambda(node)
+                if self.4
+                    && let Some(parameters) = &node.parameters
+                    && parameters.len() == 1
+                    && parameters.kwonlyargs.is_empty()
+                    && let Some(parameter) = parameters.iter_non_variadic_params().next()
+                    && let Some(default) = parameter.default.as_deref()
+                    && matches!(node.body.as_ref(), Expr::Name(name)
+                        if self.attribute_name(name.id.as_str())
+                            == self.attribute_name(parameter.name().as_str())) =>
+            {
+                self.binding_name(parameter.name().as_str(), parameter.name())?;
+                ExpressionKind::IdentityDefaultLambda(Box::new(lower(default)?))
+            }
+            Expr::Lambda(node)
                 if lambda_parameter(node).is_some()
                     && matches!(node.body.as_ref(), Expr::Lambda(inner)
                         if lambda_parameter(inner).is_some_and(|parameter|
@@ -2491,6 +2529,35 @@ fn discarded_comprehension_iterable(expression: &Expr) -> Option<&Expr> {
         _ => return None,
     };
     (!generator.is_async && (!must_be_empty || elements.is_empty())).then_some(&generator.iter)
+}
+
+fn terminating_literal_loop(node: &ruff_python_ast::StmtFor) -> Option<(&Expr, &[Stmt])> {
+    if node.is_async || !node.orelse.is_empty() {
+        return None;
+    }
+    let values = match node.iter.as_ref() {
+        Expr::Tuple(tuple) => &tuple.elts,
+        Expr::List(list) => &list.elts,
+        _ => return None,
+    };
+    let (terminal, unreachable) = node.body.split_first()?;
+    let selected = match terminal {
+        Stmt::Break(_) => values.first()?,
+        Stmt::Continue(_) => values.last()?,
+        _ => return None,
+    };
+    (values.iter().all(|value| {
+        matches!(
+            value,
+            Expr::NoneLiteral(_)
+                | Expr::BooleanLiteral(_)
+                | Expr::NumberLiteral(_)
+                | Expr::StringLiteral(_)
+        )
+    }) && unreachable
+        .iter()
+        .all(|statement| matches!(statement, Stmt::Expr(_) | Stmt::Pass(_))))
+    .then_some((selected, unreachable))
 }
 
 fn literal_route_loop(node: &ruff_python_ast::StmtFor) -> Option<(&Expr, &Expr)> {

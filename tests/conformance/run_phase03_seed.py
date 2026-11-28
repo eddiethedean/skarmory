@@ -44,7 +44,8 @@ from phase03_dependencies import (
 )
 from phase03_engine import ENGINE_CASES, INCLUDE_SOURCE, TRACED_ENGINE_CASES, engine_case
 from phase03_factory import METHOD_CASES as FACTORY_METHOD_CASES
-from phase03_factory import PREREQUISITE as FACTORY_METHOD_EXECUTION, verify_factory_method
+from phase03_factory import PREREQUISITE as FACTORY_METHOD_EXECUTION
+from phase03_factory import PROXY_CASES, verify_dormant_proxy, verify_factory_method
 from phase03_framework import framework_report, patch_framework_analysis
 from phase03_fastapi import CASES as FASTAPI_CASES
 from phase03_fastapi import (
@@ -295,8 +296,10 @@ def port_cases(args):
     for key, case in cases.items():
         if (SDK_CLI_PARITY in case["prerequisites"]) != (key == SDK_CLI_PARITY_CASE):
             raise ValueError("missing native CLI adapter for a mapped SDK parity case")
-        if key.startswith(JSON_PROVIDER_CASE) and PROVIDER_METHOD_EVIDENCE not in case["prerequisites"]:
-            raise ValueError("the JSON provider cases require the native method evidence control")
+        if (key.startswith(JSON_PROVIDER_CASE) or key in PROXY_CASES) and (
+            PROVIDER_METHOD_EVIDENCE not in case["prerequisites"]
+        ):
+            raise ValueError("the provider cases require the native method evidence control")
         if (FACTORY_METHOD_EXECUTION in case["prerequisites"]) != (key in FACTORY_METHOD_CASES):
             raise ValueError("the source factory method adapter requires its paired evidence control")
     if SDK_CLI_PARITY_CASE in cases and (
@@ -727,6 +730,13 @@ def pytest_worker(args):
                 if key.startswith(JSON_PROVIDER_CASE):
                     if not proved_json_provider_dispatch(args.sdk_python, path, options, report):
                         pytest.fail("the native provider control did not distinguish an actual method call")
+                    self.provider_method_proofs.add(key)
+                if key in PROXY_CASES:
+                    if not verify_dormant_proxy(
+                        key, path, options, report,
+                        lambda project, settings: scan_candidate(args.sdk_python, project, settings),
+                    ):
+                        pytest.fail("the dormant proxy control did not distinguish an active source call")
                     self.provider_method_proofs.add(key)
                 if FACTORY_METHOD_EXECUTION in case["prerequisites"]:
                     if not verify_factory_method(

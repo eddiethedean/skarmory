@@ -14,11 +14,15 @@ FACTORY_METHOD = "source_factory_method"
 FACTORY_CASES = {
     f"{SOURCE}::test_expression_bodies_keep_eager_provider_calls_without_inventing_dead_arms"
     "[make_provider().inspect_payload() if False else None-False]": False,
+    f"{SOURCE}::test_expression_bodies_keep_eager_provider_calls_without_inventing_dead_arms"
+    "[lambda value=make_provider().inspect_payload(): value-True]": True,
     **{
         f"{SOURCE}::test_completed_or_short_circuited_sites_do_not_prove_provider_calls[{body}-{runs}]": runs
         for body, runs in (
             (r"if True:\n    return\nmake_provider().inspect_payload()", False),
             (r"if False:\n    return\nmake_provider().inspect_payload()", True),
+            (r"for item in [1]:\n    break\n    make_provider().inspect_payload()", False),
+            (r"for item in [1]:\n    continue\n    make_provider().inspect_payload()", False),
             ("False and make_provider().inspect_payload()", False),
             ("True or make_provider().inspect_payload()", False),
             ("True and make_provider().inspect_payload()", True),
@@ -33,6 +37,74 @@ DEFERRED_CASES = {
     for kind in ("coroutine", "generator")
 }
 METHOD_CASES = FACTORY_CASES.keys() | DEFERRED_CASES
+PROXY_CASES = {
+    f"{SOURCE}::test_legacy_proxy_call_requires_an_executing_owner[{verify}-{confidence}]": (
+        confidence, verify,
+    )
+    for confidence in (0, 80)
+    for verify in (False, True)
+}
+PROXY_OWNER = "commands.retired_shell"
+PROXY_TARGET = "app.App.make_shell_context"
+PROXY_PATHS = ("app.py", "commands.py")
+
+
+def verify_dormant_proxy(case_id, path, options, report, scan):
+    confidence, verify = PROXY_CASES[case_id]
+    if options != {"conf": confidence, "grep_verify": verify, "grep_cache": False}:
+        return False
+    if not _proxy_report(report, verify, coverage="complete"):
+        return False
+    if not _proxy_unused(report, PROXY_OWNER) or _proxy_called(report):
+        return False
+
+    # Preserve the original files. Activate the unresolved receiver in one
+    # control and call the actual provider independently in the other.
+    original = Path(path)
+    app = (original / "app.py").read_bytes()
+    commands = (original / "commands.py").read_bytes()
+    with TemporaryDirectory(prefix="skarmory-dormant-proxy-control-") as directory:
+        project = Path(directory)
+        (project / "app.py").write_bytes(app)
+        (project / "commands.py").write_bytes(commands + b"\nretired_shell()\n")
+        activated = json.loads(scan(project, options))
+        if not _proxy_report(activated, verify, coverage="incomplete") or _proxy_called(activated):
+            return False
+        if not any(
+            item["path"] == "commands.py" and item["kind"] == "unresolved_call"
+            for item in activated["coverage"]["issues"]
+        ):
+            return False
+        (project / "commands.py").write_bytes(
+            commands + b"\nfrom app import app as selected_app\nselected_app.make_shell_context()\n"
+        )
+        selected = json.loads(scan(project, options))
+        return (
+            _proxy_report(selected, verify, coverage="complete")
+            and _proxy_unused(selected, PROXY_OWNER)
+            and not _proxy_unused(selected, PROXY_TARGET)
+            and _proxy_called(selected)
+        )
+
+
+def _proxy_report(report, verify, *, coverage):
+    return (
+        report["coverage"]["status"] == coverage
+        and tuple(report["selected_paths"]) == PROXY_PATHS
+        and report["analysis_summary"]["grep_verify"]["enabled"] is verify
+    )
+
+
+def _proxy_unused(report, target):
+    return any(item["full_name"] == target for item in report["unused_functions"])
+
+
+def _proxy_called(report):
+    return any(
+        item["qualified_name"] == PROXY_TARGET
+        and any(edge["kind"] == "direct_call" for edge in item["evidence"])
+        for item in report["dead_code_evidence"]["symbols"]
+    )
 
 
 def verify_factory_method(case_id, path, options, report, scan):
